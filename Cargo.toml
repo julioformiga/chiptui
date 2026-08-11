@@ -1,0 +1,16 @@
+[package]
+name = "chiptui"
+version = "0.1.0"
+edition = "2024"
+description = "Terminal UI for embedded development workflows"
+
+[dependencies]
+# Crossterm is used through `ratatui::crossterm` rather than as a direct
+# dependency, so the backend and the terminal driver can never drift apart.
+ratatui = "0.30.2"
+# Local half of the content check: the device side is hashed by
+# `mpremote fs sha256sum`, and std has no hashing to match it with.
+sha2 = { version = "0.11.0", default-features = false }
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }

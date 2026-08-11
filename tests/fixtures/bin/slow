@@ -1,0 +1,5 @@
+#!/bin/sh
+# Emits a line, then blocks: for timeout and cancellation tests.
+echo "starting"
+sleep 30
+echo "never reached"

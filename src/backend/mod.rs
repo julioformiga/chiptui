@@ -1,0 +1,309 @@
+//! Backend abstraction.
+//!
+//! A backend answers two questions and nothing else for now:
+//!
+//! 1. *Is this directory a project of my kind?* --- [`Backend::detect`] returns
+//!    weighted evidence, never a boolean, so detection stays explainable.
+//! 2. *What can be done with such a project?* --- [`Backend::capabilities`].
+//!
+//! The UI consumes capabilities; it never asks "is this MicroPython?".
+//! Operations (`build`, `flash`, `monitor`, ...) are deliberately absent until
+//! there is a process manager to run them.
+
+pub mod micropython;
+pub mod registry;
+pub mod zephyr;
+
+use std::fmt;
+
+use crate::project::{DirScan, Signal};
+
+pub use registry::BackendRegistry;
+
+/// The backends that exist today. Adding a variant is a deliberate act; the UI
+/// never matches on it to decide which actions to offer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum BackendKind {
+    MicroPython,
+    Zephyr,
+}
+
+impl BackendKind {
+    pub const ALL: &'static [BackendKind] = &[BackendKind::MicroPython, BackendKind::Zephyr];
+
+    /// Stable identifier used by configuration and manual overrides.
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::MicroPython => "micropython",
+            Self::Zephyr => "zephyr",
+        }
+    }
+
+    pub const fn display_name(self) -> &'static str {
+        match self {
+            Self::MicroPython => "MicroPython",
+            Self::Zephyr => "Zephyr",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|kind| kind.id() == id)
+    }
+}
+
+impl fmt::Display for BackendKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.display_name())
+    }
+}
+
+/// An operation a backend may support.
+///
+/// Kept flat and small on purpose: each variant must correspond to something
+/// the UI can actually render as an action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[repr(u8)]
+pub enum Capability {
+    Build,
+    Clean,
+    Flash,
+    EraseFlash,
+    Upload,
+    Download,
+    Filesystem,
+    Repl,
+    Monitor,
+    Run,
+    Reset,
+    DeviceInfo,
+    PackageInstall,
+    BoardSelect,
+}
+
+impl Capability {
+    pub const ALL: &'static [Capability] = &[
+        Capability::Build,
+        Capability::Clean,
+        Capability::Flash,
+        Capability::EraseFlash,
+        Capability::Upload,
+        Capability::Download,
+        Capability::Filesystem,
+        Capability::Repl,
+        Capability::Monitor,
+        Capability::Run,
+        Capability::Reset,
+        Capability::DeviceInfo,
+        Capability::PackageInstall,
+        Capability::BoardSelect,
+    ];
+
+    const fn bit(self) -> u32 {
+        1u32 << (self as u32)
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Build => "build",
+            Self::Clean => "clean",
+            Self::Flash => "flash",
+            Self::EraseFlash => "erase flash",
+            Self::Upload => "upload",
+            Self::Download => "download",
+            Self::Filesystem => "filesystem",
+            Self::Repl => "repl",
+            Self::Monitor => "monitor",
+            Self::Run => "run",
+            Self::Reset => "reset",
+            Self::DeviceInfo => "device info",
+            Self::PackageInstall => "install package",
+            Self::BoardSelect => "select board",
+        }
+    }
+
+    /// Whether invoking this operation can destroy user data or device state.
+    ///
+    /// `SPEC.md` §15: these always require confirmation. Marking it on the
+    /// capability keeps the rule in one place instead of in every view.
+    pub const fn is_destructive(self) -> bool {
+        matches!(self, Self::Flash | Self::EraseFlash | Self::Clean)
+    }
+}
+
+/// A set of [`Capability`] values, stored as a bitmask.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Capabilities(u32);
+
+impl Capabilities {
+    pub const fn empty() -> Self {
+        Self(0)
+    }
+
+    pub const fn from_slice(caps: &[Capability]) -> Self {
+        let mut bits = 0u32;
+        let mut i = 0;
+        while i < caps.len() {
+            bits |= caps[i].bit();
+            i += 1;
+        }
+        Self(bits)
+    }
+
+    pub const fn with(self, cap: Capability) -> Self {
+        Self(self.0 | cap.bit())
+    }
+
+    pub const fn contains(self, cap: Capability) -> bool {
+        self.0 & cap.bit() != 0
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    pub fn len(self) -> usize {
+        self.0.count_ones() as usize
+    }
+
+    /// Supported capabilities, in [`Capability::ALL`] order.
+    pub fn iter(self) -> impl Iterator<Item = Capability> {
+        Capability::ALL
+            .iter()
+            .copied()
+            .filter(move |cap| self.contains(*cap))
+    }
+
+    /// Supported capabilities that require confirmation before running.
+    pub fn destructive(self) -> impl Iterator<Item = Capability> {
+        self.iter().filter(|cap| cap.is_destructive())
+    }
+}
+
+impl FromIterator<Capability> for Capabilities {
+    fn from_iter<T: IntoIterator<Item = Capability>>(iter: T) -> Self {
+        iter.into_iter().fold(Self::empty(), Self::with)
+    }
+}
+
+/// A framework-specific backend.
+pub trait Backend {
+    fn kind(&self) -> BackendKind;
+
+    /// Weighted evidence that `scan` is a project of this backend's kind.
+    ///
+    /// Returning an empty vector means "no evidence", not "not this kind".
+    fn detect(&self, scan: &DirScan) -> Vec<Signal>;
+
+    /// Total signal weight at which detection is considered fully confident.
+    ///
+    /// Confidence is `min(1, score / saturation)`, which keeps the number
+    /// explainable: "3.0 of the 4.0 points needed".
+    fn saturation(&self) -> f32;
+
+    fn capabilities(&self) -> Capabilities;
+
+    /// External executables this backend delegates to (`AGENTS.md` §2).
+    fn required_tools(&self) -> &'static [&'static str];
+}
+
+/// Whether `name` resolves to an executable on `PATH`.
+///
+/// Used to report a missing toolchain as an actionable error rather than
+/// letting the first command fail with "No such file or directory".
+pub fn tool_available(name: &str) -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|dir| {
+        let candidate = dir.join(name);
+        candidate.is_file() && is_executable(&candidate)
+    })
+}
+
+#[cfg(unix)]
+fn is_executable(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).is_ok_and(|meta| meta.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+fn is_executable(_path: &std::path::Path) -> bool {
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capability_bits_are_distinct() {
+        let mut seen = Vec::new();
+        for cap in Capability::ALL {
+            assert!(!seen.contains(&cap.bit()), "duplicate bit for {cap:?}");
+            seen.push(cap.bit());
+        }
+        // The bitmask is a u32; the enum must not outgrow it.
+        assert!(Capability::ALL.len() <= 32);
+    }
+
+    #[test]
+    fn set_round_trips_through_iter() {
+        let caps =
+            Capabilities::from_slice(&[Capability::Build, Capability::Monitor, Capability::Flash]);
+        assert_eq!(caps.len(), 3);
+        assert_eq!(
+            caps.iter().collect::<Vec<_>>(),
+            // iteration order follows Capability::ALL, not insertion order
+            vec![Capability::Build, Capability::Flash, Capability::Monitor]
+        );
+    }
+
+    #[test]
+    fn contains_reports_only_declared_capabilities() {
+        let caps = Capabilities::from_slice(&[Capability::Repl]);
+        assert!(caps.contains(Capability::Repl));
+        assert!(!caps.contains(Capability::Build));
+        assert!(!Capabilities::empty().contains(Capability::Repl));
+        assert!(Capabilities::empty().is_empty());
+    }
+
+    #[test]
+    fn adding_a_capability_twice_is_idempotent() {
+        let once = Capabilities::empty().with(Capability::Flash);
+        assert_eq!(once.with(Capability::Flash), once);
+        assert_eq!(once.len(), 1);
+    }
+
+    #[test]
+    fn from_iter_matches_from_slice() {
+        let caps = [Capability::Clean, Capability::Build];
+        assert_eq!(
+            caps.into_iter().collect::<Capabilities>(),
+            Capabilities::from_slice(&caps)
+        );
+    }
+
+    #[test]
+    fn destructive_capabilities_require_confirmation() {
+        // SPEC.md §15: erase, flash and clean remove state the user cannot recover.
+        assert!(Capability::EraseFlash.is_destructive());
+        assert!(Capability::Flash.is_destructive());
+        assert!(Capability::Clean.is_destructive());
+        assert!(!Capability::Monitor.is_destructive());
+        assert!(!Capability::DeviceInfo.is_destructive());
+
+        let caps = Capabilities::from_slice(&[Capability::Monitor, Capability::EraseFlash]);
+        assert_eq!(
+            caps.destructive().collect::<Vec<_>>(),
+            vec![Capability::EraseFlash]
+        );
+    }
+
+    #[test]
+    fn backend_kind_ids_round_trip() {
+        for kind in BackendKind::ALL {
+            assert_eq!(BackendKind::from_id(kind.id()), Some(*kind));
+        }
+        assert_eq!(BackendKind::from_id("esp-idf"), None);
+    }
+}

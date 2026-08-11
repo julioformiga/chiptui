@@ -1,0 +1,57 @@
+#!/bin/sh
+# Fake `mpremote` for ChipTUI tests.
+#
+# Reproduces the output formats of mpremote 1.28.0 (see
+# src/backend/micropython/parse.rs) so the browser can be exercised end to end
+# without a board attached.
+#
+# Listing sizes and the sha256 digest below are matched by tests/files_view.rs.
+
+args="$*"
+
+# `connect <port>` may precede the sub-command; strip it so matching is simple.
+case "$args" in
+    "connect "*) args=$(printf '%s' "$args" | cut -d' ' -f3-) ;;
+esac
+
+case "$args" in
+    devs)
+        # A machine with legacy UARTs plus one real board: the parser must
+        # discard the 0000:0000 entries.
+        printf '/dev/ttyS0 None 0000:0000 None None\n'
+        printf '/dev/ttyS1 None 0000:0000 None None\n'
+        printf '/dev/ttyACM0 e6614104036e5f24 2e8a:0005 MicroPython Board in FS mode\n'
+        ;;
+
+    "fs --no-verbose ls :/")
+        printf '%12d %s\n' 0 'lib/'
+        printf '%12d %s\n' 12 'same.py'
+        printf '%12d %s\n' 9 'diff.py'
+        printf '%12d %s\n' 42 'device_only.py'
+        ;;
+
+    "fs --no-verbose ls :/lib")
+        printf '%12d %s\n' 512 'simple.py'
+        ;;
+
+    "fs --no-verbose ls :/missing")
+        echo 'mpremote: ls: No such file or directory.' >&2
+        exit 1
+        ;;
+
+    "fs --no-verbose sha256sum :/same.py")
+        # sha256 of "print('hi')\n" --- matches the local fixture byte for byte.
+        printf 'caf026f25d7140209f98072605307a438914b9ce6f3c14b23d15d9667241de52\n'
+        ;;
+
+    "fs --no-verbose sha256sum :/diff.py")
+        # Same length as the local file, different contents: the case a size
+        # comparison cannot catch.
+        printf '0000000000000000000000000000000000000000000000000000000000000000\n'
+        ;;
+
+    *)
+        echo "mpremote: no device found" >&2
+        exit 1
+        ;;
+esac

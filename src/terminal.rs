@@ -1,0 +1,108 @@
+//! Terminal setup and teardown.
+//!
+//! `AGENTS.md`: the terminal must be restored on *every* exit path. Three
+//! mechanisms cover them:
+//!
+//! * [`TerminalGuard::restore`] --- the normal path, which can report errors;
+//! * `Drop` --- early returns and `?` propagation;
+//! * a panic hook --- so a panic leaves a usable shell instead of a raw-mode
+//!   terminal with a hidden cursor.
+
+use std::io::{self, Stdout, Write};
+use std::sync::Once;
+
+use ratatui::Terminal;
+use ratatui::backend::CrosstermBackend;
+use ratatui::crossterm::cursor::{Hide, Show};
+use ratatui::crossterm::event::DisableMouseCapture;
+use ratatui::crossterm::execute;
+use ratatui::crossterm::terminal::{
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+};
+use ratatui::crossterm::tty::IsTty;
+
+use crate::error::{Error, Result};
+
+static PANIC_HOOK: Once = Once::new();
+
+pub type Tui = Terminal<CrosstermBackend<Stdout>>;
+
+/// Owns the terminal's modified state and undoes it exactly once.
+pub struct TerminalGuard {
+    terminal: Tui,
+    restored: bool,
+}
+
+/// Enters raw mode and the alternate screen.
+///
+/// Mouse capture is *not* enabled: `SPEC.md` §11 makes keyboard primary, and
+/// leaving mouse reporting off keeps the terminal's own selection/scrollback
+/// working.
+pub fn init() -> Result<TerminalGuard> {
+    if !io::stdout().is_tty() {
+        return Err(Error::NotATerminal);
+    }
+
+    install_panic_hook();
+
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    if let Err(source) = execute!(stdout, EnterAlternateScreen, Hide) {
+        // Undo the half-applied setup before reporting.
+        let _ = disable_raw_mode();
+        return Err(source.into());
+    }
+
+    let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
+    terminal.clear()?;
+
+    Ok(TerminalGuard {
+        terminal,
+        restored: false,
+    })
+}
+
+impl TerminalGuard {
+    pub fn terminal(&mut self) -> &mut Tui {
+        &mut self.terminal
+    }
+
+    /// Restores the terminal, reporting failures. Safe to call more than once.
+    pub fn restore(&mut self) -> Result<()> {
+        if self.restored {
+            return Ok(());
+        }
+        self.restored = true;
+        restore_raw()?;
+        self.terminal.show_cursor()?;
+        Ok(())
+    }
+}
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        // Last line of defence: errors here cannot be reported anywhere useful.
+        let _ = self.restore();
+    }
+}
+
+/// Undoes the terminal modifications without needing the guard.
+///
+/// Used by the panic hook, where the guard is not reachable.
+fn restore_raw() -> io::Result<()> {
+    let mut stdout = io::stdout();
+    let leave = execute!(stdout, DisableMouseCapture, LeaveAlternateScreen, Show);
+    let raw = disable_raw_mode();
+    stdout.flush()?;
+    leave.and(raw)
+}
+
+fn install_panic_hook() {
+    PANIC_HOOK.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let _ = restore_raw();
+            previous(info);
+        }));
+    });
+}

@@ -1,0 +1,6 @@
+#!/bin/sh
+# Writes to both streams and exits non-zero.
+echo "line one"
+echo "warning on stderr" >&2
+echo "line two"
+exit 3
