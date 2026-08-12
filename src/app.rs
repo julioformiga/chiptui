@@ -227,7 +227,6 @@ pub struct PendingMonitor {
     pub command: crate::process::Command,
 }
 
-
 /// One entry of the backend picker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PickerOption {
@@ -283,7 +282,7 @@ pub struct App {
     /// for `$EDITOR`. `App` cannot run it itself --- it has no access to
     /// [`crate::terminal::TerminalGuard`].
     pending_edit: Option<PendingEdit>,
-    
+
     /// The interactive device monitor session spawned inside a PTY.
     pub device_monitor_process: Option<crate::process::ProcessId>,
     /// Accumulated lines from the PTY session.
@@ -472,7 +471,10 @@ impl App {
             return;
         }
 
-        if matches!(self.devices.discovery, crate::device::DiscoveryState::Scanning) {
+        if matches!(
+            self.devices.discovery,
+            crate::device::DiscoveryState::Scanning
+        ) {
             return;
         }
         if self.browser.as_ref().is_some_and(Browser::is_busy) {
@@ -487,7 +489,8 @@ impl App {
             if let Some(last) = self.last_port_count
                 && current != last
             {
-                self.logs.info("device connection change detected, rescanning...");
+                self.logs
+                    .info("device connection change detected, rescanning...");
                 self.scan_devices();
             }
             self.last_port_count = Some(current);
@@ -501,11 +504,17 @@ impl App {
     /// simpler than tracking ownership here.
     fn on_process(&mut self, event: &crate::process::ProcessEvent) {
         match event {
-            crate::process::ProcessEvent::Line { id, stream: _, text } if Some(*id) == self.device_monitor_process => {
+            crate::process::ProcessEvent::Line {
+                id,
+                stream: _,
+                text,
+            } if Some(*id) == self.device_monitor_process => {
                 self.device_monitor_output.push(text.clone());
                 return;
             }
-            crate::process::ProcessEvent::Output { id, text } if Some(*id) == self.device_monitor_process => {
+            crate::process::ProcessEvent::Output { id, text }
+                if Some(*id) == self.device_monitor_process =>
+            {
                 if self.device_monitor_output.is_empty() {
                     self.device_monitor_output.push(String::new());
                 }
@@ -527,9 +536,14 @@ impl App {
                 }
                 return;
             }
-            crate::process::ProcessEvent::Finished { id, outcome, duration: _ } if Some(*id) == self.device_monitor_process => {
+            crate::process::ProcessEvent::Finished {
+                id,
+                outcome,
+                duration: _,
+            } if Some(*id) == self.device_monitor_process => {
                 self.device_monitor_process = None;
-                self.device_monitor_output.push(format!("\r\n[monitor {}]", outcome.summary()));
+                self.device_monitor_output
+                    .push(format!("\r\n[monitor {}]", outcome.summary()));
                 return;
             }
             _ => {}
@@ -1404,13 +1418,21 @@ impl App {
     /// Starts an interactive device monitor.
     pub fn open_monitor(&mut self) {
         let port = self.devices.selected_port().map(str::to_string);
-        if let Some(command) = self.manager.backend().and_then(|b| b.monitor_command(port.as_deref())) {
+        if let Some(command) = self
+            .manager
+            .backend()
+            .and_then(|b| b.monitor_command(port.as_deref()))
+        {
             self.log_tab = LogTab::Monitor;
             self.monitor_source = MonitorSource::Device;
             self.device_monitor_output.clear();
-            
+
             // Spawn the monitor in a PTY so it stays inside the tab
-            match self.processes.spawn_pty(command, std::time::Duration::from_secs(86400)) { // 24h timeout
+            match self
+                .processes
+                .spawn_pty(command, std::time::Duration::from_secs(86400))
+            {
+                // 24h timeout
                 Ok(id) => self.device_monitor_process = Some(id),
                 Err(e) => {
                     self.logs.error(format!("could not open monitor: {}", e));

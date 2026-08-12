@@ -18,7 +18,10 @@ pub fn count_serial_ports() -> Option<usize> {
         if let Ok(entries) = std::fs::read_dir("/dev") {
             for entry in entries.flatten() {
                 if let Some(name) = entry.file_name().to_str()
-                    && (name.starts_with("ttyUSB") || name.starts_with("ttyACM") || name.starts_with("cu.usb") || name.starts_with("tty.usb"))
+                    && (name.starts_with("ttyUSB")
+                        || name.starts_with("ttyACM")
+                        || name.starts_with("cu.usb")
+                        || name.starts_with("tty.usb"))
                 {
                     count += 1;
                 }

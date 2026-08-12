@@ -109,7 +109,10 @@ pub enum ProcessEvent {
 impl ProcessEvent {
     pub fn id(&self) -> ProcessId {
         match self {
-            Self::Started { id, .. } | Self::Line { id, .. } | Self::Output { id, .. } | Self::Finished { id, .. } => *id,
+            Self::Started { id, .. }
+            | Self::Line { id, .. }
+            | Self::Output { id, .. }
+            | Self::Finished { id, .. } => *id,
         }
     }
 }
@@ -229,12 +232,14 @@ impl ProcessManager {
         });
 
         let pty_system = portable_pty::native_pty_system();
-        let pair = pty_system.openpty(portable_pty::PtySize {
-            rows: 24,
-            cols: 80,
-            pixel_width: 0,
-            pixel_height: 0,
-        }).map_err(|e| e.to_string())?;
+        let pair = pty_system
+            .openpty(portable_pty::PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|e| e.to_string())?;
 
         let mut cmd = portable_pty::CommandBuilder::new(command.program());
         cmd.args(command.args_slice());
@@ -275,15 +280,21 @@ impl ProcessManager {
                 }
                 match child.try_wait() {
                     Ok(Some(status)) => {
-                        let outcome = kill_reason.unwrap_or(if status.success() { Outcome::Success } else { Outcome::Failed { code: None }});
+                        let outcome = kill_reason.unwrap_or(if status.success() {
+                            Outcome::Success
+                        } else {
+                            Outcome::Failed { code: None }
+                        });
                         if !outcome.was_killed() {
                             let _ = reader_thread.join();
                         }
                         let _ = tx.send(ProcessEvent::Finished {
-                            id, outcome, duration: started.elapsed(),
+                            id,
+                            outcome,
+                            duration: started.elapsed(),
                         });
                         break;
-                    },
+                    }
                     Ok(None) => thread::sleep(POLL_INTERVAL),
                     Err(_) => break,
                 }
@@ -294,7 +305,11 @@ impl ProcessManager {
     }
 
     pub fn write_stdin(&mut self, id: ProcessId, data: &[u8]) {
-        if let Some(writer) = self.running.get_mut(&id).and_then(|r| r.stdin_writer.as_mut()) {
+        if let Some(writer) = self
+            .running
+            .get_mut(&id)
+            .and_then(|r| r.stdin_writer.as_mut())
+        {
             let _ = writer.write_all(data);
             let _ = writer.flush();
         }
@@ -349,8 +364,6 @@ impl Drop for ProcessManager {
         self.cancel_all();
     }
 }
-
-
 
 /// Forwards one stream line by line until EOF, splitting on `\r` as well as
 /// `\n`.

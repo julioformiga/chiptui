@@ -4,7 +4,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Paragraph, Wrap};
+use ratatui::widgets::{Paragraph, Tabs, Wrap};
 
 use crate::app::{App, Focus, LogTab};
 use crate::backend::Capability;
@@ -258,22 +258,29 @@ pub fn draw_log_tabs(frame: &mut Frame, area: Rect, app: &App) {
     let focused = dashboard_focused(app, Focus::Logs);
     let has_monitor = app.manager.capabilities().contains(Capability::Monitor);
 
-    let mut spans = vec![tab_span("Log", app.log_tab == LogTab::Log, focused)];
+    let mut titles = vec![" Log "];
     if has_monitor {
-        spans.push(Span::raw(" "));
-        spans.push(tab_span("Monitor", app.log_tab == LogTab::Monitor, focused));
+        titles.push(" Monitor ");
     }
 
-    frame.render_widget(Paragraph::new(Line::from(spans)), area);
-}
-
-fn tab_span(label: &str, active: bool, focused: bool) -> Span<'static> {
-    let style = match (active, focused) {
-        (true, true) => Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-        (true, false) => Style::new().dim().add_modifier(Modifier::BOLD),
-        (false, _) => Style::new().dim(),
+    let selected_index = match app.log_tab {
+        LogTab::Log => 0,
+        LogTab::Monitor => 1,
     };
-    Span::styled(format!(" {label} "), style)
+
+    let highlight_style = if focused {
+        Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+    } else {
+        Style::new().dim().add_modifier(Modifier::BOLD)
+    };
+
+    let tabs = Tabs::new(titles)
+        .select(selected_index)
+        .style(Style::new().dim())
+        .highlight_style(highlight_style)
+        .divider(" ");
+
+    frame.render_widget(tabs, area);
 }
 
 /// Width of the field-label column, including its colon and trailing space.
