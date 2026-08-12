@@ -289,6 +289,15 @@ impl FlashPanel {
         self.curl_tool_path = Some(program.into());
     }
 
+    /// Drops everything esptool has reported so far. [`DeviceDetails::merge`]
+    /// is deliberately additive-only, so a disconnect (`App::on_process`'s
+    /// empty-scan branch) is the only thing that should ever clear this ---
+    /// otherwise the Dashboard's Device panel keeps showing the previous
+    /// board's chip/flash identity after it is gone.
+    pub fn clear_device_details(&mut self) {
+        self.details = DeviceDetails::default();
+    }
+
     pub fn selected_action(&self) -> FlashAction {
         FlashAction::ALL[self.cursor]
     }

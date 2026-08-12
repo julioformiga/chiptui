@@ -601,6 +601,9 @@ impl App {
                         self.set_device_pane_error(
                             "no MicroPython device found — connect a board and press 'd'",
                         );
+                        if let Some(flash) = self.flash.as_mut() {
+                            flash.clear_device_details();
+                        }
                     } else if self.devices.needs_selection() {
                         // Several boards: ask before touching any of them.
                         self.open_device_picker();
@@ -613,6 +616,9 @@ impl App {
                 Some(Err(error)) => {
                     self.devices.set_failed(error.clone());
                     self.set_device_pane_error(error);
+                    if let Some(flash) = self.flash.as_mut() {
+                        flash.clear_device_details();
+                    }
                 }
                 None => {}
             }

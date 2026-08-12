@@ -647,6 +647,57 @@ fn key(code: ratatui::crossterm::event::KeyCode) -> AppEvent {
 }
 
 #[test]
+fn disconnecting_the_device_clears_the_stale_dashboard_details() {
+    use chiptui::backend::micropython::esptool::{ChipFamily, DeviceDetails};
+    use chiptui::flash::FlashPanel;
+    use ratatui::crossterm::event::KeyCode;
+
+    let project = Project::new("disconnect");
+    let mut app = App::new(&project.root);
+    app.bootstrap();
+    app.manager.set_override(Some(BackendKind::MicroPython));
+
+    // A previous query already reported a board (mirrors
+    // `ui_render.rs`'s `device_pane_shows_chip_and_flash_details_...`).
+    let mut flash = FlashPanel::new(std::env::temp_dir());
+    flash.details = DeviceDetails {
+        family: Some(ChipFamily::Esp32S3),
+        revision: Some("3".to_string()),
+        mac: Some("24:6f:28:12:34:56".to_string()),
+        flash_size: Some("4MB".to_string()),
+        ..DeviceDetails::default()
+    };
+    app.flash = Some(flash);
+
+    // The board is gone: a rescan (hotplug poll or a lost-device retry, both
+    // of which funnel through the same `App::on_process` branch as pressing
+    // 'd') finds nothing.
+    app.browser = Some(Browser::new(&project.root));
+    app.browser
+        .as_mut()
+        .unwrap()
+        .set_tool_path(fake_mpremote_no_devices());
+    app.handle(key(KeyCode::Char('d')));
+    settle_app(&mut app);
+
+    assert!(
+        app.flash.as_ref().unwrap().details.is_empty(),
+        "stale chip/flash details survived the disconnect: {:?}",
+        app.flash.as_ref().unwrap().details
+    );
+
+    let frame = render(&mut app, 100, 30);
+    assert!(
+        !frame.contains("ESP32-S3"),
+        "the Device panel still shows the previous board:\n{frame}"
+    );
+    assert!(
+        frame.contains("no device data yet"),
+        "the Device panel should read as empty again:\n{frame}"
+    );
+}
+
+#[test]
 fn entering_a_local_text_file_opens_the_action_dialog() {
     use ratatui::crossterm::event::KeyCode;
 
