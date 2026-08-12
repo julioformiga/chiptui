@@ -196,6 +196,126 @@ fn navigates_into_a_device_directory() {
 }
 
 #[test]
+fn creating_a_directory_on_the_device_reloads_the_current_listing() {
+    let project = Project::new("mkdir");
+    let (mut browser, mut processes) = browser_for(&project);
+
+    browser.load_device(&mut processes, None, false);
+    settle(&mut browser, &mut processes);
+
+    let messages = browser.request_mkdir("newdir", &mut processes, None);
+    let messages: Vec<String> = messages
+        .into_iter()
+        .map(|(_, text)| text)
+        .chain(settle(&mut browser, &mut processes))
+        .collect();
+
+    assert!(
+        messages.iter().any(|m| m.contains("created")),
+        "no success notice: {messages:?}"
+    );
+    assert_eq!(
+        browser.device_state,
+        PaneState::Ready,
+        "creating an entry in the current directory re-lists it"
+    );
+}
+
+#[test]
+fn mkdir_reports_a_conflict_with_an_existing_directory() {
+    let project = Project::new("mkdir-conflict");
+    let (mut browser, mut processes) = browser_for(&project);
+
+    let messages = browser.request_mkdir("lib", &mut processes, None);
+    let messages: Vec<String> = messages
+        .into_iter()
+        .map(|(_, text)| text)
+        .chain(settle(&mut browser, &mut processes))
+        .collect();
+
+    assert!(
+        messages.iter().any(|m| m.contains("mkdir failed")),
+        "no failure notice: {messages:?}"
+    );
+}
+
+#[test]
+fn creating_a_file_on_the_device() {
+    let project = Project::new("touch");
+    let (mut browser, mut processes) = browser_for(&project);
+
+    let messages = browser.request_touch("newfile.py", &mut processes, None);
+    let messages: Vec<String> = messages
+        .into_iter()
+        .map(|(_, text)| text)
+        .chain(settle(&mut browser, &mut processes))
+        .collect();
+
+    assert!(
+        messages.iter().any(|m| m.contains("created")),
+        "no success notice: {messages:?}"
+    );
+}
+
+#[test]
+fn sending_a_local_directory_to_the_device() {
+    let project = Project::new("upload-dir");
+    let (mut browser, mut processes) = browser_for(&project);
+
+    let messages = browser.request_upload_dir("lib", &mut processes, None);
+    let messages: Vec<String> = messages
+        .into_iter()
+        .map(|(_, text)| text)
+        .chain(settle(&mut browser, &mut processes))
+        .collect();
+
+    assert!(
+        messages.iter().any(|m| m.contains("uploaded to")),
+        "no success notice: {messages:?}"
+    );
+}
+
+#[test]
+fn downloading_a_device_directory_writes_it_locally() {
+    let project = Project::new("download-dir");
+    let (mut browser, mut processes) = browser_for(&project);
+
+    let messages = browser.request_download_dir("lib", &mut processes, None);
+    let messages: Vec<String> = messages
+        .into_iter()
+        .map(|(_, text)| text)
+        .chain(settle(&mut browser, &mut processes))
+        .collect();
+
+    assert!(
+        messages.iter().any(|m| m.contains("downloaded to")),
+        "no success notice: {messages:?}"
+    );
+    assert!(
+        project.root.join("lib").join("simple.py").is_file(),
+        "the device directory's contents were not written locally"
+    );
+}
+
+#[test]
+fn removing_a_device_directory_recursively() {
+    let project = Project::new("rmdir");
+    let (mut browser, mut processes) = browser_for(&project);
+
+    let messages = browser.request_remove_device_dir("lib", &mut processes, None);
+    let messages: Vec<String> = messages
+        .into_iter()
+        .map(|(_, text)| text)
+        .chain(settle(&mut browser, &mut processes))
+        .collect();
+
+    assert!(
+        messages.iter().any(|m| m.contains("removed")),
+        "no success notice: {messages:?}"
+    );
+}
+
+#[test]
 fn a_failing_listing_leaves_the_pane_usable() {
     let project = Project::new("fail");
     let (mut browser, mut processes) = browser_for(&project);
@@ -711,6 +831,7 @@ fn entering_a_local_text_file_opens_the_action_dialog() {
         Some(Overlay::FileActions {
             side: Side::Local,
             name: "diff.py".to_string(),
+            is_dir: false,
             selected: 0,
         })
     );
@@ -722,6 +843,51 @@ fn entering_a_local_text_file_opens_the_action_dialog() {
     assert!(
         !frame.contains("Download"),
         "a local file is never downloaded from itself:\n{frame}"
+    );
+}
+
+#[test]
+fn left_closes_the_action_dialog_like_esc() {
+    use ratatui::crossterm::event::KeyCode;
+
+    let project = Project::new("dialog-left-cancel");
+    let mut app = app_in_browser(&project);
+    app.browser.as_mut().unwrap().cursor_to(1); // diff.py
+
+    app.handle(key(KeyCode::Enter));
+    assert!(app.overlay.is_some());
+
+    app.handle(key(KeyCode::Left));
+    assert_eq!(app.overlay, None, "← cancels the menu, same as Esc");
+}
+
+#[test]
+fn right_runs_the_highlighted_action_like_enter() {
+    use ratatui::crossterm::event::KeyCode;
+
+    let project = Project::new("dialog-right-confirm");
+    let mut app = app_in_browser(&project);
+    // Sorted order: lib/, diff.py, local_only.py, same.py.
+    app.browser.as_mut().unwrap().cursor_to(2);
+    assert_eq!(
+        app.browser
+            .as_ref()
+            .unwrap()
+            .selected_name(Side::Local)
+            .as_deref(),
+        Some("local_only.py")
+    );
+
+    app.handle(key(KeyCode::Enter)); // open the dialog, "Send to device" highlighted
+    app.handle(key(KeyCode::Right)); // → runs it, same as Enter
+
+    assert_eq!(
+        app.overlay,
+        Some(Overlay::ConfirmUpload {
+            name: "local_only.py".to_string(),
+            is_dir: false,
+            confirm: false,
+        })
     );
 }
 
@@ -826,7 +992,7 @@ fn escaping_the_viewer_does_not_queue_an_edit() {
 }
 
 #[test]
-fn entering_a_local_directory_still_descends_instead_of_opening_the_dialog() {
+fn entering_a_local_directory_opens_the_dialog_defaulted_to_open() {
     use ratatui::crossterm::event::KeyCode;
 
     let project = Project::new("dialog-dir");
@@ -835,8 +1001,47 @@ fn entering_a_local_directory_still_descends_instead_of_opening_the_dialog() {
 
     app.handle(key(KeyCode::Enter));
     assert_eq!(
+        app.overlay,
+        Some(Overlay::FileActions {
+            side: Side::Local,
+            name: "lib".to_string(),
+            is_dir: true,
+            selected: 0,
+        }),
+        "a directory gets the menu too now, defaulted to 'Open'"
+    );
+
+    let frame = render(&mut app, 110, 24);
+    assert!(frame.contains("Open"), "menu not shown:\n{frame}");
+    assert!(frame.contains("Send to device"));
+    assert!(frame.contains("Delete"));
+    assert!(
+        !frame.contains("View") && !frame.contains("Edit"),
+        "a directory cannot be previewed or edited:\n{frame}"
+    );
+
+    // A second `Enter` runs the default selection, "Open" --- descending
+    // just like a bare `Enter` used to do directly.
+    app.handle(key(KeyCode::Enter));
+    assert_eq!(app.overlay, None);
+    assert_eq!(
+        app.browser.as_ref().unwrap().local_path,
+        project.root.join("lib")
+    );
+}
+
+#[test]
+fn right_descends_into_a_directory_directly_without_opening_the_dialog() {
+    use ratatui::crossterm::event::KeyCode;
+
+    let project = Project::new("right-descend");
+    let mut app = app_in_browser(&project);
+    // The cursor starts on "lib/", the first entry once sorted.
+
+    app.handle(key(KeyCode::Right));
+    assert_eq!(
         app.overlay, None,
-        "a directory should descend, not open the dialog"
+        "→ is pure navigation, unlike Enter --- it never opens the menu"
     );
     assert_eq!(
         app.browser.as_ref().unwrap().local_path,
@@ -845,7 +1050,29 @@ fn entering_a_local_directory_still_descends_instead_of_opening_the_dialog() {
 }
 
 #[test]
-fn entering_a_binary_local_file_does_nothing() {
+fn right_on_a_file_does_nothing() {
+    use ratatui::crossterm::event::KeyCode;
+
+    let project = Project::new("right-on-file");
+    let mut app = app_in_browser(&project);
+    // Sorted order: lib/, diff.py, local_only.py, same.py.
+    app.browser.as_mut().unwrap().cursor_to(1);
+    assert_eq!(
+        app.browser
+            .as_ref()
+            .unwrap()
+            .selected_name(Side::Local)
+            .as_deref(),
+        Some("diff.py")
+    );
+
+    app.handle(key(KeyCode::Right));
+    assert_eq!(app.overlay, None);
+    assert_eq!(app.browser.as_ref().unwrap().local_path, project.root);
+}
+
+#[test]
+fn entering_a_binary_local_file_opens_the_dialog_without_view_or_edit() {
     use ratatui::crossterm::event::KeyCode;
 
     let project = Project::new("dialog-binary");
@@ -863,7 +1090,118 @@ fn entering_a_binary_local_file_does_nothing() {
     );
 
     app.handle(key(KeyCode::Enter));
-    assert_eq!(app.overlay, None, "binary files never get the action menu");
+    assert_eq!(
+        app.overlay,
+        Some(Overlay::FileActions {
+            side: Side::Local,
+            name: "firmware.bin".to_string(),
+            is_dir: false,
+            selected: 0,
+        }),
+        "a binary file still gets send/download/delete, just not view/edit"
+    );
+
+    let frame = render(&mut app, 110, 24);
+    assert!(frame.contains("Send to device"), "menu not shown:\n{frame}");
+    assert!(frame.contains("Delete"));
+    assert!(
+        !frame.contains("View") && !frame.contains("Edit"),
+        "a binary file cannot be previewed or edited:\n{frame}"
+    );
+}
+
+#[test]
+fn pressing_a_opens_create_entry_for_the_focused_pane() {
+    use ratatui::crossterm::event::KeyCode;
+
+    let project = Project::new("create-open");
+    let mut app = app_in_browser(&project);
+
+    app.handle(key(KeyCode::Char('a')));
+    assert_eq!(
+        app.overlay,
+        Some(Overlay::CreateEntry {
+            side: Side::Local,
+            input: String::new(),
+        })
+    );
+
+    let frame = render(&mut app, 110, 24);
+    assert!(frame.contains("New (local)"), "textbox not shown:\n{frame}");
+}
+
+#[test]
+fn create_entry_makes_a_local_file() {
+    use ratatui::crossterm::event::KeyCode;
+
+    let project = Project::new("create-file");
+    let mut app = app_in_browser(&project);
+
+    app.handle(key(KeyCode::Char('a')));
+    for c in "brand_new.py".chars() {
+        app.handle(key(KeyCode::Char(c)));
+    }
+    app.handle(key(KeyCode::Enter));
+
+    assert_eq!(app.overlay, None);
+    assert!(project.root.join("brand_new.py").is_file());
+}
+
+#[test]
+fn create_entry_makes_a_local_directory_when_the_name_ends_with_a_slash() {
+    use ratatui::crossterm::event::KeyCode;
+
+    let project = Project::new("create-dir");
+    let mut app = app_in_browser(&project);
+
+    app.handle(key(KeyCode::Char('a')));
+    for c in "brand_new/".chars() {
+        app.handle(key(KeyCode::Char(c)));
+    }
+    app.handle(key(KeyCode::Enter));
+
+    assert_eq!(app.overlay, None);
+    assert!(project.root.join("brand_new").is_dir());
+}
+
+#[test]
+fn create_entry_backspace_edits_the_typed_name() {
+    use ratatui::crossterm::event::KeyCode;
+
+    let project = Project::new("create-backspace");
+    let mut app = app_in_browser(&project);
+
+    app.handle(key(KeyCode::Char('a')));
+    for c in "wrong".chars() {
+        app.handle(key(KeyCode::Char(c)));
+    }
+    for _ in 0..5 {
+        app.handle(key(KeyCode::Backspace));
+    }
+    for c in "right.py".chars() {
+        app.handle(key(KeyCode::Char(c)));
+    }
+    app.handle(key(KeyCode::Enter));
+
+    assert!(!project.root.join("wrong").exists());
+    assert!(project.root.join("right.py").is_file());
+}
+
+#[test]
+fn escaping_create_entry_creates_nothing() {
+    use ratatui::crossterm::event::KeyCode;
+
+    let project = Project::new("create-escape");
+    let mut app = app_in_browser(&project);
+
+    app.handle(key(KeyCode::Char('a')));
+    for c in "never.py".chars() {
+        app.handle(key(KeyCode::Char(c)));
+    }
+    app.handle(key(KeyCode::Esc));
+
+    assert_eq!(app.overlay, None);
+    assert!(!project.root.join("never.py").exists());
 }
 
 #[test]
@@ -883,6 +1221,7 @@ fn entering_a_device_text_file_opens_the_dialog_with_download() {
         Some(Overlay::FileActions {
             side: Side::Device,
             name: "device_only.py".to_string(),
+            is_dir: false,
             selected: 0,
         })
     );
@@ -1215,6 +1554,49 @@ fn sending_a_local_file_to_the_device_uploads_it() {
         app.logs
             .visible(20)
             .any(|entry| entry.message.contains("uploaded")),
+        "no success notice logged"
+    );
+}
+
+#[test]
+fn sending_a_local_directory_to_the_device_via_the_dialog() {
+    use ratatui::crossterm::event::KeyCode;
+
+    let project = Project::new("send-dir-to-device");
+    let mut app = app_in_browser(&project);
+    // Sorted order: lib/, diff.py, local_only.py, same.py.
+    app.browser.as_mut().unwrap().cursor_to(0);
+    assert_eq!(
+        app.browser
+            .as_ref()
+            .unwrap()
+            .selected_name(Side::Local)
+            .as_deref(),
+        Some("lib")
+    );
+
+    app.handle(key(KeyCode::Enter));
+    assert_eq!(
+        app.overlay,
+        Some(Overlay::FileActions {
+            side: Side::Local,
+            name: "lib".to_string(),
+            is_dir: true,
+            selected: 0,
+        }),
+        "a directory's menu defaults to 'Open'"
+    );
+
+    app.handle(key(KeyCode::Down)); // Open -> Send to device
+    app.handle(key(KeyCode::Enter));
+    app.handle(key(KeyCode::Char('y'))); // Confirm upload
+
+    assert_eq!(app.overlay, None);
+    settle_app(&mut app);
+    assert!(
+        app.logs
+            .visible(20)
+            .any(|entry| entry.message.contains("uploaded to")),
         "no success notice logged"
     );
 }

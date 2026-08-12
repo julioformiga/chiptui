@@ -24,14 +24,17 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
         Overlay::ConfirmDownloadOverwrite { url, dest, confirm } => {
             draw_confirm_download_overwrite(frame, area, &url, &dest, confirm)
         }
-        Overlay::ConfirmUpload { name, confirm } => {
-            draw_confirm_upload(frame, area, &name, confirm)
-        }
+        Overlay::ConfirmUpload {
+            name,
+            is_dir,
+            confirm,
+        } => draw_confirm_upload(frame, area, &name, is_dir, confirm),
         Overlay::FileActions {
             side,
             name,
+            is_dir,
             selected,
-        } => draw_file_actions(frame, area, side, &name, selected),
+        } => draw_file_actions(frame, area, side, &name, is_dir, selected),
         Overlay::FileViewer => draw_file_viewer(frame, area, app),
         Overlay::ConfirmRestartDevice { confirm } => {
             draw_confirm_restart_device(frame, area, app, confirm)
@@ -42,8 +45,10 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
         Overlay::ConfirmDelete {
             side,
             name,
+            is_dir,
             confirm,
-        } => draw_confirm_delete(frame, area, side, &name, confirm),
+        } => draw_confirm_delete(frame, area, side, &name, is_dir, confirm),
+        Overlay::CreateEntry { side, input } => draw_create_entry(frame, area, side, &input),
     }
 }
 
@@ -114,14 +119,20 @@ fn draw_confirm_delete(
     area: Rect,
     side: crate::browser::Side,
     name: &str,
+    is_dir: bool,
     confirm: bool,
 ) {
     let side_str = match side {
         crate::browser::Side::Local => "locally",
         crate::browser::Side::Device => "from device",
     };
+    let label = if is_dir {
+        format!("Delete '{}/' and everything in it?", name)
+    } else {
+        format!("Delete '{}'?", name)
+    };
     let message = vec![
-        Line::from(format!("Delete '{}'?", name).fg(Color::Yellow)),
+        Line::from(label.fg(Color::Yellow)),
         Line::from(format!("This will remove it {}.", side_str).dim()),
     ];
     draw_confirm_dialog(frame, area, "Confirm Delete", message, confirm, 54, 9);
@@ -155,16 +166,18 @@ fn draw_dialog_button(frame: &mut Frame, area: Rect, label: &str, selected: bool
     );
 }
 
-/// The three actions for the file `enter` was pressed on (`FileAction::for_side`
-/// decides which three), sized like the other small pickers in this module.
+/// The actions for the entry `enter` was pressed on (`FileAction::for_entry`
+/// decides which ones), sized like the other small pickers in this module.
 fn draw_file_actions(
     frame: &mut Frame,
     area: Rect,
     side: crate::browser::Side,
     name: &str,
+    is_dir: bool,
     selected: usize,
 ) {
-    let actions = FileAction::for_side(side);
+    let is_text = crate::files::is_text_like(name);
+    let actions = FileAction::for_entry(side, is_dir, is_text);
     let items: Vec<ListItem> = actions
         .iter()
         .map(|action| ListItem::new(Line::from(format!(" {} ", action.label()))))
@@ -172,11 +185,16 @@ fn draw_file_actions(
 
     let popup = centered(area, 44, actions.len() as u16 + 2);
     let mut state = ListState::default().with_selected(Some(selected));
+    let title = if is_dir {
+        format!("{name}/")
+    } else {
+        name.to_string()
+    };
 
     frame.render_widget(Clear, popup);
     frame.render_stateful_widget(
         List::new(items)
-            .block(modal(name))
+            .block(modal(&title))
             .highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
         popup,
         &mut state,
@@ -272,12 +290,63 @@ fn draw_confirm_download_overwrite(
     draw_confirm_dialog(frame, area, "Overwrite firmware?", message, confirm, 70, 8);
 }
 
-fn draw_confirm_upload(frame: &mut Frame, area: Rect, name: &str, confirm: bool) {
-    let message = vec![
-        Line::from(format!("Upload '{}' to the device?", name).fg(Color::Yellow)),
-        Line::from("This will overwrite any existing file with the same name on the device.".dim()),
-    ];
+fn draw_confirm_upload(frame: &mut Frame, area: Rect, name: &str, is_dir: bool, confirm: bool) {
+    let message = if is_dir {
+        vec![
+            Line::from(
+                format!("Upload '{}/' and everything in it to the device?", name).fg(Color::Yellow),
+            ),
+            Line::from(
+                "This will overwrite any existing files with the same names on the device.".dim(),
+            ),
+        ]
+    } else {
+        vec![
+            Line::from(format!("Upload '{}' to the device?", name).fg(Color::Yellow)),
+            Line::from(
+                "This will overwrite any existing file with the same name on the device.".dim(),
+            ),
+        ]
+    };
     draw_confirm_dialog(frame, area, "Confirm Upload", message, confirm, 65, 8);
+}
+
+/// Inline text entry for creating a file or directory (`a`), in whichever
+/// pane last had focus --- a trailing `/` on the typed name is what decides
+/// file vs directory, explained right in the box so the rule needs no
+/// separate help lookup.
+fn draw_create_entry(frame: &mut Frame, area: Rect, side: crate::browser::Side, input: &str) {
+    let popup = centered(area, 54, 6);
+    let title = match side {
+        crate::browser::Side::Local => "New (local)",
+        crate::browser::Side::Device => "New (device)",
+    };
+    let block = modal(title);
+    let inner = block.inner(popup);
+
+    frame.render_widget(Clear, popup);
+    frame.render_widget(block, popup);
+
+    let [hint_area, input_area] =
+        Layout::vertical([Constraint::Length(1), Constraint::Length(3)]).areas(inner);
+
+    frame.render_widget(
+        Paragraph::new("name, or 'name/' for a directory".dim()),
+        hint_area,
+    );
+
+    let field = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(Color::Cyan));
+    let field_inner = field.inner(input_area);
+    frame.render_widget(field, input_area);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::raw(input),
+            Span::raw("_").fg(Color::Cyan),
+        ])),
+        field_inner,
+    );
 }
 
 /// Empty or unrecognized project (`SPEC.md` §7): asks which backend this
@@ -434,12 +503,17 @@ fn draw_help(frame: &mut Frame, area: Rect, app: &App) {
             ),
             ("o", "override the detected backend"),
             (
-                "enter / →",
-                "open a directory, or a text file's menu (send/download, view, edit)",
+                "enter",
+                "open the menu for the selected entry (send/download, view, edit, delete)",
             ),
+            ("→", "descend into the selected directory directly"),
             (
                 "backspace / ←",
                 "go to the parent directory in the file browser",
+            ),
+            (
+                "a",
+                "create a file, or a directory if the name ends with '/'",
             ),
             ("c", "compare the selected file by sha256"),
             ("h", "show or hide dot-files in the file browser"),

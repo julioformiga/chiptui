@@ -50,9 +50,50 @@ pub fn upload(port: Option<&str>, local_path: &Path, remote: &DevicePath) -> Com
         .arg(remote.as_arg())
 }
 
+/// `mpremote [connect PORT] fs --recursive cp LOCAL_DIR :REMOTE_PARENT` ---
+/// uploads a whole local directory to the device, nested under
+/// `remote_parent` the same way Unix `cp -r src existing_dest_dir` nests
+/// `src` under `existing_dest_dir`. `remote_parent` must already exist
+/// (mpremote 1.28's recursive `cp` falls back to its non-recursive path,
+/// which then fails on the directory, when the destination does not exist
+/// and the source has no sub-directories of its own) --- callers always pass
+/// the currently-listed device directory, which satisfies that.
+pub fn upload_dir(port: Option<&str>, local_dir: &Path, remote_parent: &DevicePath) -> Command {
+    filesystem_recursive(port, "cp")
+        .arg(local_dir.to_string_lossy().into_owned())
+        .arg(remote_parent.as_arg())
+}
+
+/// `mpremote [connect PORT] fs --recursive cp :REMOTE_DIR LOCAL_PARENT` ---
+/// the download counterpart of [`upload_dir`], same existing-destination
+/// requirement.
+pub fn download_dir(port: Option<&str>, remote_dir: &DevicePath, local_parent: &Path) -> Command {
+    filesystem_recursive(port, "cp")
+        .arg(remote_dir.as_arg())
+        .arg(local_parent.to_string_lossy().into_owned())
+}
+
 /// `mpremote [connect PORT] fs rm :PATH` --- removes a file from the device.
 pub fn rm(port: Option<&str>, path: &DevicePath) -> Command {
     filesystem(port, "rm").arg(path.as_arg())
+}
+
+/// `mpremote [connect PORT] fs --recursive rm :PATH` --- removes a directory
+/// and everything under it.
+pub fn rm_recursive(port: Option<&str>, path: &DevicePath) -> Command {
+    filesystem_recursive(port, "rm").arg(path.as_arg())
+}
+
+/// `mpremote [connect PORT] fs mkdir :PATH` --- creates an empty directory.
+/// Not recursive: like the device's own `os.mkdir`, the parent must already
+/// exist.
+pub fn mkdir(port: Option<&str>, path: &DevicePath) -> Command {
+    filesystem(port, "mkdir").arg(path.as_arg())
+}
+
+/// `mpremote [connect PORT] fs touch :PATH` --- creates an empty file.
+pub fn touch(port: Option<&str>, path: &DevicePath) -> Command {
+    filesystem(port, "touch").arg(path.as_arg())
 }
 
 /// `mpremote [connect PORT] soft-reset` --- reboots MicroPython without a
@@ -75,6 +116,12 @@ pub fn repl(port: Option<&str>) -> Command {
 /// positionals far more predictably than one interleaved between them.
 fn filesystem(port: Option<&str>, subcommand: &str) -> Command {
     connect(port).args(["fs", "--no-verbose", subcommand])
+}
+
+/// Same as [`filesystem`], with `--recursive` set --- required by `cp`/`rm`
+/// to operate on a directory instead of a single file.
+fn filesystem_recursive(port: Option<&str>, subcommand: &str) -> Command {
+    connect(port).args(["fs", "--no-verbose", "--recursive", subcommand])
 }
 
 fn connect(port: Option<&str>) -> Command {
@@ -159,6 +206,56 @@ mod tests {
         assert_eq!(
             command.to_string(),
             "mpremote fs --no-verbose cp /home/dev/project/src/main.py :/main.py"
+        );
+    }
+
+    #[test]
+    fn upload_dir_targets_the_existing_parent_not_a_joined_path() {
+        let command = upload_dir(
+            None,
+            Path::new("/home/dev/project/src/lib"),
+            &DevicePath::root(),
+        );
+        assert_eq!(
+            command.to_string(),
+            "mpremote fs --no-verbose --recursive cp /home/dev/project/src/lib :/"
+        );
+    }
+
+    #[test]
+    fn download_dir_targets_the_existing_local_parent() {
+        let command = download_dir(
+            Some("/dev/ttyACM0"),
+            &DevicePath::new("/lib"),
+            Path::new("/home/dev/project/src"),
+        );
+        assert_eq!(
+            command.to_string(),
+            "mpremote connect /dev/ttyACM0 fs --no-verbose --recursive cp :/lib /home/dev/project/src"
+        );
+    }
+
+    #[test]
+    fn rm_recursive_sets_the_flag_before_the_subcommand() {
+        let command = rm_recursive(None, &DevicePath::new("/lib"));
+        assert_eq!(
+            command.to_string(),
+            "mpremote fs --no-verbose --recursive rm :/lib"
+        );
+    }
+
+    #[test]
+    fn mkdir_addresses_a_single_directory() {
+        let command = mkdir(None, &DevicePath::new("/lib"));
+        assert_eq!(command.to_string(), "mpremote fs --no-verbose mkdir :/lib");
+    }
+
+    #[test]
+    fn touch_addresses_a_single_file() {
+        let command = touch(Some("/dev/ttyACM0"), &DevicePath::new("/lib/__init__.py"));
+        assert_eq!(
+            command.to_string(),
+            "mpremote connect /dev/ttyACM0 fs --no-verbose touch :/lib/__init__.py"
         );
     }
 

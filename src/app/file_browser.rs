@@ -59,17 +59,22 @@ impl App {
                 browser.cursor_to(usize::MAX);
                 Vec::new()
             }
-            KeyCode::Enter | KeyCode::Right => match browser.selected_actionable_name() {
-                Some(name) => {
+            KeyCode::Enter => {
+                if let Some(name) = browser.selected_name(browser.focus) {
                     self.overlay = Some(Overlay::FileActions {
                         side: browser.focus,
+                        is_dir: browser.selected_is_dir(browser.focus),
                         name,
                         selected: 0,
                     });
-                    Vec::new()
                 }
-                None => browser.enter(&mut self.processes, port),
-            },
+                Vec::new()
+            }
+            // Left/right stay pure navigation, independent of the action
+            // menu: `→` descends into a directory directly (a no-op on a
+            // file, same as `Browser::enter` already guards), `←`/Backspace
+            // goes back up.
+            KeyCode::Right => browser.enter(&mut self.processes, port),
             KeyCode::Backspace | KeyCode::Left => browser.ascend(&mut self.processes, port),
             KeyCode::Char('r') => {
                 if browser.focus == Side::Device {
@@ -78,6 +83,13 @@ impl App {
                     browser.reload_local();
                     Vec::new()
                 }
+            }
+            KeyCode::Char('a') => {
+                self.overlay = Some(Overlay::CreateEntry {
+                    side: browser.focus,
+                    input: String::new(),
+                });
+                Vec::new()
             }
             KeyCode::Char('h') => {
                 browser.toggle_hidden();
@@ -94,11 +106,27 @@ impl App {
     }
 
     /// Runs the action chosen from [`Overlay::FileActions`]. `name` is the
-    /// file's name in whichever directory `side` currently shows --- stable
+    /// entry's name in whichever directory `side` currently shows --- stable
     /// for the duration of the menu, since an open overlay routes every key
     /// to [`App::on_overlay_key`] instead of the browser's own navigation.
-    pub(super) fn run_file_action(&mut self, side: Side, name: &str, action: FileAction) {
+    /// `is_dir` is carried alongside it since [`FileAction::for_entry`] can
+    /// offer the same variant (`Delete`, or a directory's `SendToDevice`/
+    /// `Download`) for either kind of entry, and only the browser call
+    /// underneath differs.
+    pub(super) fn run_file_action(
+        &mut self,
+        side: Side,
+        name: &str,
+        is_dir: bool,
+        action: FileAction,
+    ) {
         match (side, action) {
+            // A directory's menu always starts on `Open` (`for_entry`'s
+            // default selection): re-run the same descend `Enter` used to
+            // do directly, now one keypress later.
+            (_, FileAction::Open) => {
+                self.dispatch_browser(|browser, processes, port| browser.enter(processes, port));
+            }
             (Side::Local, FileAction::View) => {
                 let Some(browser) = &self.browser else { return };
                 self.open_local_file_viewer(browser.local_path.join(name));
@@ -113,6 +141,7 @@ impl App {
             (Side::Local, FileAction::SendToDevice) => {
                 self.overlay = Some(Overlay::ConfirmUpload {
                     name: name.to_string(),
+                    is_dir,
                     confirm: false,
                 });
             }
@@ -120,10 +149,16 @@ impl App {
                 self.overlay = Some(Overlay::ConfirmDelete {
                     side: Side::Local,
                     name: name.to_string(),
+                    is_dir,
                     confirm: false,
                 });
             }
             (Side::Device, FileAction::View) => self.open_device_file_viewer(name),
+            (Side::Device, FileAction::Download) if is_dir => {
+                self.dispatch_browser(|browser, processes, port| {
+                    browser.request_download_dir(name, processes, port)
+                });
+            }
             (Side::Device, FileAction::Download) => {
                 self.dispatch_browser(|browser, processes, port| {
                     browser.request_download(name, processes, port)
@@ -138,18 +173,19 @@ impl App {
                 self.overlay = Some(Overlay::ConfirmDelete {
                     side: Side::Device,
                     name: name.to_string(),
+                    is_dir,
                     confirm: false,
                 });
             }
-            // `FileAction::for_side` never offers `Download` on `Local` or
+            // `FileAction::for_entry` never offers `Download` on `Local` or
             // `SendToDevice` on `Device`.
             (Side::Local, FileAction::Download) | (Side::Device, FileAction::SendToDevice) => {}
         }
     }
 
-    pub(super) fn delete_file(&mut self, side: Side, name: &str) {
-        match side {
-            Side::Local => {
+    pub(super) fn delete_file(&mut self, side: Side, name: &str, is_dir: bool) {
+        match (side, is_dir) {
+            (Side::Local, false) => {
                 if let Some(browser) = &mut self.browser {
                     let path = browser.local_path.join(name);
                     match std::fs::remove_file(&path) {
@@ -164,9 +200,76 @@ impl App {
                     }
                 }
             }
-            Side::Device => {
+            (Side::Local, true) => {
+                if let Some(browser) = &mut self.browser {
+                    let path = browser.local_path.join(name);
+                    match std::fs::remove_dir_all(&path) {
+                        Ok(_) => {
+                            self.logs.success(format!("{} removed", path.display()));
+                            browser.reload_local();
+                        }
+                        Err(e) => {
+                            self.logs
+                                .error(format!("{}: remove failed: {e}", path.display()));
+                        }
+                    }
+                }
+            }
+            (Side::Device, false) => {
                 self.dispatch_browser(|browser, processes, port| {
                     browser.request_remove_device(name, processes, port)
+                });
+            }
+            (Side::Device, true) => {
+                self.dispatch_browser(|browser, processes, port| {
+                    browser.request_remove_device_dir(name, processes, port)
+                });
+            }
+        }
+    }
+
+    /// Runs the create-entry action (`a`): a trailing `/` on the typed name
+    /// means "create a directory" (`SPEC.md` §9), otherwise an empty file.
+    /// Local creation is synchronous, like [`Self::delete_file`]'s local
+    /// arm; the device side queues through [`Browser`] like everything else
+    /// that touches the port.
+    pub(super) fn create_entry(&mut self, side: Side, input: &str) {
+        let input = input.trim();
+        let is_dir = input.ends_with('/');
+        let name = input.trim_end_matches('/').trim();
+        if name.is_empty() {
+            self.logs.warn("type a name first");
+            return;
+        }
+
+        match side {
+            Side::Local => {
+                let Some(browser) = &mut self.browser else {
+                    return;
+                };
+                let path = browser.local_path.join(name);
+                let result = if is_dir {
+                    std::fs::create_dir(&path)
+                } else {
+                    std::fs::File::create_new(&path).map(|_| ())
+                };
+                match result {
+                    Ok(()) => {
+                        self.logs.success(format!("{} created", path.display()));
+                        browser.reload_local();
+                    }
+                    Err(e) => self
+                        .logs
+                        .error(format!("{}: create failed: {e}", path.display())),
+                }
+            }
+            Side::Device => {
+                self.dispatch_browser(|browser, processes, port| {
+                    if is_dir {
+                        browser.request_mkdir(name, processes, port)
+                    } else {
+                        browser.request_touch(name, processes, port)
+                    }
                 });
             }
         }

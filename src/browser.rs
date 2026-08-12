@@ -92,6 +92,27 @@ enum Request {
     },
     /// `rm :remote` to delete a device file.
     RemoveDevice(DevicePath),
+    /// `rm --recursive :remote` to delete a device directory and everything
+    /// under it --- "Delete" on a directory entry, distinct from
+    /// [`Request::RemoveDevice`] since a plain `rm` refuses a directory.
+    RemoveDeviceRecursive(DevicePath),
+    /// `cp --recursive local_dir :remote_parent`, for "Send to device" on a
+    /// local directory --- see [`Browser::request_upload_dir`].
+    UploadDir {
+        local_dir: PathBuf,
+        remote_parent: DevicePath,
+    },
+    /// `cp --recursive :remote_dir local_parent`, for "Download" on a device
+    /// directory --- see [`Browser::request_download_dir`].
+    DownloadDir {
+        remote_dir: DevicePath,
+        local_parent: PathBuf,
+    },
+    /// `mkdir :remote`, for the create-entry action (`a`) when the typed
+    /// name ends with `/`.
+    Mkdir(DevicePath),
+    /// `touch :remote`, for the create-entry action (`a`) on a plain name.
+    Touch(DevicePath),
     /// `soft-reset`, offered after a post-edit re-upload lands.
     Reset,
 }
@@ -308,18 +329,6 @@ impl Browser {
         }
     }
 
-    /// Name of the text file under the cursor in the focused pane, if `enter`
-    /// should open the files-pane action menu for it.
-    ///
-    /// `None` for a directory (`enter` should descend into it instead), an
-    /// empty pane, or a file [`files::is_text_like`] excludes --- binary,
-    /// font, image and similar files never get the menu, on either side.
-    pub fn selected_actionable_name(&self) -> Option<String> {
-        let is_dir = self.selected_is_dir(self.focus);
-        let name = self.selected_name(self.focus)?;
-        (!is_dir && files::is_text_like(&name)).then_some(name)
-    }
-
     /// Size of `name` in the current device directory, from the cached
     /// listing --- lets the viewer refuse an oversized device file before
     /// spending a round trip fetching it (mirrors [`files::read_text_file`]'s
@@ -331,7 +340,10 @@ impl Browser {
             .map(|entry| entry.size)
     }
 
-    fn selected_is_dir(&self, side: Side) -> bool {
+    /// Whether the entry under the cursor in `side` is a directory --- used
+    /// to decide which [`crate::app::FileAction`]s a files-pane `Enter`
+    /// offers for it.
+    pub fn selected_is_dir(&self, side: Side) -> bool {
         match side {
             Side::Local => self
                 .visible_local()
@@ -615,6 +627,99 @@ impl Browser {
         notices
     }
 
+    /// Queues a recursive deletion of a device directory, in the current
+    /// device directory --- "Delete" on a directory entry.
+    pub fn request_remove_device_dir(
+        &mut self,
+        name: &str,
+        processes: &mut ProcessManager,
+        port: Option<&str>,
+    ) -> Vec<Notice> {
+        let target = self.device_path.join(name);
+        let mut notices = vec![(Level::Info, format!("removing {target}/ (recursive)"))];
+        notices.extend(self.enqueue(Request::RemoveDeviceRecursive(target), processes, port));
+        notices
+    }
+
+    /// Queues a recursive upload of `name`, a directory in the current local
+    /// directory, into the device's current directory --- "Send to device"
+    /// on a directory entry. The destination is the device's current
+    /// directory itself, not `device_path.join(name)`: mpremote nests the
+    /// source's own basename under an existing destination directory, the
+    /// same way Unix `cp -r src existing_dest_dir` does.
+    pub fn request_upload_dir(
+        &mut self,
+        name: &str,
+        processes: &mut ProcessManager,
+        port: Option<&str>,
+    ) -> Vec<Notice> {
+        let local_dir = self.local_path.join(name);
+        let remote_parent = self.device_path.clone();
+        let mut notices = vec![(Level::Info, format!("sending {name}/ to {remote_parent}"))];
+        notices.extend(self.enqueue(
+            Request::UploadDir {
+                local_dir,
+                remote_parent,
+            },
+            processes,
+            port,
+        ));
+        notices
+    }
+
+    /// Queues a recursive download of `name`, a directory in the current
+    /// device directory, into the local pane's current directory ---
+    /// "Download" on a directory entry. Same existing-destination reasoning
+    /// as [`Self::request_upload_dir`], mirrored.
+    pub fn request_download_dir(
+        &mut self,
+        name: &str,
+        processes: &mut ProcessManager,
+        port: Option<&str>,
+    ) -> Vec<Notice> {
+        let remote_dir = self.device_path.join(name);
+        let local_parent = self.local_path.clone();
+        let mut notices = vec![(Level::Info, format!("downloading {remote_dir}/"))];
+        notices.extend(self.enqueue(
+            Request::DownloadDir {
+                remote_dir,
+                local_parent,
+            },
+            processes,
+            port,
+        ));
+        notices
+    }
+
+    /// Queues creation of an empty directory in the current device
+    /// directory --- the create-entry action (`a`) when the typed name ends
+    /// with `/`.
+    pub fn request_mkdir(
+        &mut self,
+        name: &str,
+        processes: &mut ProcessManager,
+        port: Option<&str>,
+    ) -> Vec<Notice> {
+        let target = self.device_path.join(name);
+        let mut notices = vec![(Level::Info, format!("creating directory {target}"))];
+        notices.extend(self.enqueue(Request::Mkdir(target), processes, port));
+        notices
+    }
+
+    /// Queues creation of an empty file in the current device directory ---
+    /// the create-entry action (`a`) on a plain name.
+    pub fn request_touch(
+        &mut self,
+        name: &str,
+        processes: &mut ProcessManager,
+        port: Option<&str>,
+    ) -> Vec<Notice> {
+        let target = self.device_path.join(name);
+        let mut notices = vec![(Level::Info, format!("creating {target}"))];
+        notices.extend(self.enqueue(Request::Touch(target), processes, port));
+        notices
+    }
+
     /// Queues a request, starting it if the device is free.
     fn enqueue(
         &mut self,
@@ -646,7 +751,18 @@ impl Browser {
             Request::Upload {
                 local_path, target, ..
             } => commands::upload(port, local_path, target),
-            Request::RemoveDevice(path) => commands::rm(port, &path),
+            Request::RemoveDevice(path) => commands::rm(port, path),
+            Request::RemoveDeviceRecursive(path) => commands::rm_recursive(port, path),
+            Request::UploadDir {
+                local_dir,
+                remote_parent,
+            } => commands::upload_dir(port, local_dir, remote_parent),
+            Request::DownloadDir {
+                remote_dir,
+                local_parent,
+            } => commands::download_dir(port, remote_dir, local_parent),
+            Request::Mkdir(path) => commands::mkdir(port, path),
+            Request::Touch(path) => commands::touch(port, path),
             Request::Reset => commands::soft_reset(port),
         };
         let command = match &self.tool_path {
@@ -934,6 +1050,100 @@ impl Browser {
                 }
             },
 
+            Request::RemoveDeviceRecursive(path) => match failure {
+                Some(error) => {
+                    self.rescan_if_device_lost(output, update);
+                    update
+                        .notices
+                        .push((Level::Error, format!("{path}: remove failed: {error}")));
+                }
+                None => {
+                    update
+                        .notices
+                        .push((Level::Success, format!("{path} removed")));
+                    let dir = path.parent().unwrap_or(crate::device::DevicePath::root());
+                    self.cache.remove(&dir);
+                    if self.device_path == dir {
+                        self.device_state = PaneState::Loading;
+                        self.queue.push_front(Request::List(dir));
+                    }
+                }
+            },
+
+            Request::UploadDir {
+                local_dir,
+                remote_parent,
+            } => match failure {
+                Some(error) => {
+                    self.rescan_if_device_lost(output, update);
+                    update.notices.push((
+                        Level::Error,
+                        format!("{}: upload failed: {error}", local_dir.display()),
+                    ));
+                }
+                None => {
+                    update.notices.push((
+                        Level::Success,
+                        format!("{} uploaded to {remote_parent}", local_dir.display()),
+                    ));
+                    self.cache.remove(remote_parent);
+                    if *remote_parent == self.device_path {
+                        self.device_state = PaneState::Loading;
+                        self.queue.push_front(Request::List(remote_parent.clone()));
+                    }
+                }
+            },
+
+            Request::DownloadDir {
+                remote_dir,
+                local_parent,
+            } => match failure {
+                Some(error) => {
+                    self.rescan_if_device_lost(output, update);
+                    update.notices.push((
+                        Level::Error,
+                        format!("{remote_dir}: download failed: {error}"),
+                    ));
+                }
+                None => {
+                    update.notices.push((
+                        Level::Success,
+                        format!("{remote_dir} downloaded to {}", local_parent.display()),
+                    ));
+                    self.reload_local();
+                }
+            },
+
+            Request::Mkdir(path) => match failure {
+                Some(error) => {
+                    self.rescan_if_device_lost(output, update);
+                    update
+                        .notices
+                        .push((Level::Error, format!("{path}: mkdir failed: {error}")));
+                }
+                None => {
+                    update
+                        .notices
+                        .push((Level::Success, format!("{path} created")));
+                    self.invalidate_parent_of(path);
+                }
+            },
+
+            Request::Touch(path) => match failure {
+                Some(error) => {
+                    self.rescan_if_device_lost(output, update);
+                    update
+                        .notices
+                        .push((Level::Error, format!("{path}: create failed: {error}")));
+                }
+                None => {
+                    update
+                        .notices
+                        .push((Level::Success, format!("{path} created")));
+                    self.invalidate_parent_of(path);
+                }
+            },
+
             Request::Reset => match failure {
                 Some(error) => {
                     self.rescan_if_device_lost(output, update);
@@ -955,6 +1165,19 @@ impl Browser {
                         .push_front(Request::List(self.device_path.clone()));
                 }
             },
+        }
+    }
+
+    /// Invalidates the cached listing of `path`'s parent directory, and
+    /// queues a fresh listing if it is the one currently on screen ---
+    /// shared by [`Request::Mkdir`] and [`Request::Touch`], which both add
+    /// one new entry to whatever directory `path` sits in.
+    fn invalidate_parent_of(&mut self, path: &DevicePath) {
+        let Some(dir) = path.parent() else { return };
+        self.cache.remove(&dir);
+        if dir == self.device_path {
+            self.device_state = PaneState::Loading;
+            self.queue.push_front(Request::List(dir));
         }
     }
 
@@ -1123,57 +1346,14 @@ mod tests {
     }
 
     #[test]
-    fn selected_actionable_name_is_none_for_a_directory() {
-        let fixture = Fixture::new("viewer-dir");
+    fn selected_is_dir_distinguishes_files_from_directories() {
+        let fixture = Fixture::new("is-dir");
         let mut browser = Browser::new(&fixture.root);
 
         browser.cursor_to(0); // lib/
-        assert_eq!(browser.selected_actionable_name(), None);
-    }
-
-    #[test]
-    fn selected_actionable_name_resolves_a_text_file() {
-        let fixture = Fixture::new("viewer-file");
-        let mut browser = Browser::new(&fixture.root);
-
+        assert!(browser.selected_is_dir(Side::Local));
         browser.cursor_to(1); // main.py
-        assert_eq!(
-            browser.selected_actionable_name().as_deref(),
-            Some("main.py")
-        );
-    }
-
-    #[test]
-    fn selected_actionable_name_excludes_binary_extensions() {
-        let fixture = Fixture::new("viewer-binary");
-        std::fs::write(fixture.root.join("firmware.bin"), [0u8, 1, 2]).unwrap();
-        let mut browser = Browser::new(&fixture.root);
-
-        // Sorted order: lib/, firmware.bin, main.py.
-        browser.cursor_to(1);
-        assert_eq!(
-            browser.selected_name(Side::Local).as_deref(),
-            Some("firmware.bin")
-        );
-        assert_eq!(
-            browser.selected_actionable_name(),
-            None,
-            "binary files never get the action menu"
-        );
-    }
-
-    #[test]
-    fn selected_actionable_name_reads_the_focused_pane() {
-        let fixture = Fixture::new("viewer-focus");
-        let mut browser = Browser::new(&fixture.root);
-        browser.cursor_to(1); // main.py, on the local side
-
-        browser.focus = Side::Device;
-        assert_eq!(
-            browser.selected_actionable_name(),
-            None,
-            "the device pane is empty until scanned, regardless of the local cursor"
-        );
+        assert!(!browser.selected_is_dir(Side::Local));
     }
 
     #[test]

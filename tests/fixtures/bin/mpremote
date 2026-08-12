@@ -85,6 +85,34 @@ case "$args" in
         exit 1
         ;;
 
+    "fs --no-verbose mkdir :/newdir")
+        ;;
+
+    "fs --no-verbose mkdir :/lib")
+        echo 'mpremote: mkdir: /lib: File exists.' >&2
+        exit 1
+        ;;
+
+    "fs --no-verbose touch :/newfile.py")
+        ;;
+
+    "fs --no-verbose --recursive cp "*" :/")
+        # Recursive upload of a local directory into the device root, e.g.
+        # "Send to device" on `lib/`. The fake does not need to actually
+        # place anything on a device --- only the command shape matters.
+        ;;
+
+    "fs --no-verbose --recursive cp :/lib "*)
+        # Recursive download of the device's `lib/` into the caller's local
+        # directory.
+        dest=$(printf '%s' "$args" | sed 's/^fs --no-verbose --recursive cp :\/lib //')
+        mkdir -p "$dest/lib"
+        printf 'lib content\n' > "$dest/lib/simple.py"
+        ;;
+
+    "fs --no-verbose --recursive rm :/lib")
+        ;;
+
     soft-reset)
         printf 'MPY: soft reboot\n'
         ;;

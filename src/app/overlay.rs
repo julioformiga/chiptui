@@ -184,17 +184,29 @@ impl App {
                     |_| {},
                 );
             }
-            Overlay::ConfirmUpload { name, confirm } => {
+            Overlay::ConfirmUpload {
+                name,
+                is_dir,
+                confirm,
+            } => {
                 let accept_name = name.clone();
                 self.dispatch_confirm(
                     key.code,
                     confirm,
                     move |app, confirm| {
-                        app.overlay = Some(Overlay::ConfirmUpload { name, confirm });
+                        app.overlay = Some(Overlay::ConfirmUpload {
+                            name,
+                            is_dir,
+                            confirm,
+                        });
                     },
                     move |app| {
                         app.dispatch_browser(|browser, processes, port| {
-                            browser.request_upload(&accept_name, processes, port)
+                            if is_dir {
+                                browser.request_upload_dir(&accept_name, processes, port)
+                            } else {
+                                browser.request_upload(&accept_name, processes, port)
+                            }
                         });
                     },
                     |_| {},
@@ -203,15 +215,21 @@ impl App {
             Overlay::FileActions {
                 side,
                 name,
+                is_dir,
                 selected,
             } => {
-                let count = FileAction::for_side(side).len();
+                let is_text = crate::files::is_text_like(&name);
+                let count = FileAction::for_entry(side, is_dir, is_text).len();
                 match key.code {
-                    KeyCode::Esc | KeyCode::Char('q') => self.overlay = None,
+                    // Left/right mirror the files pane's own navigation
+                    // (`←` back, `→` act) so the menu never asks for a
+                    // different reflex than the pane it opened from.
+                    KeyCode::Esc | KeyCode::Char('q') | KeyCode::Left => self.overlay = None,
                     KeyCode::Up | KeyCode::Char('k') => {
                         self.overlay = Some(Overlay::FileActions {
                             side,
                             name,
+                            is_dir,
                             selected: (selected + count - 1) % count,
                         });
                     }
@@ -219,17 +237,36 @@ impl App {
                         self.overlay = Some(Overlay::FileActions {
                             side,
                             name,
+                            is_dir,
                             selected: (selected + 1) % count,
                         });
                     }
-                    KeyCode::Enter => {
-                        let action = FileAction::for_side(side)[selected];
+                    KeyCode::Enter | KeyCode::Right => {
+                        let action = FileAction::for_entry(side, is_dir, is_text)[selected];
                         self.overlay = None;
-                        self.run_file_action(side, &name, action);
+                        self.run_file_action(side, &name, is_dir, action);
                     }
                     _ => {}
                 }
             }
+            Overlay::CreateEntry { side, input } => match key.code {
+                KeyCode::Esc => self.overlay = None,
+                KeyCode::Backspace => {
+                    let mut input = input;
+                    input.pop();
+                    self.overlay = Some(Overlay::CreateEntry { side, input });
+                }
+                KeyCode::Char(c) => {
+                    let mut input = input;
+                    input.push(c);
+                    self.overlay = Some(Overlay::CreateEntry { side, input });
+                }
+                KeyCode::Enter => {
+                    self.overlay = None;
+                    self.create_entry(side, &input);
+                }
+                _ => {}
+            },
             Overlay::FileViewer => match key.code {
                 KeyCode::Esc | KeyCode::Char('q') => {
                     self.overlay = None;
@@ -292,6 +329,7 @@ impl App {
             Overlay::ConfirmDelete {
                 side,
                 name,
+                is_dir,
                 confirm,
             } => {
                 let accept_name = name.clone();
@@ -302,10 +340,11 @@ impl App {
                         app.overlay = Some(Overlay::ConfirmDelete {
                             side,
                             name,
+                            is_dir,
                             confirm,
                         });
                     },
-                    move |app| app.delete_file(side, &accept_name),
+                    move |app| app.delete_file(side, &accept_name, is_dir),
                     |_| {},
                 );
             }

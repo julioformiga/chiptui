@@ -124,17 +124,21 @@ pub enum Overlay {
         dest: PathBuf,
         confirm: bool,
     },
-    /// Ask for confirmation before uploading a file.
+    /// Ask for confirmation before uploading a file or directory.
     ConfirmUpload {
         name: String,
+        is_dir: bool,
         confirm: bool,
     },
-    /// The text file under the cursor in the files pane (`enter`): a small
-    /// menu of what to do with it. Which three actions show up depends on
-    /// which pane --- see [`FileAction::for_side`].
+    /// The entry under the cursor in the files pane (`enter`): a small menu
+    /// of what to do with it. Which actions show up depends on the pane, on
+    /// whether it is a directory, and --- for a file --- whether
+    /// [`crate::files::is_text_like`] considers it text --- see
+    /// [`FileAction::for_entry`].
     FileActions {
         side: Side,
         name: String,
+        is_dir: bool,
         selected: usize,
     },
     /// A file's contents, opened by choosing `View` from [`Overlay::FileActions`]
@@ -156,20 +160,34 @@ pub enum Overlay {
     ConfirmEraseForMicroPython {
         confirm: bool,
     },
-    /// Ask for confirmation before deleting a file.
+    /// Ask for confirmation before deleting a file or directory.
     ConfirmDelete {
         side: Side,
         name: String,
+        is_dir: bool,
         confirm: bool,
+    },
+    /// Inline text entry for creating a new entry in `side`'s current
+    /// directory (`a`). A trailing `/` on the typed name means "create a
+    /// directory" (`SPEC.md` §9's "create directory" action); otherwise an
+    /// empty file.
+    CreateEntry {
+        side: Side,
+        input: String,
     },
 }
 
-/// One action offered by [`Overlay::FileActions`] for the file under the
+/// One action offered by [`Overlay::FileActions`] for the entry under the
 /// cursor. The files pane is a sync tool, not a filesystem manager, so the
 /// choices mirror that: move a copy across, or work with the copy already
 /// there.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileAction {
+    /// Descends into a directory --- the menu's default entry for one, so a
+    /// reflex `Enter` twice still just browses in, one extra keypress from
+    /// what a bare `Enter` used to do before directories gained the rest of
+    /// this menu too.
+    Open,
     SendToDevice,
     Download,
     View,
@@ -180,6 +198,7 @@ pub enum FileAction {
 impl FileAction {
     pub fn label(self) -> &'static str {
         match self {
+            Self::Open => "📂 Open",
             Self::SendToDevice => "📤 Send to device",
             Self::Download => "📥 Download",
             Self::View => "👁  View",
@@ -188,11 +207,31 @@ impl FileAction {
         }
     }
 
-    /// The three actions offered for a file in `side`, in menu order.
-    pub fn for_side(side: Side) -> &'static [FileAction] {
-        match side {
-            Side::Local => &[Self::SendToDevice, Self::View, Self::Edit, Self::Delete],
-            Side::Device => &[Self::Download, Self::View, Self::Edit, Self::Delete],
+    /// The actions offered for the entry under the cursor, in menu order.
+    ///
+    /// A directory gets `Open` first (descend), plus whichever transfer
+    /// makes sense for `side` and `Delete` --- never `View`/`Edit`, which
+    /// need file contents. A file never offers `Open`; `View`/`Edit` appear
+    /// only when `is_text` ([`crate::files::is_text_like`]) --- a binary
+    /// file (e.g. a `.mpy`) can still be sent, downloaded and deleted, just
+    /// not previewed or opened in `$EDITOR`.
+    pub fn for_entry(side: Side, is_dir: bool, is_text: bool) -> Vec<FileAction> {
+        if is_dir {
+            match side {
+                Side::Local => vec![Self::Open, Self::SendToDevice, Self::Delete],
+                Side::Device => vec![Self::Open, Self::Download, Self::Delete],
+            }
+        } else {
+            let mut actions = match side {
+                Side::Local => vec![Self::SendToDevice],
+                Side::Device => vec![Self::Download],
+            };
+            if is_text {
+                actions.push(Self::View);
+                actions.push(Self::Edit);
+            }
+            actions.push(Self::Delete);
+            actions
         }
     }
 }
@@ -861,6 +900,11 @@ impl App {
                 ("e", "edit with $EDITOR"),
                 ("q/esc", "close"),
             ],
+            Some(Overlay::CreateEntry { .. }) => vec![
+                ("type", "name"),
+                ("enter", "create ('name/' for a directory)"),
+                ("esc", "cancel"),
+            ],
             Some(
                 Overlay::BackendPicker { .. }
                 | Overlay::DevicePicker { .. }
@@ -912,9 +956,11 @@ impl App {
                 View::Dashboard => {
                     let mut keys = vec![("tab", "focus")];
                     if matches!(self.focus, Focus::FilesLocal | Focus::FilesDevice) {
-                        keys.push(("enter", "open"));
-                        keys.push(("bksp", "up"));
+                        keys.push(("enter", "menu"));
+                        keys.push(("→", "descend"));
+                        keys.push(("←/bksp", "up"));
                         keys.push(("r", "reload"));
+                        keys.push(("a", "new"));
                         keys.push(("c", "compare"));
                         keys.push(("h", "hidden"));
                     } else {
