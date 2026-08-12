@@ -1,0 +1,358 @@
+//! Dashboard file-browser dispatch: navigation, the per-file action menu,
+//! the local/device viewer, and the transfers they trigger. Split out of
+//! `app.rs` since it is the one subsystem `App` drives almost entirely
+//! through [`crate::browser::Browser`] and never touches [`crate::flash`].
+
+use std::path::PathBuf;
+
+use ratatui::crossterm::event::{KeyCode, KeyEvent};
+
+use crate::browser::{Browser, DeviceView, Notice, Side, Transfer, TransferKind};
+use crate::device::DevicePath;
+use crate::files;
+use crate::process::ProcessManager;
+
+use super::{
+    App, FileAction, FileViewer, Overlay, PendingEdit, PendingMonitor, ViewerSource, ViewerState,
+};
+
+impl App {
+    /// Handles a key while [`super::Focus::FilesLocal`]/[`super::Focus::FilesDevice`] holds
+    /// focus. `Tab`/`BackTab`, `o`, `x`, `?` and `d` are dashboard-wide and
+    /// already handled by [`App::on_dashboard_key`] before this is reached,
+    /// so only the file browser's own navigation remains here.
+    pub(super) fn on_files_key(&mut self, key: KeyEvent) {
+        let Some(mut browser) = self.browser.take() else {
+            return;
+        };
+        // The two columns are separate `Focus` stops now, so the browser's
+        // own notion of which side is active just follows it.
+        browser.focus = match self.focus {
+            super::Focus::FilesDevice => Side::Device,
+            _ => Side::Local,
+        };
+        let port = self.devices.selected_port().map(str::to_string);
+        let port = port.as_deref();
+
+        let notices = match key.code {
+            KeyCode::Up | KeyCode::Char('k') => {
+                browser.move_cursor(-1);
+                Vec::new()
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                browser.move_cursor(1);
+                Vec::new()
+            }
+            KeyCode::PageUp => {
+                browser.move_cursor(-10);
+                Vec::new()
+            }
+            KeyCode::PageDown => {
+                browser.move_cursor(10);
+                Vec::new()
+            }
+            KeyCode::Home => {
+                browser.cursor_to(0);
+                Vec::new()
+            }
+            KeyCode::End => {
+                browser.cursor_to(usize::MAX);
+                Vec::new()
+            }
+            KeyCode::Enter | KeyCode::Right => match browser.selected_actionable_name() {
+                Some(name) => {
+                    self.overlay = Some(Overlay::FileActions {
+                        side: browser.focus,
+                        name,
+                        selected: 0,
+                    });
+                    Vec::new()
+                }
+                None => browser.enter(&mut self.processes, port),
+            },
+            KeyCode::Backspace | KeyCode::Left => browser.ascend(&mut self.processes, port),
+            KeyCode::Char('r') => {
+                if browser.focus == Side::Device {
+                    browser.load_device(&mut self.processes, port, true)
+                } else {
+                    browser.reload_local();
+                    Vec::new()
+                }
+            }
+            KeyCode::Char('h') => {
+                browser.toggle_hidden();
+                Vec::new()
+            }
+            KeyCode::Char('c') => browser.verify_selected(&mut self.processes, port),
+            _ => Vec::new(),
+        };
+
+        self.browser = Some(browser);
+        for (level, message) in notices {
+            self.logs.push(level, message);
+        }
+    }
+
+    /// Runs the action chosen from [`Overlay::FileActions`]. `name` is the
+    /// file's name in whichever directory `side` currently shows --- stable
+    /// for the duration of the menu, since an open overlay routes every key
+    /// to [`App::on_overlay_key`] instead of the browser's own navigation.
+    pub(super) fn run_file_action(&mut self, side: Side, name: &str, action: FileAction) {
+        match (side, action) {
+            (Side::Local, FileAction::View) => {
+                let Some(browser) = &self.browser else { return };
+                self.open_local_file_viewer(browser.local_path.join(name));
+            }
+            (Side::Local, FileAction::Edit) => {
+                let Some(browser) = &self.browser else { return };
+                self.pending_edit = Some(PendingEdit {
+                    path: browser.local_path.join(name),
+                    device_target: None,
+                });
+            }
+            (Side::Local, FileAction::SendToDevice) => {
+                self.overlay = Some(Overlay::ConfirmUpload {
+                    name: name.to_string(),
+                    confirm: false,
+                });
+            }
+            (Side::Local, FileAction::Delete) => {
+                self.overlay = Some(Overlay::ConfirmDelete {
+                    side: Side::Local,
+                    name: name.to_string(),
+                    confirm: false,
+                });
+            }
+            (Side::Device, FileAction::View) => self.open_device_file_viewer(name),
+            (Side::Device, FileAction::Download) => {
+                self.dispatch_browser(|browser, processes, port| {
+                    browser.request_download(name, processes, port)
+                });
+            }
+            (Side::Device, FileAction::Edit) => {
+                self.dispatch_browser(|browser, processes, port| {
+                    browser.request_edit_download(name, processes, port)
+                });
+            }
+            (Side::Device, FileAction::Delete) => {
+                self.overlay = Some(Overlay::ConfirmDelete {
+                    side: Side::Device,
+                    name: name.to_string(),
+                    confirm: false,
+                });
+            }
+            // `FileAction::for_side` never offers `Download` on `Local` or
+            // `SendToDevice` on `Device`.
+            (Side::Local, FileAction::Download) | (Side::Device, FileAction::SendToDevice) => {}
+        }
+    }
+
+    pub(super) fn delete_file(&mut self, side: Side, name: &str) {
+        match side {
+            Side::Local => {
+                if let Some(browser) = &mut self.browser {
+                    let path = browser.local_path.join(name);
+                    match std::fs::remove_file(&path) {
+                        Ok(_) => {
+                            self.logs.success(format!("{} removed", path.display()));
+                            browser.reload_local();
+                        }
+                        Err(e) => {
+                            self.logs
+                                .error(format!("{}: remove failed: {e}", path.display()));
+                        }
+                    }
+                }
+            }
+            Side::Device => {
+                self.dispatch_browser(|browser, processes, port| {
+                    browser.request_remove_device(name, processes, port)
+                });
+            }
+        }
+    }
+
+    /// Takes `self.browser` for the duration of `f`, supplying the selected
+    /// port, then puts it back and logs whatever `f` reports --- the same
+    /// take/replace/log shape every browser-mutating key handler here
+    /// already repeats, pulled out for the three new file-transfer actions.
+    pub(super) fn dispatch_browser(
+        &mut self,
+        f: impl FnOnce(&mut Browser, &mut ProcessManager, Option<&str>) -> Vec<Notice>,
+    ) {
+        let Some(mut browser) = self.browser.take() else {
+            return;
+        };
+        let port = self.devices.selected_port().map(str::to_string);
+        let notices = f(&mut browser, &mut self.processes, port.as_deref());
+        self.browser = Some(browser);
+        for (level, message) in notices {
+            self.logs.push(level, message);
+        }
+    }
+
+    /// Reads `path` and opens [`Overlay::FileViewer`] over it, synchronously
+    /// --- a local read never has to wait. A file that cannot be shown
+    /// (binary, too large, unreadable) still opens the viewer, with the
+    /// reason in place of content, rather than doing nothing.
+    fn open_local_file_viewer(&mut self, path: PathBuf) {
+        let state = match files::read_text_file(&path) {
+            Ok(content) => ViewerState::Ready {
+                lines: content.lines().map(str::to_string).collect(),
+            },
+            Err(message) => ViewerState::Error(message),
+        };
+        self.viewer = Some(FileViewer {
+            source: ViewerSource::Local(path),
+            state,
+            scroll: 0,
+        });
+        self.overlay = Some(Overlay::FileViewer);
+    }
+
+    /// Opens [`Overlay::FileViewer`] on `name`, in the current device
+    /// directory, and queues the `cat` that will fill it in --- unlike the
+    /// local case this cannot be synchronous, so the viewer opens straight
+    /// into [`ViewerState::Loading`].
+    fn open_device_file_viewer(&mut self, name: &str) {
+        let Some(browser) = &self.browser else { return };
+        let path = browser.device_path.join(name);
+
+        if let Some(size) = browser.device_entry_size(name)
+            && size > files::MAX_VIEW_BYTES
+        {
+            self.logs.warn(format!(
+                "{path}: too large to preview ({} MiB) --- use 'Download' or 'Edit' instead",
+                size / (1024 * 1024)
+            ));
+            return;
+        }
+
+        self.viewer = Some(FileViewer {
+            source: ViewerSource::Device(path),
+            state: ViewerState::Loading,
+            scroll: 0,
+        });
+        self.overlay = Some(Overlay::FileViewer);
+        self.dispatch_browser(|browser, processes, port| {
+            browser.request_device_view(name, processes, port)
+        });
+    }
+
+    /// Feeds a finished device `cat` into the open viewer, if it is still the
+    /// one waiting on it --- matched by path, so a reply for a viewer the
+    /// user already closed (or replaced by opening a different file) is
+    /// dropped instead of overwriting the wrong content.
+    pub(super) fn apply_device_view(&mut self, view: DeviceView) {
+        let Some(viewer) = &mut self.viewer else {
+            return;
+        };
+        let ViewerSource::Device(path) = &viewer.source else {
+            return;
+        };
+        if *path != view.path {
+            return;
+        }
+        viewer.state = match view.content {
+            Ok(content) => ViewerState::Ready {
+                lines: content.lines().map(str::to_string).collect(),
+            },
+            Err(message) => ViewerState::Error(message),
+        };
+    }
+
+    /// Reacts to a finished download or upload. A download queued by
+    /// [`FileAction::Edit`] on a device file lands locally here --- queue
+    /// `$EDITOR` on it. The re-upload that follows once `$EDITOR` closes
+    /// (`App::request_device_reupload`) offers a restart on success. A plain
+    /// download and an ordinary "Send to device" upload are fire-and-forget:
+    /// their outcome is already in the log via `notices`, nothing further to
+    /// do here.
+    pub(super) fn apply_transfer(&mut self, transfer: Transfer) {
+        let Transfer { kind, ok } = transfer;
+        match kind {
+            TransferKind::Download {
+                local_path,
+                then_edit: true,
+                source,
+            } if ok => {
+                self.pending_edit = Some(PendingEdit {
+                    path: local_path,
+                    device_target: Some(source),
+                });
+            }
+            TransferKind::Upload { after_edit: true } if ok => {
+                self.overlay = Some(Overlay::ConfirmRestartDevice { confirm: false });
+            }
+            _ => {}
+        }
+    }
+
+    /// Re-uploads `local_path` to `target` after `$EDITOR` closes
+    /// successfully on a device file --- called by the binary, which is the
+    /// only place that knows the editor actually ran and exited cleanly.
+    pub fn request_device_reupload(&mut self, local_path: PathBuf, target: DevicePath) {
+        self.dispatch_browser(|browser, processes, port| {
+            browser.request_reupload_after_edit(local_path, target, processes, port)
+        });
+    }
+
+    /// Restarts the device (`soft-reset`), once the user has explicitly
+    /// confirmed it from [`Overlay::ConfirmRestartDevice`].
+    pub(super) fn restart_device(&mut self) {
+        self.dispatch_browser(|browser, processes, port| browser.request_reset(processes, port));
+    }
+
+    /// Scrolls the open file viewer, clamped to the last position that still
+    /// keeps the viewport full --- same shape as [`crate::logs::LogStore::scroll_up`], just
+    /// counting down from the top instead of up from the tail. A no-op while
+    /// [`ViewerState::Loading`] or [`ViewerState::Error`]: there is nothing to
+    /// page through yet.
+    pub(super) fn scroll_viewer(&mut self, delta: isize) {
+        let viewport = self.viewer_viewport.max(1);
+        let Some(viewer) = &mut self.viewer else {
+            return;
+        };
+        let ViewerState::Ready { lines } = &viewer.state else {
+            return;
+        };
+        let max = lines.len().saturating_sub(viewport) as isize;
+        let next = (viewer.scroll as isize + delta).clamp(0, max.max(0));
+        viewer.scroll = next as usize;
+    }
+
+    /// Jumps the open file viewer straight to `target`, clamped the same way
+    /// as [`Self::scroll_viewer`]. `usize::MAX` means "the end", mirroring
+    /// [`Browser::cursor_to`]'s convention for the same key (`End`).
+    pub(super) fn jump_viewer(&mut self, target: usize) {
+        let viewport = self.viewer_viewport.max(1);
+        let Some(viewer) = &mut self.viewer else {
+            return;
+        };
+        let ViewerState::Ready { lines } = &viewer.state else {
+            return;
+        };
+        let max = lines.len().saturating_sub(viewport);
+        viewer.scroll = target.min(max);
+    }
+
+    /// Takes the path queued by an `Edit` action, if any. The binary's event
+    /// loop polls this once per iteration and, when it fires, suspends the
+    /// terminal to run `$EDITOR` --- `App` has no terminal handle to do that
+    /// itself.
+    pub fn take_pending_edit(&mut self) -> Option<PendingEdit> {
+        self.pending_edit.take()
+    }
+
+    pub fn take_pending_monitor(&mut self) -> Option<PendingMonitor> {
+        self.pending_monitor.take()
+    }
+
+    /// Re-reads the local pane after `$EDITOR` closes: size and contents may
+    /// have changed under it while the terminal was suspended.
+    pub fn reload_local_files(&mut self) {
+        if let Some(browser) = &mut self.browser {
+            browser.reload_local();
+        }
+    }
+}
