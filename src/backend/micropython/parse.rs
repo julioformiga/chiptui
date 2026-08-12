@@ -213,10 +213,13 @@ pub fn explain_error(stderr: &str) -> String {
 /// Whether this failure means the device is gone, so a fresh `devs` scan
 /// should run rather than leaving a stale selection pointing at a dead port.
 pub fn is_device_lost_error(stderr: &str) -> bool {
-    matches!(
-        classify(stderr),
-        FailureKind::DeviceNotFound | FailureKind::DeviceUnresponsive
-    )
+    matches!(classify(stderr), FailureKind::DeviceNotFound)
+}
+
+/// Whether the device is present but did not respond to the command.
+/// This often happens when a board is connected but does not have MicroPython installed.
+pub fn is_device_unresponsive_error(stderr: &str) -> bool {
+    matches!(classify(stderr), FailureKind::DeviceUnresponsive)
 }
 
 #[cfg(test)]
@@ -380,9 +383,9 @@ mod tests {
     }
 
     #[test]
-    fn device_lost_errors_are_identified() {
+    fn classifies_lost_device() {
         assert!(is_device_lost_error("mpremote: no device found"));
-        assert!(is_device_lost_error(
+        assert!(is_device_unresponsive_error(
             "mpremote: failed to access /dev/ttyACM0"
         ));
         assert!(!is_device_lost_error(

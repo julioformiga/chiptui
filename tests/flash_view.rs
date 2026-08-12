@@ -111,7 +111,11 @@ fn read_only_actions_run_without_confirmation() {
     settle(&mut app);
 
     let flash = app.flash.as_ref().unwrap();
-    assert!(matches!(flash.state, RunState::Succeeded));
+    assert!(
+        matches!(flash.state, RunState::Succeeded),
+        "state was {:?}",
+        flash.state
+    );
     assert_eq!(
         app.view,
         View::Dashboard,
@@ -171,7 +175,7 @@ fn erase_then_offer_never_flashes_on_its_own() {
     app.handle(key(KeyCode::Down));
     app.handle(key(KeyCode::Down)); // erase flash
     app.handle(key(KeyCode::Enter)); // opens the confirm overlay
-    app.handle(key(KeyCode::Enter)); // accepts it
+    app.handle(key(KeyCode::Char('y'))); // accepts it
     settle(&mut app);
 
     let flash = app.flash.as_ref().unwrap();
@@ -241,11 +245,15 @@ fn write_flash_end_to_end_succeeds_and_detects_the_chip() {
         other => panic!("expected a confirmation overlay, got {other:?}"),
     }
 
-    app.handle(key(KeyCode::Enter)); // confirm
+    app.handle(key(KeyCode::Char('y'))); // confirm
     settle(&mut app);
 
     let flash = app.flash.as_ref().unwrap();
-    assert!(matches!(flash.state, RunState::Succeeded));
+    assert!(
+        matches!(flash.state, RunState::Succeeded),
+        "state was {:?}",
+        flash.state
+    );
     assert_eq!(
         flash.chip.family(),
         Some(ChipFamily::Esp32),
@@ -382,7 +390,7 @@ fn write_flash_output_shows_a_read_only_recap_above_the_console() {
         app.handle(key(KeyCode::Char(c)));
     }
     app.handle(key(KeyCode::Enter)); // request confirmation
-    app.handle(key(KeyCode::Enter)); // confirm
+    app.handle(key(KeyCode::Char('y'))); // confirm
     settle(&mut app);
 
     // Row 3 (the Monitor tab) is a fixed fraction of the dashboard rather
@@ -532,10 +540,14 @@ fn downloading_online_firmware_offers_the_erase_and_flash_chain() {
         other => panic!("expected the erase-flash confirmation, got {other:?}"),
     }
 
-    app.handle(key(KeyCode::Enter)); // accept the erase
+    app.handle(key(KeyCode::Char('y'))); // accept the erase
     settle(&mut app);
     let flash = app.flash.as_ref().unwrap();
-    assert!(matches!(flash.state, RunState::Succeeded));
+    assert!(
+        matches!(flash.state, RunState::Succeeded),
+        "state was {:?}",
+        flash.state
+    );
     assert_eq!(
         flash.screen,
         FlashScreen::Options,
@@ -595,7 +607,7 @@ fn re_downloading_the_same_file_asks_before_overwriting() {
         "nothing must be overwritten before the user confirms"
     );
 
-    app.handle(key(KeyCode::Enter)); // confirm the overwrite
+    app.handle(key(KeyCode::Char('y'))); // confirm the overwrite
     settle(&mut app);
     assert_eq!(
         std::fs::read_to_string(&existing).unwrap(),

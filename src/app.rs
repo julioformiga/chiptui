@@ -136,6 +136,10 @@ pub enum Overlay {
     ConfirmRestartDevice {
         confirm: bool,
     },
+    /// Ask to flash MicroPython if device is unresponsive.
+    ConfirmEraseForMicroPython {
+        confirm: bool,
+    },
     /// Ask for confirmation before deleting a file.
     ConfirmDelete {
         side: Side,
@@ -599,6 +603,14 @@ impl App {
             if let Some(view) = update.device_view {
                 self.apply_device_view(view);
             }
+            if update.prompt_micropython_flash
+                && !matches!(
+                    self.overlay,
+                    Some(Overlay::ConfirmEraseForMicroPython { .. })
+                )
+            {
+                self.overlay = Some(Overlay::ConfirmEraseForMicroPython { confirm: false });
+            }
             if let Some(transfer) = update.transfer {
                 self.apply_transfer(transfer);
             }
@@ -614,6 +626,10 @@ impl App {
             }
             if update.offer_flash {
                 self.offer_flash_after_erase();
+            }
+            if update.search_online_for_firmware {
+                self.search_online();
+                self.view = View::Flash;
             }
 
             for (level, message) in fetch_update.notices {
@@ -959,7 +975,8 @@ impl App {
                             browser.reload_local();
                         }
                         Err(e) => {
-                            self.logs.error(format!("{}: remove failed: {e}", path.display()));
+                            self.logs
+                                .error(format!("{}: remove failed: {e}", path.display()));
                         }
                     }
                 }
@@ -1584,6 +1601,23 @@ impl App {
         self.flash = Some(flash);
     }
 
+    /// The user confirmed erasing flash to install MicroPython
+    /// (`Overlay::ConfirmEraseForMicroPython`). Same port-contention
+    /// reasoning as [`Self::apply_device_picker`]: only safe to query esptool
+    /// right away when the browser is not about to hold the port itself.
+    fn confirm_erase_for_micropython(&mut self) {
+        self.ensure_flash_panel();
+        if let Some(flash) = &mut self.flash {
+            flash.screen = crate::flash::FlashScreen::OnlineBoards;
+            self.view = View::Flash;
+        }
+        if self.browser.as_ref().is_some_and(Browser::is_busy) {
+            self.defer_device_info_query();
+        } else {
+            self.maybe_query_device_info();
+        }
+    }
+
     /// Scans for a connected device as soon as the project is known, without
     /// waiting for the user to move focus onto a file browser pane. A no-op
     /// once a browser already exists (`AGENTS.md` §5's "one `mpremote` at a
@@ -1945,6 +1979,28 @@ impl App {
                 KeyCode::Esc | KeyCode::Char('q') => self.overlay = None,
                 _ => {}
             },
+            Overlay::ConfirmEraseForMicroPython { confirm } => match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => self.overlay = None,
+                KeyCode::Left
+                | KeyCode::Right
+                | KeyCode::Tab
+                | KeyCode::BackTab
+                | KeyCode::Char('h' | 'l') => {
+                    self.overlay = Some(Overlay::ConfirmEraseForMicroPython { confirm: !confirm });
+                }
+                KeyCode::Char('y') => {
+                    self.overlay = None;
+                    self.confirm_erase_for_micropython();
+                }
+                KeyCode::Char('n') => self.overlay = None,
+                KeyCode::Enter => {
+                    self.overlay = None;
+                    if confirm {
+                        self.confirm_erase_for_micropython();
+                    }
+                }
+                _ => {}
+            },
             Overlay::ConfirmDelete {
                 side,
                 ref name,
@@ -2184,7 +2240,8 @@ impl App {
                 | Overlay::ConfirmDownloadOverwrite { .. }
                 | Overlay::ConfirmDelete { .. }
                 | Overlay::ConfirmUpload { .. }
-                | Overlay::ConfirmRestartDevice { .. },
+                | Overlay::ConfirmRestartDevice { .. }
+                | Overlay::ConfirmEraseForMicroPython { .. },
             ) => {
                 vec![
                     ("←/→", "choose"),

@@ -36,13 +36,26 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
         Overlay::ConfirmRestartDevice { confirm } => {
             draw_confirm_restart_device(frame, area, app, confirm)
         }
-        Overlay::ConfirmDelete { side, name, confirm } => {
-            draw_confirm_delete(frame, area, side, &name, confirm)
+        Overlay::ConfirmEraseForMicroPython { confirm } => {
+            draw_confirm_erase_for_micropython(frame, area, confirm)
         }
+        Overlay::ConfirmDelete {
+            side,
+            name,
+            confirm,
+        } => draw_confirm_delete(frame, area, side, &name, confirm),
     }
 }
 
-fn draw_confirm_dialog(frame: &mut Frame, area: Rect, title: &str, message: Vec<Line>, confirm: bool, width: u16, height: u16) {
+fn draw_confirm_dialog(
+    frame: &mut Frame,
+    area: Rect,
+    title: &str,
+    message: Vec<Line>,
+    confirm: bool,
+    width: u16,
+    height: u16,
+) {
     let popup = centered(area, width.min(area.width), height);
     let block = modal(title);
     let inner = block.inner(popup);
@@ -50,11 +63,16 @@ fn draw_confirm_dialog(frame: &mut Frame, area: Rect, title: &str, message: Vec<
     frame.render_widget(Clear, popup);
     frame.render_widget(block, popup);
 
-    let [message_area, buttons_area] =
-        Layout::vertical([Constraint::Length(height.saturating_sub(5)), Constraint::Length(3)]).areas(inner);
+    let [message_area, buttons_area] = Layout::vertical([
+        Constraint::Length(height.saturating_sub(5)),
+        Constraint::Length(3),
+    ])
+    .areas(inner);
 
     frame.render_widget(
-        Paragraph::new(message).alignment(Alignment::Center).wrap(ratatui::widgets::Wrap { trim: false }),
+        Paragraph::new(message)
+            .alignment(Alignment::Center)
+            .wrap(ratatui::widgets::Wrap { trim: false }),
         message_area,
     );
 
@@ -81,7 +99,23 @@ fn draw_confirm_restart_device(frame: &mut Frame, area: Rect, app: &App, confirm
     draw_confirm_dialog(frame, area, "Restart device?", message, confirm, 54, 9);
 }
 
-fn draw_confirm_delete(frame: &mut Frame, area: Rect, side: crate::browser::Side, name: &str, confirm: bool) {
+fn draw_confirm_erase_for_micropython(frame: &mut Frame, area: Rect, confirm: bool) {
+    let message = vec![
+        Line::from("Device is unresponsive to MicroPython commands.".fg(Color::Yellow)),
+        Line::from("It might have a different firmware (e.g. Zephyr) installed.".fg(Color::Yellow)),
+        Line::from(""),
+        Line::from("Would you like to install MicroPython?".fg(Color::White)),
+    ];
+    draw_confirm_dialog(frame, area, "Install MicroPython?", message, confirm, 65, 9);
+}
+
+fn draw_confirm_delete(
+    frame: &mut Frame,
+    area: Rect,
+    side: crate::browser::Side,
+    name: &str,
+    confirm: bool,
+) {
     let side_str = match side {
         crate::browser::Side::Local => "locally",
         crate::browser::Side::Device => "from device",
@@ -238,12 +272,7 @@ fn draw_confirm_download_overwrite(
     draw_confirm_dialog(frame, area, "Overwrite firmware?", message, confirm, 70, 8);
 }
 
-fn draw_confirm_upload(
-    frame: &mut Frame,
-    area: Rect,
-    name: &str,
-    confirm: bool,
-) {
+fn draw_confirm_upload(frame: &mut Frame, area: Rect, name: &str, confirm: bool) {
     let message = vec![
         Line::from(format!("Upload '{}' to the device?", name).fg(Color::Yellow)),
         Line::from("This will overwrite any existing file with the same name on the device.".dim()),
@@ -293,9 +322,7 @@ fn draw_project_setup(frame: &mut Frame, area: Rect, selected: usize) {
 /// §15). `message` is always the literal command about to run, never a
 /// paraphrase, so shown as-is.
 fn draw_confirm(frame: &mut Frame, area: Rect, message: &str, confirm: bool) {
-    let lines = vec![
-        Line::from(message.to_string().fg(Color::Yellow)),
-    ];
+    let lines = vec![Line::from(message.to_string().fg(Color::Yellow))];
     draw_confirm_dialog(frame, area, "Confirm", lines, confirm, 70, 7);
 }
 

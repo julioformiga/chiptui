@@ -743,7 +743,8 @@ fn choosing_edit_directly_queues_an_edit_without_opening_the_viewer() {
     app.browser.as_mut().unwrap().cursor_to(1); // diff.py
 
     app.handle(key(KeyCode::Enter));
-    app.handle(key(KeyCode::Up)); app.handle(key(KeyCode::Up)); // wraps to Edit
+    app.handle(key(KeyCode::Up));
+    app.handle(key(KeyCode::Up)); // wraps to Edit
     app.handle(key(KeyCode::Enter));
 
     assert_eq!(app.overlay, None);
@@ -927,7 +928,8 @@ fn choosing_edit_on_a_device_file_downloads_it_to_a_temp_file_then_queues_an_edi
     browser.cursor_to(1); // device_only.py
 
     app.handle(key(KeyCode::Enter));
-    app.handle(key(KeyCode::Up)); app.handle(key(KeyCode::Up)); // wraps to Edit
+    app.handle(key(KeyCode::Up));
+    app.handle(key(KeyCode::Up)); // wraps to Edit
     app.handle(key(KeyCode::Enter));
 
     assert_eq!(app.overlay, None);

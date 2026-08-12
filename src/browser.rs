@@ -753,7 +753,7 @@ impl Browser {
                 let current = *path == self.device_path;
                 match failure {
                     Some(error) => {
-                        self.rescan_if_device_lost(output, &mut update.notices);
+                        self.rescan_if_device_lost(output, update);
                         update
                             .notices
                             .push((Level::Error, format!("{path}: {error}")));
@@ -789,7 +789,7 @@ impl Browser {
 
             Request::Hash { name, local_digest } => match failure {
                 Some(error) => {
-                    self.rescan_if_device_lost(output, &mut update.notices);
+                    self.rescan_if_device_lost(output, update);
                     update
                         .notices
                         .push((Level::Error, format!("{name}: {error}")));
@@ -819,7 +819,7 @@ impl Browser {
 
             Request::ViewDevice(path) => match failure {
                 Some(error) => {
-                    self.rescan_if_device_lost(output, &mut update.notices);
+                    self.rescan_if_device_lost(output, update);
                     update
                         .notices
                         .push((Level::Error, format!("{path}: {error}")));
@@ -851,7 +851,7 @@ impl Browser {
                 };
                 match failure {
                     Some(error) => {
-                        self.rescan_if_device_lost(output, &mut update.notices);
+                        self.rescan_if_device_lost(output, update);
                         update
                             .notices
                             .push((Level::Error, format!("{source}: download failed: {error}")));
@@ -889,7 +889,7 @@ impl Browser {
                 };
                 match failure {
                     Some(error) => {
-                        self.rescan_if_device_lost(output, &mut update.notices);
+                        self.rescan_if_device_lost(output, update);
                         update.notices.push((
                             Level::Error,
                             format!("{}: upload failed: {error}", local_path.display()),
@@ -917,7 +917,7 @@ impl Browser {
             }
             Request::RemoveDevice(path) => match failure {
                 Some(error) => {
-                    self.rescan_if_device_lost(output, &mut update.notices);
+                    self.rescan_if_device_lost(output, update);
                     update
                         .notices
                         .push((Level::Error, format!("{}: remove failed: {error}", path)));
@@ -936,7 +936,7 @@ impl Browser {
 
             Request::Reset => match failure {
                 Some(error) => {
-                    self.rescan_if_device_lost(output, &mut update.notices);
+                    self.rescan_if_device_lost(output, update);
                     update
                         .notices
                         .push((Level::Error, format!("reset failed: {error}")));
@@ -961,14 +961,18 @@ impl Browser {
     /// A `List`/`Hash` failure caused by the device disappearing queues a
     /// fresh `devs` scan, so a stale selection does not keep pointing at a
     /// dead port until the user notices and presses 'd' themselves.
-    fn rescan_if_device_lost(&mut self, output: &Output, notices: &mut Vec<Notice>) {
+    fn rescan_if_device_lost(&mut self, output: &Output, update: &mut BrowserUpdate) {
+        if parse::is_device_unresponsive_error(&output.stderr) {
+            update.prompt_micropython_flash = true;
+            return;
+        }
         if !parse::is_device_lost_error(&output.stderr) {
             return;
         }
         if matches!(self.queue.front(), Some(Request::Devices)) {
             return;
         }
-        notices.push((
+        update.notices.push((
             Level::Warn,
             "device appears to be disconnected — rescanning".to_string(),
         ));
@@ -1000,6 +1004,8 @@ pub struct BrowserUpdate {
     pub device_view: Option<DeviceView>,
     /// Present when a download or upload finished.
     pub transfer: Option<Transfer>,
+    /// True if the device is present but did not respond to the command.
+    pub prompt_micropython_flash: bool,
 }
 
 /// Where a device file bound for `$EDITOR` is downloaded to --- one scratch

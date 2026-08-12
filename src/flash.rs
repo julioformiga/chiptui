@@ -160,6 +160,10 @@ pub enum RunState {
 struct RunningCommand {
     id: ProcessId,
     action: FlashAction,
+    /// True when spawned by [`FlashPanel::query_device_info`]'s courtesy
+    /// refresh rather than a user-initiated [`FlashPanel::run`] --- only the
+    /// latter should ever trigger an unprompted online firmware search.
+    background: bool,
     stdout: String,
     stderr: String,
 }
@@ -245,6 +249,8 @@ pub struct FlashUpdate {
     /// screen. Flashing itself never happens automatically --- it still
     /// needs its own confirmation (`SPEC.md` §15).
     pub offer_flash: bool,
+    /// Device query finished, chip is known, but firmware folder is empty.
+    pub search_online_for_firmware: bool,
 }
 
 impl FlashPanel {
@@ -503,7 +509,7 @@ impl FlashPanel {
         processes: &mut ProcessManager,
         port: Option<&str>,
     ) -> Vec<Notice> {
-        let notices = self.spawn(action, processes, port);
+        let notices = self.spawn(action, processes, port, false);
         if notices.is_empty() {
             self.output.clear();
         }
@@ -522,7 +528,7 @@ impl FlashPanel {
     /// request queue here (see the module doc), and this is a courtesy
     /// refresh, not something worth interrupting real work for.
     pub fn query_device_info(&mut self, processes: &mut ProcessManager, port: Option<&str>) {
-        self.spawn(FlashAction::FlashInfo, processes, port);
+        self.spawn(FlashAction::FlashInfo, processes, port, true);
     }
 
     fn spawn(
@@ -530,6 +536,7 @@ impl FlashPanel {
         action: FlashAction,
         processes: &mut ProcessManager,
         port: Option<&str>,
+        background: bool,
     ) -> Vec<Notice> {
         if self.is_busy() {
             return vec![(Level::Warn, "a command is already running".to_string())];
@@ -549,6 +556,7 @@ impl FlashPanel {
         self.in_flight = Some(RunningCommand {
             id,
             action,
+            background,
             stdout: String::new(),
             stderr: String::new(),
         });
@@ -637,6 +645,13 @@ impl FlashPanel {
                 if running.action == FlashAction::EraseFlash {
                     update.notices.extend(self.discover_firmware());
                     update.offer_flash = true;
+                }
+
+                if running.action == FlashAction::FlashInfo && !running.background {
+                    update.notices.extend(self.discover_firmware());
+                    if self.firmware.is_empty() && self.chip.family().is_some() {
+                        update.search_online_for_firmware = true;
+                    }
                 }
             }
         }
@@ -1123,12 +1138,17 @@ mod tests {
         );
 
         panel.run(FlashAction::FlashInfo, &mut processes, None);
-        settle(&mut panel, &mut processes);
+        let update = settle(&mut panel, &mut processes);
         assert_eq!(panel.details.flash_size.as_deref(), Some("4MB"));
         assert_eq!(
             panel.details.mac.as_deref(),
             Some("24:6f:28:12:34:56"),
             "the earlier chip-id run's MAC must survive a flash-id run that repeats it"
+        );
+        assert!(
+            update.search_online_for_firmware,
+            "a user-initiated flash-info with an empty firmware/ dir and a known \
+             chip should offer an online search"
         );
     }
 
@@ -1145,7 +1165,7 @@ mod tests {
         assert!(panel.is_busy());
         assert_eq!(panel.screen, FlashScreen::Menu, "screen must stay put");
 
-        settle(&mut panel, &mut processes);
+        let update = settle(&mut panel, &mut processes);
 
         assert_eq!(panel.details.family, Some(ChipFamily::Esp32));
         assert_eq!(panel.details.flash_size.as_deref(), Some("4MB"));
@@ -1153,6 +1173,12 @@ mod tests {
             panel.screen,
             FlashScreen::Menu,
             "a silent refresh must not navigate to the output screen"
+        );
+        assert!(
+            !update.search_online_for_firmware,
+            "a courtesy background refresh must never trigger an unprompted \
+             online firmware search, even with an empty firmware/ dir and a \
+             known chip"
         );
     }
 
@@ -1202,7 +1228,10 @@ mod tests {
         while panel.is_busy() && Instant::now() < deadline {
             for event in processes.drain() {
                 let update = panel.on_process(&event);
-                if !update.notices.is_empty() || update.offer_flash {
+                if !update.notices.is_empty()
+                    || update.offer_flash
+                    || update.search_online_for_firmware
+                {
                     last = update;
                 }
             }
