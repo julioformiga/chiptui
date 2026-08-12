@@ -958,9 +958,12 @@ impl Browser {
         }
     }
 
-    /// A `List`/`Hash` failure caused by the device disappearing queues a
-    /// fresh `devs` scan, so a stale selection does not keep pointing at a
-    /// dead port until the user notices and presses 'd' themselves.
+    /// Reacts to a device-presence failure on any request: a `DeviceNotFound`
+    /// queues a fresh `devs` scan so a stale selection does not keep pointing
+    /// at a dead port until the user notices and presses 'd' themselves; a
+    /// `DeviceUnresponsive` (board present but silent --- often a
+    /// non-MicroPython firmware) instead asks the caller to prompt for a
+    /// MicroPython install via `update.prompt_micropython_flash`.
     fn rescan_if_device_lost(&mut self, output: &Output, update: &mut BrowserUpdate) {
         if parse::is_device_unresponsive_error(&output.stderr) {
             update.prompt_micropython_flash = true;

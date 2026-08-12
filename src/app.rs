@@ -1602,9 +1602,10 @@ impl App {
     }
 
     /// The user confirmed erasing flash to install MicroPython
-    /// (`Overlay::ConfirmEraseForMicroPython`). Same port-contention
-    /// reasoning as [`Self::apply_device_picker`]: only safe to query esptool
-    /// right away when the browser is not about to hold the port itself.
+    /// (`Overlay::ConfirmEraseForMicroPython`). Same port-contention concern
+    /// as [`Self::apply_device_picker`]: `esptool` cannot open the serial
+    /// port while `mpremote` still holds it, so this defers the query
+    /// instead of racing it whenever the browser has a request in flight.
     fn confirm_erase_for_micropython(&mut self) {
         self.ensure_flash_panel();
         if let Some(flash) = &mut self.flash {
@@ -1690,6 +1691,49 @@ impl App {
         }
     }
 
+    /// Shared key handling for every Yes/No confirm overlay
+    /// (`Overlay::Confirm`, `ConfirmDownloadOverwrite`, `ConfirmUpload`,
+    /// `ConfirmRestartDevice`, `ConfirmEraseForMicroPython`,
+    /// `ConfirmDelete`): Left/Right/Tab/BackTab/h/l toggle which button is
+    /// highlighted, `y`/`n` jump straight to an answer for muscle memory,
+    /// `Enter` dispatches on the highlighted button, and `Esc`/`q` decline.
+    /// Only `toggle` (rebuilding the overlay --- each variant carries
+    /// different associated data) and what `accept`/`decline` actually do
+    /// differ per variant; `decline` is a no-op for most of them.
+    fn dispatch_confirm(
+        &mut self,
+        code: KeyCode,
+        confirm: bool,
+        toggle: impl FnOnce(&mut Self, bool),
+        accept: impl FnOnce(&mut Self),
+        decline: impl FnOnce(&mut Self),
+    ) {
+        match code {
+            KeyCode::Left
+            | KeyCode::Right
+            | KeyCode::Tab
+            | KeyCode::BackTab
+            | KeyCode::Char('h' | 'l') => toggle(self, !confirm),
+            KeyCode::Char('y') => {
+                self.overlay = None;
+                accept(self);
+            }
+            KeyCode::Char('n' | 'q') | KeyCode::Esc => {
+                self.overlay = None;
+                decline(self);
+            }
+            KeyCode::Enter => {
+                self.overlay = None;
+                if confirm {
+                    accept(self);
+                } else {
+                    decline(self);
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn on_overlay_key(&mut self, key: KeyEvent) {
         let Some(overlay) = self.overlay.clone() else {
             return;
@@ -1744,40 +1788,21 @@ impl App {
                     _ => {}
                 }
             }
-            Overlay::Confirm {
-                ref message,
-                confirm,
-            } => match key.code {
-                KeyCode::Left
-                | KeyCode::Right
-                | KeyCode::Tab
-                | KeyCode::BackTab
-                | KeyCode::Char('h' | 'l') => {
-                    self.overlay = Some(Overlay::Confirm {
-                        message: message.clone(),
-                        confirm: !confirm,
-                    });
-                }
-                KeyCode::Char('y') => {
-                    self.overlay = None;
-                    self.confirm_flash_action();
-                }
-                KeyCode::Char('n' | 'q') | KeyCode::Esc => {
-                    self.overlay = None;
-                    if let Some(flash) = &mut self.flash {
-                        flash.cancel_pending();
-                    }
-                }
-                KeyCode::Enter => {
-                    self.overlay = None;
-                    if confirm {
-                        self.confirm_flash_action();
-                    } else if let Some(flash) = &mut self.flash {
-                        flash.cancel_pending();
-                    }
-                }
-                _ => {}
-            },
+            Overlay::Confirm { message, confirm } => {
+                self.dispatch_confirm(
+                    key.code,
+                    confirm,
+                    move |app, confirm| {
+                        app.overlay = Some(Overlay::Confirm { message, confirm });
+                    },
+                    Self::confirm_flash_action,
+                    |app| {
+                        if let Some(flash) = &mut app.flash {
+                            flash.cancel_pending();
+                        }
+                    },
+                );
+            }
             Overlay::FirmwarePicker { selected } => {
                 let count = self
                     .flash
@@ -1827,67 +1852,35 @@ impl App {
                     _ => {}
                 }
             }
-            Overlay::ConfirmDownloadOverwrite {
-                ref url,
-                ref dest,
-                confirm,
-            } => match key.code {
-                KeyCode::Left
-                | KeyCode::Right
-                | KeyCode::Tab
-                | KeyCode::BackTab
-                | KeyCode::Char('h' | 'l') => {
-                    self.overlay = Some(Overlay::ConfirmDownloadOverwrite {
-                        url: url.clone(),
-                        dest: dest.clone(),
-                        confirm: !confirm,
-                    });
-                }
-                KeyCode::Char('y') => {
-                    self.overlay = None;
-                    let (url, dest) = (url.clone(), dest.clone());
-                    self.start_download(url, dest);
-                }
-                KeyCode::Char('n' | 'q') | KeyCode::Esc => self.overlay = None,
-                KeyCode::Enter => {
-                    self.overlay = None;
-                    if confirm {
-                        let (url, dest) = (url.clone(), dest.clone());
-                        self.start_download(url, dest);
-                    }
-                }
-                _ => {}
-            },
-            Overlay::ConfirmUpload { ref name, confirm } => match key.code {
-                KeyCode::Left
-                | KeyCode::Right
-                | KeyCode::Tab
-                | KeyCode::BackTab
-                | KeyCode::Char('h' | 'l') => {
-                    self.overlay = Some(Overlay::ConfirmUpload {
-                        name: name.clone(),
-                        confirm: !confirm,
-                    });
-                }
-                KeyCode::Char('y') => {
-                    self.overlay = None;
-                    let name = name.clone();
-                    self.dispatch_browser(|browser, processes, port| {
-                        browser.request_upload(&name, processes, port)
-                    });
-                }
-                KeyCode::Char('n' | 'q') | KeyCode::Esc => self.overlay = None,
-                KeyCode::Enter => {
-                    self.overlay = None;
-                    if confirm {
-                        let name = name.clone();
-                        self.dispatch_browser(|browser, processes, port| {
-                            browser.request_upload(&name, processes, port)
+            Overlay::ConfirmDownloadOverwrite { url, dest, confirm } => {
+                let (accept_url, accept_dest) = (url.clone(), dest.clone());
+                self.dispatch_confirm(
+                    key.code,
+                    confirm,
+                    move |app, confirm| {
+                        app.overlay =
+                            Some(Overlay::ConfirmDownloadOverwrite { url, dest, confirm });
+                    },
+                    move |app| app.start_download(accept_url, accept_dest),
+                    |_| {},
+                );
+            }
+            Overlay::ConfirmUpload { name, confirm } => {
+                let accept_name = name.clone();
+                self.dispatch_confirm(
+                    key.code,
+                    confirm,
+                    move |app, confirm| {
+                        app.overlay = Some(Overlay::ConfirmUpload { name, confirm });
+                    },
+                    move |app| {
+                        app.dispatch_browser(|browser, processes, port| {
+                            browser.request_upload(&accept_name, processes, port)
                         });
-                    }
-                }
-                _ => {}
-            },
+                    },
+                    |_| {},
+                );
+            }
             Overlay::FileActions {
                 side,
                 name,
@@ -1954,88 +1947,49 @@ impl App {
             // Default *no*: `confirm` starts `false` (No highlighted), so a
             // reflex `Enter` dismisses instead of restarting, unlike every
             // other confirm overlay here --- a restart interrupts whatever
-            // the board is doing. Left/Right (and h/l) move the highlight
-            // between the two buttons; `y`/`n` still jump straight to an
-            // answer for muscle memory.
-            Overlay::ConfirmRestartDevice { confirm } => match key.code {
-                KeyCode::Left
-                | KeyCode::Right
-                | KeyCode::Tab
-                | KeyCode::BackTab
-                | KeyCode::Char('h' | 'l') => {
-                    self.overlay = Some(Overlay::ConfirmRestartDevice { confirm: !confirm });
-                }
-                KeyCode::Char('y') => {
-                    self.overlay = None;
-                    self.restart_device();
-                }
-                KeyCode::Char('n') => self.overlay = None,
-                KeyCode::Enter => {
-                    self.overlay = None;
-                    if confirm {
-                        self.restart_device();
-                    }
-                }
-                KeyCode::Esc | KeyCode::Char('q') => self.overlay = None,
-                _ => {}
-            },
-            Overlay::ConfirmEraseForMicroPython { confirm } => match key.code {
-                KeyCode::Esc | KeyCode::Char('q') => self.overlay = None,
-                KeyCode::Left
-                | KeyCode::Right
-                | KeyCode::Tab
-                | KeyCode::BackTab
-                | KeyCode::Char('h' | 'l') => {
-                    self.overlay = Some(Overlay::ConfirmEraseForMicroPython { confirm: !confirm });
-                }
-                KeyCode::Char('y') => {
-                    self.overlay = None;
-                    self.confirm_erase_for_micropython();
-                }
-                KeyCode::Char('n') => self.overlay = None,
-                KeyCode::Enter => {
-                    self.overlay = None;
-                    if confirm {
-                        self.confirm_erase_for_micropython();
-                    }
-                }
-                _ => {}
-            },
+            // the board is doing.
+            Overlay::ConfirmRestartDevice { confirm } => {
+                self.dispatch_confirm(
+                    key.code,
+                    confirm,
+                    |app, confirm| {
+                        app.overlay = Some(Overlay::ConfirmRestartDevice { confirm });
+                    },
+                    Self::restart_device,
+                    |_| {},
+                );
+            }
+            Overlay::ConfirmEraseForMicroPython { confirm } => {
+                self.dispatch_confirm(
+                    key.code,
+                    confirm,
+                    |app, confirm| {
+                        app.overlay = Some(Overlay::ConfirmEraseForMicroPython { confirm });
+                    },
+                    Self::confirm_erase_for_micropython,
+                    |_| {},
+                );
+            }
             Overlay::ConfirmDelete {
                 side,
-                ref name,
+                name,
                 confirm,
-            } => match key.code {
-                KeyCode::Left
-                | KeyCode::Right
-                | KeyCode::Tab
-                | KeyCode::BackTab
-                | KeyCode::Char('h' | 'l') => {
-                    self.overlay = Some(Overlay::ConfirmDelete {
-                        side,
-                        name: name.clone(),
-                        confirm: !confirm,
-                    });
-                }
-                KeyCode::Char('y') => {
-                    let side = side;
-                    let name = name.clone();
-                    self.overlay = None;
-                    self.delete_file(side, &name);
-                }
-                KeyCode::Char('n') => self.overlay = None,
-                KeyCode::Enter => {
-                    let side = side;
-                    let name = name.clone();
-                    let do_it = confirm;
-                    self.overlay = None;
-                    if do_it {
-                        self.delete_file(side, &name);
-                    }
-                }
-                KeyCode::Esc | KeyCode::Char('q') => self.overlay = None,
-                _ => {}
-            },
+            } => {
+                let accept_name = name.clone();
+                self.dispatch_confirm(
+                    key.code,
+                    confirm,
+                    move |app, confirm| {
+                        app.overlay = Some(Overlay::ConfirmDelete {
+                            side,
+                            name,
+                            confirm,
+                        });
+                    },
+                    move |app| app.delete_file(side, &accept_name),
+                    |_| {},
+                );
+            }
         }
     }
 
