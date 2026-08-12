@@ -1,0 +1,70 @@
+#!/bin/sh
+# Fake `curl` for ChipTUI tests.
+#
+# Reproduces the invocation shapes in
+# src/backend/micropython/curl/commands.rs: a plain page fetch
+# (`curl -sS -L URL`, body on stdout) and a file download
+# (`curl -sS -L -f -o DEST -w "%{http_code} %{size_download}" URL`, body
+# written to DEST, the `-w` summary on stdout). Matching is done on the last
+# argument (the URL) and, for downloads, the argument following `-o`, since
+# these scripts are invoked without a shell (no argv reassembly to worry
+# about).
+
+dest=""
+prev=""
+url=""
+for arg in "$@"; do
+    if [ "$prev" = "-o" ]; then
+        dest="$arg"
+    fi
+    prev="$arg"
+    url="$arg"
+done
+
+case "$url" in
+    *"mcu=esp32c3"*)
+        # Deliberately empty: exercises the "no boards found" path.
+        exit 0
+        ;;
+    *"mcu=esp32&vendor=Espressif"*)
+        cat <<'EOF'
+<a class="board-card" href="ESP32_GENERIC">
+<div class="board-product">ESP32 / WROOM</div>
+<div class="board-vendor">Espressif</div>
+</a>
+EOF
+        ;;
+    *"mcu=esp32"*)
+        cat <<'EOF'
+<a class="board-card" href="ESP32_GENERIC">
+<div class="board-product">ESP32 / WROOM</div>
+<div class="board-vendor">Espressif</div>
+</a>
+<a class="board-card" href="OTHER_BOARD">
+<div class="board-product">Other Board</div>
+<div class="board-vendor">Acme</div>
+</a>
+EOF
+        ;;
+    *"/download/ESP32_GENERIC/"*)
+        cat <<'EOF'
+<h2>Firmware</h2>
+<a href="/resources/firmware/ESP32_GENERIC-20260406-v1.28.0.bin">v1.28.0 (2026-04-06) .bin</a>
+/ <a href="/resources/firmware/ESP32_GENERIC-20260406-v1.28.0.app-bin">[.app-bin]</a>
+EOF
+        ;;
+    *"/resources/firmware/missing.bin"*)
+        echo "curl: (22) The requested URL returned error: 404" >&2
+        exit 22
+        ;;
+    *"/resources/firmware/"*)
+        if [ -n "$dest" ]; then
+            printf 'firmware-bytes' > "$dest"
+        fi
+        printf '200 14\n'
+        ;;
+    *)
+        echo "curl: unrecognized fake url: $url" >&2
+        exit 1
+        ;;
+esac

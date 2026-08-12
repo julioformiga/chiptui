@@ -58,11 +58,6 @@ pub fn soft_reset(port: Option<&str>) -> Command {
     connect(port).arg("soft-reset")
 }
 
-/// `mpremote [connect PORT] repl` --- starts an interactive REPL/serial monitor.
-pub fn repl(port: Option<&str>) -> Command {
-    connect(port).arg("repl")
-}
-
 /// Common prefix for `fs` sub-commands.
 ///
 /// `--no-verbose` suppresses the `ls :path` header mpremote prints by default,

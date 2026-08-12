@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use crate::backend::{BackendKind, BackendRegistry};
 use crate::error::{Error, Result};
-use crate::project::DirScan;
+use crate::project::{DirScan, config};
 
 /// Minimum confidence for a directory to be considered a project at all.
 pub const MIN_CONFIDENCE: f32 = 0.35;
@@ -91,8 +91,11 @@ impl DetectionOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DetectionSource {
     Automatic,
-    /// Chosen by the user, overriding the heuristics.
+    /// Chosen by the user, overriding the heuristics. Session-only.
     Manual,
+    /// Read from the project-local scaffold file (`chiptui.toml`,
+    /// `SPEC.md` §7) --- a persisted counterpart of [`Self::Manual`].
+    Config,
 }
 
 /// The full result of a detection run, including the evidence behind it.
@@ -209,6 +212,20 @@ pub fn detect_from(registry: &BackendRegistry, start: &Path) -> Result<Detection
         searched.push(dir.to_path_buf());
 
         let scores = score_directory(registry, &scan);
+
+        // The scaffold file wins outright, ahead of the confidence check
+        // below: it is an explicit, previously-recorded user choice
+        // (`SPEC.md` §7), not evidence to be weighed against anything else.
+        if let Some(kind) = scan.text(config::FILE_NAME).and_then(config::parse) {
+            return Ok(Detection {
+                root: dir.to_path_buf(),
+                outcome: DetectionOutcome::Detected(kind),
+                scores,
+                source: DetectionSource::Config,
+                searched,
+            });
+        }
+
         let top = scores.first().map_or(0.0, |score| score.confidence);
 
         if top >= AUTO_CONFIDENCE {
@@ -445,6 +462,77 @@ mod tests {
             [("CMakeLists.txt", "find_package(Zephyr)")],
         );
         assert_eq!(confidence_for(&scan, BackendKind::Zephyr), 1.0);
+    }
+
+    /// A real temp directory, since the scaffold file is read by
+    /// [`detect_from`] through [`DirScan::read`], not [`DirScan::from_parts`].
+    struct TempDir {
+        path: PathBuf,
+    }
+
+    impl TempDir {
+        fn new(tag: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "chiptui-detect-scaffold-{tag}-{}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&path).unwrap();
+            Self { path }
+        }
+
+        fn write(&self, name: &str, contents: &str) {
+            std::fs::write(self.path.join(name), contents).unwrap();
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    #[test]
+    fn a_scaffold_file_wins_even_with_no_other_evidence() {
+        let dir = TempDir::new("alone");
+        dir.write("chiptui.toml", "project_type = \"zephyr\"\n");
+
+        let detection = detect_from(&registry(), &dir.path).unwrap();
+        assert_eq!(
+            detection.outcome,
+            DetectionOutcome::Detected(BackendKind::Zephyr)
+        );
+        assert_eq!(detection.source, DetectionSource::Config);
+    }
+
+    #[test]
+    fn a_scaffold_file_overrides_conflicting_evidence() {
+        let dir = TempDir::new("conflict");
+        dir.write("boot.py", "");
+        dir.write("main.py", "");
+        dir.write("chiptui.toml", "project_type = \"zephyr\"\n");
+
+        let detection = detect_from(&registry(), &dir.path).unwrap();
+        assert_eq!(
+            detection.outcome,
+            DetectionOutcome::Detected(BackendKind::Zephyr),
+            "the scaffold must win even against strong MicroPython signals"
+        );
+        assert_eq!(detection.source, DetectionSource::Config);
+    }
+
+    #[test]
+    fn a_malformed_scaffold_file_falls_back_to_normal_scoring() {
+        let dir = TempDir::new("malformed");
+        dir.write("boot.py", "");
+        dir.write("main.py", "");
+        dir.write("chiptui.toml", "not a valid scaffold file\n");
+
+        let detection = detect_from(&registry(), &dir.path).unwrap();
+        assert_eq!(
+            detection.outcome,
+            DetectionOutcome::Detected(BackendKind::MicroPython)
+        );
+        assert_eq!(detection.source, DetectionSource::Automatic);
     }
 
     #[test]

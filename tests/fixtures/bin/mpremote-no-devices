@@ -1,0 +1,25 @@
+#!/bin/sh
+# Fake `mpremote` for a machine with no MicroPython board attached: `devs`
+# reports only the legacy UARTs every Linux box has, so the parser must land
+# on an empty (not stuck-scanning) result. See tests/fixtures/bin/mpremote for
+# the populated-machine counterpart; a separate binary rather than an
+# environment toggle because tests run in parallel and `PATH`/env mutation
+# would race across them.
+
+args="$*"
+
+case "$args" in
+    "connect "*) args=$(printf '%s' "$args" | cut -d' ' -f3-) ;;
+esac
+
+case "$args" in
+    devs)
+        printf '/dev/ttyS0 None 0000:0000 None None\n'
+        printf '/dev/ttyS1 None 0000:0000 None None\n'
+        ;;
+
+    *)
+        echo "mpremote: no device found" >&2
+        exit 1
+        ;;
+esac

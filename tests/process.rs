@@ -67,6 +67,29 @@ fn streams_both_pipes_and_reports_the_exit_code() {
 }
 
 #[test]
+fn carriage_return_progress_updates_stream_as_separate_lines() {
+    // Regression: esptool's write_flash progress uses `\r` with no `\n`
+    // until the very end. A pump that only splits on `\n` buffers every
+    // update into one giant line, so the UI never sees progress until the
+    // command is already finished. Each `\r`-terminated update must arrive
+    // as its own event, and a trailing `\r\n` must not produce a stray
+    // empty line.
+    let mut processes = ProcessManager::new();
+    let id = processes.spawn(Command::new(fixture("progress")), Duration::from_secs(10));
+    let events = run_to_completion(&mut processes, id);
+
+    assert_eq!(
+        lines(&events, Stream::Stdout),
+        [
+            "Writing at 0x00001000... (10 %)",
+            "Writing at 0x00001000... (50 %)",
+            "Writing at 0x00001000... (100 %)",
+            "Wrote 16384 bytes",
+        ]
+    );
+}
+
+#[test]
 fn the_first_event_is_started_and_the_last_is_finished() {
     // The browser relies on this: seeing `Finished` means all output arrived.
     let mut processes = ProcessManager::new();

@@ -111,10 +111,6 @@ impl Backend for MicroPythonBackend {
     fn required_tools(&self) -> &'static [&'static str] {
         &["mpremote", "esptool"]
     }
-
-    fn monitor_command(&self, port: Option<&str>) -> Option<crate::process::Command> {
-        Some(commands::repl(port))
-    }
 }
 
 #[cfg(test)]

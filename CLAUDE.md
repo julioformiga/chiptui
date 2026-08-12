@@ -6,8 +6,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Phase 1 of `SPEC.md` §17 is done (core, TUI, detection, backend registry, capabilities), plus the
 process manager and the first real device operation: a dual-pane local/device **file browser** for
-MicroPython (list + compare only — no upload, download, delete or mkdir yet). Zephyr backends still
-declare detection and capabilities only. The repo is not under git.
+MicroPython, with list/compare, a per-file action menu (send to device, download, view, edit) and a
+read-only viewer with lightweight syntax highlighting (`src/highlight.rs`) and `$EDITOR` handoff
+(`src/editor.rs`, `src/terminal.rs`'s `TerminalGuard::suspend`). Editing a device file downloads it to
+a scratch temp file (`browser::edit_download_path`), never the project tree — the point is to prove a
+change on the device first; `Download` is the separate, explicit step for landing a confirmed-good
+result in the project. On a clean `$EDITOR` exit it re-uploads to the same device path and then offers
+a `soft-reset`, defaulting to *no* (`Overlay::ConfirmRestartDevice`) — still no delete or mkdir. Zephyr
+backends still declare detection and capabilities only. The repo is not under git.
 
 `lib.rs` + `main.rs`: everything except `terminal` and `ui` is testable without a tty, and `ui` is
 testable through ratatui's `TestBackend` (see `tests/ui_render.rs`, `tests/files_view.rs`).
@@ -112,11 +118,12 @@ These are the decisions that shape most code, and getting them wrong causes wide
 - **One `mpremote` at a time.** `mpremote` opens the serial port exclusively, so `Browser` keeps a
   queue and a single `in_flight` request. Listings are cached per `DevicePath` because each `ls`
   costs seconds over serial; `r` invalidates.
-- **The device is chosen before it is used.** `open_files` only scans; the first `ls` waits for the
-  scan to name a port. Letting `mpremote` auto-connect first would talk to whichever board answers
-  — the guess `SPEC.md` §8 forbids. `mpremote devs` lists *every* comport (32 legacy `/dev/ttyS*`
-  on a typical Linux box), so `parse_devices` keeps only USB devices, matching mpremote's own
-  auto-connect rule.
+- **The device is chosen before it is used.** `open_files`/`App::maybe_scan_devices` (the latter
+  run once at startup, from `main.rs`, so the Dashboard header does not sit on "not scanned" until
+  the user opens the file browser) only scan; the first `ls` waits for the scan to name a port.
+  Letting `mpremote` auto-connect first would talk to whichever board answers — the guess `SPEC.md`
+  §8 forbids. `mpremote devs` lists *every* comport (32 legacy `/dev/ttyS*` on a typical Linux box),
+  so `parse_devices` keeps only USB devices, matching mpremote's own auto-connect rule.
 - **`=` vs `≈` is a real distinction.** `SameSize` means only that lengths match; `Identical`
   requires a sha256 check (`c`), device side via `mpremote fs sha256sum`, local side via `sha2`.
 

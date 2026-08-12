@@ -223,6 +223,33 @@ Zephyr       confidence: 0.03
 If confidence is ambiguous, the UI should ask the user to select the
 backend.
 
+### Empty or unrecognized projects
+
+When detection concludes `Unknown` or `Ambiguous` and no project-local
+configuration file (below) is present, the UI should ask the user which
+project type this directory is, offering the currently supported backends
+(today: MicroPython, Zephyr). This is not the same prompt as the manual
+override below: it fires automatically once, right after detection, instead
+of waiting for the user to invoke an override action.
+
+Once the user answers, the choice is written to the project-local
+configuration file so the directory is recognized automatically on every
+later run, without asking again. Writing this file is the one case where the
+application modifies a project file without a separate, dedicated user
+action beyond answering the prompt itself --- it is still explicit, never
+inferred (§3).
+
+This is how a brand-new, otherwise-empty project directory gets a working
+backend: the user is not required to create marker files like `boot.py` or
+`west.yml` by hand before the TUI becomes useful.
+
+When the answer is MicroPython, the TUI also creates two directories, if they
+do not already exist: `src/` for the sources kept in sync with the device
+(§9's Filesystem browser opens on this directory), and `firmware/` for
+firmware files (§9's Firmware discovery and download saves into it). Neither
+creation requires its own confirmation --- it is part of answering the same
+prompt, same reasoning as the scaffold file above.
+
 ### Manual override
 
 The user must be able to override detection.
@@ -239,7 +266,12 @@ or:
 project_type = "zephyr"
 ```
 
-The exact filename should be chosen during implementation.
+The file is named `chiptui.toml` and lives at the project root. It is the
+persisted counterpart of two things: the automatic prompt above, and a
+manual, always-available override action. The override action itself stays
+session-only unless the user is going through the empty-project prompt ---
+switching backends for a single session should not silently rewrite a file
+the automatic prompt did not ask permission to create.
 
 ## 8. Device Management
 
@@ -310,6 +342,13 @@ the MVP.
 
 ### Filesystem
 
+The local side of the dual-pane browser (§11) opens on the project's `src/`
+directory rather than the project root, so what it shows is exactly what a
+future upload would send to the device --- `firmware/` and any project
+tooling files stay out of the way. A project without a `src/` (one that
+predates it, or was never routed through the empty-project prompt above)
+falls back to the project root.
+
 The UI should present a remote filesystem explorer:
 
 ``` text
@@ -356,6 +395,39 @@ Potential actions:
 -   reset.
 
 `erase_flash` must require explicit confirmation.
+
+### Firmware discovery and download
+
+Flashing should not require the user to already have a firmware file on
+disk. With a connected device and a known chip family (read from an
+`esptool` banner, or picked manually), the TUI should be able to search
+[micropython.org/download](https://micropython.org/download/) for candidate
+firmware builds:
+
+-   the search narrows by MCU (chip family) always;
+-   it narrows by board vendor as well, but only when the connected
+    device's USB vendor/product id identifies an actual board vendor rather
+    than a generic USB-serial bridge chip (e.g. CP210x, FTDI, CH340 are used
+    across many unrelated boards and must not be treated as a vendor
+    filter);
+-   results are presented as a list of candidate boards, and then a list of
+    firmware builds for the chosen board (version, date, variant);
+-   the user may paste a specific download URL directly instead of
+    searching.
+
+The chosen file is downloaded into the project's `firmware/` directory so it
+becomes an ordinary local firmware candidate for the existing flash
+operations above, which also look there.
+Fetching the download page and downloading the firmware file are both
+delegated to an external tool (`curl`) rather than adding a bundled HTTP
+client, consistent with §22's "delegate rather than reimplement." This tool
+is only required when this specific feature is used --- it must not be
+reported as a missing requirement for the MicroPython backend in general.
+
+After a successful download, the user is asked whether to proceed with
+`erase_flash` and writing the new firmware, with the same explicit,
+per-step confirmation as any other destructive flash operation (§15) ---
+never a combined step that skips confirming each one.
 
 ## 10. Zephyr Backend
 
@@ -434,21 +506,50 @@ build/flash failure does not corrupt the terminal state.
 
 The application should use a contextual dashboard.
 
-### Common layout
+### Dashboard layout
+
+The Dashboard view is three rows, stacked top to bottom, below a one-line header and above a
+one-line contextual shortcut footer:
 
 ``` text
-┌─────────────────────────────────────────────────────────────┐
-│ ChipTUI │ Project │ Backend │ Device                   │
-├─────────────────────────────────────────────────────────────┤
-│ PROJECT / DEVICE │ MAIN VIEW              │ LOG / OUTPUT    │
-│                   │                        │                 │
-│                   │                        │                 │
-├───────────────────┴────────────────────────┴────────────────┤
-│ Contextual keyboard shortcuts                                │
-└─────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────┐
+│ ChipTUI │ Project │ Backend │ Device                          │
+├───────────────────────────────┬───────────────────────────────┤
+│ Project                       │ Device                        │
+├───────────────────────────────┴───────────────────────────────┤
+│ Files: Local           │ Files: Device                        │
+│  (or, when the backend declares no Capability::Filesystem,    │
+│   a single full-width placeholder pane)                       │
+├───────────────────────────────────────────────────────────────┤
+│ Log │ Monitor                                                 │
+├───────────────────────────────────────────────────────────────┤
+│ Contextual keyboard shortcuts                                 │
+└───────────────────────────────────────────────────────────────┘
 ```
 
-The exact layout is not fixed.
+- **Row 1** --- Project and Device, side by side.
+- **Row 2** --- the dual-pane local/device file browser, shown whenever the selected backend
+  declares `Capability::Filesystem`; otherwise a single full-width pane stating that file
+  browsing is not implemented for that backend.
+- **Row 3** --- a one-line `Log`/`Monitor` tab strip over the selected tab's body, full width.
+  `Left`/`Right` switch tabs while row 3 has focus. `Log` is the rolling status/notice feed
+  (unchanged). `Monitor` shows whichever live process output the user last asked for: a
+  running or just-finished flash/erase command (`esptool`), or a live device serial session
+  once one exists. The `Monitor` tab itself only appears for a backend with
+  `Capability::Monitor`.
+
+The Flash view (opened with `x`) is a dialog layered over the dimmed dashboard for choosing and
+configuring an action, not a full-screen replacement. Running an action closes the dialog and
+moves focus to row 3's Monitor tab, where its output streams --- there is no separate output
+screen inside the dialog.
+
+> **Status**: row 2's dual-pane file browser is implemented for MicroPython. Zephyr declares no
+> `Capability::Filesystem` (`src/backend/zephyr.rs`), so its row 2 always shows the placeholder ---
+> this layout is spec'd in anticipation of a future Zephyr filesystem integration, not implemented
+> today. The Monitor tab's live device serial session is not implemented yet either --- today it
+> only shows flash/erase output; connecting to the device itself is a follow-up.
+
+The exact proportions (row heights, column widths) are not fixed.
 
 ### Required UX
 
@@ -845,6 +946,18 @@ Mitigation:
 -   MVP limited to MicroPython and Zephyr;
 -   capability-based backend abstraction;
 -   no plugin system until required.
+
+### Firmware site markup changes
+
+The MicroPython download site has no machine-readable API; firmware
+discovery (§9) parses its HTML directly.
+
+Mitigation:
+
+-   isolate all parsing behind one tested module, fixture-driven so the
+    normal test suite never depends on the live site;
+-   treat a parse failure as "found nothing" rather than a crash, and always
+    allow the user to paste a direct download URL instead.
 
 ## 24. References
 

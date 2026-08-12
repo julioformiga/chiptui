@@ -1,20 +1,21 @@
-//! The four panes: project, detection evidence, capabilities and log.
+//! Dashboard panes: project, device, the no-filesystem placeholder, and log.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style, Stylize};
+use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{Paragraph, Wrap};
 
-use crate::app::{App, Focus};
+use crate::app::{App, Focus, LogTab};
 use crate::backend::Capability;
 use crate::logs::Level;
 use crate::project::{DetectionOutcome, DetectionSource};
-use crate::ui::{confidence_bar, confidence_color, pane};
+use crate::ui::{content_style, dashboard_focused, pane_block};
 
 /// Project identity: where it is, what it is, and how sure we are.
 pub fn draw_project(frame: &mut Frame, area: Rect, app: &App) {
-    let block = pane("Project", Focus::Project, app);
+    let focused = dashboard_focused(app, Focus::Project);
+    let block = pane_block("Project", focused);
     let mut lines = Vec::new();
 
     let detection = app.manager.detection();
@@ -40,16 +41,10 @@ pub fn draw_project(frame: &mut Frame, area: Rect, app: &App) {
 
     match detection.map(|d| &d.outcome) {
         Some(DetectionOutcome::Detected(kind)) => {
-            let confidence = detection.and_then(|d| d.confidence()).unwrap_or(0.0);
             lines.push(field_styled(
                 "type",
                 kind.display_name().to_string(),
                 Style::new().fg(Color::Green).bold(),
-            ));
-            lines.push(field_styled(
-                "confidence",
-                confidence_bar(confidence),
-                Style::new().fg(confidence_color(confidence)),
             ));
         }
         Some(DetectionOutcome::Ambiguous(kinds)) => {
@@ -60,13 +55,8 @@ pub fn draw_project(frame: &mut Frame, area: Rect, app: &App) {
                 .join(" / ");
             lines.push(field_styled(
                 "type",
-                format!("ambiguous: {names}"),
+                format!("ambiguous: {names} --- press 'o' to choose"),
                 Style::new().fg(Color::Yellow),
-            ));
-            lines.push(field_styled(
-                "confidence",
-                "press 'o' to choose".to_string(),
-                Style::new().dim(),
             ));
         }
         Some(DetectionOutcome::Unknown) => {
@@ -74,11 +64,6 @@ pub fn draw_project(frame: &mut Frame, area: Rect, app: &App) {
                 "type",
                 "unknown".to_string(),
                 Style::new().fg(Color::Red),
-            ));
-            lines.push(field_styled(
-                "confidence",
-                "no backend reached the threshold".to_string(),
-                Style::new().dim(),
             ));
         }
         None => lines.push(field("type", "not detected yet".to_string())),
@@ -88,6 +73,7 @@ pub fn draw_project(frame: &mut Frame, area: Rect, app: &App) {
         let source = match detection.source {
             DetectionSource::Automatic => "automatic",
             DetectionSource::Manual => "manual override",
+            DetectionSource::Config => "saved in chiptui.toml",
         };
         lines.push(field("source", source.to_string()));
     }
@@ -112,115 +98,113 @@ pub fn draw_project(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(
         Paragraph::new(lines)
             .block(block)
+            .style(content_style(focused))
             .wrap(Wrap { trim: false }),
         area,
     );
 }
 
-/// Why detection concluded what it did (`AGENTS.md` §4: explainable).
+/// What esptool has reported about the connected board so far: identity
+/// (chip/revision/features/crystal/MAC) and flash geometry, accumulated
+/// across whatever `chip-id`/`flash-id`/flash/erase/verify runs have
+/// happened in the Flash view (`crate::flash::FlashPanel::details`). The
+/// backend's own name already lives in the Project pane above, so this space
+/// is spent on the board itself instead of repeating it.
 pub fn draw_detection(frame: &mut Frame, area: Rect, app: &App) {
-    let block = pane("Detection", Focus::Project, app);
-    let Some(detection) = app.manager.detection() else {
+    let focused = dashboard_focused(app, Focus::Project);
+    let block = pane_block("Device", focused);
+    let caps = app.manager.capabilities();
+
+    if !caps.contains(Capability::Flash) && !caps.contains(Capability::EraseFlash) {
         frame.render_widget(
-            Paragraph::new("detection has not run yet".dim()).block(block),
+            Paragraph::new("no device information for this project".dim()).block(block),
+            area,
+        );
+        return;
+    }
+    let Some(flash) = app.flash.as_ref() else {
+        frame.render_widget(
+            Paragraph::new("press 'x' to open Flash and query the device".dim()).block(block),
             area,
         );
         return;
     };
-
-    let mut lines = Vec::new();
-    for score in &detection.scores {
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!("{:<12}", score.kind.display_name()),
-                Style::new().add_modifier(ratatui::style::Modifier::BOLD),
-            ),
-            Span::styled(
-                confidence_bar(score.confidence),
-                Style::new().fg(confidence_color(score.confidence)),
-            ),
-        ]));
-
-        if score.signals.is_empty() {
-            lines.push(Line::from("    no signals".dim()));
-            continue;
-        }
-        for signal in &score.signals {
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!("    +{:.2}  ", signal.weight),
-                    Style::new().fg(Color::Cyan),
-                ),
-                Span::styled(signal.detail, Style::new().dim()),
-            ]));
-        }
+    let details = &flash.details;
+    if details.is_empty() {
+        frame.render_widget(
+            Paragraph::new(
+                "no device data yet --- run chip or flash information from the Flash menu".dim(),
+            )
+            .block(block),
+            area,
+        );
+        return;
     }
 
-    if detection.scores.is_empty() {
-        lines.push(Line::from(
+    let mut lines = Vec::new();
+    if let Some(family) = details.family {
+        let mut spans = vec![
+            label_span("chip"),
+            Span::styled(
+                family.label().to_string(),
+                Style::new().fg(Color::Green).bold(),
+            ),
+        ];
+        if let Some(revision) = &details.revision {
+            spans.push(Span::raw(format!(" (revision {revision})")));
+        }
+        lines.push(Line::from(spans));
+    }
+    if let Some(features) = &details.features {
+        lines.push(field("features", features.clone()));
+    }
+    if let Some(crystal) = &details.crystal_mhz {
+        lines.push(field("crystal", crystal.clone()));
+    }
+    if let Some(mac) = &details.mac {
+        lines.push(field("MAC", mac.clone()));
+    }
+    if details.flash_manufacturer.is_some() || details.flash_device.is_some() {
+        lines.push(field(
+            "flash id",
             format!(
-                "searched {} director{}",
-                detection.searched.len(),
-                plural(detection.searched.len())
-            )
-            .dim(),
+                "{} / {}",
+                details.flash_manufacturer.as_deref().unwrap_or("?"),
+                details.flash_device.as_deref().unwrap_or("?"),
+            ),
+        ));
+    }
+    if let Some(size) = &details.flash_size {
+        lines.push(field_styled(
+            "memory",
+            size.clone(),
+            Style::new().fg(Color::Cyan),
         ));
     }
 
     frame.render_widget(
         Paragraph::new(lines)
             .block(block)
+            .style(content_style(focused))
             .wrap(Wrap { trim: false }),
         area,
     );
 }
 
-/// What the selected backend can do --- the UI's only source of actions.
-pub fn draw_capabilities(frame: &mut Frame, area: Rect, app: &App) {
-    let block = pane("Capabilities", Focus::Capabilities, app);
-    let supported = app.manager.capabilities();
-
-    let items: Vec<ListItem> = Capability::ALL
-        .iter()
-        .map(|cap| {
-            let available = supported.contains(*cap);
-            let (mark, style) = if available {
-                ("●", Style::new().fg(Color::Green))
-            } else {
-                ("○", Style::new().dim())
-            };
-
-            let mut spans = vec![
-                Span::styled(format!("{mark} "), style),
-                Span::styled(
-                    format!("{:<16}", cap.label()),
-                    if available {
-                        Style::new()
-                    } else {
-                        Style::new().dim()
-                    },
-                ),
-            ];
-            // Destructive operations are flagged wherever they appear (SPEC.md §15).
-            if cap.is_destructive() {
-                let warn = if available {
-                    Style::new().fg(Color::Yellow)
-                } else {
-                    Style::new().dim()
-                };
-                spans.push(Span::styled("confirm", warn));
-            }
-            ListItem::new(Line::from(spans))
-        })
-        .collect();
-
-    let mut state = ListState::default().with_selected(Some(app.capability_cursor));
-    let list = List::new(items)
-        .block(block)
-        .highlight_style(Style::new().add_modifier(ratatui::style::Modifier::REVERSED))
-        .highlight_symbol("");
-
-    frame.render_stateful_widget(list, area, &mut state);
+/// Row 2 placeholder when the selected backend declares no
+/// [`Capability::Filesystem`] (today: Zephyr) --- `SPEC.md` §11 spec's a
+/// dual-pane file browser for this row, but only a backend with a device
+/// filesystem can back it.
+pub fn draw_no_filesystem(frame: &mut Frame, area: Rect, app: &App) {
+    let block = pane_block("Files", false);
+    let backend = app
+        .manager
+        .selected_kind()
+        .map_or("this backend".to_string(), |kind| kind.to_string());
+    frame.render_widget(
+        Paragraph::new(format!("{backend}: file browsing not implemented yet").dim()).block(block),
+        area,
+    );
 }
 
 /// Rolling status/log output.
@@ -231,7 +215,8 @@ pub fn draw_logs(frame: &mut Frame, area: Rect, app: &mut App) {
     } else {
         format!("Log ({}) ↑{}", app.logs.len(), app.logs.scroll())
     };
-    let block = pane(&title, Focus::Logs, app);
+    let focused = dashboard_focused(app, Focus::Logs);
+    let block = pane_block(&title, focused);
 
     // Publish the usable height so page-scrolling matches the rendered view.
     let viewport = block.inner(area).height as usize;
@@ -258,7 +243,37 @@ pub fn draw_logs(frame: &mut Frame, area: Rect, app: &mut App) {
         })
         .collect();
 
-    frame.render_widget(Paragraph::new(lines).block(block), area);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .style(content_style(focused)),
+        area,
+    );
+}
+
+/// Row 3's tab strip: `Log` / `Monitor`. `Monitor` is omitted entirely when
+/// the backend has no `Capability::Monitor` --- capability-gated, never
+/// backend-kind-gated (`AGENTS.md` §3).
+pub fn draw_log_tabs(frame: &mut Frame, area: Rect, app: &App) {
+    let focused = dashboard_focused(app, Focus::Logs);
+    let has_monitor = app.manager.capabilities().contains(Capability::Monitor);
+
+    let mut spans = vec![tab_span("Log", app.log_tab == LogTab::Log, focused)];
+    if has_monitor {
+        spans.push(Span::raw(" "));
+        spans.push(tab_span("Monitor", app.log_tab == LogTab::Monitor, focused));
+    }
+
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+fn tab_span(label: &str, active: bool, focused: bool) -> Span<'static> {
+    let style = match (active, focused) {
+        (true, true) => Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        (true, false) => Style::new().dim().add_modifier(Modifier::BOLD),
+        (false, _) => Style::new().dim(),
+    };
+    Span::styled(format!(" {label} "), style)
 }
 
 /// Width of the field-label column, including its colon and trailing space.
@@ -293,10 +308,6 @@ fn field(label: &str, value: String) -> Line<'static> {
 
 fn field_styled(label: &str, value: String, style: Style) -> Line<'static> {
     Line::from(vec![label_span(label), Span::styled(value, style)])
-}
-
-const fn plural(count: usize) -> &'static str {
-    if count == 1 { "y" } else { "ies" }
 }
 
 #[cfg(test)]

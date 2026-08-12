@@ -6,16 +6,19 @@
 //! for terminal-native output rather than an imposed theme.
 
 mod files;
+mod flash;
+mod monitor;
 mod overlay;
 mod panels;
 
 use ratatui::Frame;
-use ratatui::layout::{Alignment, Constraint, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Flex, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Wrap};
 
-use crate::app::{App, Focus, View};
+use crate::app::{App, Focus, LogTab, View};
+use crate::backend::Capability;
 
 /// Below this the panes cannot be rendered legibly.
 const MIN_WIDTH: u16 = 60;
@@ -38,28 +41,73 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     draw_header(frame, header, app);
 
-    match app.view {
-        View::Dashboard => draw_dashboard(frame, body, app),
-        // The browser needs the full width; the log stays one key away.
-        View::Files => files::draw(frame, body, app),
+    // The flash view is a dialog layered over the dashboard, never a
+    // full-screen replacement, so the project/device/files panes stay
+    // visible (and, via `pane`'s `View::Dashboard` check below, visibly
+    // dimmed) while esptool commands run.
+    draw_dashboard(frame, body, app);
+    if app.view == View::Flash {
+        draw_flash_dialog(frame, body, app);
     }
 
     draw_footer(frame, footer, app);
     overlay::draw(frame, area, app);
 }
 
+/// The flash action menu/options, sized to its content (like
+/// `overlay::draw_confirm`/`draw_device_picker`) and centered over `body`
+/// with a `Clear` behind it so the dashboard shows through around the edges
+/// --- a real dialog, not a near-fullscreen replacement. Running an action
+/// closes this dialog (`App::show_flash_in_monitor`), so it never needs to
+/// size itself for streamed output.
+fn draw_flash_dialog(frame: &mut Frame, body: Rect, app: &App) {
+    let Some(flash) = &app.flash else { return };
+    let (width, height) = flash::dialog_size(flash);
+    let popup = centered(body, width, height);
+    frame.render_widget(Clear, popup);
+    flash::draw(frame, popup, app);
+}
+
+/// Centers a `width`×`height` box inside `area`, shrinking to fit. Shared
+/// with `overlay::draw` --- every modal in this app sizes itself off its own
+/// content rather than a fraction of the screen.
+fn centered(area: Rect, width: u16, height: u16) -> Rect {
+    let [row] = Layout::vertical([Constraint::Length(height.min(area.height))])
+        .flex(Flex::Center)
+        .areas(area);
+    let [popup] = Layout::horizontal([Constraint::Length(width.min(area.width))])
+        .flex(Flex::Center)
+        .areas(row);
+    popup
+}
+
+/// Row 1: Project | Device, split evenly. Row 2: the dual-pane file browser
+/// when the backend has `Capability::Filesystem`, else a full-width
+/// placeholder. Row 3: a one-line Log/Monitor tab strip over the tab's body,
+/// full width (`SPEC.md` §11).
 fn draw_dashboard(frame: &mut Frame, body: Rect, app: &mut App) {
-    let [left, right] =
-        Layout::horizontal([Constraint::Percentage(42), Constraint::Percentage(58)]).areas(body);
-    let [project, detection] =
-        Layout::vertical([Constraint::Length(9), Constraint::Min(3)]).areas(left);
-    let [capabilities, logs] =
-        Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(right);
+    let [row1, rest] = Layout::vertical([Constraint::Length(9), Constraint::Min(0)]).areas(body);
+    let [row2, row3] =
+        Layout::vertical([Constraint::Percentage(60), Constraint::Percentage(40)]).areas(rest);
+    let [project, device] =
+        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(row1);
 
     panels::draw_project(frame, project, app);
-    panels::draw_detection(frame, detection, app);
-    panels::draw_capabilities(frame, capabilities, app);
-    panels::draw_logs(frame, logs, app);
+    panels::draw_detection(frame, device, app);
+
+    if app.manager.capabilities().contains(Capability::Filesystem) {
+        files::draw(frame, row2, app);
+    } else {
+        panels::draw_no_filesystem(frame, row2, app);
+    }
+
+    let [tabs, tab_body] =
+        Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(row3);
+    panels::draw_log_tabs(frame, tabs, app);
+    match app.log_tab {
+        LogTab::Log => panels::draw_logs(frame, tab_body, app),
+        LogTab::Monitor => monitor::draw(frame, tab_body, app),
+    }
 }
 
 fn draw_too_small(frame: &mut Frame, area: Rect) {
@@ -118,9 +166,26 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-/// A bordered block for a dashboard pane.
-fn pane(title: &str, focus: Focus, app: &App) -> Block<'static> {
-    pane_block(title, app.focus == focus && app.overlay.is_none())
+/// Whether `focus` currently has the user's attention on the dashboard ---
+/// false whenever the flash dialog or another overlay has it instead, in
+/// which case both a pane's border (`pane_block`) and its content
+/// (`content_style`) should read as dimmed.
+fn dashboard_focused(app: &App, focus: Focus) -> bool {
+    app.view == View::Dashboard && app.focus == focus && app.overlay.is_none()
+}
+
+/// Style for a dashboard pane's content: unchanged when focused, dimmed
+/// otherwise. Ratatui has no dedicated "darken the background" primitive ---
+/// a terminal buffer has no compositing/alpha to blend against, so this is
+/// the closest equivalent: `Modifier::DIM` set at the widget level, which
+/// cascades onto every already-colored `Span` drawn inside instead of
+/// requiring each one to know about focus.
+fn content_style(focused: bool) -> Style {
+    if focused {
+        Style::default()
+    } else {
+        Style::new().add_modifier(Modifier::DIM)
+    }
 }
 
 /// A bordered block that shows whether it holds focus.
@@ -140,45 +205,4 @@ fn pane_block(title: &str, focused: bool) -> Block<'static> {
         .border_type(BorderType::Rounded)
         .border_style(border)
         .title(Span::styled(format!(" {title} "), title_style))
-}
-
-/// A ten-cell confidence meter, e.g. `████████░░ 0.83`.
-fn confidence_bar(confidence: f32) -> String {
-    const CELLS: usize = 10;
-    let filled = (confidence * CELLS as f32).round().clamp(0.0, CELLS as f32) as usize;
-    format!(
-        "{}{} {confidence:.2}",
-        "█".repeat(filled),
-        "░".repeat(CELLS - filled)
-    )
-}
-
-/// Color scale for a confidence value, matching the detection thresholds.
-fn confidence_color(confidence: f32) -> Color {
-    if confidence >= crate::project::AUTO_CONFIDENCE {
-        Color::Green
-    } else if confidence >= crate::project::MIN_CONFIDENCE {
-        Color::Yellow
-    } else {
-        Color::DarkGray
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn confidence_bar_spans_the_full_range() {
-        assert_eq!(confidence_bar(0.0), "░░░░░░░░░░ 0.00");
-        assert_eq!(confidence_bar(1.0), "██████████ 1.00");
-        assert!(confidence_bar(0.5).starts_with("█████░"));
-    }
-
-    #[test]
-    fn confidence_color_follows_the_detection_thresholds() {
-        assert_eq!(confidence_color(0.95), Color::Green);
-        assert_eq!(confidence_color(0.45), Color::Yellow);
-        assert_eq!(confidence_color(0.05), Color::DarkGray);
-    }
 }

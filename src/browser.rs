@@ -70,6 +70,65 @@ enum Request {
         /// The locally computed digest to compare against.
         local_digest: String,
     },
+    /// `cat`, for the viewer's "View" action on a device file. Nothing is
+    /// written to disk --- [`Download`](Request::Download) is the only
+    /// request that touches the local filesystem.
+    ViewDevice(DevicePath),
+    /// `cp :remote local`, for "Download" (into the project tree,
+    /// `then_edit: false`) and "Edit" (into a scratch temp file,
+    /// `then_edit: true`) on a device file --- see
+    /// [`Browser::request_download`]/[`Browser::request_edit_download`].
+    Download {
+        source: DevicePath,
+        local_path: PathBuf,
+        then_edit: bool,
+    },
+    /// `cp local :remote`, for "Send to device" on a local file, and for the
+    /// re-upload after editing a device file (`after_edit`).
+    Upload {
+        local_path: PathBuf,
+        target: DevicePath,
+        after_edit: bool,
+    },
+    /// `soft-reset`, offered after a post-edit re-upload lands.
+    Reset,
+}
+
+/// A device `cat` finished --- the viewer's content, or the reason it could
+/// not be read (already logged into `notices` too, so the viewer's error
+/// state and the log agree).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceView {
+    pub path: DevicePath,
+    pub content: Result<String, String>,
+}
+
+/// What a completed transfer was for, carrying what its caller needs to
+/// react: [`App`](crate::app::App) opens `$EDITOR` on a successful
+/// download-to-edit, and otherwise a transfer is fire-and-forget (its
+/// outcome is already in `notices`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TransferKind {
+    Download {
+        local_path: PathBuf,
+        then_edit: bool,
+        /// Where it came from --- carried through so a successful
+        /// `then_edit` download can be re-uploaded to the same place once
+        /// `$EDITOR` closes.
+        source: DevicePath,
+    },
+    Upload {
+        /// Set for the re-upload that follows editing a device file, so a
+        /// successful landing can offer a restart; an ordinary "Send to
+        /// device" is fire-and-forget, its outcome already in `notices`.
+        after_edit: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Transfer {
+    pub kind: TransferKind,
+    pub ok: bool,
 }
 
 /// stdout/stderr collected for one in-flight process.
@@ -247,6 +306,29 @@ impl Browser {
         }
     }
 
+    /// Name of the text file under the cursor in the focused pane, if `enter`
+    /// should open the files-pane action menu for it.
+    ///
+    /// `None` for a directory (`enter` should descend into it instead), an
+    /// empty pane, or a file [`files::is_text_like`] excludes --- binary,
+    /// font, image and similar files never get the menu, on either side.
+    pub fn selected_actionable_name(&self) -> Option<String> {
+        let is_dir = self.selected_is_dir(self.focus);
+        let name = self.selected_name(self.focus)?;
+        (!is_dir && files::is_text_like(&name)).then_some(name)
+    }
+
+    /// Size of `name` in the current device directory, from the cached
+    /// listing --- lets the viewer refuse an oversized device file before
+    /// spending a round trip fetching it (mirrors [`files::read_text_file`]'s
+    /// size check on the local side).
+    pub fn device_entry_size(&self, name: &str) -> Option<u64> {
+        self.visible_device()
+            .into_iter()
+            .find(|entry| entry.name == name)
+            .map(|entry| entry.size)
+    }
+
     fn selected_is_dir(&self, side: Side) -> bool {
         match side {
             Side::Local => self
@@ -387,6 +469,137 @@ impl Browser {
         notices
     }
 
+    /// Queues a `cat` of `name`, in the current device directory, for the
+    /// viewer's "View" action. Content arrives later as
+    /// [`BrowserUpdate::device_view`].
+    pub fn request_device_view(
+        &mut self,
+        name: &str,
+        processes: &mut ProcessManager,
+        port: Option<&str>,
+    ) -> Vec<Notice> {
+        let path = self.device_path.join(name);
+        let mut notices = vec![(Level::Info, format!("reading {path}"))];
+        notices.extend(self.enqueue(Request::ViewDevice(path), processes, port));
+        notices
+    }
+
+    /// Queues a download of `name`, in the current device directory, to the
+    /// local pane's current directory --- "Download" on a device file, into
+    /// the project tree.
+    pub fn request_download(
+        &mut self,
+        name: &str,
+        processes: &mut ProcessManager,
+        port: Option<&str>,
+    ) -> Vec<Notice> {
+        let source = self.device_path.join(name);
+        let local_path = self.local_path.join(name);
+        let mut notices = vec![(Level::Info, format!("downloading {source}"))];
+        notices.extend(self.enqueue(
+            Request::Download {
+                source,
+                local_path,
+                then_edit: false,
+            },
+            processes,
+            port,
+        ));
+        notices
+    }
+
+    /// Queues a download of `name`, in the current device directory, to a
+    /// scratch temp file for `$EDITOR` --- "Edit" on a device file. Never
+    /// the project tree: the point is to try a change on the device first;
+    /// [`Self::request_download`] is the separate, explicit step for
+    /// bringing a confirmed-good result into the project once it works
+    /// (`then_edit: true` on the resulting [`BrowserUpdate::transfer`] is
+    /// what tells the caller to open `$EDITOR` once it lands).
+    pub fn request_edit_download(
+        &mut self,
+        name: &str,
+        processes: &mut ProcessManager,
+        port: Option<&str>,
+    ) -> Vec<Notice> {
+        let source = self.device_path.join(name);
+        let local_path = edit_download_path(name);
+        if let Some(parent) = local_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let mut notices = vec![(Level::Info, format!("downloading {source} to try it out"))];
+        notices.extend(self.enqueue(
+            Request::Download {
+                source,
+                local_path,
+                then_edit: true,
+            },
+            processes,
+            port,
+        ));
+        notices
+    }
+
+    /// Queues an upload of `name`, in the current local directory, to the
+    /// device's current directory --- "Send to device" on a local file.
+    pub fn request_upload(
+        &mut self,
+        name: &str,
+        processes: &mut ProcessManager,
+        port: Option<&str>,
+    ) -> Vec<Notice> {
+        let local_path = self.local_path.join(name);
+        let target = self.device_path.join(name);
+        let mut notices = vec![(Level::Info, format!("sending {name} to {target}"))];
+        notices.extend(self.enqueue(
+            Request::Upload {
+                local_path,
+                target,
+                after_edit: false,
+            },
+            processes,
+            port,
+        ));
+        notices
+    }
+
+    /// Re-uploads `local_path` to `target` once `$EDITOR` closes on a device
+    /// file. Unlike [`Self::request_upload`], both paths are exact rather
+    /// than resolved from the current directory --- the browser may have
+    /// navigated elsewhere while the terminal was suspended running
+    /// `$EDITOR` --- and `after_edit: true` on the resulting
+    /// [`BrowserUpdate::transfer`] is what tells the caller to offer a
+    /// restart once it lands.
+    pub fn request_reupload_after_edit(
+        &mut self,
+        local_path: PathBuf,
+        target: DevicePath,
+        processes: &mut ProcessManager,
+        port: Option<&str>,
+    ) -> Vec<Notice> {
+        let mut notices = vec![(Level::Info, format!("sending edited file to {target}"))];
+        notices.extend(self.enqueue(
+            Request::Upload {
+                local_path,
+                target,
+                after_edit: true,
+            },
+            processes,
+            port,
+        ));
+        notices
+    }
+
+    /// Queues a `soft-reset`, offered after a post-edit re-upload lands.
+    pub fn request_reset(
+        &mut self,
+        processes: &mut ProcessManager,
+        port: Option<&str>,
+    ) -> Vec<Notice> {
+        let mut notices = vec![(Level::Info, "restarting device".to_string())];
+        notices.extend(self.enqueue(Request::Reset, processes, port));
+        notices
+    }
+
     /// Queues a request, starting it if the device is free.
     fn enqueue(
         &mut self,
@@ -411,6 +624,14 @@ impl Browser {
             Request::Devices => commands::list_devices(),
             Request::List(path) => commands::list_dir(port, path),
             Request::Hash { name, .. } => commands::sha256(port, &self.device_path.join(name)),
+            Request::ViewDevice(path) => commands::cat(port, path),
+            Request::Download {
+                source, local_path, ..
+            } => commands::download(port, source, local_path),
+            Request::Upload {
+                local_path, target, ..
+            } => commands::upload(port, local_path, target),
+            Request::Reset => commands::soft_reset(port),
         };
         let command = match &self.tool_path {
             Some(program) => command.with_program(program),
@@ -437,6 +658,7 @@ impl Browser {
 
         match event {
             ProcessEvent::Started { .. } => return update,
+            ProcessEvent::Output { .. } => {}
             ProcessEvent::Line { id, stream, text } => {
                 if let Some(output) = self.output.get_mut(id) {
                     let buffer = match stream {
@@ -515,6 +737,7 @@ impl Browser {
                 let current = *path == self.device_path;
                 match failure {
                     Some(error) => {
+                        self.rescan_if_device_lost(output, &mut update.notices);
                         update
                             .notices
                             .push((Level::Error, format!("{path}: {error}")));
@@ -549,9 +772,12 @@ impl Browser {
             }
 
             Request::Hash { name, local_digest } => match failure {
-                Some(error) => update
-                    .notices
-                    .push((Level::Error, format!("{name}: {error}"))),
+                Some(error) => {
+                    self.rescan_if_device_lost(output, &mut update.notices);
+                    update
+                        .notices
+                        .push((Level::Error, format!("{name}: {error}")));
+                }
                 None => match parse::parse_sha256(&output.stdout) {
                     Some(remote_digest) => {
                         let identical = remote_digest == *local_digest;
@@ -574,7 +800,145 @@ impl Browser {
                     )),
                 },
             },
+
+            Request::ViewDevice(path) => match failure {
+                Some(error) => {
+                    self.rescan_if_device_lost(output, &mut update.notices);
+                    update
+                        .notices
+                        .push((Level::Error, format!("{path}: {error}")));
+                    update.device_view = Some(DeviceView {
+                        path: path.clone(),
+                        content: Err(error),
+                    });
+                }
+                None => {
+                    update
+                        .notices
+                        .push((Level::Success, format!("{path}: read for preview")));
+                    update.device_view = Some(DeviceView {
+                        path: path.clone(),
+                        content: Ok(output.stdout.clone()),
+                    });
+                }
+            },
+
+            Request::Download {
+                source,
+                local_path,
+                then_edit,
+            } => {
+                let kind = TransferKind::Download {
+                    local_path: local_path.clone(),
+                    then_edit: *then_edit,
+                    source: source.clone(),
+                };
+                match failure {
+                    Some(error) => {
+                        self.rescan_if_device_lost(output, &mut update.notices);
+                        update
+                            .notices
+                            .push((Level::Error, format!("{source}: download failed: {error}")));
+                        update.transfer = Some(Transfer { kind, ok: false });
+                    }
+                    None => {
+                        // An edit download lands in a scratch temp
+                        // directory (`edit_download_path`) --- naming it in
+                        // the log would just be noise the user did not ask
+                        // for; an ordinary download names exactly where it
+                        // went, into the project tree.
+                        let message = if *then_edit {
+                            format!("{source} ready to try out")
+                        } else {
+                            format!("{source} downloaded to {}", local_path.display())
+                        };
+                        update.notices.push((Level::Success, message));
+                        // Cheap and always safe, unlike a device listing: just
+                        // re-reads whatever directory the local pane currently
+                        // shows, wherever that is by now. A no-op for an edit
+                        // download, which never touches it.
+                        self.reload_local();
+                        update.transfer = Some(Transfer { kind, ok: true });
+                    }
+                }
+            }
+
+            Request::Upload {
+                local_path,
+                target,
+                after_edit,
+            } => {
+                let kind = TransferKind::Upload {
+                    after_edit: *after_edit,
+                };
+                match failure {
+                    Some(error) => {
+                        self.rescan_if_device_lost(output, &mut update.notices);
+                        update.notices.push((
+                            Level::Error,
+                            format!("{}: upload failed: {error}", local_path.display()),
+                        ));
+                        update.transfer = Some(Transfer { kind, ok: false });
+                    }
+                    None => {
+                        update.notices.push((
+                            Level::Success,
+                            format!("{} uploaded to {target}", local_path.display()),
+                        ));
+                        // The directory just written into may be the one on
+                        // screen; a stale cache entry would hide the new file
+                        // until the user manually reloads.
+                        if let Some(dir) = target.parent() {
+                            self.cache.remove(&dir);
+                            if dir == self.device_path {
+                                self.device_state = PaneState::Loading;
+                                self.queue.push_front(Request::List(dir));
+                            }
+                        }
+                        update.transfer = Some(Transfer { kind, ok: true });
+                    }
+                }
+            }
+
+            Request::Reset => match failure {
+                Some(error) => {
+                    self.rescan_if_device_lost(output, &mut update.notices);
+                    update
+                        .notices
+                        .push((Level::Error, format!("reset failed: {error}")));
+                }
+                None => {
+                    update
+                        .notices
+                        .push((Level::Success, "device reset --- reloading".to_string()));
+                    // A reboot invalidates whatever was cached; the pane the
+                    // user is looking at is worth a fresh look right away
+                    // rather than waiting for them to notice and press 'r'.
+                    self.cache.clear();
+                    self.verdicts.clear();
+                    self.device_state = PaneState::Loading;
+                    self.queue
+                        .push_front(Request::List(self.device_path.clone()));
+                }
+            },
         }
+    }
+
+    /// A `List`/`Hash` failure caused by the device disappearing queues a
+    /// fresh `devs` scan, so a stale selection does not keep pointing at a
+    /// dead port until the user notices and presses 'd' themselves.
+    fn rescan_if_device_lost(&mut self, output: &Output, notices: &mut Vec<Notice>) {
+        if !parse::is_device_lost_error(&output.stderr) {
+            return;
+        }
+        if matches!(self.queue.front(), Some(Request::Devices)) {
+            return;
+        }
+        notices.push((
+            Level::Warn,
+            "device appears to be disconnected — rescanning".to_string(),
+        ));
+        self.queue.push_front(Request::Devices);
     }
 
     /// Whether a device command is currently running.
@@ -598,6 +962,21 @@ pub struct BrowserUpdate {
     pub notices: Vec<Notice>,
     /// Present when a device scan finished; the caller owns device state.
     pub device_scan: Option<Result<Vec<crate::device::DeviceInfo>, String>>,
+    /// Present when a device `cat` (the viewer's "View" action) finished.
+    pub device_view: Option<DeviceView>,
+    /// Present when a download or upload finished.
+    pub transfer: Option<Transfer>,
+}
+
+/// Where a device file bound for `$EDITOR` is downloaded to --- one scratch
+/// directory per process, never the project tree. Editing a device file is
+/// meant to prove a change on the device first; landing it in the project
+/// would make that indistinguishable from an ordinary local edit and defeat
+/// the point (`Browser::request_edit_download`'s doc comment).
+fn edit_download_path(name: &str) -> PathBuf {
+    std::env::temp_dir()
+        .join(format!("chiptui-edit-{}", std::process::id()))
+        .join(name)
 }
 
 /// Hashes a local file with the same algorithm the device uses.
@@ -698,6 +1077,60 @@ mod tests {
         browser.cursor_to(1); // main.py
         browser.enter(&mut processes, None);
         assert_eq!(browser.local_path, fixture.root);
+    }
+
+    #[test]
+    fn selected_actionable_name_is_none_for_a_directory() {
+        let fixture = Fixture::new("viewer-dir");
+        let mut browser = Browser::new(&fixture.root);
+
+        browser.cursor_to(0); // lib/
+        assert_eq!(browser.selected_actionable_name(), None);
+    }
+
+    #[test]
+    fn selected_actionable_name_resolves_a_text_file() {
+        let fixture = Fixture::new("viewer-file");
+        let mut browser = Browser::new(&fixture.root);
+
+        browser.cursor_to(1); // main.py
+        assert_eq!(
+            browser.selected_actionable_name().as_deref(),
+            Some("main.py")
+        );
+    }
+
+    #[test]
+    fn selected_actionable_name_excludes_binary_extensions() {
+        let fixture = Fixture::new("viewer-binary");
+        std::fs::write(fixture.root.join("firmware.bin"), [0u8, 1, 2]).unwrap();
+        let mut browser = Browser::new(&fixture.root);
+
+        // Sorted order: lib/, firmware.bin, main.py.
+        browser.cursor_to(1);
+        assert_eq!(
+            browser.selected_name(Side::Local).as_deref(),
+            Some("firmware.bin")
+        );
+        assert_eq!(
+            browser.selected_actionable_name(),
+            None,
+            "binary files never get the action menu"
+        );
+    }
+
+    #[test]
+    fn selected_actionable_name_reads_the_focused_pane() {
+        let fixture = Fixture::new("viewer-focus");
+        let mut browser = Browser::new(&fixture.root);
+        browser.cursor_to(1); // main.py, on the local side
+
+        browser.focus = Side::Device;
+        assert_eq!(
+            browser.selected_actionable_name(),
+            None,
+            "the device pane is empty until scanned, regardless of the local cursor"
+        );
     }
 
     #[test]

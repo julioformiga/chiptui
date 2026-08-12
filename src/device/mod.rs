@@ -5,8 +5,32 @@
 //! `mpremote`, not here (`AGENTS.md` §2).
 
 mod path;
+mod vendor;
 
 pub use path::DevicePath;
+
+/// Counts the number of connected serial ports matching common patterns.
+/// Used for lightweight hotplug detection on supported platforms.
+pub fn count_serial_ports() -> Option<usize> {
+    #[cfg(unix)]
+    {
+        let mut count = 0;
+        if let Ok(entries) = std::fs::read_dir("/dev") {
+            for entry in entries.flatten() {
+                if let Some(name) = entry.file_name().to_str()
+                    && (name.starts_with("ttyUSB") || name.starts_with("ttyACM") || name.starts_with("cu.usb") || name.starts_with("tty.usb"))
+                {
+                    count += 1;
+                }
+            }
+        }
+        Some(count)
+    }
+    #[cfg(not(unix))]
+    {
+        None
+    }
+}
 
 /// A serial device as reported by `mpremote devs`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,6 +53,22 @@ impl DeviceInfo {
         } else {
             format!("{} ({})", self.port, self.description)
         }
+    }
+
+    /// A recognisable vendor name for this `vid:pid`, if any.
+    ///
+    /// Labeling only, never filtering: an unrecognised USB serial device is
+    /// still a legitimate candidate (`SPEC.md` §8), it simply carries no
+    /// extra hint.
+    pub fn vendor(&self) -> Option<&'static str> {
+        vendor::label_for(&self.vid_pid)
+    }
+
+    /// The micropython.org/download/ `vendor=` filter value for this device,
+    /// if its vid:pid identifies an actual board vendor rather than a
+    /// generic USB-serial bridge chip (`SPEC.md` §9).
+    pub fn board_vendor(&self) -> Option<&'static str> {
+        vendor::board_vendor_for(&self.vid_pid)
     }
 }
 
@@ -97,6 +137,10 @@ impl DeviceState {
     pub fn set_devices(&mut self, devices: Vec<DeviceInfo>) {
         let previous = self.selected().map(|device| device.port.clone());
         self.known = devices;
+        // Stable: ties (including "both unknown") keep mpremote's original
+        // order, so a recognised board surfaces first without reshuffling
+        // devices the vendor table has nothing to say about.
+        self.known.sort_by_key(|device| device.vendor().is_none());
         self.discovery = DiscoveryState::Ready;
         self.error = None;
 
@@ -129,7 +173,10 @@ impl DeviceState {
             DiscoveryState::Scanning => "scanning…".to_string(),
             DiscoveryState::Failed => "unavailable".to_string(),
             DiscoveryState::Ready => match self.selected() {
-                Some(device) => device.port.clone(),
+                Some(device) => match device.vendor() {
+                    Some(vendor) => format!("{} ({vendor})", device.port),
+                    None => device.port.clone(),
+                },
                 None if self.known.is_empty() => "none".to_string(),
                 None => format!("{} found, none selected", self.known.len()),
             },
@@ -148,10 +195,14 @@ mod tests {
     use super::*;
 
     fn device(port: &str) -> DeviceInfo {
+        device_with_vid(port, "2e8a:0005")
+    }
+
+    fn device_with_vid(port: &str, vid_pid: &str) -> DeviceInfo {
         DeviceInfo {
             port: port.to_string(),
             serial: Some("e6614104".to_string()),
-            vid_pid: "2e8a:0005".to_string(),
+            vid_pid: vid_pid.to_string(),
             description: "MicroPython Board".to_string(),
         }
     }
@@ -217,6 +268,50 @@ mod tests {
         assert_eq!(state.selected_port(), None);
         assert!(state.devices().is_empty());
         assert_eq!(state.summary(), "unavailable");
+    }
+
+    #[test]
+    fn known_vendors_sort_before_unknown_ones() {
+        let mut state = DeviceState::new();
+        state.set_devices(vec![
+            device_with_vid("/dev/ttyUSB0", "1234:5678"),
+            device_with_vid("/dev/ttyACM0", "2e8a:0005"),
+        ]);
+
+        assert_eq!(
+            state.devices()[0].port,
+            "/dev/ttyACM0",
+            "a recognised board sorts first"
+        );
+        assert_eq!(state.devices()[1].port, "/dev/ttyUSB0");
+    }
+
+    #[test]
+    fn devices_with_the_same_recognition_keep_their_scan_order() {
+        let mut state = DeviceState::new();
+        state.set_devices(vec![device("/dev/ttyACM0"), device("/dev/ttyUSB0")]);
+
+        assert_eq!(state.devices()[0].port, "/dev/ttyACM0");
+        assert_eq!(state.devices()[1].port, "/dev/ttyUSB0");
+    }
+
+    #[test]
+    fn board_vendor_is_narrower_than_the_display_label() {
+        let espressif = device_with_vid("/dev/ttyACM0", "303a:1001");
+        assert_eq!(espressif.board_vendor(), Some("Espressif"));
+
+        // CP210x is a bridge chip used by many unrelated boards: it gets a
+        // display label but no board-vendor filter value.
+        let bridge = device_with_vid("/dev/ttyUSB0", "10c4:ea60");
+        assert!(bridge.vendor().is_some());
+        assert_eq!(bridge.board_vendor(), None);
+    }
+
+    #[test]
+    fn summary_includes_a_known_vendor_label() {
+        let mut state = DeviceState::new();
+        state.set_devices(vec![device("/dev/ttyACM0")]);
+        assert_eq!(state.summary(), "/dev/ttyACM0 (Raspberry Pi (RP2040))");
     }
 
     #[test]

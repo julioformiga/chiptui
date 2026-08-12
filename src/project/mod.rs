@@ -1,8 +1,10 @@
 //! Project manager: root discovery, backend detection and manual override.
 
+pub mod config;
 mod detect;
 mod scan;
 
+use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::backend::{Backend, BackendKind, BackendRegistry, Capabilities};
@@ -66,19 +68,28 @@ impl ProjectManager {
     /// Sets or clears the manual backend override (`AGENTS.md` §4).
     ///
     /// Clearing restores the automatic conclusion from the evidence already
-    /// gathered --- no filesystem access needed.
+    /// gathered --- no filesystem access needed. When there was no manual
+    /// override to clear (the conclusion already came from scoring or from
+    /// the persisted `chiptui.toml`, `SPEC.md` §7), this is a no-op: without
+    /// the guard, re-deriving the outcome via `classify` would discard a
+    /// scaffold-file conclusion that was never based on the raw scores in
+    /// the first place (`detect_from` lets the scaffold win outright, ahead
+    /// of the confidence check), turning a correctly detected backend into
+    /// "unknown" just for picking "Automatic" in the picker.
     pub fn set_override(&mut self, kind: Option<BackendKind>) {
+        let had_override = self.override_kind.is_some();
         self.override_kind = kind;
         let Some(detection) = self.detection.take() else {
             return;
         };
         self.detection = Some(match kind {
             Some(kind) => detection.overridden_with(kind),
-            None => Detection {
+            None if had_override => Detection {
                 outcome: classify(&detection.scores),
                 source: DetectionSource::Automatic,
                 ..detection
             },
+            None => detection,
         });
     }
 
@@ -109,6 +120,32 @@ impl ProjectManager {
     /// is in play (`SPEC.md` §4.3).
     pub fn capabilities(&self) -> Capabilities {
         self.registry.capabilities(self.selected_kind())
+    }
+
+    /// Directory the empty-project scaffold operates on: the detected root,
+    /// or [`ProjectManager::start_dir`] before detection has produced one
+    /// --- the empty-project prompt this backs can fire before a root is
+    /// known.
+    fn scaffold_dir(&self) -> &Path {
+        self.root().unwrap_or(self.start_dir.as_path())
+    }
+
+    /// Persists `kind` to the project-local scaffold file (`SPEC.md` §7),
+    /// so the directory is recognized automatically on later runs.
+    pub fn write_scaffold(&self, kind: BackendKind) -> io::Result<()> {
+        config::write(self.scaffold_dir(), kind)
+    }
+
+    /// Creates the `src/` (kept in sync with the device, `SPEC.md` §9) and
+    /// `firmware/` (download destination for online firmware, `SPEC.md` §9)
+    /// directories a fresh MicroPython project is expected to have, so a
+    /// brand-new empty directory does not need them created by hand.
+    /// Idempotent: does nothing to a directory that already has them.
+    pub fn ensure_micropython_layout(&self) -> io::Result<()> {
+        let dir = self.scaffold_dir();
+        std::fs::create_dir_all(dir.join("src"))?;
+        std::fs::create_dir_all(dir.join("firmware"))?;
+        Ok(())
     }
 }
 
@@ -166,6 +203,29 @@ mod tests {
     }
 
     #[test]
+    fn selecting_automatic_with_no_active_override_is_a_no_op() {
+        // Regression: pressing 'o' and choosing "Automatic" always called
+        // `set_override(None)`, even when nothing was overridden. That used
+        // to re-derive the outcome from raw scores unconditionally, which
+        // silently downgraded a `chiptui.toml`-backed conclusion (weak or
+        // empty scores, since the scaffold file wins outright ahead of the
+        // confidence check) to Unknown.
+        let mut manager = manager_with_detection();
+        manager.detection.as_mut().unwrap().scores.clear();
+        manager.detection.as_mut().unwrap().source = DetectionSource::Config;
+
+        assert_eq!(manager.override_kind(), None, "nothing was ever overridden");
+        manager.set_override(None);
+
+        assert_eq!(
+            manager.selected_kind(),
+            Some(BackendKind::MicroPython),
+            "a config-sourced conclusion must survive picking 'Automatic'"
+        );
+        assert_eq!(manager.detection().unwrap().source, DetectionSource::Config);
+    }
+
+    #[test]
     fn no_detection_means_no_capabilities() {
         let manager = ProjectManager::new("/p");
         assert!(manager.capabilities().is_empty());
@@ -180,5 +240,54 @@ mod tests {
         manager.set_override(Some(BackendKind::Zephyr));
         assert_eq!(manager.override_kind(), Some(BackendKind::Zephyr));
         assert_eq!(manager.selected_kind(), None, "nothing detected yet");
+    }
+
+    #[test]
+    fn write_scaffold_falls_back_to_start_dir_before_detection_ran() {
+        let dir =
+            std::env::temp_dir().join(format!("chiptui-manager-scaffold-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let manager = ProjectManager::new(&dir);
+        assert!(manager.root().is_none(), "nothing detected yet");
+        manager.write_scaffold(BackendKind::MicroPython).unwrap();
+
+        let text = std::fs::read_to_string(dir.join(config::FILE_NAME)).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(config::parse(&text), Some(BackendKind::MicroPython));
+    }
+
+    #[test]
+    fn ensure_micropython_layout_creates_src_and_firmware() {
+        let dir =
+            std::env::temp_dir().join(format!("chiptui-manager-layout-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let manager = ProjectManager::new(&dir);
+        manager.ensure_micropython_layout().unwrap();
+
+        let src_exists = dir.join("src").is_dir();
+        let firmware_exists = dir.join("firmware").is_dir();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(src_exists, "src/ was not created");
+        assert!(firmware_exists, "firmware/ was not created");
+    }
+
+    #[test]
+    fn ensure_micropython_layout_is_idempotent() {
+        let dir = std::env::temp_dir().join(format!(
+            "chiptui-manager-layout-idempotent-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src").join("boot.py"), "").unwrap();
+
+        let manager = ProjectManager::new(&dir);
+        let result = manager.ensure_micropython_layout();
+
+        let boot_still_there = dir.join("src").join("boot.py").exists();
+        let _ = std::fs::remove_dir_all(&dir);
+        result.unwrap();
+        assert!(boot_still_there, "an existing src/ must not be touched");
     }
 }

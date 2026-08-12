@@ -154,28 +154,69 @@ pub fn parse_sha256(stdout: &str) -> Option<String> {
         .map(str::to_ascii_lowercase)
 }
 
+/// What kind of failure `mpremote`'s stderr describes.
+///
+/// A single classifier backs both [`explain_error`] (the message) and
+/// [`is_device_lost_error`] (whether a rescan should follow) so the substring
+/// table lives in one place.
+enum FailureKind {
+    /// No board answered at all.
+    DeviceNotFound,
+    /// A board was seen but stopped responding mid-command.
+    DeviceUnresponsive,
+    PermissionDenied,
+    PathNotFound,
+    Empty,
+    Other,
+}
+
+fn classify(stderr: &str) -> FailureKind {
+    let lower = stderr.trim().to_ascii_lowercase();
+
+    if lower.is_empty() {
+        FailureKind::Empty
+    } else if lower.contains("no device found") || lower.contains("no serial device") {
+        FailureKind::DeviceNotFound
+    } else if lower.contains("failed to access") {
+        FailureKind::DeviceUnresponsive
+    } else if lower.contains("permission denied") || lower.contains("could not open port") {
+        FailureKind::PermissionDenied
+    } else if lower.contains("no such file") || lower.contains("enoent") {
+        FailureKind::PathNotFound
+    } else {
+        FailureKind::Other
+    }
+}
+
 /// Turns `mpremote`'s stderr into something the user can act on.
 ///
 /// `AGENTS.md` §Error Messages: say what failed and what to do next. The raw
 /// text stays in the log pane either way.
 pub fn explain_error(stderr: &str) -> String {
-    let raw = stderr.trim();
-    let lower = raw.to_ascii_lowercase();
-
-    if lower.contains("no device found") || lower.contains("no serial device") {
-        "no MicroPython device found — connect the board, then press 'd' to rescan".to_string()
-    } else if lower.contains("permission denied") || lower.contains("could not open port") {
-        "cannot open the serial port — check that no other program holds it, and that your user is in the 'dialout' group".to_string()
-    } else if lower.contains("no such file") || lower.contains("enoent") {
-        "that path does not exist on the device".to_string()
-    } else if lower.contains("failed to access") {
-        "the device is present but did not respond — try unplugging and reconnecting it".to_string()
-    } else if raw.is_empty() {
-        "mpremote failed without reporting a reason".to_string()
-    } else {
+    match classify(stderr) {
+        FailureKind::DeviceNotFound => {
+            "no MicroPython device found — connect the board, then press 'd' to rescan"
+                .to_string()
+        }
+        FailureKind::DeviceUnresponsive => {
+            "the device is present but did not respond — try unplugging and reconnecting it"
+                .to_string()
+        }
+        FailureKind::PermissionDenied => "cannot open the serial port — check that no other program holds it, and that your user is in the 'dialout' group".to_string(),
+        FailureKind::PathNotFound => "that path does not exist on the device".to_string(),
+        FailureKind::Empty => "mpremote failed without reporting a reason".to_string(),
         // Already prefixed with "mpremote: " by the tool itself.
-        raw.to_string()
+        FailureKind::Other => stderr.trim().to_string(),
     }
+}
+
+/// Whether this failure means the device is gone, so a fresh `devs` scan
+/// should run rather than leaving a stale selection pointing at a dead port.
+pub fn is_device_lost_error(stderr: &str) -> bool {
+    matches!(
+        classify(stderr),
+        FailureKind::DeviceNotFound | FailureKind::DeviceUnresponsive
+    )
 }
 
 #[cfg(test)]
@@ -336,5 +377,20 @@ mod tests {
     fn unknown_failures_are_passed_through_verbatim() {
         let message = "mpremote: something entirely new went wrong";
         assert_eq!(explain_error(message), message);
+    }
+
+    #[test]
+    fn device_lost_errors_are_identified() {
+        assert!(is_device_lost_error("mpremote: no device found"));
+        assert!(is_device_lost_error(
+            "mpremote: failed to access /dev/ttyACM0"
+        ));
+        assert!(!is_device_lost_error(
+            "could not open port /dev/ttyACM0: Permission denied"
+        ));
+        assert!(!is_device_lost_error(
+            "mpremote: ls: No such file or directory."
+        ));
+        assert!(!is_device_lost_error(""));
     }
 }

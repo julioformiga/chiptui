@@ -13,19 +13,20 @@ use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{List, ListItem, ListState, Paragraph, Wrap};
 
-use crate::app::App;
-use crate::browser::{Browser, PaneState, Side};
+use crate::app::{App, Focus};
+use crate::browser::{Browser, PaneState};
 use crate::device::DiscoveryState;
 use crate::files::SyncStatus;
-use crate::ui::pane_block;
+use crate::ui::{content_style, dashboard_focused, pane_block};
 
 /// Frames of the "waiting on the device" spinner.
 const SPINNER: [&str; 4] = ["⠋", "⠙", "⠹", "⠸"];
 
 pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
     let Some(browser) = &app.browser else {
+        let block = pane_block("Files", false);
         frame.render_widget(
-            Paragraph::new("the file browser has not been opened".dim()),
+            Paragraph::new("the file listing has not started yet".dim()).block(block),
             area,
         );
         return;
@@ -48,14 +49,12 @@ fn draw_local(
     browser: &Browser,
     statuses: &BTreeMap<String, SyncStatus>,
 ) {
+    let focused = dashboard_focused(app, Focus::FilesLocal);
     let title = format!(
         "Local  {}",
         shorten(&browser.local_path.display().to_string(), area.width)
     );
-    let block = pane_block(
-        &title,
-        browser.focus == Side::Local && app.overlay.is_none(),
-    );
+    let block = pane_block(&title, focused);
 
     if let Some(error) = &browser.local_error {
         frame.render_widget(
@@ -82,7 +81,7 @@ fn draw_local(
         })
         .collect();
 
-    render_list(frame, area, block, items, browser.local_cursor);
+    render_list(frame, area, block, items, browser.local_cursor, focused);
 }
 
 fn draw_device(
@@ -92,11 +91,9 @@ fn draw_device(
     browser: &Browser,
     statuses: &BTreeMap<String, SyncStatus>,
 ) {
+    let focused = dashboard_focused(app, Focus::FilesDevice);
     let title = format!("Device  {}", browser.device_path);
-    let block = pane_block(
-        &title,
-        browser.focus == Side::Device && app.overlay.is_none(),
-    );
+    let block = pane_block(&title, focused);
 
     match &browser.device_state {
         PaneState::Idle => {
@@ -148,7 +145,7 @@ fn draw_device(
         })
         .collect();
 
-    render_list(frame, area, block, items, browser.device_cursor);
+    render_list(frame, area, block, items, browser.device_cursor, focused);
 }
 
 fn render_list(
@@ -157,6 +154,7 @@ fn render_list(
     block: ratatui::widgets::Block<'static>,
     items: Vec<ListItem<'static>>,
     cursor: usize,
+    focused: bool,
 ) {
     if items.is_empty() {
         frame.render_widget(Paragraph::new("empty".dim()).block(block), area);
@@ -167,6 +165,7 @@ fn render_list(
     frame.render_stateful_widget(
         List::new(items)
             .block(block)
+            .style(content_style(focused))
             .highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
         area,
         &mut state,

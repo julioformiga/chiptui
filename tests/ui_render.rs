@@ -3,13 +3,16 @@
 //! These need no terminal, so they run in the normal suite (`AGENTS.md`:
 //! the standard tests must not require hardware or a tty). They assert what the
 //! dashboard is required to show --- `SPEC.md` §11 and the first-stage
-//! deliverable: directory, project type, confidence, backend and capabilities.
+//! deliverable: directory, project type, backend, device information and
+//! capabilities.
 
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 
-use chiptui::app::{App, Focus, Overlay};
+use chiptui::app::{App, Focus, LogTab, Overlay};
 use chiptui::backend::BackendKind;
+use chiptui::backend::micropython::esptool::{ChipFamily, DeviceDetails};
+use chiptui::flash::FlashPanel;
 
 /// Renders the dashboard at `width`x`height` and returns it as plain text.
 fn render(app: &mut App, width: u16, height: u16) -> String {
@@ -30,40 +33,71 @@ fn app_with_backend(kind: BackendKind) -> App {
 }
 
 #[test]
-fn dashboard_shows_project_backend_and_capabilities() {
+fn dashboard_shows_project_device_and_log_panes() {
     let mut app = app_with_backend(BackendKind::Zephyr);
     let frame = render(&mut app, 100, 30);
 
     assert!(frame.contains("ChipTUI"), "missing header:\n{frame}");
     assert!(frame.contains("Zephyr"), "missing backend name:\n{frame}");
     assert!(frame.contains("Project"), "missing project pane:\n{frame}");
-    assert!(
-        frame.contains("Detection"),
-        "missing detection pane:\n{frame}"
-    );
-    assert!(
-        frame.contains("Capabilities"),
-        "missing capabilities pane:\n{frame}"
-    );
+    assert!(frame.contains("Device"), "missing device pane:\n{frame}");
     assert!(frame.contains("Log"), "missing log pane:\n{frame}");
 
-    // Capabilities are rendered from the backend's declaration.
+    // Row 2: Zephyr declares no Capability::Filesystem (SPEC.md §11).
     assert!(
-        frame.contains("build"),
-        "missing build capability:\n{frame}"
-    );
-    assert!(
-        frame.contains("repl"),
-        "unsupported capabilities are still listed:\n{frame}"
-    );
-    // Destructive operations are flagged in the list itself (SPEC.md §15).
-    assert!(
-        frame.contains("confirm"),
-        "destructive flag missing:\n{frame}"
+        frame.contains("file browsing not implemented"),
+        "missing the no-filesystem placeholder:\n{frame}"
     );
 
     // Footer shortcuts.
     assert!(frame.contains("quit"), "missing footer shortcuts:\n{frame}");
+}
+
+#[test]
+fn dashboard_shows_the_file_browser_in_row_two_for_a_filesystem_backend() {
+    let mut app = app_with_backend(BackendKind::MicroPython);
+    app.maybe_scan_devices();
+    let frame = render(&mut app, 100, 30);
+
+    assert!(
+        frame.contains("Local"),
+        "missing the local file pane:\n{frame}"
+    );
+    assert!(
+        !frame.contains("file browsing not implemented"),
+        "MicroPython has a filesystem, no placeholder expected:\n{frame}"
+    );
+}
+
+#[test]
+fn row_three_shows_a_log_monitor_tab_strip() {
+    let mut app = app_with_backend(BackendKind::MicroPython);
+    let frame = render(&mut app, 100, 30);
+
+    assert!(frame.contains("Log"), "missing the Log tab:\n{frame}");
+    assert!(
+        frame.contains("Monitor"),
+        "missing the Monitor tab:\n{frame}"
+    );
+}
+
+#[test]
+fn switching_to_the_monitor_tab_changes_row_three() {
+    let mut app = app_with_backend(BackendKind::MicroPython);
+    app.focus = Focus::Logs;
+    let on_log = render(&mut app, 100, 30);
+
+    app.log_tab = LogTab::Monitor;
+    let on_monitor = render(&mut app, 100, 30);
+
+    assert_ne!(
+        on_log, on_monitor,
+        "switching row 3's tab must change what is drawn"
+    );
+    assert!(
+        on_monitor.contains("not connected"),
+        "Monitor tab should show its placeholder body:\n{on_monitor}"
+    );
 }
 
 #[test]
@@ -77,6 +111,56 @@ fn dashboard_shows_the_working_directory_and_detection_source() {
         "missing detection source:\n{frame}"
     );
     assert!(frame.contains("MicroPython"), "missing backend:\n{frame}");
+}
+
+#[test]
+fn device_pane_prompts_to_open_flash_before_anything_has_been_queried() {
+    let mut app = app_with_backend(BackendKind::MicroPython);
+    let frame = render(&mut app, 100, 30);
+
+    assert!(
+        frame.contains("press 'x'"),
+        "missing hint to open the flash view:\n{frame}"
+    );
+}
+
+#[test]
+fn device_pane_has_nothing_to_show_without_a_flash_capable_backend() {
+    // No override and an empty directory: detection concludes `Unknown`, so
+    // `selected_kind()` is `None` and capabilities() is empty --- neither
+    // currently-registered backend lacks Flash on its own, so this is the
+    // only way to exercise the "no capability" branch.
+    let mut app = App::new(std::env::temp_dir());
+    app.bootstrap();
+    let frame = render(&mut app, 100, 30);
+
+    assert!(
+        frame.contains("no device information"),
+        "expected a capability-appropriate message:\n{frame}"
+    );
+}
+
+#[test]
+fn device_pane_shows_chip_and_flash_details_once_esptool_has_reported_them() {
+    let mut app = app_with_backend(BackendKind::MicroPython);
+    let mut flash = FlashPanel::new(std::env::temp_dir());
+    flash.details = DeviceDetails {
+        family: Some(ChipFamily::Esp32S3),
+        revision: Some("3".to_string()),
+        mac: Some("24:6f:28:12:34:56".to_string()),
+        flash_size: Some("4MB".to_string()),
+        ..DeviceDetails::default()
+    };
+    app.flash = Some(flash);
+
+    let frame = render(&mut app, 100, 30);
+    assert!(frame.contains("ESP32-S3"), "missing chip family:\n{frame}");
+    assert!(frame.contains("revision 3"), "missing revision:\n{frame}");
+    assert!(
+        frame.contains("24:6f:28:12:34:56"),
+        "missing MAC address:\n{frame}"
+    );
+    assert!(frame.contains("4MB"), "missing flash size:\n{frame}");
 }
 
 #[test]
@@ -124,6 +208,21 @@ fn overlays_draw_above_the_dashboard() {
     assert!(
         picker.contains("MicroPython"),
         "picker options missing:\n{picker}"
+    );
+
+    app.overlay = Some(Overlay::ProjectSetup { selected: 0 });
+    let setup = render(&mut app, 100, 30);
+    assert!(
+        setup.contains("New project"),
+        "project setup overlay missing:\n{setup}"
+    );
+    assert!(
+        setup.contains("MicroPython") && setup.contains("Zephyr"),
+        "project setup options missing:\n{setup}"
+    );
+    assert!(
+        !setup.contains("Automatic"),
+        "detection already failed to conclude one, so there is nothing to fall back to:\n{setup}"
     );
 }
 

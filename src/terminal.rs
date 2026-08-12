@@ -77,6 +77,27 @@ impl TerminalGuard {
         self.terminal.show_cursor()?;
         Ok(())
     }
+
+    /// Leaves the alternate screen for the duration of `run`, so an
+    /// interactive child --- `$EDITOR`, from the file viewer --- gets the
+    /// real terminal instead of drawing into ChipTUI's own buffer, then
+    /// re-enters it. The same "give up raw mode cleanly, always restore"
+    /// shape `AGENTS.md` §6 asks of REPL/monitor sessions, applied to a
+    /// one-shot child rather than a streamed one.
+    ///
+    /// `run` itself is infallible here on purpose: a failure to spawn or a
+    /// non-zero exit from the child is the caller's concern (it belongs in
+    /// the log, not as a fatal terminal error), so `run` should catch its own
+    /// errors into `T` rather than short-circuit this method. Only failures
+    /// to toggle the terminal itself are surfaced as `Err`.
+    pub fn suspend<T>(&mut self, run: impl FnOnce() -> T) -> Result<T> {
+        restore_raw()?;
+        let value = run();
+        enable_raw_mode()?;
+        execute!(io::stdout(), EnterAlternateScreen, Hide)?;
+        self.terminal.clear()?;
+        Ok(value)
+    }
 }
 
 impl Drop for TerminalGuard {

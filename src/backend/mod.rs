@@ -204,6 +204,13 @@ pub trait Backend {
 
     /// External executables this backend delegates to (`AGENTS.md` §2).
     fn required_tools(&self) -> &'static [&'static str];
+
+    /// Returns the command to launch an interactive serial monitor/REPL.
+    /// Returns `None` if the backend doesn't support a monitor, or if it isn't implemented.
+    fn monitor_command(&self, port: Option<&str>) -> Option<crate::process::Command> {
+        let _ = port;
+        None
+    }
 }
 
 /// Whether `name` resolves to an executable on `PATH`.

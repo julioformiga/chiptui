@@ -1,0 +1,86 @@
+#!/bin/sh
+# Fake `esptool` for ChipTUI tests.
+#
+# Reproduces the output shapes of esptool v5.3.1's Click-based CLI (see
+# src/backend/micropython/esptool/{commands,parse}.rs) so the flash flow can
+# be exercised end to end without a board attached. `--port`/`--chip` are
+# global options that may appear before the sub-command in either order, so
+# matching is done by substring rather than a fixed argument shape.
+
+args="$*"
+
+case "$args" in
+    *"--port /dev/ttyGONE"*)
+        echo "A fatal error occurred: Could not open /dev/ttyGONE, the port is busy or doesn't exist" >&2
+        exit 1
+        ;;
+esac
+
+case "$args" in
+    *"chip-id"*)
+        printf 'esptool v5.3.1\n'
+        printf 'Serial port /dev/ttyUSB0\n'
+        printf 'Detecting chip type... ESP32\n'
+        printf 'Chip is ESP32-D0WD (revision 3)\n'
+        printf 'Features: WiFi, BT, Dual Core, 240MHz, VRef calibration in efuse, Coding Scheme None\n'
+        printf 'Crystal is 40MHz\n'
+        printf 'MAC: 24:6f:28:12:34:56\n'
+        printf 'Chip ID: 0x1234567890ab\n'
+        ;;
+
+    *"flash-id"*)
+        printf 'esptool v5.3.1\n'
+        printf 'Detecting chip type... ESP32\n'
+        printf 'Chip is ESP32-D0WD (revision 3)\n'
+        printf 'Features: WiFi, BT, Dual Core, 240MHz, VRef calibration in efuse, Coding Scheme None\n'
+        printf 'Crystal is 40MHz\n'
+        printf 'MAC: 24:6f:28:12:34:56\n'
+        printf 'Manufacturer: 5e\n'
+        printf 'Device: 4016\n'
+        printf 'Detected flash size: 4MB\n'
+        ;;
+
+    *"erase-flash"*)
+        printf 'esptool v5.3.1\n'
+        printf 'Detecting chip type... ESP32\n'
+        printf 'Chip is ESP32-D0WD (revision 3)\n'
+        printf 'Erasing flash (this may take a while)...\n'
+        printf 'Chip erase completed successfully\n'
+        ;;
+
+    *"write-flash"*)
+        case "$args" in
+            *"missing.bin"*)
+                echo "esptool: [Errno 2] No such file or directory: 'missing.bin'" >&2
+                exit 1
+                ;;
+        esac
+        printf 'esptool v5.3.1\n'
+        printf 'Detecting chip type... ESP32\n'
+        printf 'Chip is ESP32-D0WD (revision 3)\n'
+        printf 'Writing at 0x00001000... (50 %%)\r'
+        printf 'Writing at 0x00001000... (100 %%)\r'
+        printf '\n'
+        printf 'Wrote 16384 bytes\n'
+        printf 'Hash of data verified.\n'
+        printf 'Hard resetting via RTS pin...\n'
+        ;;
+
+    *"verify-flash"*)
+        printf 'esptool v5.3.1\n'
+        printf 'Detecting chip type... ESP32\n'
+        printf 'Chip is ESP32-D0WD (revision 3)\n'
+        printf 'Verifying 0x1000 (100 %%)\n'
+        printf 'Verified OK!\n'
+        ;;
+
+    *"run"*)
+        printf 'esptool v5.3.1\n'
+        printf 'Hard resetting via RTS pin...\n'
+        ;;
+
+    *)
+        echo "A fatal error occurred: Could not open port, no device found" >&2
+        exit 1
+        ;;
+esac

@@ -50,6 +50,45 @@ case "$args" in
         printf '0000000000000000000000000000000000000000000000000000000000000000\n'
         ;;
 
+    "fs --no-verbose cat :/device_only.py")
+        printf 'device content\n'
+        ;;
+
+    "fs --no-verbose cat :/missing.py")
+        echo 'mpremote: cat: No such file or directory.' >&2
+        exit 1
+        ;;
+
+    "fs --no-verbose cp :/device_only.py "*)
+        # Downloads device_only.py: the destination is the caller's temp dir,
+        # so only the fixed source half of the command is matched.
+        dest=$(printf '%s' "$args" | sed 's/^fs --no-verbose cp :\/device_only\.py //')
+        printf 'device content\n' > "$dest"
+        ;;
+
+    "fs --no-verbose cp :/missing.py "*)
+        echo 'mpremote: cp: No such file or directory.' >&2
+        exit 1
+        ;;
+
+    "fs --no-verbose cp "*" :/local_only.py")
+        # Uploads local_only.py: the local source is the caller's temp dir,
+        # so only the fixed destination half of the command is matched.
+        ;;
+
+    "fs --no-verbose cp "*" :/device_only.py")
+        # Re-uploads device_only.py after editing it.
+        ;;
+
+    "fs --no-verbose cp "*" :/rejected.py")
+        echo 'mpremote: cp: Permission denied.' >&2
+        exit 1
+        ;;
+
+    soft-reset)
+        printf 'MPY: soft reboot\n'
+        ;;
+
     *)
         echo "mpremote: no device found" >&2
         exit 1

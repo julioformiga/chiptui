@@ -65,6 +65,93 @@ pub fn is_hidden(name: &str) -> bool {
     name.starts_with('.')
 }
 
+/// Files above this are not opened in the viewer (local: read outright,
+/// device: from the cached listing's size), to keep the read and the
+/// on-screen buffer off the UI thread's back --- `$EDITOR` (`Edit`, in the
+/// files-pane action menu) can still open a rejected local file directly,
+/// since it does its own paging; a device file that size still downloads
+/// fine, `mpremote` streams it rather than buffering it as one `String`.
+pub const MAX_VIEW_BYTES: u64 = 2 * 1024 * 1024;
+
+/// Bytes sniffed from the front of a file to decide whether it looks like
+/// text, mirroring what `file`/`grep -I` treat as the binary signal.
+const BINARY_PROBE_BYTES: usize = 8192;
+
+/// Extensions treated as binary --- excluded from the files-pane action menu
+/// entirely, so `enter` on one stays a no-op exactly as it always was. A
+/// denylist, not an allowlist: an unfamiliar text extension (a `Makefile`
+/// with no extension, a stray `.env`) should still work rather than silently
+/// losing its menu.
+///
+/// The device pane has no content to sniff before a file is fetched, so this
+/// is the only signal available there; local files get a second,
+/// content-based check in [`read_text_file`].
+const BINARY_EXTENSIONS: &[&str] = &[
+    // compiled / firmware
+    "bin", "elf", "hex", "dfu", "uf2", "o", "a", "so", "dll", "exe", "mpy", "pyc", "class",
+    // archives
+    "zip", "tar", "gz", "tgz", "xz", "bz2", "7z", "rar", // images
+    "png", "jpg", "jpeg", "gif", "bmp", "ico", "webp", "svg", // fonts
+    "ttf", "otf", "woff", "woff2", "eot", // audio / video
+    "mp3", "wav", "ogg", "flac", "mp4", "avi", "mov", "mkv", // documents
+    "pdf",
+];
+
+/// Whether `name` looks like a text file, judging only by its extension.
+pub fn is_text_like(name: &str) -> bool {
+    match name.rsplit_once('.') {
+        Some((_, ext)) => !BINARY_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()),
+        None => true,
+    }
+}
+
+/// Reads `path` as text for the file-browser viewer.
+///
+/// Rejects directories, oversized files and anything that looks binary (a
+/// NUL byte in the first [`BINARY_PROBE_BYTES`]) instead of dumping raw bytes
+/// into the terminal. Decoding is lossy: a file with a few invalid UTF-8
+/// bytes should still be readable, with replacement characters standing in,
+/// rather than refusing to show it at all.
+pub fn read_text_file(path: &Path) -> Result<String, String> {
+    let metadata = std::fs::metadata(path).map_err(|source| format!("cannot read: {source}"))?;
+    if metadata.is_dir() {
+        return Err("is a directory".to_string());
+    }
+    if metadata.len() > MAX_VIEW_BYTES {
+        return Err(format!(
+            "too large to preview ({} MiB) --- press 'e' to open it in $EDITOR instead",
+            metadata.len() / (1024 * 1024)
+        ));
+    }
+
+    let bytes = std::fs::read(path).map_err(|source| format!("cannot read: {source}"))?;
+    let probe = &bytes[..bytes.len().min(BINARY_PROBE_BYTES)];
+    if probe.contains(&0) {
+        return Err("binary file --- press 'e' to open it in $EDITOR instead".to_string());
+    }
+
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// `.bin`/`.elf` firmware candidates in `dir`, non-recursive.
+///
+/// Built on [`read_dir`]: same hidden-file convention, restricted to files
+/// (a directory named `firmware.bin` is not firmware) with a recognised
+/// extension. Used to offer an esptool flash after an erase, or on its own,
+/// scoped to the project's `firmware/` directory (`SPEC.md` §9).
+pub fn firmware_candidates(dir: &Path) -> io::Result<Vec<LocalEntry>> {
+    let entries = read_dir(dir)?
+        .into_iter()
+        .filter(|entry| !entry.is_dir && !is_hidden(&entry.name) && is_firmware_name(&entry.name))
+        .collect();
+    Ok(entries)
+}
+
+fn is_firmware_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.ends_with(".bin") || lower.ends_with(".elf")
+}
+
 /// How one name compares between the local directory and the device directory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyncStatus {
@@ -329,5 +416,107 @@ mod tests {
         assert!(entries[0].is_dir);
         assert_eq!(entries[1].name, "main.py");
         assert_eq!(entries[1].size, 12);
+    }
+
+    #[test]
+    fn firmware_candidates_are_filtered_by_extension() {
+        let dir = std::env::temp_dir().join(format!("chiptui-firmware-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("build.bin")).unwrap(); // a directory, not firmware
+        std::fs::write(dir.join("app.BIN"), "x").unwrap(); // extension case is ignored
+        std::fs::write(dir.join("app.elf"), "x").unwrap();
+        std::fs::write(dir.join("readme.txt"), "x").unwrap();
+        std::fs::write(dir.join(".hidden.bin"), "x").unwrap();
+
+        let entries = firmware_candidates(&dir).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let names: BTreeSet<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, BTreeSet::from(["app.BIN", "app.elf"]));
+    }
+
+    #[test]
+    fn text_like_extensions_pass() {
+        assert!(is_text_like("main.py"));
+        assert!(is_text_like("CMakeLists.txt"));
+        assert!(is_text_like("Makefile"), "no extension is not binary");
+        assert!(is_text_like(".env"), "a dotfile with no real extension");
+    }
+
+    #[test]
+    fn binary_extensions_are_excluded_case_insensitively() {
+        assert!(!is_text_like("firmware.bin"));
+        assert!(!is_text_like("firmware.BIN"));
+        assert!(!is_text_like("app.elf"));
+        assert!(!is_text_like("bytecode.mpy"));
+        assert!(!is_text_like("logo.png"));
+        assert!(!is_text_like("font.ttf"));
+        assert!(
+            !is_text_like("archive.tar.gz"),
+            "the last extension decides"
+        );
+    }
+
+    #[test]
+    fn reads_a_text_file_for_the_viewer() {
+        let dir = std::env::temp_dir().join(format!("chiptui-view-text-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("main.py"), "print('hi')\n").unwrap();
+
+        let content = read_text_file(&dir.join("main.py")).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(content, "print('hi')\n");
+    }
+
+    #[test]
+    fn viewer_rejects_directories() {
+        let dir = std::env::temp_dir().join(format!("chiptui-view-dir-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("lib")).unwrap();
+
+        let error = read_text_file(&dir.join("lib")).unwrap_err();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(error.contains("directory"));
+    }
+
+    #[test]
+    fn viewer_rejects_binary_content() {
+        let dir = std::env::temp_dir().join(format!("chiptui-view-bin-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("firmware.bin"),
+            [0x7f, 0x45, 0x4c, 0x46, 0x00, 0x01],
+        )
+        .unwrap();
+
+        let error = read_text_file(&dir.join("firmware.bin")).unwrap_err();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(error.contains("binary"));
+    }
+
+    #[test]
+    fn viewer_rejects_oversized_files() {
+        let dir = std::env::temp_dir().join(format!("chiptui-view-big-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let big = vec![b'a'; (MAX_VIEW_BYTES + 1) as usize];
+        std::fs::write(dir.join("huge.txt"), &big).unwrap();
+
+        let error = read_text_file(&dir.join("huge.txt")).unwrap_err();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(error.contains("large"));
+    }
+
+    #[test]
+    fn firmware_candidates_is_empty_when_none_match() {
+        let dir = std::env::temp_dir().join(format!("chiptui-no-firmware-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("main.py"), "x").unwrap();
+
+        let entries = firmware_candidates(&dir).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(entries.is_empty());
     }
 }

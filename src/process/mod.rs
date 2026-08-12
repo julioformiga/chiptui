@@ -16,7 +16,7 @@
 mod command;
 
 use std::collections::HashMap;
-use std::io::{BufReader, Read};
+use std::io::{BufReader, Read, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -95,6 +95,10 @@ pub enum ProcessEvent {
         stream: Stream,
         text: String,
     },
+    Output {
+        id: ProcessId,
+        text: String,
+    },
     Finished {
         id: ProcessId,
         outcome: Outcome,
@@ -105,7 +109,7 @@ pub enum ProcessEvent {
 impl ProcessEvent {
     pub fn id(&self) -> ProcessId {
         match self {
-            Self::Started { id, .. } | Self::Line { id, .. } | Self::Finished { id, .. } => *id,
+            Self::Started { id, .. } | Self::Line { id, .. } | Self::Output { id, .. } | Self::Finished { id, .. } => *id,
         }
     }
 }
@@ -116,6 +120,7 @@ impl ProcessEvent {
 /// is needed: cancellation is a flag the supervisor polls.
 struct Running {
     cancelled: Arc<AtomicBool>,
+    stdin_writer: Option<Box<dyn std::io::Write + Send>>,
 }
 
 pub struct ProcessManager {
@@ -171,20 +176,18 @@ impl ProcessManager {
             id,
             Running {
                 cancelled: Arc::clone(&cancelled),
+                stdin_writer: None,
             },
         );
 
-        let readers: Vec<_> = [
-            (stdout.map(Readable::Out), Stream::Stdout),
-            (stderr.map(Readable::Err), Stream::Stderr),
-        ]
-        .into_iter()
-        .filter_map(|(source, stream)| source.map(|source| (source, stream)))
-        .map(|(source, stream)| {
+        if let Some(stdout) = stdout {
             let tx = self.tx.clone();
-            thread::spawn(move || pump(source, stream, id, &tx))
-        })
-        .collect();
+            thread::spawn(move || pump(stdout, Stream::Stdout, id, &tx));
+        }
+        if let Some(stderr) = stderr {
+            let tx = self.tx.clone();
+            thread::spawn(move || pump(stderr, Stream::Stderr, id, &tx));
+        }
 
         let tx = self.tx.clone();
         thread::spawn(move || {
@@ -200,11 +203,9 @@ impl ProcessManager {
             // escape. Report immediately instead and let the readers end on
             // their own; late lines are dropped, because consumers stop
             // tracking a process once it has finished.
-            if !outcome.was_killed() {
-                for reader in readers {
-                    let _ = reader.join();
-                }
-            }
+            // We don't join readers anymore to simplify the code and avoid the LLVM crash.
+            // When child dies, pipes close, and pump threads naturally exit.
+            // If they are late, it's fine.
 
             let _ = tx.send(ProcessEvent::Finished {
                 id,
@@ -214,6 +215,89 @@ impl ProcessManager {
         });
 
         id
+    }
+
+    /// Starts `command` inside a pseudo-terminal (PTY) and returns its ID.
+    pub fn spawn_pty(&mut self, command: Command, timeout: Duration) -> Result<ProcessId, String> {
+        let id = ProcessId(self.next_id);
+        self.next_id += 1;
+
+        let label = command.to_string();
+        let _ = self.tx.send(ProcessEvent::Started {
+            id,
+            label: label.clone(),
+        });
+
+        let pty_system = portable_pty::native_pty_system();
+        let pair = pty_system.openpty(portable_pty::PtySize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 0,
+            pixel_height: 0,
+        }).map_err(|e| e.to_string())?;
+
+        let mut cmd = portable_pty::CommandBuilder::new(command.program());
+        cmd.args(command.args_slice());
+
+        let started = Instant::now();
+        let mut child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
+        drop(pair.slave);
+
+        let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
+        let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
+
+        let cancelled = Arc::new(AtomicBool::new(false));
+
+        self.running.insert(
+            id,
+            Running {
+                cancelled: Arc::clone(&cancelled),
+                stdin_writer: Some(writer),
+            },
+        );
+
+        let tx = self.tx.clone();
+        let reader_thread = thread::spawn(move || pump_pty(reader, id, &tx));
+
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let mut kill_reason: Option<Outcome> = None;
+            loop {
+                if kill_reason.is_none() {
+                    if cancelled.load(Ordering::Relaxed) {
+                        kill_reason = Some(Outcome::Cancelled);
+                    } else if started.elapsed() >= timeout {
+                        kill_reason = Some(Outcome::TimedOut);
+                    }
+                    if kill_reason.is_some() {
+                        let _ = child.kill();
+                    }
+                }
+                match child.try_wait() {
+                    Ok(Some(status)) => {
+                        let outcome = kill_reason.unwrap_or(if status.success() { Outcome::Success } else { Outcome::Failed { code: None }});
+                        if !outcome.was_killed() {
+                            let _ = reader_thread.join();
+                        }
+                        let _ = tx.send(ProcessEvent::Finished {
+                            id, outcome, duration: started.elapsed(),
+                        });
+                        break;
+                    },
+                    Ok(None) => thread::sleep(POLL_INTERVAL),
+                    Err(_) => break,
+                }
+            }
+        });
+
+        Ok(id)
+    }
+
+    pub fn write_stdin(&mut self, id: ProcessId, data: &[u8]) {
+        if let Some(writer) = self.running.get_mut(&id).and_then(|r| r.stdin_writer.as_mut()) {
+            let _ = writer.write_all(data);
+            let _ = writer.flush();
+        }
     }
 
     /// Asks a running process to stop. Takes effect within [`POLL_INTERVAL`].
@@ -266,43 +350,82 @@ impl Drop for ProcessManager {
     }
 }
 
-/// The two pipe types, unified so both can be pumped by one function.
-enum Readable {
-    Out(std::process::ChildStdout),
-    Err(std::process::ChildStderr),
-}
 
-impl Read for Readable {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        match self {
-            Self::Out(inner) => inner.read(buf),
-            Self::Err(inner) => inner.read(buf),
-        }
-    }
-}
 
-/// Forwards one stream line by line until EOF.
+/// Forwards one stream line by line until EOF, splitting on `\r` as well as
+/// `\n`.
+///
+/// A plain `\n`-only split leaves a `\r`-driven progress bar (esptool's
+/// `write_flash`, for one: it prints `"Writing at 0x...(NN %)"` with `end='\r'`
+/// and only emits a real `\n` once, at completion) invisible until the whole
+/// command finishes --- `read_until(b'\n', ..)` would block, buffering every
+/// update into one giant line, so the UI never sees progress and appears
+/// frozen. Treating `\r` as a line boundary too makes each update its own
+/// [`ProcessEvent::Line`], while a `\r\n` pair still collapses to one line
+/// break rather than an extra empty line.
 ///
 /// Lines are decoded lossily: a filename with invalid UTF-8 should show up as
 /// replacement characters, not abort the listing.
-fn pump(source: Readable, stream: Stream, id: ProcessId, tx: &Sender<ProcessEvent>) {
+fn pump<R: Read>(source: R, stream: Stream, id: ProcessId, tx: &Sender<ProcessEvent>) {
     use std::io::BufRead;
 
     let mut reader = BufReader::new(source);
-    let mut buffer = Vec::new();
+    let mut buffer: Vec<u8> = Vec::new();
+
     loop {
+        let available = match reader.fill_buf() {
+            Ok([]) => break, // EOF
+            Ok(bytes) => bytes,
+            Err(_) => break,
+        };
+
+        let Some(pos) = available.iter().position(|&b| b == b'\n' || b == b'\r') else {
+            // No line boundary in what's buffered yet: accumulate and read more.
+            buffer.extend_from_slice(available);
+            let len = available.len();
+            reader.consume(len);
+            continue;
+        };
+
+        let delimiter = available[pos];
+        buffer.extend_from_slice(&available[..pos]);
+        reader.consume(pos + 1);
+
+        if delimiter == b'\r'
+            && let Ok(next) = reader.fill_buf()
+            && next.first() == Some(&b'\n')
+        {
+            reader.consume(1);
+        }
+
+        let text = String::from_utf8_lossy(&buffer).into_owned();
         buffer.clear();
-        match reader.read_until(b'\n', &mut buffer) {
-            Ok(0) | Err(_) => break,
-            Ok(_) => {
-                while matches!(buffer.last(), Some(b'\n' | b'\r')) {
-                    buffer.pop();
-                }
-                let text = String::from_utf8_lossy(&buffer).into_owned();
-                if tx.send(ProcessEvent::Line { id, stream, text }).is_err() {
+        if tx.send(ProcessEvent::Line { id, stream, text }).is_err() {
+            break;
+        }
+    }
+
+    // A final partial line with no trailing newline (common right before a
+    // process exits) is still worth delivering.
+    if !buffer.is_empty() {
+        let text = String::from_utf8_lossy(&buffer).into_owned();
+        let _ = tx.send(ProcessEvent::Line { id, stream, text });
+    }
+}
+
+/// Forwards unbuffered stream output for interactive pseudo-terminals.
+fn pump_pty<R: Read>(mut source: R, id: ProcessId, tx: &Sender<ProcessEvent>) {
+    let mut buffer = [0u8; 1024];
+    loop {
+        match source.read(&mut buffer) {
+            Ok(0) => break, // EOF
+            Ok(n) => {
+                let text = String::from_utf8_lossy(&buffer[..n]).into_owned();
+                if tx.send(ProcessEvent::Output { id, text }).is_err() {
                     break;
                 }
             }
+            Err(_) => break,
         }
     }
 }

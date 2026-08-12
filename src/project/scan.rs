@@ -18,6 +18,7 @@ pub const TEXT_FILES: &[&str] = &[
     "CMakeLists.txt",
     "requirements.txt",
     "west.yml",
+    "chiptui.toml",
 ];
 
 /// Contents above this size are ignored; detection markers all live near the

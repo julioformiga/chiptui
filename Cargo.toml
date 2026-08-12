@@ -5,6 +5,12 @@ edition = "2024"
 description = "Terminal UI for embedded development workflows"
 
 [dependencies]
+# The device serial monitor runs `mpremote repl`, which requires a real tty
+# (it calls `termios.tcgetattr(stdin)` unconditionally) --- a plain pipe via
+# `process::ProcessManager` makes it exit immediately. `portable-pty` opens a
+# real PTY cross-platform (Linux/macOS `openpty`, Windows ConPTY), matching
+# `SPEC.md`'s "architecture should remain portable to macOS and Windows".
+portable-pty = "0.9.0"
 # Crossterm is used through `ratatui::crossterm` rather than as a direct
 # dependency, so the backend and the terminal driver can never drift apart.
 ratatui = "0.30.2"

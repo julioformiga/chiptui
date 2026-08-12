@@ -1,0 +1,9 @@
+#!/bin/sh
+# Mimics esptool's write_flash progress: several \r-only updates (no
+# newline) followed by a single \n at the very end, and one ordinary line
+# after that. Used to prove the process pump streams \r-delimited updates
+# live instead of buffering them all into one line until \n arrives.
+printf 'Writing at 0x00001000... (10 %%)\r'
+printf 'Writing at 0x00001000... (50 %%)\r'
+printf 'Writing at 0x00001000... (100 %%)\r\n'
+printf 'Wrote 16384 bytes\n'
