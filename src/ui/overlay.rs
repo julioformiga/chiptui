@@ -18,11 +18,14 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
         Overlay::Help => draw_help(frame, area, app),
         Overlay::BackendPicker { selected } => draw_picker(frame, area, app, selected),
         Overlay::DevicePicker { selected } => draw_device_picker(frame, area, app, selected),
-        Overlay::Confirm { message } => draw_confirm(frame, area, &message),
+        Overlay::Confirm { message, confirm } => draw_confirm(frame, area, &message, confirm),
         Overlay::FirmwarePicker { selected } => draw_firmware_picker(frame, area, app, selected),
         Overlay::ProjectSetup { selected } => draw_project_setup(frame, area, selected),
-        Overlay::ConfirmDownloadOverwrite { url, dest } => {
-            draw_confirm_download_overwrite(frame, area, &url, &dest)
+        Overlay::ConfirmDownloadOverwrite { url, dest, confirm } => {
+            draw_confirm_download_overwrite(frame, area, &url, &dest, confirm)
+        }
+        Overlay::ConfirmUpload { name, confirm } => {
+            draw_confirm_upload(frame, area, &name, confirm)
         }
         Overlay::FileActions {
             side,
@@ -39,32 +42,19 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
     }
 }
 
-/// Offered once an edited device file has been re-uploaded. Unlike every
-/// other confirm overlay here (a plain `y/enter` vs. `n/esc` line), this one
-/// gets a btop-style pair of button widgets --- `confirm` is which one is
-/// highlighted, defaulting to "No" so a reflex `Enter` cannot restart the
-/// board.
-fn draw_confirm_restart_device(frame: &mut Frame, area: Rect, app: &App, confirm: bool) {
-    let command = crate::backend::micropython::commands::soft_reset(app.devices.selected_port());
-
-    let popup = centered(area, 54.min(area.width), 9);
-    let block = modal("Restart device?");
+fn draw_confirm_dialog(frame: &mut Frame, area: Rect, title: &str, message: Vec<Line>, confirm: bool, width: u16, height: u16) {
+    let popup = centered(area, width.min(area.width), height);
+    let block = modal(title);
     let inner = block.inner(popup);
 
     frame.render_widget(Clear, popup);
     frame.render_widget(block, popup);
 
     let [message_area, buttons_area] =
-        Layout::vertical([Constraint::Length(4), Constraint::Length(3)]).areas(inner);
+        Layout::vertical([Constraint::Length(height.saturating_sub(5)), Constraint::Length(3)]).areas(inner);
 
-    let message = vec![
-        Line::from("The edited file was uploaded to the device.".fg(Color::Yellow)),
-        Line::from("Restart it now?".fg(Color::Yellow)),
-        Line::from(""),
-        Line::from(command.to_string().dim()),
-    ];
     frame.render_widget(
-        Paragraph::new(message).alignment(Alignment::Center),
+        Paragraph::new(message).alignment(Alignment::Center).wrap(ratatui::widgets::Wrap { trim: false }),
         message_area,
     );
 
@@ -80,41 +70,27 @@ fn draw_confirm_restart_device(frame: &mut Frame, area: Rect, app: &App, confirm
     draw_dialog_button(frame, yes_area, "Yes", confirm);
 }
 
+fn draw_confirm_restart_device(frame: &mut Frame, area: Rect, app: &App, confirm: bool) {
+    let command = crate::backend::micropython::commands::soft_reset(app.devices.selected_port());
+    let message = vec![
+        Line::from("The edited file was uploaded to the device.".fg(Color::Yellow)),
+        Line::from("Restart it now?".fg(Color::Yellow)),
+        Line::from(""),
+        Line::from(command.to_string().dim()),
+    ];
+    draw_confirm_dialog(frame, area, "Restart device?", message, confirm, 54, 9);
+}
+
 fn draw_confirm_delete(frame: &mut Frame, area: Rect, side: crate::browser::Side, name: &str, confirm: bool) {
     let side_str = match side {
         crate::browser::Side::Local => "locally",
         crate::browser::Side::Device => "from device",
     };
-    let title = "Confirm Delete";
-    
-    let popup = centered(area, 54.min(area.width), 9);
-    frame.render_widget(Clear, popup);
-    let block = modal(title);
-    let inner = block.inner(popup);
-    frame.render_widget(block, popup);
-
-    let [message_area, buttons_area] =
-        Layout::vertical([Constraint::Length(4), Constraint::Length(3)]).areas(inner);
-
     let message = vec![
         Line::from(format!("Delete '{}'?", name).fg(Color::Yellow)),
         Line::from(format!("This will remove it {}.", side_str).dim()),
     ];
-    frame.render_widget(
-        Paragraph::new(message).alignment(Alignment::Center),
-        message_area,
-    );
-
-    let [no_area, _gap, yes_area] = Layout::horizontal([
-        Constraint::Length(10),
-        Constraint::Length(4),
-        Constraint::Length(10),
-    ])
-    .flex(Flex::Center)
-    .areas(buttons_area);
-
-    draw_dialog_button(frame, no_area, "No", !confirm);
-    draw_dialog_button(frame, yes_area, "Yes", confirm);
+    draw_confirm_dialog(frame, area, "Confirm Delete", message, confirm, 54, 9);
 }
 
 /// One btop-style dialog button: a bordered box, filled solid when selected
@@ -253,26 +229,26 @@ fn draw_confirm_download_overwrite(
     area: Rect,
     url: &str,
     dest: &std::path::Path,
+    confirm: bool,
 ) {
-    let lines = vec![
+    let message = vec![
         Line::from(format!("{} already exists.", dest.display()).fg(Color::Yellow)),
         Line::from(format!("Overwrite it by downloading {url}?")),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("y / enter", Style::new().fg(Color::Cyan)),
-            Span::raw("  confirm    "),
-            Span::styled("n / esc", Style::new().fg(Color::Cyan)),
-            Span::raw("  cancel"),
-        ]),
     ];
-    let popup = centered(area, 70.min(area.width), 6);
-    frame.render_widget(Clear, popup);
-    frame.render_widget(
-        Paragraph::new(lines)
-            .block(modal("Overwrite firmware?"))
-            .wrap(ratatui::widgets::Wrap { trim: false }),
-        popup,
-    );
+    draw_confirm_dialog(frame, area, "Overwrite firmware?", message, confirm, 70, 8);
+}
+
+fn draw_confirm_upload(
+    frame: &mut Frame,
+    area: Rect,
+    name: &str,
+    confirm: bool,
+) {
+    let message = vec![
+        Line::from(format!("Upload '{}' to the device?", name).fg(Color::Yellow)),
+        Line::from("This will overwrite any existing file with the same name on the device.".dim()),
+    ];
+    draw_confirm_dialog(frame, area, "Confirm Upload", message, confirm, 65, 8);
 }
 
 /// Empty or unrecognized project (`SPEC.md` §7): asks which backend this
@@ -316,25 +292,11 @@ fn draw_project_setup(frame: &mut Frame, area: Rect, selected: usize) {
 /// A destructive esptool action awaiting explicit confirmation (`SPEC.md`
 /// §15). `message` is always the literal command about to run, never a
 /// paraphrase, so shown as-is.
-fn draw_confirm(frame: &mut Frame, area: Rect, message: &str) {
+fn draw_confirm(frame: &mut Frame, area: Rect, message: &str, confirm: bool) {
     let lines = vec![
         Line::from(message.to_string().fg(Color::Yellow)),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("y / enter", Style::new().fg(Color::Cyan)),
-            Span::raw("  confirm    "),
-            Span::styled("n / esc", Style::new().fg(Color::Cyan)),
-            Span::raw("  cancel"),
-        ]),
     ];
-    let popup = centered(area, 70.min(area.width), 5);
-    frame.render_widget(Clear, popup);
-    frame.render_widget(
-        Paragraph::new(lines)
-            .block(modal("Confirm"))
-            .wrap(ratatui::widgets::Wrap { trim: false }),
-        popup,
-    );
+    draw_confirm_dialog(frame, area, "Confirm", lines, confirm, 70, 7);
 }
 
 /// Chooses among several `.bin`/`.elf` candidates found in the project root.

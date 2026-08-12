@@ -133,7 +133,7 @@ fn erase_flash_requires_confirmation_showing_the_literal_command() {
     app.handle(key(KeyCode::Enter));
 
     match &app.overlay {
-        Some(Overlay::Confirm { message }) => {
+        Some(Overlay::Confirm { message, .. }) => {
             assert!(
                 message.contains("erase-flash"),
                 "confirmation must show the real command, not a paraphrase: {message}"
@@ -233,7 +233,7 @@ fn write_flash_end_to_end_succeeds_and_detects_the_chip() {
     }
     app.handle(key(KeyCode::Enter)); // request confirmation
     match &app.overlay {
-        Some(Overlay::Confirm { message }) => {
+        Some(Overlay::Confirm { message, .. }) => {
             assert!(message.contains("write-flash"));
             assert!(message.contains("app.bin"));
             assert!(message.contains("0x1000"));
@@ -300,7 +300,7 @@ fn write_flash_without_a_chip_or_offset_stays_on_options_instead_of_confirming()
     app.handle(key(KeyCode::Right));
     app.handle(key(KeyCode::Enter));
     match &app.overlay {
-        Some(Overlay::Confirm { message }) => assert!(
+        Some(Overlay::Confirm { message, .. }) => assert!(
             !message.contains("write-flash  ") && !message.contains("write-flash \""),
             "offset must not be blank in the confirmed command: {message}"
         ),
@@ -525,7 +525,7 @@ fn downloading_online_firmware_offers_the_erase_and_flash_chain() {
         "firmware-bytes"
     );
     match &app.overlay {
-        Some(Overlay::Confirm { message }) => assert!(
+        Some(Overlay::Confirm { message, .. }) => assert!(
             message.contains("erase-flash"),
             "must show the literal command, not a paraphrase: {message}"
         ),

@@ -86,6 +86,7 @@ pub enum Overlay {
     /// a paraphrase.
     Confirm {
         message: String,
+        confirm: bool,
     },
     /// Firmware file selection when more than one `.bin`/`.elf` was found in
     /// `firmware/`.
@@ -105,6 +106,12 @@ pub enum Overlay {
     ConfirmDownloadOverwrite {
         url: String,
         dest: PathBuf,
+        confirm: bool,
+    },
+    /// Ask for confirmation before uploading a file.
+    ConfirmUpload {
+        name: String,
+        confirm: bool,
     },
     /// The text file under the cursor in the files pane (`enter`): a small
     /// menu of what to do with it. Which three actions show up depends on
@@ -905,8 +912,9 @@ impl App {
                 });
             }
             (Side::Local, FileAction::SendToDevice) => {
-                self.dispatch_browser(|browser, processes, port| {
-                    browser.request_upload(name, processes, port)
+                self.overlay = Some(Overlay::ConfirmUpload {
+                    name: name.to_string(),
+                    confirm: false,
                 });
             }
             (Side::Local, FileAction::Delete) => {
@@ -1337,7 +1345,11 @@ impl App {
             return;
         };
         if dest.exists() {
-            self.overlay = Some(Overlay::ConfirmDownloadOverwrite { url, dest });
+            self.overlay = Some(Overlay::ConfirmDownloadOverwrite {
+                url,
+                dest,
+                confirm: false,
+            });
         } else {
             self.start_download(url, dest);
         }
@@ -1436,7 +1448,10 @@ impl App {
             let message = flash
                 .command_preview(action, port.as_deref())
                 .unwrap_or_else(|| "(command unavailable)".to_string());
-            self.overlay = Some(Overlay::Confirm { message });
+            self.overlay = Some(Overlay::Confirm {
+                message,
+                confirm: false,
+            });
             self.flash = Some(flash);
         } else {
             let notices = flash.run(action, &mut self.processes, port.as_deref());
@@ -1695,14 +1710,35 @@ impl App {
                     _ => {}
                 }
             }
-            Overlay::Confirm { .. } => match key.code {
-                KeyCode::Enter | KeyCode::Char('y') => {
+            Overlay::Confirm {
+                ref message,
+                confirm,
+            } => match key.code {
+                KeyCode::Left
+                | KeyCode::Right
+                | KeyCode::Tab
+                | KeyCode::BackTab
+                | KeyCode::Char('h' | 'l') => {
+                    self.overlay = Some(Overlay::Confirm {
+                        message: message.clone(),
+                        confirm: !confirm,
+                    });
+                }
+                KeyCode::Char('y') => {
                     self.overlay = None;
                     self.confirm_flash_action();
                 }
-                KeyCode::Esc | KeyCode::Char('n' | 'q') => {
+                KeyCode::Char('n' | 'q') | KeyCode::Esc => {
                     self.overlay = None;
                     if let Some(flash) = &mut self.flash {
+                        flash.cancel_pending();
+                    }
+                }
+                KeyCode::Enter => {
+                    self.overlay = None;
+                    if confirm {
+                        self.confirm_flash_action();
+                    } else if let Some(flash) = &mut self.flash {
                         flash.cancel_pending();
                     }
                 }
@@ -1757,12 +1793,65 @@ impl App {
                     _ => {}
                 }
             }
-            Overlay::ConfirmDownloadOverwrite { url, dest } => match key.code {
-                KeyCode::Enter | KeyCode::Char('y') => {
+            Overlay::ConfirmDownloadOverwrite {
+                ref url,
+                ref dest,
+                confirm,
+            } => match key.code {
+                KeyCode::Left
+                | KeyCode::Right
+                | KeyCode::Tab
+                | KeyCode::BackTab
+                | KeyCode::Char('h' | 'l') => {
+                    self.overlay = Some(Overlay::ConfirmDownloadOverwrite {
+                        url: url.clone(),
+                        dest: dest.clone(),
+                        confirm: !confirm,
+                    });
+                }
+                KeyCode::Char('y') => {
                     self.overlay = None;
+                    let (url, dest) = (url.clone(), dest.clone());
                     self.start_download(url, dest);
                 }
-                KeyCode::Esc | KeyCode::Char('n' | 'q') => self.overlay = None,
+                KeyCode::Char('n' | 'q') | KeyCode::Esc => self.overlay = None,
+                KeyCode::Enter => {
+                    self.overlay = None;
+                    if confirm {
+                        let (url, dest) = (url.clone(), dest.clone());
+                        self.start_download(url, dest);
+                    }
+                }
+                _ => {}
+            },
+            Overlay::ConfirmUpload { ref name, confirm } => match key.code {
+                KeyCode::Left
+                | KeyCode::Right
+                | KeyCode::Tab
+                | KeyCode::BackTab
+                | KeyCode::Char('h' | 'l') => {
+                    self.overlay = Some(Overlay::ConfirmUpload {
+                        name: name.clone(),
+                        confirm: !confirm,
+                    });
+                }
+                KeyCode::Char('y') => {
+                    self.overlay = None;
+                    let name = name.clone();
+                    self.dispatch_browser(|browser, processes, port| {
+                        browser.request_upload(&name, processes, port)
+                    });
+                }
+                KeyCode::Char('n' | 'q') | KeyCode::Esc => self.overlay = None,
+                KeyCode::Enter => {
+                    self.overlay = None;
+                    if confirm {
+                        let name = name.clone();
+                        self.dispatch_browser(|browser, processes, port| {
+                            browser.request_upload(&name, processes, port)
+                        });
+                    }
+                }
                 _ => {}
             },
             Overlay::FileActions {
@@ -2090,15 +2179,18 @@ impl App {
             ) => {
                 vec![("↑/↓", "select"), ("enter", "apply"), ("esc", "cancel")]
             }
-            Some(Overlay::Confirm { .. } | Overlay::ConfirmDownloadOverwrite { .. } | Overlay::ConfirmDelete { .. }) => {
-                vec![("y/enter", "confirm"), ("n/esc", "cancel")]
-            }
-            Some(Overlay::ConfirmRestartDevice { .. }) => {
+            Some(
+                Overlay::Confirm { .. }
+                | Overlay::ConfirmDownloadOverwrite { .. }
+                | Overlay::ConfirmDelete { .. }
+                | Overlay::ConfirmUpload { .. }
+                | Overlay::ConfirmRestartDevice { .. },
+            ) => {
                 vec![
                     ("←/→", "choose"),
                     ("enter", "confirm"),
-                    ("y/n", "restart/skip"),
-                    ("esc", "skip"),
+                    ("y/n", "quick reply"),
+                    ("esc", "cancel"),
                 ]
             }
             None => match self.view {
