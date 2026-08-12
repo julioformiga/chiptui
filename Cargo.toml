@@ -17,6 +17,12 @@ ratatui = "0.30.2"
 # Local half of the content check: the device side is hashed by
 # `mpremote fs sha256sum`, and std has no hashing to match it with.
 sha2 = { version = "0.11.0", default-features = false }
+# Log-pane timestamps read in the operator's local wall-clock time; std has no
+# notion of the local UTC offset. `local-offset` reads it from the OS once at
+# startup, before any other thread exists --- see `logs::LogStore` module docs
+# for why that ordering matters (the lookup is unsound once the process is
+# multi-threaded).
+time = { version = "0.3", features = ["local-offset"] }
 
 [lints.clippy]
 all = { level = "deny", priority = -1 }

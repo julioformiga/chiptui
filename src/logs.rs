@@ -1,11 +1,16 @@
 //! In-memory log/status buffer backing the log pane.
 //!
-//! Timestamps are relative to application start (monotonic `Instant`), which
-//! avoids a date/time dependency and is the more useful reading for "how long
-//! did that build take".
+//! Timestamps are wall-clock, in the operator's local time zone, so entries
+//! read against the system clock rather than time-since-launch. The offset
+//! defaults to UTC and must be set once via [`LogStore::set_offset`] --- do
+//! that at startup, before any other thread exists. `time`'s local-offset
+//! lookup (`Cargo.toml`) reads the OS's `TZ` state via a C API that is
+//! unsound to call once the process is multi-threaded, so it is done a
+//! single time in `main` rather than per entry.
 
 use std::collections::VecDeque;
-use std::time::{Duration, Instant};
+
+use time::{OffsetDateTime, UtcOffset};
 
 /// Entries kept before the oldest are dropped. Sized so a verbose build's
 /// output stays scrollable without growing unbounded.
@@ -34,15 +39,15 @@ impl Level {
 #[derive(Debug, Clone)]
 pub struct LogEntry {
     pub level: Level,
-    /// Time since application start.
-    pub at: Duration,
+    /// Wall-clock time the entry was pushed, in `LogStore`'s configured offset.
+    pub at: OffsetDateTime,
     pub message: String,
 }
 
 pub struct LogStore {
     entries: VecDeque<LogEntry>,
     capacity: usize,
-    started: Instant,
+    offset: UtcOffset,
     /// Lines scrolled up from the bottom. Zero means "following the tail".
     scroll: usize,
 }
@@ -52,9 +57,15 @@ impl LogStore {
         Self {
             entries: VecDeque::with_capacity(capacity.min(256)),
             capacity,
-            started: Instant::now(),
+            offset: UtcOffset::UTC,
             scroll: 0,
         }
+    }
+
+    /// Sets the offset applied to entries pushed from now on. See the module
+    /// docs for why this must run once, at startup, before any other thread.
+    pub fn set_offset(&mut self, offset: UtcOffset) {
+        self.offset = offset;
     }
 
     pub fn push(&mut self, level: Level, message: impl Into<String>) {
@@ -63,7 +74,7 @@ impl LogStore {
         }
         self.entries.push_back(LogEntry {
             level,
-            at: self.started.elapsed(),
+            at: OffsetDateTime::now_utc().to_offset(self.offset),
             message: message.into(),
         });
 

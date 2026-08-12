@@ -232,9 +232,15 @@ pub fn draw_logs(frame: &mut Frame, area: Rect, app: &mut App) {
                 Level::Warn => Style::new().fg(Color::Yellow),
                 Level::Error => Style::new().fg(Color::Red),
             };
+            let centis = entry.at.millisecond() / 10;
             Line::from(vec![
                 Span::styled(
-                    format!("{:>7.2}s ", entry.at.as_secs_f32()),
+                    format!(
+                        "{:02}:{:02}:{:02}.{centis:02} ",
+                        entry.at.hour(),
+                        entry.at.minute(),
+                        entry.at.second()
+                    ),
                     Style::new().dim(),
                 ),
                 Span::styled(format!("{} ", entry.level.marker()), style),

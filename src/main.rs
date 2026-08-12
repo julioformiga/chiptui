@@ -24,7 +24,13 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<()> {
+    // Captured first, before `app.bootstrap()` logs anything and before any
+    // other thread exists: `time`'s local-offset lookup (`logs::LogStore`
+    // module docs) is unsound once the process is multi-threaded.
+    let offset = time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC);
+
     let mut app = app_from_cwd()?;
+    app.logs.set_offset(offset);
     // Detection runs before the terminal is taken over: if it fails, the error
     // is logged into the pane rather than lost behind the alternate screen.
     app.bootstrap();
