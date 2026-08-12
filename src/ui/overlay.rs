@@ -33,6 +33,9 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
         Overlay::ConfirmRestartDevice { confirm } => {
             draw_confirm_restart_device(frame, area, app, confirm)
         }
+        Overlay::ConfirmDelete { side, name, confirm } => {
+            draw_confirm_delete(frame, area, side, &name, confirm)
+        }
     }
 }
 
@@ -59,6 +62,43 @@ fn draw_confirm_restart_device(frame: &mut Frame, area: Rect, app: &App, confirm
         Line::from("Restart it now?".fg(Color::Yellow)),
         Line::from(""),
         Line::from(command.to_string().dim()),
+    ];
+    frame.render_widget(
+        Paragraph::new(message).alignment(Alignment::Center),
+        message_area,
+    );
+
+    let [no_area, _gap, yes_area] = Layout::horizontal([
+        Constraint::Length(10),
+        Constraint::Length(4),
+        Constraint::Length(10),
+    ])
+    .flex(Flex::Center)
+    .areas(buttons_area);
+
+    draw_dialog_button(frame, no_area, "No", !confirm);
+    draw_dialog_button(frame, yes_area, "Yes", confirm);
+}
+
+fn draw_confirm_delete(frame: &mut Frame, area: Rect, side: crate::browser::Side, name: &str, confirm: bool) {
+    let side_str = match side {
+        crate::browser::Side::Local => "locally",
+        crate::browser::Side::Device => "from device",
+    };
+    let title = "Confirm Delete";
+    
+    let popup = centered(area, 54.min(area.width), 9);
+    frame.render_widget(Clear, popup);
+    let block = modal(title);
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let [message_area, buttons_area] =
+        Layout::vertical([Constraint::Length(4), Constraint::Length(3)]).areas(inner);
+
+    let message = vec![
+        Line::from(format!("Delete '{}'?", name).fg(Color::Yellow)),
+        Line::from(format!("This will remove it {}.", side_str).dim()),
     ];
     frame.render_widget(
         Paragraph::new(message).alignment(Alignment::Center),

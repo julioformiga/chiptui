@@ -50,6 +50,11 @@ pub fn upload(port: Option<&str>, local_path: &Path, remote: &DevicePath) -> Com
         .arg(remote.as_arg())
 }
 
+/// `mpremote [connect PORT] fs rm :PATH` --- removes a file from the device.
+pub fn rm(port: Option<&str>, path: &DevicePath) -> Command {
+    filesystem(port, "rm").arg(path.as_arg())
+}
+
 /// `mpremote [connect PORT] soft-reset` --- reboots MicroPython without a
 /// full hardware reset, re-running `boot.py`/`main.py` so a file just
 /// uploaded actually takes effect. Not under `fs`: `soft-reset` is a

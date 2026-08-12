@@ -90,6 +90,8 @@ enum Request {
         target: DevicePath,
         after_edit: bool,
     },
+    /// `rm :remote` to delete a device file.
+    RemoveDevice(DevicePath),
     /// `soft-reset`, offered after a post-edit re-upload lands.
     Reset,
 }
@@ -600,6 +602,19 @@ impl Browser {
         notices
     }
 
+    /// Queues a deletion of a device file.
+    pub fn request_remove_device(
+        &mut self,
+        name: &str,
+        processes: &mut ProcessManager,
+        port: Option<&str>,
+    ) -> Vec<Notice> {
+        let target = self.device_path.join(name);
+        let mut notices = vec![(Level::Info, format!("removing {target}"))];
+        notices.extend(self.enqueue(Request::RemoveDevice(target), processes, port));
+        notices
+    }
+
     /// Queues a request, starting it if the device is free.
     fn enqueue(
         &mut self,
@@ -631,6 +646,7 @@ impl Browser {
             Request::Upload {
                 local_path, target, ..
             } => commands::upload(port, local_path, target),
+            Request::RemoveDevice(path) => commands::rm(port, &path),
             Request::Reset => commands::soft_reset(port),
         };
         let command = match &self.tool_path {
@@ -899,6 +915,24 @@ impl Browser {
                     }
                 }
             }
+            Request::RemoveDevice(path) => match failure {
+                Some(error) => {
+                    self.rescan_if_device_lost(output, &mut update.notices);
+                    update
+                        .notices
+                        .push((Level::Error, format!("{}: remove failed: {error}", path)));
+                }
+                None => {
+                    update
+                        .notices
+                        .push((Level::Success, format!("{} removed", path)));
+                    // Reload current dir
+                    let dir = path.parent().unwrap_or(crate::device::DevicePath::root());
+                    if self.device_path == dir {
+                        self.queue.push_front(Request::List(dir));
+                    }
+                }
+            },
 
             Request::Reset => match failure {
                 Some(error) => {

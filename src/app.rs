@@ -129,6 +129,12 @@ pub enum Overlay {
     ConfirmRestartDevice {
         confirm: bool,
     },
+    /// Ask for confirmation before deleting a file.
+    ConfirmDelete {
+        side: Side,
+        name: String,
+        confirm: bool,
+    },
 }
 
 /// One action offered by [`Overlay::FileActions`] for the file under the
@@ -141,6 +147,7 @@ pub enum FileAction {
     Download,
     View,
     Edit,
+    Delete,
 }
 
 impl FileAction {
@@ -150,14 +157,15 @@ impl FileAction {
             Self::Download => "📥 Download",
             Self::View => "👁  View",
             Self::Edit => "📝 Edit",
+            Self::Delete => "🗑  Delete",
         }
     }
 
     /// The three actions offered for a file in `side`, in menu order.
     pub fn for_side(side: Side) -> &'static [FileAction] {
         match side {
-            Side::Local => &[Self::SendToDevice, Self::View, Self::Edit],
-            Side::Device => &[Self::Download, Self::View, Self::Edit],
+            Side::Local => &[Self::SendToDevice, Self::View, Self::Edit, Self::Delete],
+            Side::Device => &[Self::Download, Self::View, Self::Edit, Self::Delete],
         }
     }
 }
@@ -901,6 +909,13 @@ impl App {
                     browser.request_upload(name, processes, port)
                 });
             }
+            (Side::Local, FileAction::Delete) => {
+                self.overlay = Some(Overlay::ConfirmDelete {
+                    side: Side::Local,
+                    name: name.to_string(),
+                    confirm: false,
+                });
+            }
             (Side::Device, FileAction::View) => self.open_device_file_viewer(name),
             (Side::Device, FileAction::Download) => {
                 self.dispatch_browser(|browser, processes, port| {
@@ -912,9 +927,40 @@ impl App {
                     browser.request_edit_download(name, processes, port)
                 });
             }
+            (Side::Device, FileAction::Delete) => {
+                self.overlay = Some(Overlay::ConfirmDelete {
+                    side: Side::Device,
+                    name: name.to_string(),
+                    confirm: false,
+                });
+            }
             // `FileAction::for_side` never offers `Download` on `Local` or
             // `SendToDevice` on `Device`.
             (Side::Local, FileAction::Download) | (Side::Device, FileAction::SendToDevice) => {}
+        }
+    }
+
+    fn delete_file(&mut self, side: Side, name: &str) {
+        match side {
+            Side::Local => {
+                if let Some(browser) = &mut self.browser {
+                    let path = browser.local_path.join(name);
+                    match std::fs::remove_file(&path) {
+                        Ok(_) => {
+                            self.logs.success(format!("{} removed", path.display()));
+                            browser.reload_local();
+                        }
+                        Err(e) => {
+                            self.logs.error(format!("{}: remove failed: {e}", path.display()));
+                        }
+                    }
+                }
+            }
+            Side::Device => {
+                self.dispatch_browser(|browser, processes, port| {
+                    browser.request_remove_device(name, processes, port)
+                });
+            }
         }
     }
 
@@ -1810,6 +1856,41 @@ impl App {
                 KeyCode::Esc | KeyCode::Char('q') => self.overlay = None,
                 _ => {}
             },
+            Overlay::ConfirmDelete {
+                side,
+                ref name,
+                confirm,
+            } => match key.code {
+                KeyCode::Left
+                | KeyCode::Right
+                | KeyCode::Tab
+                | KeyCode::BackTab
+                | KeyCode::Char('h' | 'l') => {
+                    self.overlay = Some(Overlay::ConfirmDelete {
+                        side,
+                        name: name.clone(),
+                        confirm: !confirm,
+                    });
+                }
+                KeyCode::Char('y') => {
+                    let side = side;
+                    let name = name.clone();
+                    self.overlay = None;
+                    self.delete_file(side, &name);
+                }
+                KeyCode::Char('n') => self.overlay = None,
+                KeyCode::Enter => {
+                    let side = side;
+                    let name = name.clone();
+                    let do_it = confirm;
+                    self.overlay = None;
+                    if do_it {
+                        self.delete_file(side, &name);
+                    }
+                }
+                KeyCode::Esc | KeyCode::Char('q') => self.overlay = None,
+                _ => {}
+            },
         }
     }
 
@@ -2009,7 +2090,7 @@ impl App {
             ) => {
                 vec![("↑/↓", "select"), ("enter", "apply"), ("esc", "cancel")]
             }
-            Some(Overlay::Confirm { .. } | Overlay::ConfirmDownloadOverwrite { .. }) => {
+            Some(Overlay::Confirm { .. } | Overlay::ConfirmDownloadOverwrite { .. } | Overlay::ConfirmDelete { .. }) => {
                 vec![("y/enter", "confirm"), ("n/esc", "cancel")]
             }
             Some(Overlay::ConfirmRestartDevice { .. }) => {
