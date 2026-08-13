@@ -1827,6 +1827,67 @@ fn esc_and_n_also_decline_the_restart_prompt() {
 }
 
 #[test]
+fn shift_r_opens_the_restart_prompt_from_anywhere() {
+    use ratatui::crossterm::event::KeyCode;
+
+    let project = Project::new("shift-r-restart");
+    let mut app = app_in_browser(&project);
+    // Not a files pane --- proves it is a global binding, like 'm'/'d'.
+    app.focus = Focus::Project;
+
+    app.handle(key(KeyCode::Char('R')));
+
+    assert_eq!(
+        app.overlay,
+        Some(Overlay::ConfirmRestartDevice { confirm: false }),
+        "shift+r should offer a restart directly, without going through an edit first"
+    );
+}
+
+#[test]
+fn opening_the_monitor_moves_focus_onto_the_log_pane() {
+    use ratatui::crossterm::event::KeyCode;
+
+    let project = Project::new("monitor-focus");
+    let mut app = app_in_browser(&project);
+    app.focus = Focus::FilesDevice;
+
+    app.handle(key(KeyCode::Char('m')));
+
+    assert_eq!(
+        app.focus,
+        Focus::Logs,
+        "opening the monitor should move focus onto it, or the keystrokes \
+         that follow still go to the pane the user was on before"
+    );
+    assert_eq!(app.log_tab, chiptui::app::LogTab::Monitor);
+}
+
+#[test]
+fn the_footer_swaps_to_the_repl_exit_hint_while_a_monitor_session_is_active() {
+    let project = Project::new("monitor-footer");
+    let mut app = app_in_browser(&project);
+    app.focus = Focus::Logs;
+    app.log_tab = chiptui::app::LogTab::Monitor;
+
+    // `MonitorSource` defaults to `Device`, and `device_monitor_process`
+    // only needs to be *some* live id --- what it runs is irrelevant to
+    // `shortcuts()`, which just checks whether a session is active.
+    let id = app.processes.spawn(
+        chiptui::process::Command::new(fake_mpremote()),
+        std::time::Duration::from_secs(20),
+    );
+    app.device_monitor_process = Some(id);
+
+    let keys: Vec<&str> = app.shortcuts().iter().map(|(k, _)| *k).collect();
+    assert_eq!(
+        keys,
+        vec!["ctrl+]", "type"],
+        "every other binding is unreachable while the REPL owns the keyboard"
+    );
+}
+
+#[test]
 fn sending_a_local_file_to_the_device_uploads_it() {
     use ratatui::crossterm::event::KeyCode;
 

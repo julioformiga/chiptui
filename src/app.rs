@@ -752,13 +752,20 @@ impl App {
         }
     }
 
-    fn on_key(&mut self, key: KeyEvent) {
-        let is_monitor_active = self.focus == Focus::Logs
+    /// Whether an interactive device REPL/monitor session is currently
+    /// eating every keystroke --- shared by [`App::on_key`] (to route bytes
+    /// into the pty instead of dashboard navigation) and [`App::shortcuts`]
+    /// (so the footer stops advertising bindings that cannot fire while this
+    /// is true).
+    fn is_monitor_active(&self) -> bool {
+        self.focus == Focus::Logs
             && self.log_tab == LogTab::Monitor
             && self.monitor_source == MonitorSource::Device
-            && self.device_monitor_process.is_some();
+            && self.device_monitor_process.is_some()
+    }
 
-        if is_monitor_active {
+    fn on_key(&mut self, key: KeyEvent) {
+        if self.is_monitor_active() {
             if let Some((id, bytes)) = self.device_monitor_process.zip(key_to_bytes(key)) {
                 self.processes.write_stdin(id, &bytes);
             }
@@ -854,6 +861,14 @@ impl App {
                 self.open_monitor();
                 return;
             }
+            // Capital so it never collides with plain `r` (re-detect / reload
+            // pane) --- a restart interrupts whatever the board is doing, so
+            // it goes through the same confirm-first dialog as the
+            // post-edit-reupload prompt rather than firing immediately.
+            KeyCode::Char('R') if self.manager.capabilities().contains(Capability::Reset) => {
+                self.overlay = Some(Overlay::ConfirmRestartDevice { confirm: false });
+                return;
+            }
             _ => {}
         }
 
@@ -927,6 +942,14 @@ impl App {
 
     /// Keybindings for the current context, rendered in the footer.
     pub fn shortcuts(&self) -> Vec<(&'static str, &'static str)> {
+        // Every other binding below is a lie while the REPL owns the
+        // keyboard: `on_key` forwards raw bytes into the pty instead of
+        // dispatching them, so the footer must switch to the one escape that
+        // actually works (`mpremote repl`'s own, via `key_to_bytes`'s
+        // generic Ctrl+letter handling).
+        if self.is_monitor_active() {
+            return vec![("ctrl+]", "exit REPL/monitor"), ("type", "send to device")];
+        }
         match self.overlay {
             Some(Overlay::Help) => vec![("esc", "close")],
             Some(Overlay::FileViewer) => vec![
@@ -1013,6 +1036,12 @@ impl App {
                     keys.push(("o", "backend"));
                     if caps.contains(Capability::Flash) || caps.contains(Capability::EraseFlash) {
                         keys.push(("x", "flash"));
+                    }
+                    if caps.contains(Capability::Monitor) {
+                        keys.push(("m", "monitor/REPL"));
+                    }
+                    if caps.contains(Capability::Reset) {
+                        keys.push(("shift+r", "restart device"));
                     }
                     if self.focus == Focus::Logs {
                         if caps.contains(Capability::Monitor) {

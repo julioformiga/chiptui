@@ -197,6 +197,9 @@ impl App {
             .backend()
             .and_then(|b| b.monitor_command(port.as_deref()))
         {
+            // Otherwise the process starts receiving keystrokes only once the
+            // user separately tabs over to the pane that just opened for it.
+            self.focus = super::Focus::Logs;
             self.log_tab = LogTab::Monitor;
             self.monitor_source = MonitorSource::Device;
             self.device_monitor_output.clear();

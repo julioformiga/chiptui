@@ -102,15 +102,17 @@ fn draw_confirm_dialog(
     draw_dialog_button(frame, yes_area, "Yes", confirm);
 }
 
+// Reached two ways now: right after a post-edit reupload lands, and from the
+// standalone `shift+r` binding --- the wording stays generic so neither
+// caller needs a variant of its own just to describe why it fired.
 fn draw_confirm_restart_device(frame: &mut Frame, area: Rect, app: &App, confirm: bool) {
     let command = crate::backend::micropython::commands::soft_reset(app.devices.selected_port());
     let message = vec![
-        Line::from("The edited file was uploaded to the device.".fg(Color::Yellow)),
-        Line::from("Restart it now?".fg(Color::Yellow)),
+        Line::from("Restart the device now (soft-reset)?".fg(Color::Yellow)),
         Line::from(""),
         Line::from(command.to_string().dim()),
     ];
-    draw_confirm_dialog(frame, area, "Restart device?", message, confirm, 54, 9);
+    draw_confirm_dialog(frame, area, "Restart device?", message, confirm, 54, 8);
 }
 
 fn draw_confirm_erase_for_micropython(frame: &mut Frame, area: Rect, confirm: bool) {
@@ -564,6 +566,14 @@ fn draw_help(frame: &mut Frame, area: Rect, app: &App) {
             (
                 "i",
                 "on the device pane: install a package via mip (when the backend supports it)",
+            ),
+            (
+                "m",
+                "open the device monitor/REPL (when the backend supports it); ctrl+] exits it",
+            ),
+            (
+                "shift+r",
+                "restart the device with a soft-reset (when the backend supports it)",
             ),
             ("e", "in the file viewer: edit with $EDITOR"),
             ("?", "toggle this help"),
