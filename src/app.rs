@@ -1039,6 +1039,7 @@ impl App {
                         keys.push(("r", "reload"));
                         keys.push(("a", "new"));
                         keys.push(("c", "compare"));
+                        keys.push(("shift+s", "sync"));
                         keys.push(("h", "hidden"));
                         if self.focus == Focus::FilesDevice
                             && caps.contains(Capability::PackageInstall)
