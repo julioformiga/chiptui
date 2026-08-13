@@ -1,0 +1,37 @@
+#!/bin/sh
+# A second, different MicroPython board: same port naming as `mpremote`, but
+# no `lib/` --- only `boot.py`. Used to reproduce a hotplug swap (device A
+# disconnected, device B connected on the same/another port) and assert the
+# browser does not keep serving device A's cached listing. See
+# tests/fixtures/bin/mpremote for the populated-board counterpart.
+
+args="$*"
+
+case "$args" in
+    "connect "*) args=$(printf '%s' "$args" | cut -d' ' -f3-) ;;
+esac
+
+case "$args" in
+    devs)
+        printf '/dev/ttyACM0 aa11bb22cc33dd44 2e8a:0005 MicroPython Board in FS mode\n'
+        ;;
+
+    "fs --no-verbose ls :/")
+        printf '%12d %s\n' 9 'boot.py'
+        ;;
+
+    "fs --no-verbose ls :/lib")
+        echo 'mpremote: ls: No such file or directory.' >&2
+        exit 1
+        ;;
+
+    df)
+        printf '%s\n' 'filesystem     size     used    avail use% mounted on'
+        printf '%s %9d %8d %8d %4d %s\n' 'vfs       ' 524288 65536 458752 12 '/'
+        ;;
+
+    *)
+        echo "mpremote: no device found" >&2
+        exit 1
+        ;;
+esac

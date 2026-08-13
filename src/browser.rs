@@ -940,6 +940,14 @@ impl Browser {
                             count => format!("found {count} devices — press 'd' to choose"),
                         },
                     ));
+                    // A scan can follow a hotplug swap on the very same port,
+                    // so a cached listing, free-space reading or verdict from
+                    // whatever was previously connected must not survive it
+                    // (`load_device_root` reuses the cache and would otherwise
+                    // show the old board's files under the new one).
+                    self.cache.clear();
+                    self.verdicts.clear();
+                    self.device_space = None;
                     update.device_scan = Some(Ok(devices));
                 }
             },

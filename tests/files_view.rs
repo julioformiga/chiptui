@@ -36,6 +36,15 @@ fn fake_mpremote_no_devices() -> String {
     )
 }
 
+/// A different board from `fake_mpremote`'s: no `lib/`, only `boot.py`. Used
+/// to simulate a hotplug swap.
+fn fake_mpremote_second_board() -> String {
+    format!(
+        "{}/tests/fixtures/bin/mpremote-second-board",
+        env!("CARGO_MANIFEST_DIR")
+    )
+}
+
 /// A local project laid out to exercise every comparison outcome against the
 /// device listing the fake returns.
 struct Project {
@@ -110,6 +119,51 @@ fn lists_the_device_root() {
         ["lib", "device_only.py", "diff.py", "same.py"],
         "directories first, then files alphabetically"
     );
+}
+
+#[test]
+fn a_device_swap_does_not_serve_the_previous_boards_cached_listing() {
+    let project = Project::new("swap");
+    let (mut browser, mut processes) = browser_for(&project);
+
+    // Board A: list the root, populating the cache with a `lib/` entry.
+    browser.load_device(&mut processes, None, false);
+    settle(&mut browser, &mut processes);
+    let names: Vec<&str> = browser
+        .visible_device()
+        .iter()
+        .map(|entry| entry.name.as_str())
+        .collect();
+    assert!(names.contains(&"lib"), "board A has a lib/ directory");
+
+    // Board A disconnects and board B (no lib/) connects: a rescan is the
+    // only signal of the swap `App::check_device_hotplug` gets.
+    browser.set_tool_path(fake_mpremote_second_board());
+    browser.scan_devices(&mut processes, None);
+    settle(&mut browser, &mut processes);
+
+    // Landing back on the sole device without forcing a reload mirrors
+    // `App::load_device_root` --- it must not reuse board A's cached listing.
+    browser.load_device(&mut processes, None, false);
+    settle(&mut browser, &mut processes);
+
+    let names: Vec<&str> = browser
+        .visible_device()
+        .iter()
+        .map(|entry| entry.name.as_str())
+        .collect();
+    assert_eq!(
+        names,
+        ["boot.py"],
+        "board B's real listing, not board A's stale cache"
+    );
+    let free = browser
+        .device_space
+        .as_ref()
+        .expect("free space refetched for the new connection")
+        .as_ref()
+        .expect("the fake mpremote's df output parses");
+    assert_eq!(free.total, 524_288, "board B's own df, not board A's");
 }
 
 #[test]
