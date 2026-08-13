@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use chiptui::app::{App, Focus, Overlay, PendingEdit, ViewerSource, ViewerState};
 use chiptui::backend::BackendKind;
-use chiptui::browser::{Browser, PaneState, Side};
+use chiptui::browser::{Browser, PaneState, Side, SyncPlan};
 use chiptui::device::DevicePath;
 use chiptui::event::AppEvent;
 use chiptui::files::SyncStatus;
@@ -1959,5 +1959,83 @@ fn sending_a_local_directory_to_the_device_via_the_dialog() {
             .visible(20)
             .any(|entry| entry.message.contains("uploaded to")),
         "no success notice logged"
+    );
+}
+
+/// Drives the browser until a sync plan is produced (or the browser goes idle).
+fn settle_sync(browser: &mut Browser, processes: &mut ProcessManager) -> Option<SyncPlan> {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while browser.is_busy() && Instant::now() < deadline {
+        for event in processes.drain() {
+            let update = browser.on_process(&event, processes, None);
+            if let Some(plan) = update.sync_plan {
+                return Some(plan);
+            }
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(!browser.is_busy(), "sync walk never completed");
+    None
+}
+
+#[test]
+fn sync_walk_produces_a_plan() {
+    let project = Project::new("sync-plan");
+    let (mut browser, mut processes) = browser_for(&project);
+
+    browser.request_sync(&mut processes, None);
+    let plan =
+        settle_sync(&mut browser, &mut processes).expect("the sync walk should produce a plan");
+
+    // The local fixture has: same.py (12 B), diff.py (9 B), local_only.py,
+    // and an empty lib/ directory.
+    // The fake device root has: lib/, same.py (12 B), diff.py (9 B),
+    // device_only.py (42 B), and lib/simple.py (512 B).
+    //
+    // Uploads: local_only.py (not on device).
+    //   same.py and diff.py have matching sizes, so they are not flagged.
+    // Mkdirs: none (lib/ exists on both sides).
+    // Deletes: device_only.py and lib/simple.py (not local).
+    let upload_targets: Vec<&str> = plan.uploads.iter().map(|(_, d)| d.as_str()).collect();
+    assert!(
+        upload_targets.contains(&"/local_only.py"),
+        "uploads: {upload_targets:?}"
+    );
+    assert!(
+        !upload_targets.contains(&"/same.py"),
+        "same-size file should not be uploaded"
+    );
+
+    assert!(plan.mkdirs.is_empty(), "lib/ already exists on device");
+
+    let delete_paths: Vec<&str> = plan.deletes.iter().map(|p| p.as_str()).collect();
+    assert!(
+        delete_paths.contains(&"/device_only.py"),
+        "deletes: {delete_paths:?}"
+    );
+    assert!(
+        delete_paths.contains(&"/lib/simple.py"),
+        "deletes: {delete_paths:?}"
+    );
+}
+
+#[test]
+fn sync_execute_queues_uploads_and_deletes() {
+    let project = Project::new("sync-exec");
+    let (mut browser, mut processes) = browser_for(&project);
+
+    browser.request_sync(&mut processes, None);
+    let plan = settle_sync(&mut browser, &mut processes).expect("plan produced");
+
+    browser.execute_sync(&plan, true, &mut processes, None);
+    let messages = settle(&mut browser, &mut processes);
+
+    assert!(
+        messages.iter().any(|m| m.contains("uploaded to")),
+        "upload should have completed: {messages:?}"
+    );
+    assert!(
+        messages.iter().any(|m| m.contains("removed")),
+        "device-only file should have been removed: {messages:?}"
     );
 }

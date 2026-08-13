@@ -92,6 +92,52 @@ pub fn sort_remote(entries: &mut [RemoteEntry]) {
     });
 }
 
+/// Recursively walks `root`, returning every file and directory under it
+/// keyed by path relative to `root` (using `/` regardless of host OS so the
+/// result maps directly onto device paths). Hidden entries are skipped,
+/// mirroring the file browser's default.
+///
+/// Run synchronously like the rest of the local pane's I/O — acceptable for
+/// embedded-project trees (source files, not `node_modules`).
+pub fn walk_local(root: &Path) -> (BTreeMap<String, u64>, BTreeSet<String>) {
+    let mut files = BTreeMap::new();
+    let mut dirs = BTreeSet::new();
+    walk_local_into(root, root, &mut files, &mut dirs);
+    (files, dirs)
+}
+
+fn walk_local_into(
+    root: &Path,
+    dir: &Path,
+    files: &mut BTreeMap<String, u64>,
+    dirs: &mut BTreeSet<String>,
+) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if is_hidden(&name) {
+            continue;
+        }
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        let relative = entry
+            .path()
+            .strip_prefix(root)
+            .unwrap_or(&entry.path())
+            .to_string_lossy()
+            .replace('\\', "/");
+        if metadata.is_dir() {
+            dirs.insert(relative);
+            walk_local_into(root, &entry.path(), files, dirs);
+        } else {
+            files.insert(relative, metadata.len());
+        }
+    }
+}
+
 /// Dot-files, hidden by default so `.git/` does not drown out the comparison.
 pub fn is_hidden(name: &str) -> bool {
     name.starts_with('.')
@@ -576,5 +622,32 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
 
         assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn walk_local_finds_files_and_directories_recursively() {
+        let dir = std::env::temp_dir().join(format!("chiptui-walk-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("lib/nested")).unwrap();
+        std::fs::write(dir.join("main.py"), "print('hi')\n").unwrap(); // 12 bytes
+        std::fs::write(dir.join("lib/util.py"), "x = 1\n").unwrap(); // 6 bytes
+        std::fs::write(dir.join("lib/nested/deep.py"), "y = 2\n").unwrap(); // 6 bytes
+        std::fs::write(dir.join(".hidden"), "secret").unwrap();
+
+        let (files, dirs) = walk_local(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(files.len(), 3);
+        assert_eq!(files["main.py"], 12);
+        assert_eq!(files["lib/util.py"], 6);
+        assert_eq!(files["lib/nested/deep.py"], 6);
+        assert!(dirs.contains("lib"));
+        assert!(dirs.contains("lib/nested"));
+    }
+
+    #[test]
+    fn walk_local_on_a_missing_directory_is_empty() {
+        let (files, dirs) = walk_local(std::path::Path::new("/nonexistent-chiptui-walk"));
+        assert!(files.is_empty());
+        assert!(dirs.is_empty());
     }
 }

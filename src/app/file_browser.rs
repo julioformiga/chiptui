@@ -97,6 +97,7 @@ impl App {
                 Vec::new()
             }
             KeyCode::Char('c') => browser.verify_selected(&mut self.processes, port),
+            KeyCode::Char('S') => browser.request_sync(&mut self.processes, port),
             KeyCode::Char('i')
                 if browser.focus == Side::Device
                     && self

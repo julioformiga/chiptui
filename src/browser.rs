@@ -8,7 +8,7 @@
 //! Device commands are serialised --- `mpremote` opens the serial port
 //! exclusively, so two concurrent listings would fight over it.
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -31,6 +31,43 @@ const MAX_LOCAL_HASH_BYTES: u64 = 32 * 1024 * 1024;
 
 /// A message for the log pane.
 pub type Notice = (Level, String);
+
+/// A planned synchronization between the local tree and the device
+/// filesystem, built by walking both sides and comparing file sizes.
+///
+/// Size comparison means a file whose content changed without changing length
+/// (the case `SameSize` flags in the per-file view) will not appear here.
+/// The user can still verify individual files with `c` (sha256) before
+/// syncing; the sync itself stays fast by avoiding per-file hash round trips
+/// over serial.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyncPlan {
+    /// Directories to create on the device, parents first.
+    pub mkdirs: Vec<DevicePath>,
+    /// Files to upload: local path and device target.
+    pub uploads: Vec<(PathBuf, DevicePath)>,
+    /// Device-only files that would be deleted (only removed when the user
+    /// confirms in the preview overlay).
+    pub deletes: Vec<DevicePath>,
+}
+
+impl SyncPlan {
+    /// Whether there is nothing to do.
+    pub fn is_empty(&self) -> bool {
+        self.mkdirs.is_empty() && self.uploads.is_empty() && self.deletes.is_empty()
+    }
+}
+
+/// Internal state for an in-progress sync walk of the device filesystem.
+#[derive(Debug, Clone)]
+struct SyncState {
+    local_files: BTreeMap<String, u64>,
+    local_dirs: BTreeSet<String>,
+    device_files: BTreeMap<String, u64>,
+    device_dirs: BTreeSet<String>,
+    /// Directories whose `SyncList` result has not yet arrived.
+    pending: BTreeSet<DevicePath>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Side {
@@ -130,6 +167,9 @@ enum Request {
     /// `mip install PACKAGE` --- for the package-install prompt (`i` on the
     /// device pane). See [`Browser::request_mip_install`].
     MipInstall(String),
+    /// Recursive `ls` for building a [`SyncPlan`] --- like [`Request::List`]
+    /// but feeds into [`Browser::sync`] instead of the pane cache.
+    SyncList(DevicePath),
 }
 
 /// A device `cat` finished --- the viewer's content, or the reason it could
@@ -215,6 +255,10 @@ pub struct Browser {
 
     /// Overrides the `mpremote` executable. `None` means "resolve on PATH".
     tool_path: Option<String>,
+
+    /// Active sync walk, if [`Self::request_sync`] was called and the
+    /// resulting [`SyncPlan`] has not yet been produced.
+    sync: Option<SyncState>,
 }
 
 impl Browser {
@@ -237,6 +281,7 @@ impl Browser {
             in_flight: None,
             output: HashMap::new(),
             tool_path: None,
+            sync: None,
         };
         browser.reload_local();
         browser
@@ -794,6 +839,75 @@ impl Browser {
         notices
     }
 
+    /// Starts a batch sync: recursively walks the local tree and the device
+    /// filesystem, compares file sizes, and returns a [`SyncPlan`] for the
+    /// user to review (via [`BrowserUpdate::sync_plan`]). The plan is not
+    /// executed until [`Self::execute_sync`] is called.
+    ///
+    /// The local walk is synchronous (fast disk I/O); the device walk
+    /// serialises one `ls` per directory through the normal request queue,
+    /// so it respects serial exclusivity.
+    pub fn request_sync(
+        &mut self,
+        processes: &mut ProcessManager,
+        port: Option<&str>,
+    ) -> Vec<Notice> {
+        let (local_files, local_dirs) = files::walk_local(&self.local_path);
+        self.sync = Some(SyncState {
+            local_files,
+            local_dirs,
+            device_files: BTreeMap::new(),
+            device_dirs: BTreeSet::new(),
+            pending: BTreeSet::from([DevicePath::root()]),
+        });
+        let mut notices = vec![(Level::Info, "scanning device for sync".to_string())];
+        notices.extend(self.enqueue(Request::SyncList(DevicePath::root()), processes, port));
+        notices
+    }
+
+    /// Queues all operations from a confirmed [`SyncPlan`]. Directories are
+    /// created first (parents before children, courtesy of `BTreeSet` order),
+    /// then files are uploaded. Device-only files are deleted only when
+    /// `delete_extras` is true.
+    pub fn execute_sync(
+        &mut self,
+        plan: &SyncPlan,
+        delete_extras: bool,
+        processes: &mut ProcessManager,
+        port: Option<&str>,
+    ) -> Vec<Notice> {
+        let total = plan.mkdirs.len()
+            + plan.uploads.len()
+            + if delete_extras { plan.deletes.len() } else { 0 };
+        if total == 0 {
+            return vec![(
+                Level::Info,
+                "nothing to sync \u{2014} already in sync".to_string(),
+            )];
+        }
+
+        let mut notices = vec![(Level::Info, format!("syncing {total} operation(s)"))];
+
+        for dir in &plan.mkdirs {
+            self.queue.push_back(Request::Mkdir(dir.clone()));
+        }
+        for (local, target) in &plan.uploads {
+            self.queue.push_back(Request::Upload {
+                local_path: local.clone(),
+                target: target.clone(),
+                after_edit: false,
+            });
+        }
+        if delete_extras {
+            for path in &plan.deletes {
+                self.queue.push_back(Request::RemoveDevice(path.clone()));
+            }
+        }
+
+        notices.extend(self.pump(processes, port));
+        notices
+    }
+
     /// Queues a request, starting it if the device is free.
     fn enqueue(
         &mut self,
@@ -841,6 +955,7 @@ impl Browser {
             Request::Df => commands::df(port),
             Request::Run(path) => commands::run(port, path),
             Request::MipInstall(package) => commands::mip_install(port, package),
+            Request::SyncList(path) => commands::list_dir(port, path),
         };
         let command = match &self.tool_path {
             Some(program) => command.with_program(program),
@@ -1319,6 +1434,43 @@ impl Browser {
                     }
                 }
             },
+
+            Request::SyncList(path) => match failure {
+                Some(error) => {
+                    self.rescan_if_device_lost(output, update);
+                    self.sync = None;
+                    update
+                        .notices
+                        .push((Level::Error, format!("sync aborted at {path}: {error}")));
+                }
+                None => {
+                    let listing = parse::parse_listing(&output.stdout);
+                    let mut done = false;
+                    if let Some(sync) = &mut self.sync {
+                        sync.pending.remove(path);
+                        for entry in &listing.entries {
+                            if files::is_hidden(&entry.name) {
+                                continue;
+                            }
+                            let full = path.join(&entry.name);
+                            let relative =
+                                full.as_str().strip_prefix('/').unwrap_or("").to_string();
+                            if entry.is_dir {
+                                sync.device_dirs.insert(relative);
+                                if sync.pending.insert(full.clone()) {
+                                    self.queue.push_back(Request::SyncList(full));
+                                }
+                            } else {
+                                sync.device_files.insert(relative, entry.size);
+                            }
+                        }
+                        done = sync.pending.is_empty();
+                    }
+                    if done {
+                        update.sync_plan = Some(self.finish_sync());
+                    }
+                }
+            },
         }
     }
 
@@ -1332,6 +1484,47 @@ impl Browser {
         if dir == self.device_path {
             self.device_state = PaneState::Loading;
             self.queue.push_front(Request::List(dir));
+        }
+    }
+
+    /// Builds the final [`SyncPlan`] from the accumulated local and device
+    /// trees, consuming the [`SyncState`].
+    fn finish_sync(&mut self) -> SyncPlan {
+        let sync = self.sync.take().expect("sync state must exist to finish");
+
+        // BTreeSet iteration is sorted, so directories come parents-first.
+        let mkdirs: Vec<DevicePath> = sync
+            .local_dirs
+            .iter()
+            .filter(|d| !sync.device_dirs.contains(*d))
+            .map(|d| DevicePath::new(&format!("/{d}")))
+            .collect();
+
+        let uploads: Vec<(PathBuf, DevicePath)> = sync
+            .local_files
+            .iter()
+            .filter(|(rel, size)| match sync.device_files.get(*rel) {
+                None => true,
+                Some(device_size) => *device_size != **size,
+            })
+            .map(|(rel, _)| {
+                let local = self.local_path.join(rel);
+                let device = DevicePath::new(&format!("/{rel}"));
+                (local, device)
+            })
+            .collect();
+
+        let deletes: Vec<DevicePath> = sync
+            .device_files
+            .iter()
+            .filter(|(rel, _)| !sync.local_files.contains_key(*rel))
+            .map(|(rel, _)| DevicePath::new(&format!("/{rel}")))
+            .collect();
+
+        SyncPlan {
+            mkdirs,
+            uploads,
+            deletes,
         }
     }
 
@@ -1364,6 +1557,11 @@ impl Browser {
         self.in_flight.is_some()
     }
 
+    /// Whether a sync walk is in progress.
+    pub fn is_syncing(&self) -> bool {
+        self.sync.is_some()
+    }
+
     fn clamp_cursors(&mut self) {
         self.local_cursor = self
             .local_cursor
@@ -1384,10 +1582,12 @@ pub struct BrowserUpdate {
     pub device_view: Option<DeviceView>,
     /// Present when a `run` (the local file menu's "Run" action) finished.
     pub run_output: Option<RunOutput>,
-    /// Present when a download or upload finished.
+    /// Present when a transfer finished.
     pub transfer: Option<Transfer>,
     /// True if the device is present but did not respond to the command.
     pub prompt_micropython_flash: bool,
+    /// Present when a sync walk finished and produced a plan for review.
+    pub sync_plan: Option<SyncPlan>,
 }
 
 /// Where a device file bound for `$EDITOR` is downloaded to --- one scratch

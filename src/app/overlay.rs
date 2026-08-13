@@ -369,6 +369,23 @@ impl App {
                     |_| {},
                 );
             }
+            Overlay::SyncPreview { plan, confirm } => {
+                let accept_plan = plan.clone();
+                let has_deletes = !plan.deletes.is_empty();
+                self.dispatch_confirm(
+                    key.code,
+                    confirm,
+                    move |app, confirm| {
+                        app.overlay = Some(Overlay::SyncPreview { plan, confirm });
+                    },
+                    move |app| {
+                        app.dispatch_browser(|browser, processes, port| {
+                            browser.execute_sync(&accept_plan, has_deletes, processes, port)
+                        });
+                    },
+                    |_| {},
+                );
+            }
         }
     }
 

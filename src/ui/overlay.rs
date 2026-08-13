@@ -8,6 +8,7 @@ use ratatui::widgets::{Block, BorderType, Clear, List, ListItem, ListState, Para
 
 use crate::app::{App, FileAction, Overlay, PickerOption, View, ViewerState};
 use crate::backend::{BackendKind, Capabilities};
+use crate::browser::SyncPlan;
 use crate::highlight::{self, TokenKind};
 
 pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
@@ -58,6 +59,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
         } => draw_confirm_delete(frame, area, side, &name, is_dir, confirm),
         Overlay::CreateEntry { side, input } => draw_create_entry(frame, area, side, &input),
         Overlay::PackageInstall { input } => draw_package_install(frame, area, &input),
+        Overlay::SyncPreview { plan, confirm } => draw_sync_preview(frame, area, &plan, confirm),
     }
 }
 
@@ -561,6 +563,10 @@ fn draw_help(frame: &mut Frame, area: Rect, app: &App) {
                 "create a file, or a directory if the name ends with '/'",
             ),
             ("c", "compare the selected file by sha256"),
+            (
+                "shift+s",
+                "sync local files to the device (upload missing/changed)",
+            ),
             ("h", "show or hide dot-files in the file browser"),
             ("d", "scan for devices (when the backend has a filesystem)"),
             (
@@ -642,6 +648,71 @@ fn draw_picker(frame: &mut Frame, area: Rect, app: &App, selected: usize) {
         popup,
         &mut state,
     );
+}
+
+fn draw_sync_preview(frame: &mut Frame, area: Rect, plan: &SyncPlan, confirm: bool) {
+    let mut lines = Vec::new();
+
+    if plan.is_empty() {
+        lines.push(Line::from(
+            "Nothing to do \u{2014} local and device are in sync.".dim(),
+        ));
+        let height = 7u16;
+        draw_confirm_dialog(frame, area, "Sync preview", lines, confirm, 58, height);
+        return;
+    }
+
+    if !plan.uploads.is_empty() {
+        lines.push(Line::from(
+            format!("Upload {} file(s):", plan.uploads.len()).bold(),
+        ));
+        for (_, device) in plan.uploads.iter().take(8) {
+            lines.push(Line::from(format!("  \u{2192} {device}")));
+        }
+        if plan.uploads.len() > 8 {
+            lines.push(Line::from(
+                format!("  ... and {} more", plan.uploads.len() - 8).dim(),
+            ));
+        }
+        lines.push(Line::from(""));
+    }
+
+    if !plan.mkdirs.is_empty() {
+        lines.push(Line::from(
+            format!(
+                "Create {} director{}:",
+                plan.mkdirs.len(),
+                if plan.mkdirs.len() == 1 { "y" } else { "ies" }
+            )
+            .bold(),
+        ));
+        for dir in plan.mkdirs.iter().take(8) {
+            lines.push(Line::from(format!("  + {dir}/")));
+        }
+        if plan.mkdirs.len() > 8 {
+            lines.push(Line::from(
+                format!("  ... and {} more", plan.mkdirs.len() - 8).dim(),
+            ));
+        }
+        lines.push(Line::from(""));
+    }
+
+    if !plan.deletes.is_empty() {
+        lines.push(Line::from(
+            format!("Delete {} device-only file(s):", plan.deletes.len()).fg(Color::Yellow),
+        ));
+        for path in plan.deletes.iter().take(8) {
+            lines.push(Line::from(format!("  \u{2717} {path}").fg(Color::Yellow)));
+        }
+        if plan.deletes.len() > 8 {
+            lines.push(Line::from(
+                format!("  ... and {} more", plan.deletes.len() - 8).dim(),
+            ));
+        }
+    }
+
+    let height = (lines.len() as u16 + 5).min(area.height.saturating_sub(2));
+    draw_confirm_dialog(frame, area, "Sync preview", lines, confirm, 60, height);
 }
 
 fn modal(title: &str) -> Block<'static> {

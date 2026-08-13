@@ -182,6 +182,14 @@ pub enum Overlay {
     PackageInstall {
         input: String,
     },
+    /// A sync plan produced by [`Browser::request_sync`], awaiting the
+    /// user's review before execution (`S` in the file browser). Default
+    /// is No when the plan includes device-only file deletions, since
+    /// deleting is destructive (`SPEC.md` §15).
+    SyncPreview {
+        plan: crate::browser::SyncPlan,
+        confirm: bool,
+    },
 }
 
 /// One action offered by [`Overlay::FileActions`] for the entry under the
@@ -710,6 +718,12 @@ impl App {
             if let Some(transfer) = update.transfer {
                 self.apply_transfer(transfer);
             }
+            if let Some(plan) = update.sync_plan {
+                self.overlay = Some(Overlay::SyncPreview {
+                    plan,
+                    confirm: false,
+                });
+            }
         }
 
         if let Some(mut flash) = self.flash.take() {
@@ -981,7 +995,8 @@ impl App {
                 | Overlay::ConfirmDelete { .. }
                 | Overlay::ConfirmUpload { .. }
                 | Overlay::ConfirmRestartDevice { .. }
-                | Overlay::ConfirmEraseForMicroPython { .. },
+                | Overlay::ConfirmEraseForMicroPython { .. }
+                | Overlay::SyncPreview { .. },
             ) => {
                 vec![
                     ("←/→", "choose"),

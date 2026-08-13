@@ -113,6 +113,10 @@ case "$args" in
     "fs --no-verbose --recursive rm :/lib")
         ;;
 
+    "fs --no-verbose rm :"*)
+        # Remove a single device file.
+        ;;
+
     soft-reset)
         printf 'MPY: soft reboot\n'
         ;;
