@@ -628,7 +628,7 @@ fn the_file_browser_panes_are_only_reachable_when_the_backend_has_a_filesystem()
 
     app.manager.set_override(Some(BackendKind::MicroPython));
     app.maybe_scan_devices();
-    app.focus = Focus::Project;
+    app.focus = Focus::Logs;
     app.handle(key(KeyCode::Tab));
     assert_eq!(
         app.focus,
@@ -648,7 +648,7 @@ fn startup_scans_for_a_device_without_opening_the_browser() {
 
     assert_eq!(
         app.focus,
-        Focus::Project,
+        Focus::Logs,
         "a background scan must not move focus"
     );
     assert!(
@@ -752,7 +752,7 @@ fn the_browser_state_survives_a_focus_change_but_q_quits_outright() {
     app.focus = Focus::FilesLocal;
 
     // Moving focus elsewhere and back does not throw away the listing.
-    app.focus = Focus::Project;
+    app.focus = Focus::Logs;
     assert!(app.browser.is_some(), "the listing is not thrown away");
     app.focus = Focus::FilesLocal;
     assert!(app.browser.is_some());
@@ -2023,7 +2023,7 @@ fn shift_r_opens_the_restart_prompt_from_anywhere() {
     let project = Project::new("shift-r-restart");
     let mut app = app_in_browser(&project);
     // Not a files pane --- proves it is a global binding, like 'm'/'d'.
-    app.focus = Focus::Project;
+    app.focus = Focus::Logs;
 
     app.handle(key(KeyCode::Char('R')));
 

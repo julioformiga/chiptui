@@ -35,7 +35,7 @@ fn app_with_backend(kind: BackendKind) -> App {
 #[test]
 fn dashboard_shows_project_device_and_log_panes() {
     let mut app = app_with_backend(BackendKind::Zephyr);
-    let frame = render(&mut app, 100, 30);
+    let frame = render(&mut app, 140, 30);
 
     assert!(frame.contains("ChipTUI"), "missing header:\n{frame}");
     assert!(frame.contains("Zephyr"), "missing backend name:\n{frame}");
@@ -249,14 +249,19 @@ fn the_renderer_publishes_the_log_viewport_height() {
 
 #[test]
 fn focus_is_visible_in_the_rendered_frame() {
-    let mut app = app_with_backend(BackendKind::Zephyr);
-    let with_project_focus = render(&mut app, 100, 30);
+    // The Project/Device info row is never focused, so the visible focus
+    // change is between the file-browser panes and the log pane. MicroPython
+    // declares a filesystem, giving both something to render.
+    let mut app = app_with_backend(BackendKind::MicroPython);
+    app.maybe_scan_devices();
+    app.focus = Focus::FilesLocal;
+    let with_files_focus = render(&mut app, 100, 30);
 
     app.focus = Focus::Logs;
     let with_log_focus = render(&mut app, 100, 30);
 
     assert_ne!(
-        with_project_focus, with_log_focus,
+        with_files_focus, with_log_focus,
         "moving focus must change what is drawn"
     );
 }

@@ -13,16 +13,31 @@ use crate::project::{DetectionOutcome, DetectionSource};
 use crate::ui::{content_style, dashboard_focused, pane_block};
 
 /// Project identity: where it is, what it is, and how sure we are.
+///
+/// This pane is informational only --- it never holds focus, so it always
+/// renders with a neutral (non-dimmed) style regardless of which pane is
+/// active.
 pub fn draw_project(frame: &mut Frame, area: Rect, app: &App) {
-    let focused = dashboard_focused(app, Focus::Project);
-    let block = pane_block("Project", focused);
-    let mut lines = Vec::new();
+    let block = pane_block("Project", false);
+    let lines = project_content(app, area.width as usize);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
 
+/// Builds the Project pane's content lines. Extracted so the dashboard layout
+/// can size the info row to fit the taller of the two panes (`draw_dashboard`)
+/// without rendering twice.
+pub(super) fn project_content(app: &App, width: usize) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
     let detection = app.manager.detection();
 
     // Deep embedded trees produce long paths; the tail identifies the project,
     // so they are shortened from the left instead of wrapping over three lines.
-    let path_budget = (area.width as usize).saturating_sub(2 + LABEL_WIDTH);
+    let path_budget = width.saturating_sub(2 + LABEL_WIDTH);
     let root = app.manager.root().map_or_else(
         || app.manager.start_dir().display().to_string(),
         |root| root.display().to_string(),
@@ -95,13 +110,7 @@ pub fn draw_project(frame: &mut Frame, area: Rect, app: &App) {
         lines.push(Line::from(spans));
     }
 
-    frame.render_widget(
-        Paragraph::new(lines)
-            .block(block)
-            .style(content_style(focused))
-            .wrap(Wrap { trim: false }),
-        area,
-    );
+    lines
 }
 
 /// What esptool has reported about the connected board so far: identity
@@ -109,36 +118,37 @@ pub fn draw_project(frame: &mut Frame, area: Rect, app: &App) {
 /// across whatever `chip-id`/`flash-id`/flash/erase/verify runs have
 /// happened in the Flash view (`crate::flash::FlashPanel::details`). The
 /// backend's own name already lives in the Project pane above, so this space
-/// is spent on the board itself instead of repeating it.
+/// is spent on the board itself instead of repeating it. Like the Project
+/// pane it is informational only and never holds focus.
 pub fn draw_detection(frame: &mut Frame, area: Rect, app: &App) {
-    let focused = dashboard_focused(app, Focus::Project);
-    let block = pane_block("Device info", focused);
+    let block = pane_block("Device info", false);
+    let lines = device_content(app);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+/// Builds the Device info pane's content lines (placeholder or details). See
+/// [`project_content`] for why this is split out.
+pub(super) fn device_content(app: &App) -> Vec<Line<'static>> {
     let caps = app.manager.capabilities();
+    let dim = Style::new().add_modifier(Modifier::DIM);
 
     if !caps.contains(Capability::Flash) && !caps.contains(Capability::EraseFlash) {
-        frame.render_widget(
-            Paragraph::new("no device information for this project".dim()).block(block),
-            area,
-        );
-        return;
+        return vec![Line::from("no device information for this project").style(dim)];
     }
     let Some(flash) = app.flash.as_ref() else {
-        frame.render_widget(
-            Paragraph::new("press 'x' to open Flash and query the device".dim()).block(block),
-            area,
-        );
-        return;
+        return vec![Line::from("press 'x' to open Flash and query the device").style(dim)];
     };
     let details = &flash.details;
     if details.is_empty() {
-        frame.render_widget(
-            Paragraph::new(
-                "no device data yet --- run chip or flash information from the Flash menu".dim(),
-            )
-            .block(block),
-            area,
-        );
-        return;
+        return vec![
+            Line::from("no device data yet --- run chip or flash information from the Flash menu")
+                .style(dim),
+        ];
     }
 
     let mut lines = Vec::new();
@@ -164,31 +174,30 @@ pub fn draw_detection(frame: &mut Frame, area: Rect, app: &App) {
     if let Some(mac) = &details.mac {
         lines.push(field("MAC", mac.clone()));
     }
-    if details.flash_manufacturer.is_some() || details.flash_device.is_some() {
-        lines.push(field(
-            "flash id",
-            format!(
+
+    // `memory:` shares the `flash id:` line (5 spaces after the flash id
+    // value) so the info row stays compact.
+    let has_flash_id = details.flash_manufacturer.is_some() || details.flash_device.is_some();
+    let has_memory = details.flash_size.is_some();
+    if has_flash_id || has_memory {
+        let mut spans = vec![label_span("flash id")];
+        if has_flash_id {
+            spans.push(Span::raw(format!(
                 "{} / {}",
                 details.flash_manufacturer.as_deref().unwrap_or("?"),
                 details.flash_device.as_deref().unwrap_or("?"),
-            ),
-        ));
-    }
-    if let Some(size) = &details.flash_size {
-        lines.push(field_styled(
-            "memory",
-            size.clone(),
-            Style::new().fg(Color::Cyan),
-        ));
+            )));
+        }
+        if let Some(size) = &details.flash_size {
+            spans.push(Span::raw("          "));
+            spans.push(Span::styled("memory:", Style::new().dim()));
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(size.clone(), Style::new().fg(Color::Cyan)));
+        }
+        lines.push(Line::from(spans));
     }
 
-    frame.render_widget(
-        Paragraph::new(lines)
-            .block(block)
-            .style(content_style(focused))
-            .wrap(Wrap { trim: false }),
-        area,
-    );
+    lines
 }
 
 /// Row 2 placeholder when the selected backend declares no

@@ -85,8 +85,19 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
 /// when the backend has `Capability::Filesystem`, else a full-width
 /// placeholder. Row 3: a one-line Log/Monitor tab strip over the tab's body,
 /// full width (`SPEC.md` §11).
+///
+/// Row 1's height adapts to its content: the taller of the two info panes
+/// plus borders. Both are informational (never focused), and `memory:` shares
+/// the `flash id:` line, so the row starts compact and only grows when device
+/// details accumulate.
 fn draw_dashboard(frame: &mut Frame, body: Rect, app: &mut App) {
-    let [row1, rest] = Layout::vertical([Constraint::Length(9), Constraint::Min(0)]).areas(body);
+    let half_width = (body.width / 2).max(1) as usize;
+    let project_n = panels::project_content(app, half_width).len();
+    let device_n = panels::device_content(app).len();
+    let info_height = project_n.max(device_n).max(1) as u16 + 2;
+
+    let [row1, rest] =
+        Layout::vertical([Constraint::Length(info_height), Constraint::Min(0)]).areas(body);
     let [row2, row3] =
         Layout::vertical([Constraint::Percentage(60), Constraint::Percentage(40)]).areas(rest);
     let [project, device] =
@@ -159,7 +170,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
     for (key, label) in app.shortcuts() {
         spans.push(Span::styled(
             format!(" {key} "),
-            Style::new().fg(Color::Black).bg(Color::DarkGray),
+            Style::new().bg(Color::DarkGray),
         ));
         spans.push(Span::styled(format!(" {label}  "), Style::new().dim()));
     }

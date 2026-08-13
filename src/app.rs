@@ -54,12 +54,13 @@ pub enum View {
 
 /// Which pane receives navigation keys.
 ///
-/// `FilesLocal`/`FilesDevice` are the dashboard's two file-browser columns;
-/// each is its own stop so `Tab` walks all four dashboard columns in one
-/// consistent tour instead of a separate sub-focus inside the files row.
+/// The Project/Device info row is informational only and never holds focus
+/// --- `Tab` walks just the interactive panes. `FilesLocal`/`FilesDevice` are
+/// the dashboard's two file-browser columns; each is its own stop so `Tab`
+/// walks all columns in one consistent tour instead of a separate sub-focus
+/// inside the files row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
-    Project,
     FilesLocal,
     FilesDevice,
     Logs,
@@ -489,7 +490,7 @@ impl App {
             manager: ProjectManager::new(start_dir),
             logs: LogStore::default(),
             view: View::Dashboard,
-            focus: Focus::Project,
+            focus: Focus::FilesLocal,
             log_tab: LogTab::default(),
             monitor_source: MonitorSource::default(),
             overlay: None,
@@ -951,9 +952,10 @@ impl App {
 
     /// Focus order for `Tab`/`BackTab`: the two file-browser columns are only
     /// stops when the backend actually has something to list there
-    /// (`AGENTS.md` §3 --- gated on the capability, not the backend kind).
+    /// (`AGENTS.md` §3 --- gated on the capability, not the backend kind). The
+    /// Project/Device info row is never a stop --- it is informational only.
     fn focus_order(&self) -> Vec<Focus> {
-        let mut order = vec![Focus::Project];
+        let mut order = Vec::new();
         if self.manager.capabilities().contains(Capability::Filesystem) {
             order.push(Focus::FilesLocal);
             order.push(Focus::FilesDevice);
@@ -974,15 +976,15 @@ impl App {
         self.focus = order[next];
     }
 
-    /// Pulls focus back onto `Project` when it was sitting on a files column
-    /// that just lost its capability (a backend switch away from
+    /// Pulls focus back onto [`Focus::Logs`] when it was sitting on a files
+    /// column that just lost its capability (a backend switch away from
     /// MicroPython) --- otherwise it would point at a pane that no longer
     /// exists in the layout.
     fn clamp_focus(&mut self) {
         if matches!(self.focus, Focus::FilesLocal | Focus::FilesDevice)
             && !self.manager.capabilities().contains(Capability::Filesystem)
         {
-            self.focus = Focus::Project;
+            self.focus = Focus::Logs;
         }
     }
 
@@ -1082,7 +1084,7 @@ impl App {
             }
             // FilesLocal/FilesDevice never reach here: on_dashboard_key routes
             // them to on_files_key first.
-            Focus::Project | Focus::FilesLocal | Focus::FilesDevice | Focus::Logs => {}
+            Focus::FilesLocal | Focus::FilesDevice | Focus::Logs => {}
         }
     }
 
@@ -1091,14 +1093,14 @@ impl App {
             Focus::Logs if self.log_tab == LogTab::Log => {
                 self.logs.scroll_up(usize::MAX, self.log_viewport);
             }
-            Focus::Project | Focus::FilesLocal | Focus::FilesDevice | Focus::Logs => {}
+            Focus::FilesLocal | Focus::FilesDevice | Focus::Logs => {}
         }
     }
 
     fn jump_to_end(&mut self) {
         match self.focus {
             Focus::Logs if self.log_tab == LogTab::Log => self.logs.scroll_to_bottom(),
-            Focus::Project | Focus::FilesLocal | Focus::FilesDevice | Focus::Logs => {}
+            Focus::FilesLocal | Focus::FilesDevice | Focus::Logs => {}
         }
     }
 
@@ -1304,15 +1306,11 @@ mod tests {
     #[test]
     fn tab_cycles_focus_in_both_directions() {
         let mut app = app();
-        assert_eq!(app.focus, Focus::Project);
+        // No filesystem capability: focus defaults to FilesLocal, but it is
+        // not in the focus order (Logs only), so Tab lands on Logs.
+        assert_eq!(app.focus, Focus::FilesLocal);
         app.handle(key(KeyCode::Tab));
-        assert_eq!(
-            app.focus,
-            Focus::Logs,
-            "no filesystem capability yet, so Tab skips the files panes"
-        );
-        app.handle(key(KeyCode::Tab));
-        assert_eq!(app.focus, Focus::Project);
+        assert_eq!(app.focus, Focus::Logs);
         app.handle(key(KeyCode::BackTab));
         assert_eq!(app.focus, Focus::Logs);
     }
@@ -1325,7 +1323,9 @@ mod tests {
         let mut app = App::new(std::env::temp_dir());
         app.detect();
         app.manager.set_override(Some(BackendKind::MicroPython));
-        assert_eq!(app.focus, Focus::Project);
+        // detect's clamp_focus moved focus to Logs (no filesystem at detect
+        // time); the override adds filesystem but does not re-clamp.
+        assert_eq!(app.focus, Focus::Logs);
         app.handle(key(KeyCode::Tab));
         assert_eq!(app.focus, Focus::FilesLocal);
         app.handle(key(KeyCode::Tab));
@@ -1333,7 +1333,7 @@ mod tests {
         app.handle(key(KeyCode::Tab));
         assert_eq!(app.focus, Focus::Logs);
         app.handle(key(KeyCode::Tab));
-        assert_eq!(app.focus, Focus::Project);
+        assert_eq!(app.focus, Focus::FilesLocal);
     }
 
     #[test]
@@ -1416,7 +1416,7 @@ mod tests {
         let mut app = app();
         app.handle(key(KeyCode::Char('z')));
         assert!(!app.should_quit());
-        assert_eq!(app.focus, Focus::Project);
+        assert_eq!(app.focus, Focus::FilesLocal);
     }
 
     #[test]
@@ -1438,7 +1438,7 @@ mod tests {
 
         // Elsewhere, Left/Right must not touch it (e.g. reserved for other
         // panes' own navigation).
-        app.focus = Focus::Project;
+        app.focus = Focus::FilesLocal;
         app.handle(key(KeyCode::Right));
         assert_eq!(app.log_tab, LogTab::Log);
     }
