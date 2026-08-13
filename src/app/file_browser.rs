@@ -64,10 +64,12 @@ impl App {
             }
             KeyCode::Enter => {
                 if let Some(name) = browser.selected_name(browser.focus) {
+                    let status = browser.statuses().get(&name).copied();
                     self.overlay = Some(Overlay::FileActions {
                         side: browser.focus,
                         is_dir: browser.selected_is_dir(browser.focus),
                         name,
+                        status,
                         selected: 0,
                     });
                 }
@@ -143,6 +145,7 @@ impl App {
             (_, FileAction::Open) => {
                 self.dispatch_browser(|browser, processes, port| browser.enter(processes, port));
             }
+            (_, FileAction::Diff) => self.open_diff(name),
             (Side::Local, FileAction::View) => {
                 let Some(browser) = &self.browser else { return };
                 self.open_local_file_viewer(browser.local_path.join(name));
@@ -384,6 +387,40 @@ impl App {
         });
     }
 
+    /// Opens [`Overlay::FileViewer`] showing a unified diff of `name` between
+    /// the local copy and the device copy. The local half is read now; the
+    /// device half arrives later through the same `cat` the plain viewer uses
+    /// --- [`Self::apply_device_view`] computes the diff once it lands, so the
+    /// viewer opens straight into [`ViewerState::Loading`].
+    fn open_diff(&mut self, name: &str) {
+        let Some(browser) = &self.browser else {
+            return;
+        };
+        let local = browser.local_path.join(name);
+        let device = browser.device_path.join(name);
+
+        if let Some(size) = browser.device_entry_size(name)
+            && size > files::MAX_VIEW_BYTES
+        {
+            self.logs.warn(format!(
+                "{device}: too large to diff ({} MiB) --- use 'Download' or 'Edit' instead",
+                size / (1024 * 1024)
+            ));
+            return;
+        }
+
+        self.logs.info(format!("diffing {name} (local ↔ device)"));
+        self.viewer = Some(FileViewer {
+            source: ViewerSource::Diff { local, device },
+            state: ViewerState::Loading,
+            scroll: 0,
+        });
+        self.overlay = Some(Overlay::FileViewer);
+        self.dispatch_browser(|browser, processes, port| {
+            browser.request_device_view(name, processes, port)
+        });
+    }
+
     /// Starts a `mpremote run` session for `name` in a PTY, displayed in the
     /// Monitor tab under [`MonitorSource::Run`](super::MonitorSource::Run).
     /// The PTY lets Ctrl+C send a KeyboardInterrupt (0x03) to the running
@@ -469,21 +506,54 @@ impl App {
     /// one waiting on it --- matched by path, so a reply for a viewer the
     /// user already closed (or replaced by opening a different file) is
     /// dropped instead of overwriting the wrong content.
+    ///
+    /// For a plain device view the content becomes the viewer's lines
+    /// directly; for a [`ViewerSource::Diff`] viewer it is diffed against the
+    /// local copy (re-read here, since the file may have changed while the
+    /// `cat` was in flight over serial).
     pub(super) fn apply_device_view(&mut self, view: DeviceView) {
         let Some(viewer) = &mut self.viewer else {
             return;
         };
-        let ViewerSource::Device(path) = &viewer.source else {
-            return;
+        // Resolve which source this reply is for, and --- for a diff --- the
+        // local path to compare against, before mutably updating `state`.
+        let diff_local = match &viewer.source {
+            ViewerSource::Device(path) => {
+                if *path != view.path {
+                    return;
+                }
+                None
+            }
+            ViewerSource::Diff { local, device } => {
+                if *device != view.path {
+                    return;
+                }
+                Some(local.clone())
+            }
+            ViewerSource::Local(_) | ViewerSource::RunOutput(_) => return,
         };
-        if *path != view.path {
-            return;
-        }
-        viewer.state = match view.content {
-            Ok(content) => ViewerState::Ready {
+
+        viewer.state = match (diff_local, view.content) {
+            (None, Ok(content)) => ViewerState::Ready {
                 lines: content.lines().map(str::to_string).collect(),
             },
-            Err(message) => ViewerState::Error(message),
+            (None, Err(message)) | (Some(_), Err(message)) => ViewerState::Error(message),
+            (Some(local_path), Ok(device_content)) => match files::read_text_file(&local_path) {
+                Ok(local_content) => {
+                    let lines = crate::diff::unified_diff(&local_content, &device_content);
+                    // A `SameSize` entry can turn out byte-identical once both
+                    // sides are fetched; an empty diff would render a blank
+                    // viewer, so say so explicitly instead.
+                    if lines.is_empty() {
+                        ViewerState::Ready {
+                            lines: vec!["(no differences — files are identical)".to_string()],
+                        }
+                    } else {
+                        ViewerState::Ready { lines }
+                    }
+                }
+                Err(message) => ViewerState::Error(message),
+            },
         };
     }
 

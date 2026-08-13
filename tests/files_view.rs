@@ -1026,6 +1026,7 @@ fn entering_a_local_text_file_opens_the_action_dialog() {
             side: Side::Local,
             name: "diff.py".to_string(),
             is_dir: false,
+            status: Some(SyncStatus::SameSize),
             selected: 0,
         })
     );
@@ -1034,6 +1035,10 @@ fn entering_a_local_text_file_opens_the_action_dialog() {
     assert!(frame.contains("Send to device"), "menu not shown:\n{frame}");
     assert!(frame.contains("View"));
     assert!(frame.contains("Edit"));
+    assert!(
+        frame.contains("Diff"),
+        "a same-size (unchecked) file offers a content diff:\n{frame}"
+    );
     assert!(
         !frame.contains("Download"),
         "a local file is never downloaded from itself:\n{frame}"
@@ -1156,8 +1161,10 @@ fn choosing_edit_directly_queues_an_edit_without_opening_the_viewer() {
     app.browser.as_mut().unwrap().cursor_to(1); // diff.py
 
     app.handle(key(KeyCode::Enter));
-    app.handle(key(KeyCode::Up));
-    app.handle(key(KeyCode::Up)); // wraps to Edit
+    // Menu for a local text file: Send to device, Run, View, Edit, Diff, Delete.
+    app.handle(key(KeyCode::Down));
+    app.handle(key(KeyCode::Down));
+    app.handle(key(KeyCode::Down)); // lands on Edit
     app.handle(key(KeyCode::Enter));
 
     assert_eq!(app.overlay, None);
@@ -1391,6 +1398,7 @@ fn entering_a_local_directory_opens_the_dialog_defaulted_to_open() {
             side: Side::Local,
             name: "lib".to_string(),
             is_dir: true,
+            status: Some(SyncStatus::Directory),
             selected: 0,
         }),
         "a directory gets the menu too now, defaulted to 'Open'"
@@ -1481,6 +1489,7 @@ fn entering_a_binary_local_file_opens_the_dialog_without_view_or_edit() {
             side: Side::Local,
             name: "firmware.bin".to_string(),
             is_dir: false,
+            status: Some(SyncStatus::LocalOnly),
             selected: 0,
         }),
         "a binary file still gets send/download/delete, just not view/edit"
@@ -1607,6 +1616,7 @@ fn entering_a_device_text_file_opens_the_dialog_with_download() {
             side: Side::Device,
             name: "device_only.py".to_string(),
             is_dir: false,
+            status: Some(SyncStatus::DeviceOnly),
             selected: 0,
         })
     );
@@ -1655,6 +1665,101 @@ fn choosing_view_on_a_device_file_loads_its_content_asynchronously() {
         ViewerState::Ready {
             lines: vec!["device content".to_string()]
         }
+    );
+}
+
+#[test]
+fn choosing_diff_renders_a_unified_diff_of_local_vs_device() {
+    use ratatui::crossterm::event::KeyCode;
+
+    let project = Project::new("dialog-diff");
+    let mut app = app_in_browser(&project);
+    app.browser.as_mut().unwrap().cursor_to(1); // diff.py
+
+    // Same size on both sides, contents unchecked -> SyncStatus::SameSize,
+    // which is exactly when a content diff is offered.
+    assert_eq!(
+        app.browser.as_ref().unwrap().statuses()["diff.py"],
+        SyncStatus::SameSize
+    );
+
+    app.handle(key(KeyCode::Enter));
+    // Local text-file menu: Send to device, Run, View, Edit, Diff, Delete.
+    app.handle(key(KeyCode::Up)); // wraps to Delete
+    app.handle(key(KeyCode::Up)); // Delete -> Diff
+    app.handle(key(KeyCode::Enter));
+
+    assert_eq!(app.overlay, Some(Overlay::FileViewer));
+    assert_eq!(
+        app.viewer.as_ref().unwrap().state,
+        ViewerState::Loading,
+        "the device cat has not returned yet"
+    );
+
+    settle_app(&mut app);
+
+    // Local diff.py is "CONFIG=1\n"; the fake device copy is "CONFIG=2\n".
+    let viewer = app.viewer.as_ref().expect("viewer still open");
+    assert_eq!(
+        viewer.source,
+        ViewerSource::Diff {
+            local: project.root.join("diff.py"),
+            device: chiptui::device::DevicePath::new("/diff.py"),
+        }
+    );
+    assert_eq!(
+        viewer.state,
+        ViewerState::Ready {
+            lines: vec![
+                "@@ -1 +1 @@".to_string(),
+                "-CONFIG=1".to_string(),
+                "+CONFIG=2".to_string()
+            ]
+        }
+    );
+
+    let frame = render(&mut app, 110, 24);
+    assert!(
+        frame.contains("Diff: diff.py"),
+        "title should name the diff:\n{frame}"
+    );
+    assert!(
+        frame.contains("-CONFIG=1") && frame.contains("+CONFIG=2"),
+        "diff lines not shown:\n{frame}"
+    );
+}
+
+#[test]
+fn diff_is_not_offered_for_an_identical_file() {
+    // same.py is byte-identical (SameSize until verified, Identical after);
+    // once verified identical there is nothing to diff, so the menu drops it.
+    use ratatui::crossterm::event::KeyCode;
+
+    let project = Project::new("dialog-diff-identical");
+    let mut app = app_in_browser(&project);
+
+    // Verify same.py so its status becomes Identical.
+    let mut browser = app.browser.take().unwrap();
+    browser.cursor_to(3); // same.py
+    browser.verify_selected(&mut app.processes, None);
+    app.browser = Some(browser);
+    settle_app(&mut app);
+    assert_eq!(
+        app.browser.as_ref().unwrap().statuses()["same.py"],
+        SyncStatus::Identical
+    );
+
+    app.browser.as_mut().unwrap().cursor_to(3); // same.py
+    app.handle(key(KeyCode::Enter));
+
+    let frame = render(&mut app, 110, 24);
+    assert!(
+        !frame.contains("Diff"),
+        "an identical file offers no diff:\n{frame}"
+    );
+    assert!(
+        frame.contains("View"),
+        "the rest of the menu is intact:\n{frame}"
     );
 }
 
@@ -2028,6 +2133,7 @@ fn sending_a_local_directory_to_the_device_via_the_dialog() {
             side: Side::Local,
             name: "lib".to_string(),
             is_dir: true,
+            status: Some(SyncStatus::Directory),
             selected: 0,
         }),
         "a directory's menu defaults to 'Open'"

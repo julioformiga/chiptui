@@ -28,6 +28,7 @@ use crate::browser::{Browser, Side};
 use crate::device::{DevicePath, DeviceState};
 use crate::error::Result;
 use crate::event::AppEvent;
+use crate::files::SyncStatus;
 use crate::flash::{FlashPanel, FlashScreen};
 use crate::logs::LogStore;
 use crate::process::{ProcessId, ProcessManager};
@@ -143,6 +144,11 @@ pub enum Overlay {
         side: Side,
         name: String,
         is_dir: bool,
+        /// The comparison verdict for `name` (`Browser::statuses`), snapshot
+        /// when the menu opened so [`FileAction::for_entry`] can offer a
+        /// [`FileAction::Diff`] only when the two sides are known to (or might)
+        /// differ. `None` when the entry has no comparable status.
+        status: Option<SyncStatus>,
         selected: usize,
     },
     /// A file's contents, opened by choosing `View` from [`Overlay::FileActions`]
@@ -215,6 +221,10 @@ pub enum FileAction {
     Run,
     View,
     Edit,
+    /// Shows a unified diff of the local copy against the device copy in the
+    /// file viewer --- only offered when both sides exist as text and the
+    /// comparison verdict says they differ (or might, same size unchecked).
+    Diff,
     Delete,
 }
 
@@ -227,6 +237,7 @@ impl FileAction {
             Self::Run => "▶  Run",
             Self::View => "👁  View",
             Self::Edit => "📝 Edit",
+            Self::Diff => "🔀 Diff",
             Self::Delete => "🗑  Delete",
         }
     }
@@ -234,18 +245,22 @@ impl FileAction {
     /// The actions offered for the entry under the cursor, in menu order.
     ///
     /// A directory gets `Open` first (descend), plus whichever transfer
-    /// makes sense for `side` and `Delete` --- never `View`/`Edit`, which
-    /// need file contents. A file never offers `Open`; `View`/`Edit` appear
-    /// only when `is_text` ([`crate::files::is_text_like`]) --- a binary
+    /// makes sense for `side` and `Delete` --- never `View`/`Edit`/`Diff`,
+    /// which need file contents. A file never offers `Open`; `View`/`Edit`
+    /// appear only when `is_text` ([`crate::files::is_text_like`]) --- a binary
     /// file (e.g. a `.mpy`) can still be sent, downloaded and deleted, just
     /// not previewed or opened in `$EDITOR`. `Run` appears alongside them,
     /// gated on `capabilities` rather than shape alone --- unlike the rest of
     /// this function, a backend without [`Capability::Run`] genuinely has no
-    /// such action, not just one this menu chooses not to show.
+    /// such action, not just one this menu chooses not to show. `Diff` is
+    /// offered when `status` marks the entry as differing or as same-size but
+    /// unchecked, since that is exactly when a content diff adds information
+    /// the size markers cannot.
     pub fn for_entry(
         side: Side,
         is_dir: bool,
         is_text: bool,
+        status: Option<SyncStatus>,
         capabilities: Capabilities,
     ) -> Vec<FileAction> {
         if is_dir {
@@ -264,6 +279,12 @@ impl FileAction {
                 }
                 actions.push(Self::View);
                 actions.push(Self::Edit);
+                if matches!(
+                    status,
+                    Some(SyncStatus::Differs) | Some(SyncStatus::SameSize)
+                ) {
+                    actions.push(Self::Diff);
+                }
             }
             actions.push(Self::Delete);
             actions
@@ -295,6 +316,13 @@ impl FileViewer {
             // is plain captured output, not Python source, so it must not
             // look like a `.py` file to it.
             ViewerSource::RunOutput(path) => format!("{} — output", path.display()),
+            ViewerSource::Diff { local, .. } => {
+                let name = local
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                format!("Diff: {name}  (local ↔ device)")
+            }
         }
     }
 }
@@ -312,6 +340,15 @@ pub enum ViewerSource {
     /// Captured stdout of a local script run on the device
     /// (`FileAction::Run`), keyed by the local script's path.
     RunOutput(PathBuf),
+    /// A unified diff of the local copy (`local`) against the device copy
+    /// (`device`). Like [`Self::Device`], the device half arrives
+    /// asynchronously via a `cat`: the viewer opens in
+    /// [`ViewerState::Loading`] and [`App::apply_device_view`] computes the
+    /// diff once the device content lands.
+    Diff {
+        local: PathBuf,
+        device: DevicePath,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

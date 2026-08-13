@@ -9,6 +9,7 @@ pub mod app;
 pub mod backend;
 pub mod browser;
 pub mod device;
+pub mod diff;
 pub mod editor;
 pub mod error;
 pub mod event;

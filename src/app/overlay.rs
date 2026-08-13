@@ -216,11 +216,13 @@ impl App {
                 side,
                 name,
                 is_dir,
+                status,
                 selected,
             } => {
                 let is_text = crate::files::is_text_like(&name);
                 let capabilities = self.manager.capabilities();
-                let count = FileAction::for_entry(side, is_dir, is_text, capabilities).len();
+                let count =
+                    FileAction::for_entry(side, is_dir, is_text, status, capabilities).len();
                 match key.code {
                     // Left/right mirror the files pane's own navigation
                     // (`←` back, `→` act) so the menu never asks for a
@@ -231,6 +233,7 @@ impl App {
                             side,
                             name,
                             is_dir,
+                            status,
                             selected: (selected + count - 1) % count,
                         });
                     }
@@ -239,12 +242,14 @@ impl App {
                             side,
                             name,
                             is_dir,
+                            status,
                             selected: (selected + 1) % count,
                         });
                     }
                     KeyCode::Enter | KeyCode::Right => {
                         let action =
-                            FileAction::for_entry(side, is_dir, is_text, capabilities)[selected];
+                            FileAction::for_entry(side, is_dir, is_text, status, capabilities)
+                                [selected];
                         self.overlay = None;
                         self.run_file_action(side, &name, is_dir, action);
                     }
@@ -309,8 +314,11 @@ impl App {
                                 browser.request_edit_download(&name, processes, port)
                             });
                         }
-                        // Captured `run` output isn't a file to edit.
-                        Some(ViewerSource::RunOutput(_)) | None => {}
+                        // Captured `run` output and a diff view are not a
+                        // single file to hand to $EDITOR.
+                        Some(ViewerSource::RunOutput(_))
+                        | Some(ViewerSource::Diff { .. })
+                        | None => {}
                     }
                 }
                 KeyCode::Up | KeyCode::Char('k') => self.scroll_viewer(-1),

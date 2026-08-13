@@ -7,12 +7,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Phase 1 of `SPEC.md` §17 is done (core, TUI, detection, backend registry, capabilities), plus the
 process manager and the first real device operation: a dual-pane local/device **file browser** for
 MicroPython, with list/compare, a per-entry action menu (send to device, download, view, edit,
-delete) and a read-only viewer with lightweight syntax highlighting (`src/highlight.rs`) and
+diff, delete) and a read-only viewer with lightweight syntax highlighting (`src/highlight.rs`) and
 `$EDITOR` handoff (`src/editor.rs`, `src/terminal.rs`'s `TerminalGuard::suspend`). `Enter` opens the
 menu for *any* entry now, not just text files — a directory gets it too, defaulted to `Open`, plus a
 recursive send/download/delete (`Browser::request_upload_dir` and friends, `mpremote fs --recursive
 cp`); a binary file (e.g. `.mpy`) still offers send/download/delete, just not view/edit, which stay
-gated on `files::is_text_like` (`FileAction::for_entry`). `→` stays pure navigation, separate from the
+gated on `files::is_text_like` (`FileAction::for_entry`). `Diff` (a unified
+diff of local vs device, `src/diff.rs`, coloured in the viewer) appears only
+when the comparison verdict marks the file as differing or same-size-unchecked.
+`→` stays pure navigation, separate from the
 menu: it descends into a directory directly (a no-op on a file), mirroring `←`/Backspace going back up
 — only `Enter` opens the menu. `a` creates a new
 entry in the focused pane inline — a trailing `/` on the typed name makes it a directory

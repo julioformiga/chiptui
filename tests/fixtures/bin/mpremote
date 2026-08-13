@@ -54,6 +54,18 @@ case "$args" in
         printf 'device content\n'
         ;;
 
+    "fs --no-verbose cat :/diff.py")
+        # Same length as the local fixture (CONFIG=1\n), different contents ---
+        # the case a size comparison cannot catch, and what a content diff
+        # exists to show.
+        printf 'CONFIG=2\n'
+        ;;
+
+    "fs --no-verbose cat :/same.py")
+        # Byte-identical to the local fixture so a diff would be empty.
+        printf "print('hi')\n"
+        ;;
+
     "fs --no-verbose cat :/missing.py")
         echo 'mpremote: cat: No such file or directory.' >&2
         exit 1

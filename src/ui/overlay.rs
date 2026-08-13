@@ -6,8 +6,8 @@ use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, List, ListItem, ListState, Paragraph};
 
-use crate::app::{App, FileAction, Overlay, PickerOption, View, ViewerState};
-use crate::backend::{BackendKind, Capabilities};
+use crate::app::{App, FileAction, Overlay, PickerOption, View, ViewerSource, ViewerState};
+use crate::backend::BackendKind;
 use crate::browser::SyncPlan;
 use crate::highlight::{self, TokenKind};
 
@@ -34,16 +34,14 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
             side,
             name,
             is_dir,
+            status,
             selected,
-        } => draw_file_actions(
-            frame,
-            area,
-            side,
-            &name,
-            is_dir,
-            selected,
-            app.manager.capabilities(),
-        ),
+        } => {
+            let is_text = crate::files::is_text_like(&name);
+            let actions =
+                FileAction::for_entry(side, is_dir, is_text, status, app.manager.capabilities());
+            draw_file_actions(frame, area, &name, is_dir, &actions, selected);
+        }
         Overlay::FileViewer => draw_file_viewer(frame, area, app),
         Overlay::ConfirmRestartDevice { confirm } => {
             draw_confirm_restart_device(frame, area, app, confirm)
@@ -179,19 +177,18 @@ fn draw_dialog_button(frame: &mut Frame, area: Rect, label: &str, selected: bool
     );
 }
 
-/// The actions for the entry `enter` was pressed on (`FileAction::for_entry`
-/// decides which ones), sized like the other small pickers in this module.
+/// Renders the action menu for the entry `enter` was pressed on. The caller
+/// resolves the entry's verdict ([`FileAction::for_entry`]) so this stays a
+/// pure drawing function of an already-decided action list, sized like the
+/// other small pickers in this module.
 fn draw_file_actions(
     frame: &mut Frame,
     area: Rect,
-    side: crate::browser::Side,
     name: &str,
     is_dir: bool,
+    actions: &[FileAction],
     selected: usize,
-    capabilities: Capabilities,
 ) {
-    let is_text = crate::files::is_text_like(name);
-    let actions = FileAction::for_entry(side, is_dir, is_text, capabilities);
     let items: Vec<ListItem> = actions
         .iter()
         .map(|action| ListItem::new(Line::from(format!(" {} ", action.label()))))
@@ -257,18 +254,26 @@ fn draw_file_viewer(frame: &mut Frame, area: Rect, app: &mut App) {
             );
         }
         ViewerState::Ready { lines } => {
-            let language = highlight::Language::from_filename(&name);
-            let rendered: Vec<Line> = lines
-                .iter()
-                .map(|line| {
-                    Line::from(
-                        highlight::highlight_line(line, language)
-                            .into_iter()
-                            .map(|token| Span::styled(token.text, token_style(token.kind)))
-                            .collect::<Vec<_>>(),
-                    )
-                })
-                .collect();
+            let is_diff = matches!(viewer.source, ViewerSource::Diff { .. });
+            let rendered: Vec<Line> = if is_diff {
+                lines
+                    .iter()
+                    .map(|line| Line::from(diff_line_spans(line)))
+                    .collect()
+            } else {
+                let language = highlight::Language::from_filename(&name);
+                lines
+                    .iter()
+                    .map(|line| {
+                        Line::from(
+                            highlight::highlight_line(line, language)
+                                .into_iter()
+                                .map(|token| Span::styled(token.text, token_style(token.kind)))
+                                .collect::<Vec<_>>(),
+                        )
+                    })
+                    .collect()
+            };
             frame.render_widget(
                 Paragraph::new(rendered).scroll((viewer.scroll as u16, 0)),
                 inner,
@@ -285,6 +290,20 @@ fn token_style(kind: TokenKind) -> Style {
         TokenKind::Comment => Style::new().fg(Color::DarkGray).italic(),
         TokenKind::Number => Style::new().fg(Color::Cyan),
     }
+}
+
+/// Colours one unified-diff line by its leading marker: added lines green,
+/// removed lines red, hunk headers (`@@`) cyan, and unchanged context plain.
+/// The whole line shares one colour rather than per-token highlighting so the
+/// diff's added/removed regions read at a glance, the way `diff --color` does.
+fn diff_line_spans(line: &str) -> Vec<Span<'_>> {
+    let style = match line.chars().next() {
+        Some('+') => Style::new().fg(Color::Green),
+        Some('-') => Style::new().fg(Color::Red),
+        Some('@') => Style::new().fg(Color::Cyan),
+        _ => Style::new(),
+    };
+    vec![Span::styled(line.to_string(), style)]
 }
 
 /// A firmware download would overwrite a file already in the project root;
