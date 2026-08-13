@@ -295,6 +295,11 @@ impl Browser {
         self.tool_path = Some(program.into());
     }
 
+    /// Returns the configured tool-path override, if any.
+    pub fn tool_path(&self) -> Option<&str> {
+        self.tool_path.as_deref()
+    }
+
     // ---- local pane -----------------------------------------------------
 
     pub fn reload_local(&mut self) {

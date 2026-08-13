@@ -26,6 +26,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
     match app.monitor_source {
         MonitorSource::Flash => draw_flash_output(frame, area, app, focused),
         MonitorSource::Device => draw_device_monitor(frame, area, app, focused),
+        MonitorSource::Run => draw_run_output(frame, area, app, focused),
     }
 }
 
@@ -152,6 +153,60 @@ fn draw_flash_output(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
 
     frame.render_widget(
         Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+/// Streamed output of a `mpremote run` session, one timestamped line per row.
+/// The console always tails the latest output, mirroring the flash output's
+/// behavior.
+fn draw_run_output(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
+    let script = app
+        .run_script
+        .as_ref()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "script".to_string());
+
+    let status = match app.run_state {
+        crate::app::RunState::Idle => "",
+        crate::app::RunState::Running => " (running…)",
+        crate::app::RunState::Finished => " (done)",
+    };
+
+    let title = format!("Run: {script}{status}");
+    let block = pane_block(&title, focused);
+    let inner_height = block.inner(area).height.max(1) as usize;
+
+    let mut lines: Vec<Line> = app
+        .run_output
+        .iter()
+        .map(|entry| {
+            Line::from(vec![
+                Span::styled(
+                    format!(
+                        "{:02}:{:02}:{:02} ",
+                        entry.timestamp.hour(),
+                        entry.timestamp.minute(),
+                        entry.timestamp.second()
+                    ),
+                    Style::new().dim(),
+                ),
+                Span::raw(entry.text.clone()),
+            ])
+        })
+        .collect();
+
+    if lines.is_empty() {
+        lines.push(Line::from("(no output yet)".dim()));
+    }
+
+    let visible_start = lines.len().saturating_sub(inner_height);
+    let visible: Vec<Line> = lines.split_off(visible_start);
+
+    frame.render_widget(
+        Paragraph::new(visible)
             .block(block)
             .wrap(Wrap { trim: false }),
         area,

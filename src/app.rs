@@ -21,6 +21,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use time::OffsetDateTime;
 
 use crate::backend::{BackendKind, Capabilities, Capability};
 use crate::browser::{Browser, Side};
@@ -29,7 +30,7 @@ use crate::error::Result;
 use crate::event::AppEvent;
 use crate::flash::{FlashPanel, FlashScreen};
 use crate::logs::LogStore;
-use crate::process::ProcessManager;
+use crate::process::{ProcessId, ProcessManager};
 use crate::project::{DetectionOutcome, DetectionSource, ProjectManager};
 
 pub mod devices;
@@ -83,6 +84,9 @@ pub enum MonitorSource {
     #[default]
     Device,
     Flash,
+    /// A `mpremote run` session, spawned in a PTY so Ctrl+C can send a
+    /// KeyboardInterrupt to the device.
+    Run,
 }
 
 /// A modal layer drawn above the panes.
@@ -321,6 +325,26 @@ pub enum ViewerState {
     Error(String),
 }
 
+/// State of a script run displayed in the Monitor tab under
+/// [`MonitorSource::Run`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RunState {
+    /// No run has been started.
+    #[default]
+    Idle,
+    /// Process is running.
+    Running,
+    /// Process finished (success, failure, timeout, or cancellation).
+    Finished,
+}
+
+/// One line of streamed run output with its wall-clock timestamp.
+#[derive(Debug, Clone)]
+pub struct RunLine {
+    pub timestamp: OffsetDateTime,
+    pub text: String,
+}
+
 /// A file queued for `$EDITOR`, and where to send it back to afterward.
 /// Built by [`App::take_pending_edit`]'s callers (`main.rs`'s event loop),
 /// which owns the terminal handle needed to actually suspend and run it.
@@ -402,6 +426,14 @@ pub struct App {
     /// Accumulated lines from the PTY session.
     pub device_monitor_output: Vec<String>,
     pending_monitor: Option<PendingMonitor>,
+
+    /// Active or last-finished `mpremote run` session, shown in the Monitor
+    /// tab under [`MonitorSource::Run`]. Spawned in a PTY so Ctrl+C can
+    /// interrupt the script on the device.
+    pub run_process: Option<ProcessId>,
+    pub run_output: Vec<RunLine>,
+    pub run_script: Option<PathBuf>,
+    pub run_state: RunState,
     /// Set by [`App::defer_device_info_query`] when a device is newly
     /// selected while `mpremote` is (or is about to be) busy; consumed the
     /// moment [`Self::browser`] next goes idle. `esptool` and `mpremote`
@@ -436,6 +468,10 @@ impl App {
             device_monitor_process: None,
             device_monitor_output: Vec::new(),
             pending_monitor: None,
+            run_process: None,
+            run_output: Vec::new(),
+            run_script: None,
+            run_state: RunState::default(),
             flash_query_pending: false,
             should_quit: false,
             last_port_count: None,
@@ -597,6 +633,9 @@ impl App {
         if self.device_monitor_process.is_some() {
             return;
         }
+        if self.run_process.is_some() {
+            return;
+        }
 
         let current_count = crate::device::count_serial_ports();
         if let Some(current) = current_count {
@@ -660,6 +699,48 @@ impl App {
                     .push(format!("\r\n[monitor {}]", outcome.summary()));
                 return;
             }
+            // Run session (PTY): streamed output arrives as raw bytes.
+            crate::process::ProcessEvent::Output { id, text } if Some(*id) == self.run_process => {
+                if self.run_output.is_empty() {
+                    self.run_output.push(RunLine {
+                        timestamp: OffsetDateTime::now_utc(),
+                        text: String::new(),
+                    });
+                }
+                for char in text.chars() {
+                    match char {
+                        '\n' => self.run_output.push(RunLine {
+                            timestamp: OffsetDateTime::now_utc(),
+                            text: String::new(),
+                        }),
+                        '\r' => {}
+                        '\x08' | '\x7f' => {
+                            if let Some(last) = self.run_output.last_mut() {
+                                last.text.pop();
+                            }
+                        }
+                        _ => {
+                            if let Some(last) = self.run_output.last_mut() {
+                                last.text.push(char);
+                            }
+                        }
+                    }
+                }
+                return;
+            }
+            crate::process::ProcessEvent::Finished {
+                id,
+                outcome,
+                duration: _,
+            } if Some(*id) == self.run_process => {
+                self.run_process = None;
+                self.run_state = RunState::Finished;
+                self.run_output.push(RunLine {
+                    timestamp: OffsetDateTime::now_utc(),
+                    text: format!("[run {}]", outcome.summary()),
+                });
+                return;
+            }
             _ => {}
         }
 
@@ -703,9 +784,6 @@ impl App {
             }
             if let Some(view) = update.device_view {
                 self.apply_device_view(view);
-            }
-            if let Some(output) = update.run_output {
-                self.apply_run_output(output);
             }
             if update.prompt_micropython_flash
                 && !matches!(
@@ -778,10 +856,40 @@ impl App {
             && self.device_monitor_process.is_some()
     }
 
+    /// Whether the Monitor tab is showing the run output and the run process
+    /// is still alive --- Ctrl+C is intercepted here to send a
+    /// KeyboardInterrupt (0x03) to the device instead of quitting.
+    fn is_run_active(&self) -> bool {
+        self.focus == Focus::Logs
+            && self.log_tab == LogTab::Monitor
+            && self.monitor_source == MonitorSource::Run
+            && self.run_process.is_some()
+    }
+
+    /// Whether the Monitor tab is currently showing run output (regardless of
+    /// whether the process is still running).
+    fn is_run_view(&self) -> bool {
+        self.focus == Focus::Logs
+            && self.log_tab == LogTab::Monitor
+            && self.monitor_source == MonitorSource::Run
+    }
+
     fn on_key(&mut self, key: KeyEvent) {
         if self.is_monitor_active() {
             if let Some((id, bytes)) = self.device_monitor_process.zip(key_to_bytes(key)) {
                 self.processes.write_stdin(id, &bytes);
+            }
+            return;
+        }
+
+        // Ctrl+C during an active run sends a KeyboardInterrupt (0x03) to the
+        // device script instead of quitting the TUI.
+        if self.is_run_active()
+            && key.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(key.code, KeyCode::Char('c'))
+        {
+            if let Some(id) = self.run_process {
+                self.processes.write_stdin(id, &[0x03]);
             }
             return;
         }
@@ -892,6 +1000,9 @@ impl App {
         }
 
         match key.code {
+            KeyCode::Char('s') if self.is_run_view() => {
+                self.save_run_output();
+            }
             KeyCode::Char('r') => {
                 self.logs.info("re-running project detection");
                 self.detect();
@@ -1062,6 +1173,12 @@ impl App {
                     if self.focus == Focus::Logs {
                         if caps.contains(Capability::Monitor) {
                             keys.push(("←/→", "log/monitor"));
+                        }
+                        if self.is_run_active() {
+                            keys.push(("ctrl+c", "interrupt"));
+                        }
+                        if self.is_run_view() {
+                            keys.push(("s", "save output"));
                         }
                         if self.log_tab == LogTab::Log {
                             keys.push(("↑/↓", "scroll"));

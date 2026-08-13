@@ -1189,7 +1189,8 @@ fn escaping_the_viewer_does_not_queue_an_edit() {
 }
 
 #[test]
-fn choosing_run_on_a_local_file_loads_its_output_asynchronously() {
+fn choosing_run_on_a_local_file_opens_the_monitor_run_tab() {
+    use chiptui::app::{LogTab, MonitorSource, RunState};
     use ratatui::crossterm::event::KeyCode;
 
     let project = Project::new("run-viewer");
@@ -1201,31 +1202,115 @@ fn choosing_run_on_a_local_file_loads_its_output_asynchronously() {
     app.handle(key(KeyCode::Down)); // Send to device -> Run
     app.handle(key(KeyCode::Enter)); // choose it
 
-    assert_eq!(app.overlay, Some(Overlay::FileViewer));
+    // The run now opens in the Monitor tab (PTY-based streaming), not the
+    // FileViewer overlay.
+    assert_eq!(app.overlay, None);
+    assert_eq!(app.log_tab, LogTab::Monitor);
+    assert_eq!(app.monitor_source, MonitorSource::Run);
+    assert_eq!(app.run_state, RunState::Running);
     assert_eq!(
-        app.viewer.as_ref().unwrap().state,
-        ViewerState::Loading,
-        "the run has not returned yet"
+        app.run_script.as_ref().unwrap(),
+        &project.root.join("local_only.py")
     );
 
-    settle_app(&mut app);
-
-    let viewer = app.viewer.as_ref().expect("still open");
-    assert_eq!(
-        viewer.source,
-        ViewerSource::RunOutput(project.root.join("local_only.py"))
-    );
-    assert_eq!(
-        viewer.state,
-        ViewerState::Ready {
-            lines: vec!["run output".to_string()]
+    // Let the run finish.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while app.run_process.is_some() && Instant::now() < deadline {
+        for event in app.processes.drain() {
+            app.handle(AppEvent::Process(event));
         }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(app.run_process.is_none(), "run never completed");
+    assert_eq!(app.run_state, RunState::Finished);
+
+    // The fake mpremote prints "run output" for `run local_only.py`.
+    let output: String = app
+        .run_output
+        .iter()
+        .map(|l| l.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        output.contains("run output"),
+        "expected run output in the monitor, got: {output}"
     );
-    // Captured output must never be mistaken for the script's own source and
-    // syntax-highlighted as Python.
-    assert_eq!(
-        viewer.display_name(),
-        format!("{} — output", project.root.join("local_only.py").display())
+}
+
+#[test]
+fn pressing_s_saves_the_run_output_to_a_file_next_to_the_script() {
+    use chiptui::app::{MonitorSource, RunState};
+    use ratatui::crossterm::event::KeyCode;
+
+    let project = Project::new("run-save");
+    let mut app = app_in_browser(&project);
+    app.browser.as_mut().unwrap().cursor_to(2); // local_only.py
+
+    // Start a run.
+    app.handle(key(KeyCode::Enter));
+    app.handle(key(KeyCode::Down));
+    app.handle(key(KeyCode::Enter));
+    assert_eq!(app.monitor_source, MonitorSource::Run);
+
+    // Wait for it to finish.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while app.run_process.is_some() && Instant::now() < deadline {
+        for event in app.processes.drain() {
+            app.handle(AppEvent::Process(event));
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(app.run_state, RunState::Finished);
+
+    // Press 's' to save.
+    app.handle(key(KeyCode::Char('s')));
+
+    let dest = project.root.join("local_only.output.txt");
+    assert!(dest.exists(), "output file should have been created");
+    let content = std::fs::read_to_string(&dest).unwrap();
+    assert!(
+        content.contains("run output"),
+        "saved file should contain the run output: {content}"
+    );
+}
+
+#[test]
+fn the_run_tab_renders_timestamps_on_each_line() {
+    use chiptui::app::{LogTab, MonitorSource, RunLine, RunState};
+
+    let project = Project::new("run-render");
+    let mut app = app_in_browser(&project);
+
+    // Simulate a finished run with known output.
+    app.monitor_source = MonitorSource::Run;
+    app.focus = Focus::Logs;
+    app.log_tab = LogTab::Monitor;
+    app.run_state = RunState::Finished;
+    app.run_script = Some(project.root.join("demo.py"));
+    app.run_output = vec![
+        RunLine {
+            timestamp: time::OffsetDateTime::from_unix_timestamp(1700000000).unwrap(),
+            text: "hello".to_string(),
+        },
+        RunLine {
+            timestamp: time::OffsetDateTime::from_unix_timestamp(1700000000).unwrap(),
+            text: "world".to_string(),
+        },
+    ];
+
+    let frame = render(&mut app, 100, 30);
+    assert!(frame.contains("Run:"), "missing run title:\n{frame}");
+    assert!(
+        frame.contains("hello"),
+        "missing first output line:\n{frame}"
+    );
+    assert!(
+        frame.contains("world"),
+        "missing second output line:\n{frame}"
+    );
+    assert!(
+        frame.contains("(done)"),
+        "missing finished status:\n{frame}"
     );
 }
 

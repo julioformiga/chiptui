@@ -8,13 +8,15 @@ use std::path::PathBuf;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
 use crate::backend::Capability;
-use crate::browser::{Browser, DeviceView, Notice, RunOutput, Side, Transfer, TransferKind};
+use crate::backend::micropython::commands;
+use crate::browser::{Browser, DeviceView, Notice, Side, Transfer, TransferKind};
 use crate::device::DevicePath;
 use crate::files;
 use crate::process::ProcessManager;
 
 use super::{
-    App, FileAction, FileViewer, Overlay, PendingEdit, PendingMonitor, ViewerSource, ViewerState,
+    App, FileAction, FileViewer, Overlay, PendingEdit, PendingMonitor, RunState, ViewerSource,
+    ViewerState,
 };
 
 impl App {
@@ -159,7 +161,7 @@ impl App {
                     confirm: false,
                 });
             }
-            (Side::Local, FileAction::Run) => self.open_run_output_viewer(name),
+            (Side::Local, FileAction::Run) => self.open_run_session(name),
             (Side::Local, FileAction::Delete) => {
                 self.overlay = Some(Overlay::ConfirmDelete {
                     side: Side::Local,
@@ -310,10 +312,19 @@ impl App {
     /// port, then puts it back and logs whatever `f` reports --- the same
     /// take/replace/log shape every browser-mutating key handler here
     /// already repeats, pulled out for the three new file-transfer actions.
+    ///
+    /// Refuses to dispatch while a `run` session holds the serial port: the
+    /// PTY-based run bypasses the browser queue, so the browser's own
+    /// `is_busy` would not catch the contention.
     pub(super) fn dispatch_browser(
         &mut self,
         f: impl FnOnce(&mut Browser, &mut ProcessManager, Option<&str>) -> Vec<Notice>,
     ) {
+        if self.run_process.is_some() {
+            self.logs
+                .warn("a script is running — wait for it to finish first");
+            return;
+        }
         let Some(mut browser) = self.browser.take() else {
             return;
         };
@@ -373,44 +384,85 @@ impl App {
         });
     }
 
-    /// Opens [`Overlay::FileViewer`] on `name`, a local file, and queues the
-    /// `run` that will fill it in with the device's captured stdout ---
-    /// mirrors [`Self::open_device_file_viewer`], but the file itself never
-    /// leaves the host: only its output comes back over the wire.
-    fn open_run_output_viewer(&mut self, name: &str) {
-        let Some(browser) = &self.browser else { return };
-        let path = browser.local_path.join(name);
-
-        self.viewer = Some(FileViewer {
-            source: ViewerSource::RunOutput(path),
-            state: ViewerState::Loading,
-            scroll: 0,
-        });
-        self.overlay = Some(Overlay::FileViewer);
-        self.dispatch_browser(|browser, processes, port| {
-            browser.request_run(name, processes, port)
-        });
-    }
-
-    /// Feeds a finished `run` into the open viewer, if it is still the one
-    /// waiting on it --- same matched-by-path guard as
-    /// [`Self::apply_device_view`].
-    pub(super) fn apply_run_output(&mut self, output: RunOutput) {
-        let Some(viewer) = &mut self.viewer else {
-            return;
-        };
-        let ViewerSource::RunOutput(path) = &viewer.source else {
-            return;
-        };
-        if *path != output.path {
+    /// Starts a `mpremote run` session for `name` in a PTY, displayed in the
+    /// Monitor tab under [`MonitorSource::Run`](super::MonitorSource::Run).
+    /// The PTY lets Ctrl+C send a KeyboardInterrupt (0x03) to the running
+    /// script, and the output streams line by line with timestamps instead of
+    /// arriving all at once when the script finishes.
+    ///
+    /// Serial exclusivity: if the browser is busy, the run is refused rather
+    /// than racing an in-flight `mpremote` for the port.
+    pub(super) fn open_run_session(&mut self, name: &str) {
+        if self.browser.as_ref().is_some_and(Browser::is_busy) {
+            self.logs
+                .warn("device is busy — wait for the current operation to finish");
             return;
         }
-        viewer.state = match output.output {
-            Ok(content) => ViewerState::Ready {
-                lines: content.lines().map(str::to_string).collect(),
-            },
-            Err(message) => ViewerState::Error(message),
+        if self.device_monitor_process.is_some() {
+            self.logs
+                .warn("close the monitor/REPL before running a script");
+            return;
+        }
+
+        let Some(browser) = &self.browser else { return };
+        let local_path = browser.local_path.join(name);
+        let port = self.devices.selected_port().map(str::to_string);
+
+        let mut command = commands::run(port.as_deref(), &local_path);
+        if let Some(tool) = browser.tool_path() {
+            command = command.with_program(tool);
+        }
+
+        self.run_script = Some(local_path.clone());
+        self.run_output.clear();
+        self.run_state = RunState::Running;
+        self.monitor_source = super::MonitorSource::Run;
+        self.focus = super::Focus::Logs;
+        self.log_tab = super::LogTab::Monitor;
+
+        self.logs.info(format!("running {}", local_path.display()));
+
+        let timeout = crate::browser::RUN_TIMEOUT;
+        match self.processes.spawn_pty(command, timeout) {
+            Ok(id) => self.run_process = Some(id),
+            Err(e) => {
+                self.logs.error(format!("could not start run: {e}"));
+                self.run_state = RunState::Idle;
+            }
+        }
+    }
+
+    /// Saves the current run output (text only, no timestamps) to a file next
+    /// to the script: `{stem}.output.txt`. The timestamps are a UI convenience;
+    /// a saved file is raw script output for piping or comparison.
+    pub(super) fn save_run_output(&mut self) {
+        let Some(script) = &self.run_script else {
+            return;
         };
+        if self.run_output.is_empty() {
+            self.logs.warn("no run output to save");
+            return;
+        }
+
+        let stem = script
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "run".to_string());
+        let dir = script.parent().unwrap_or_else(|| std::path::Path::new("."));
+        let dest = dir.join(format!("{stem}.output.txt"));
+
+        let content: String = self
+            .run_output
+            .iter()
+            .map(|line| format!("{}\n", line.text))
+            .collect();
+
+        match std::fs::write(&dest, content) {
+            Ok(()) => self
+                .logs
+                .success(format!("run output saved to {}", dest.display())),
+            Err(e) => self.logs.error(format!("could not save run output: {e}")),
+        }
     }
 
     /// Feeds a finished device `cat` into the open viewer, if it is still the
