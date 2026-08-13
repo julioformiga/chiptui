@@ -22,7 +22,7 @@ use std::time::Duration;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::backend::{BackendKind, Capability};
+use crate::backend::{BackendKind, Capabilities, Capability};
 use crate::browser::{Browser, Side};
 use crate::device::{DevicePath, DeviceState};
 use crate::error::Result;
@@ -175,6 +175,13 @@ pub enum Overlay {
         side: Side,
         input: String,
     },
+    /// Inline text entry for `mip install` (`i` on the device pane). Unlike
+    /// [`Overlay::CreateEntry`] this is not tied to `side` or a selected
+    /// entry --- it acts on the device as a whole, not the file under the
+    /// cursor.
+    PackageInstall {
+        input: String,
+    },
 }
 
 /// One action offered by [`Overlay::FileActions`] for the entry under the
@@ -190,6 +197,10 @@ pub enum FileAction {
     Open,
     SendToDevice,
     Download,
+    /// Runs a local file on the device without copying it in
+    /// (`mpremote run`) --- only ever offered on [`Side::Local`], since the
+    /// underlying command takes a host path. See [`Capability::Run`].
+    Run,
     View,
     Edit,
     Delete,
@@ -201,6 +212,7 @@ impl FileAction {
             Self::Open => "📂 Open",
             Self::SendToDevice => "📤 Send to device",
             Self::Download => "📥 Download",
+            Self::Run => "▶  Run",
             Self::View => "👁  View",
             Self::Edit => "📝 Edit",
             Self::Delete => "🗑  Delete",
@@ -214,8 +226,16 @@ impl FileAction {
     /// need file contents. A file never offers `Open`; `View`/`Edit` appear
     /// only when `is_text` ([`crate::files::is_text_like`]) --- a binary
     /// file (e.g. a `.mpy`) can still be sent, downloaded and deleted, just
-    /// not previewed or opened in `$EDITOR`.
-    pub fn for_entry(side: Side, is_dir: bool, is_text: bool) -> Vec<FileAction> {
+    /// not previewed or opened in `$EDITOR`. `Run` appears alongside them,
+    /// gated on `capabilities` rather than shape alone --- unlike the rest of
+    /// this function, a backend without [`Capability::Run`] genuinely has no
+    /// such action, not just one this menu chooses not to show.
+    pub fn for_entry(
+        side: Side,
+        is_dir: bool,
+        is_text: bool,
+        capabilities: Capabilities,
+    ) -> Vec<FileAction> {
         if is_dir {
             match side {
                 Side::Local => vec![Self::Open, Self::SendToDevice, Self::Delete],
@@ -227,6 +247,9 @@ impl FileAction {
                 Side::Device => vec![Self::Download],
             };
             if is_text {
+                if side == Side::Local && capabilities.contains(Capability::Run) {
+                    actions.push(Self::Run);
+                }
                 actions.push(Self::View);
                 actions.push(Self::Edit);
             }
@@ -254,6 +277,12 @@ impl FileViewer {
         match &self.source {
             ViewerSource::Local(path) => path.display().to_string(),
             ViewerSource::Device(path) => path.to_string(),
+            // Deliberately not `{path}.output` or anything else ending the
+            // string in the script's own extension: `highlight::Language::
+            // from_filename` keys off the text after the last '.', and this
+            // is plain captured output, not Python source, so it must not
+            // look like a `.py` file to it.
+            ViewerSource::RunOutput(path) => format!("{} — output", path.display()),
         }
     }
 }
@@ -268,6 +297,9 @@ impl FileViewer {
 pub enum ViewerSource {
     Local(PathBuf),
     Device(DevicePath),
+    /// Captured stdout of a local script run on the device
+    /// (`FileAction::Run`), keyed by the local script's path.
+    RunOutput(PathBuf),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -664,6 +696,9 @@ impl App {
             if let Some(view) = update.device_view {
                 self.apply_device_view(view);
             }
+            if let Some(output) = update.run_output {
+                self.apply_run_output(output);
+            }
             if update.prompt_micropython_flash
                 && !matches!(
                     self.overlay,
@@ -905,6 +940,9 @@ impl App {
                 ("enter", "create ('name/' for a directory)"),
                 ("esc", "cancel"),
             ],
+            Some(Overlay::PackageInstall { .. }) => {
+                vec![("type", "package"), ("enter", "install"), ("esc", "cancel")]
+            }
             Some(
                 Overlay::BackendPicker { .. }
                 | Overlay::DevicePicker { .. }
@@ -955,6 +993,7 @@ impl App {
                 },
                 View::Dashboard => {
                     let mut keys = vec![("tab", "focus")];
+                    let caps = self.manager.capabilities();
                     if matches!(self.focus, Focus::FilesLocal | Focus::FilesDevice) {
                         keys.push(("enter", "menu"));
                         keys.push(("→", "descend"));
@@ -963,11 +1002,15 @@ impl App {
                         keys.push(("a", "new"));
                         keys.push(("c", "compare"));
                         keys.push(("h", "hidden"));
+                        if self.focus == Focus::FilesDevice
+                            && caps.contains(Capability::PackageInstall)
+                        {
+                            keys.push(("i", "install pkg"));
+                        }
                     } else {
                         keys.push(("r", "re-detect"));
                     }
                     keys.push(("o", "backend"));
-                    let caps = self.manager.capabilities();
                     if caps.contains(Capability::Flash) || caps.contains(Capability::EraseFlash) {
                         keys.push(("x", "flash"));
                     }

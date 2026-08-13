@@ -7,7 +7,8 @@ use std::path::PathBuf;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
-use crate::browser::{Browser, DeviceView, Notice, Side, Transfer, TransferKind};
+use crate::backend::Capability;
+use crate::browser::{Browser, DeviceView, Notice, RunOutput, Side, Transfer, TransferKind};
 use crate::device::DevicePath;
 use crate::files;
 use crate::process::ProcessManager;
@@ -96,6 +97,18 @@ impl App {
                 Vec::new()
             }
             KeyCode::Char('c') => browser.verify_selected(&mut self.processes, port),
+            KeyCode::Char('i')
+                if browser.focus == Side::Device
+                    && self
+                        .manager
+                        .capabilities()
+                        .contains(Capability::PackageInstall) =>
+            {
+                self.overlay = Some(Overlay::PackageInstall {
+                    input: String::new(),
+                });
+                Vec::new()
+            }
             _ => Vec::new(),
         };
 
@@ -145,6 +158,7 @@ impl App {
                     confirm: false,
                 });
             }
+            (Side::Local, FileAction::Run) => self.open_run_output_viewer(name),
             (Side::Local, FileAction::Delete) => {
                 self.overlay = Some(Overlay::ConfirmDelete {
                     side: Side::Local,
@@ -177,9 +191,11 @@ impl App {
                     confirm: false,
                 });
             }
-            // `FileAction::for_entry` never offers `Download` on `Local` or
-            // `SendToDevice` on `Device`.
-            (Side::Local, FileAction::Download) | (Side::Device, FileAction::SendToDevice) => {}
+            // `FileAction::for_entry` never offers `Download`/`Run` on `Local`
+            // and `Device` respectively, nor `SendToDevice` on `Device`.
+            (Side::Local, FileAction::Download)
+            | (Side::Device, FileAction::SendToDevice)
+            | (Side::Device, FileAction::Run) => {}
         }
     }
 
@@ -275,6 +291,20 @@ impl App {
         }
     }
 
+    /// Runs the package-install prompt (`i` on the device pane): queues
+    /// `mip install` for the typed package name/spec through [`Browser`],
+    /// like every other action here that touches the port.
+    pub(super) fn install_package(&mut self, input: &str) {
+        let package = input.trim();
+        if package.is_empty() {
+            self.logs.warn("type a package name first");
+            return;
+        }
+        self.dispatch_browser(|browser, processes, port| {
+            browser.request_mip_install(package, processes, port)
+        });
+    }
+
     /// Takes `self.browser` for the duration of `f`, supplying the selected
     /// port, then puts it back and logs whatever `f` reports --- the same
     /// take/replace/log shape every browser-mutating key handler here
@@ -340,6 +370,46 @@ impl App {
         self.dispatch_browser(|browser, processes, port| {
             browser.request_device_view(name, processes, port)
         });
+    }
+
+    /// Opens [`Overlay::FileViewer`] on `name`, a local file, and queues the
+    /// `run` that will fill it in with the device's captured stdout ---
+    /// mirrors [`Self::open_device_file_viewer`], but the file itself never
+    /// leaves the host: only its output comes back over the wire.
+    fn open_run_output_viewer(&mut self, name: &str) {
+        let Some(browser) = &self.browser else { return };
+        let path = browser.local_path.join(name);
+
+        self.viewer = Some(FileViewer {
+            source: ViewerSource::RunOutput(path),
+            state: ViewerState::Loading,
+            scroll: 0,
+        });
+        self.overlay = Some(Overlay::FileViewer);
+        self.dispatch_browser(|browser, processes, port| {
+            browser.request_run(name, processes, port)
+        });
+    }
+
+    /// Feeds a finished `run` into the open viewer, if it is still the one
+    /// waiting on it --- same matched-by-path guard as
+    /// [`Self::apply_device_view`].
+    pub(super) fn apply_run_output(&mut self, output: RunOutput) {
+        let Some(viewer) = &mut self.viewer else {
+            return;
+        };
+        let ViewerSource::RunOutput(path) = &viewer.source else {
+            return;
+        };
+        if *path != output.path {
+            return;
+        }
+        viewer.state = match output.output {
+            Ok(content) => ViewerState::Ready {
+                lines: content.lines().map(str::to_string).collect(),
+            },
+            Err(message) => ViewerState::Error(message),
+        };
     }
 
     /// Feeds a finished device `cat` into the open viewer, if it is still the

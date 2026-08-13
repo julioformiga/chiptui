@@ -7,7 +7,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, List, ListItem, ListState, Paragraph};
 
 use crate::app::{App, FileAction, Overlay, PickerOption, View, ViewerState};
-use crate::backend::BackendKind;
+use crate::backend::{BackendKind, Capabilities};
 use crate::highlight::{self, TokenKind};
 
 pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
@@ -34,7 +34,15 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
             name,
             is_dir,
             selected,
-        } => draw_file_actions(frame, area, side, &name, is_dir, selected),
+        } => draw_file_actions(
+            frame,
+            area,
+            side,
+            &name,
+            is_dir,
+            selected,
+            app.manager.capabilities(),
+        ),
         Overlay::FileViewer => draw_file_viewer(frame, area, app),
         Overlay::ConfirmRestartDevice { confirm } => {
             draw_confirm_restart_device(frame, area, app, confirm)
@@ -49,6 +57,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
             confirm,
         } => draw_confirm_delete(frame, area, side, &name, is_dir, confirm),
         Overlay::CreateEntry { side, input } => draw_create_entry(frame, area, side, &input),
+        Overlay::PackageInstall { input } => draw_package_install(frame, area, &input),
     }
 }
 
@@ -175,9 +184,10 @@ fn draw_file_actions(
     name: &str,
     is_dir: bool,
     selected: usize,
+    capabilities: Capabilities,
 ) {
     let is_text = crate::files::is_text_like(name);
-    let actions = FileAction::for_entry(side, is_dir, is_text);
+    let actions = FileAction::for_entry(side, is_dir, is_text, capabilities);
     let items: Vec<ListItem> = actions
         .iter()
         .map(|action| ListItem::new(Line::from(format!(" {} ", action.label()))))
@@ -332,6 +342,39 @@ fn draw_create_entry(frame: &mut Frame, area: Rect, side: crate::browser::Side, 
 
     frame.render_widget(
         Paragraph::new("name, or 'name/' for a directory".dim()),
+        hint_area,
+    );
+
+    let field = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(Color::Cyan));
+    let field_inner = field.inner(input_area);
+    frame.render_widget(field, input_area);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::raw(input),
+            Span::raw("_").fg(Color::Cyan),
+        ])),
+        field_inner,
+    );
+}
+
+/// Inline text entry for `mip install` (`i` on the device pane) --- same
+/// shape as [`draw_create_entry`], just with no `side` (it always acts on
+/// the device) and a hint describing a package spec instead of a filename.
+fn draw_package_install(frame: &mut Frame, area: Rect, input: &str) {
+    let popup = centered(area, 54, 6);
+    let block = modal("Install package (mip)");
+    let inner = block.inner(popup);
+
+    frame.render_widget(Clear, popup);
+    frame.render_widget(block, popup);
+
+    let [hint_area, input_area] =
+        Layout::vertical([Constraint::Length(1), Constraint::Length(3)]).areas(inner);
+
+    frame.render_widget(
+        Paragraph::new("package name, e.g. urequests, or name@version, github:org/repo".dim()),
         hint_area,
     );
 
@@ -504,7 +547,7 @@ fn draw_help(frame: &mut Frame, area: Rect, app: &App) {
             ("o", "override the detected backend"),
             (
                 "enter",
-                "open the menu for the selected entry (send/download, view, edit, delete)",
+                "open the menu for the selected entry (send/download, run, view, edit, delete)",
             ),
             ("→", "descend into the selected directory directly"),
             (
@@ -518,6 +561,10 @@ fn draw_help(frame: &mut Frame, area: Rect, app: &App) {
             ("c", "compare the selected file by sha256"),
             ("h", "show or hide dot-files in the file browser"),
             ("d", "scan for devices (when the backend has a filesystem)"),
+            (
+                "i",
+                "on the device pane: install a package via mip (when the backend supports it)",
+            ),
             ("e", "in the file viewer: edit with $EDITOR"),
             ("?", "toggle this help"),
             ("q / esc / ctrl+c", "quit"),

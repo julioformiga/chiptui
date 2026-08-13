@@ -123,6 +123,24 @@ case "$args" in
         printf '%s %9d %8d %8d %4d %s\n' 'vfs       ' 1441792 1040384 401408 72 '/'
         ;;
 
+    "run "*"failing.py")
+        echo 'Traceback (most recent call last): boom' >&2
+        exit 1
+        ;;
+
+    "run "*)
+        printf 'run output\n'
+        ;;
+
+    "mip install urequests")
+        printf 'Installing urequests\n'
+        ;;
+
+    "mip install rejected")
+        echo 'mip: Package rejected.' >&2
+        exit 1
+        ;;
+
     *)
         echo "mpremote: no device found" >&2
         exit 1

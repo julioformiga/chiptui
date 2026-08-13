@@ -278,6 +278,111 @@ fn creating_a_file_on_the_device() {
 }
 
 #[test]
+fn running_a_local_script_captures_its_output() {
+    let project = Project::new("run-ok");
+    let (mut browser, mut processes) = browser_for(&project);
+
+    let messages = browser.request_run("local_only.py", &mut processes, None);
+    let messages: Vec<String> = messages
+        .into_iter()
+        .map(|(_, text)| text)
+        .chain(settle(&mut browser, &mut processes))
+        .collect();
+
+    assert!(
+        messages.iter().any(|m| m.contains("finished")),
+        "no success notice: {messages:?}"
+    );
+}
+
+#[test]
+fn running_a_failing_script_reports_the_error() {
+    let project = Project::new("run-fail");
+    let (mut browser, mut processes) = browser_for(&project);
+
+    let messages = browser.request_run("failing.py", &mut processes, None);
+    let messages: Vec<String> = messages
+        .into_iter()
+        .map(|(_, text)| text)
+        .chain(settle(&mut browser, &mut processes))
+        .collect();
+
+    assert!(
+        messages.iter().any(|m| m.contains("run failed")),
+        "no failure notice: {messages:?}"
+    );
+}
+
+#[test]
+fn installing_a_package_reports_success() {
+    let project = Project::new("mip-ok");
+    let (mut browser, mut processes) = browser_for(&project);
+
+    let messages = browser.request_mip_install("urequests", &mut processes, None);
+    let messages: Vec<String> = messages
+        .into_iter()
+        .map(|(_, text)| text)
+        .chain(settle(&mut browser, &mut processes))
+        .collect();
+
+    assert!(
+        messages.iter().any(|m| m.contains("installed")),
+        "no success notice: {messages:?}"
+    );
+}
+
+#[test]
+fn installing_a_rejected_package_reports_the_error() {
+    let project = Project::new("mip-fail");
+    let (mut browser, mut processes) = browser_for(&project);
+
+    let messages = browser.request_mip_install("rejected", &mut processes, None);
+    let messages: Vec<String> = messages
+        .into_iter()
+        .map(|(_, text)| text)
+        .chain(settle(&mut browser, &mut processes))
+        .collect();
+
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("installing rejected failed")),
+        "no failure notice: {messages:?}"
+    );
+}
+
+#[test]
+fn installing_a_package_refreshes_the_lib_listing_when_viewing_it() {
+    let project = Project::new("mip-refresh");
+    let (mut browser, mut processes) = browser_for(&project);
+
+    browser.load_device(&mut processes, None, false);
+    settle(&mut browser, &mut processes);
+    browser.focus = Side::Device;
+    browser.cursor_to(0); // lib/
+    browser.enter(&mut processes, None);
+    settle(&mut browser, &mut processes);
+    assert_eq!(browser.device_path.as_str(), "/lib");
+
+    let messages = browser.request_mip_install("urequests", &mut processes, None);
+    let messages: Vec<String> = messages
+        .into_iter()
+        .map(|(_, text)| text)
+        .chain(settle(&mut browser, &mut processes))
+        .collect();
+
+    assert!(
+        messages.iter().any(|m| m.contains("installed")),
+        "no success notice: {messages:?}"
+    );
+    assert!(
+        messages.iter().any(|m| m.contains("/lib: 1 entries")),
+        "installing while viewing /lib should re-list it: {messages:?}"
+    );
+    assert_eq!(browser.device_state, PaneState::Ready);
+}
+
+#[test]
 fn sending_a_local_directory_to_the_device() {
     let project = Project::new("upload-dir");
     let (mut browser, mut processes) = browser_for(&project);
@@ -935,7 +1040,8 @@ fn choosing_view_opens_the_viewer_ready_with_highlighted_content() {
     app.browser.as_mut().unwrap().cursor_to(1); // diff.py
 
     app.handle(key(KeyCode::Enter)); // open the dialog
-    app.handle(key(KeyCode::Down)); // Send to device -> View
+    app.handle(key(KeyCode::Down)); // Send to device -> Run
+    app.handle(key(KeyCode::Down)); // Run -> View
     app.handle(key(KeyCode::Enter)); // choose it
 
     assert_eq!(app.overlay, Some(Overlay::FileViewer));
@@ -971,7 +1077,8 @@ fn pressing_e_in_the_viewer_queues_an_edit_and_closes_it() {
     app.browser.as_mut().unwrap().cursor_to(1); // diff.py
 
     app.handle(key(KeyCode::Enter));
-    app.handle(key(KeyCode::Down)); // View
+    app.handle(key(KeyCode::Down)); // Send to device -> Run
+    app.handle(key(KeyCode::Down)); // Run -> View
     app.handle(key(KeyCode::Enter));
     assert_eq!(app.overlay, Some(Overlay::FileViewer));
 
@@ -1016,7 +1123,8 @@ fn escaping_the_viewer_does_not_queue_an_edit() {
     app.browser.as_mut().unwrap().cursor_to(1); // diff.py
 
     app.handle(key(KeyCode::Enter));
-    app.handle(key(KeyCode::Down)); // View
+    app.handle(key(KeyCode::Down)); // Send to device -> Run
+    app.handle(key(KeyCode::Down)); // Run -> View
     app.handle(key(KeyCode::Enter));
     assert_eq!(app.overlay, Some(Overlay::FileViewer));
 
@@ -1024,6 +1132,109 @@ fn escaping_the_viewer_does_not_queue_an_edit() {
     assert_eq!(app.overlay, None);
     assert!(app.viewer.is_none());
     assert_eq!(app.take_pending_edit(), None);
+}
+
+#[test]
+fn choosing_run_on_a_local_file_loads_its_output_asynchronously() {
+    use ratatui::crossterm::event::KeyCode;
+
+    let project = Project::new("run-viewer");
+    let mut app = app_in_browser(&project);
+    // Sorted order: lib/, diff.py, local_only.py, same.py.
+    app.browser.as_mut().unwrap().cursor_to(2); // local_only.py
+
+    app.handle(key(KeyCode::Enter)); // open the dialog, "Send to device" highlighted
+    app.handle(key(KeyCode::Down)); // Send to device -> Run
+    app.handle(key(KeyCode::Enter)); // choose it
+
+    assert_eq!(app.overlay, Some(Overlay::FileViewer));
+    assert_eq!(
+        app.viewer.as_ref().unwrap().state,
+        ViewerState::Loading,
+        "the run has not returned yet"
+    );
+
+    settle_app(&mut app);
+
+    let viewer = app.viewer.as_ref().expect("still open");
+    assert_eq!(
+        viewer.source,
+        ViewerSource::RunOutput(project.root.join("local_only.py"))
+    );
+    assert_eq!(
+        viewer.state,
+        ViewerState::Ready {
+            lines: vec!["run output".to_string()]
+        }
+    );
+    // Captured output must never be mistaken for the script's own source and
+    // syntax-highlighted as Python.
+    assert_eq!(
+        viewer.display_name(),
+        format!("{} — output", project.root.join("local_only.py").display())
+    );
+}
+
+#[test]
+fn pressing_i_opens_the_package_install_prompt_on_the_device_pane() {
+    use ratatui::crossterm::event::KeyCode;
+
+    let project = Project::new("mip-prompt");
+    let mut app = app_in_browser(&project);
+    app.focus = Focus::FilesDevice;
+
+    app.handle(key(KeyCode::Char('i')));
+    assert_eq!(
+        app.overlay,
+        Some(Overlay::PackageInstall {
+            input: String::new(),
+        })
+    );
+
+    let frame = render(&mut app, 110, 24);
+    assert!(
+        frame.contains("Install package"),
+        "prompt not shown:\n{frame}"
+    );
+}
+
+#[test]
+fn pressing_i_on_the_local_pane_does_nothing() {
+    use ratatui::crossterm::event::KeyCode;
+
+    let project = Project::new("mip-local-noop");
+    let mut app = app_in_browser(&project); // focus defaults to FilesLocal
+
+    app.handle(key(KeyCode::Char('i')));
+    assert_eq!(
+        app.overlay, None,
+        "package install only makes sense on the device pane"
+    );
+}
+
+#[test]
+fn installing_a_package_via_the_prompt_logs_success() {
+    use ratatui::crossterm::event::KeyCode;
+
+    let project = Project::new("mip-install-flow");
+    let mut app = app_in_browser(&project);
+    app.focus = Focus::FilesDevice;
+
+    app.handle(key(KeyCode::Char('i')));
+    for c in "urequests".chars() {
+        app.handle(key(KeyCode::Char(c)));
+    }
+    app.handle(key(KeyCode::Enter));
+    assert_eq!(app.overlay, None);
+
+    settle_app(&mut app);
+
+    assert!(
+        app.logs
+            .visible(50)
+            .any(|entry| entry.message.contains("installed")),
+        "no success notice in the log"
+    );
 }
 
 #[test]

@@ -219,7 +219,8 @@ impl App {
                 selected,
             } => {
                 let is_text = crate::files::is_text_like(&name);
-                let count = FileAction::for_entry(side, is_dir, is_text).len();
+                let capabilities = self.manager.capabilities();
+                let count = FileAction::for_entry(side, is_dir, is_text, capabilities).len();
                 match key.code {
                     // Left/right mirror the files pane's own navigation
                     // (`←` back, `→` act) so the menu never asks for a
@@ -242,7 +243,8 @@ impl App {
                         });
                     }
                     KeyCode::Enter | KeyCode::Right => {
-                        let action = FileAction::for_entry(side, is_dir, is_text)[selected];
+                        let action =
+                            FileAction::for_entry(side, is_dir, is_text, capabilities)[selected];
                         self.overlay = None;
                         self.run_file_action(side, &name, is_dir, action);
                     }
@@ -264,6 +266,24 @@ impl App {
                 KeyCode::Enter => {
                     self.overlay = None;
                     self.create_entry(side, &input);
+                }
+                _ => {}
+            },
+            Overlay::PackageInstall { input } => match key.code {
+                KeyCode::Esc => self.overlay = None,
+                KeyCode::Backspace => {
+                    let mut input = input;
+                    input.pop();
+                    self.overlay = Some(Overlay::PackageInstall { input });
+                }
+                KeyCode::Char(c) => {
+                    let mut input = input;
+                    input.push(c);
+                    self.overlay = Some(Overlay::PackageInstall { input });
+                }
+                KeyCode::Enter => {
+                    self.overlay = None;
+                    self.install_package(&input);
                 }
                 _ => {}
             },
@@ -289,7 +309,8 @@ impl App {
                                 browser.request_edit_download(&name, processes, port)
                             });
                         }
-                        None => {}
+                        // Captured `run` output isn't a file to edit.
+                        Some(ViewerSource::RunOutput(_)) | None => {}
                     }
                 }
                 KeyCode::Up | KeyCode::Char('k') => self.scroll_viewer(-1),

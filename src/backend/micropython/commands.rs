@@ -115,6 +115,23 @@ pub fn df(port: Option<&str>) -> Command {
     connect(port).arg("df")
 }
 
+/// `mpremote [connect PORT] run LOCAL_PATH` --- executes a local script on the
+/// device without copying it to the filesystem, streaming its stdout back.
+/// Unlike every other command here, `local_path` is a host path, not a
+/// [`DevicePath`]: `run` never touches the device filesystem.
+pub fn run(port: Option<&str>, local_path: &Path) -> Command {
+    connect(port)
+        .arg("run")
+        .arg(local_path.to_string_lossy().into_owned())
+}
+
+/// `mpremote [connect PORT] mip install PACKAGE` --- installs a package
+/// (a name, `name@version`, or a `github:`/`gitlab:`/URL spec) into the
+/// device's `/lib`. Not under `fs`: `mip` is a top-level mpremote command.
+pub fn mip_install(port: Option<&str>, package: &str) -> Command {
+    connect(port).args(["mip", "install", package])
+}
+
 /// Common prefix for `fs` sub-commands.
 ///
 /// `--no-verbose` suppresses the `ls :path` header mpremote prints by default,
@@ -285,6 +302,34 @@ mod tests {
         assert_eq!(
             df(Some("/dev/ttyACM0")).to_string(),
             "mpremote connect /dev/ttyACM0 df"
+        );
+    }
+
+    #[test]
+    fn run_executes_a_local_script_without_a_device_path() {
+        let command = run(None, Path::new("/home/dev/project/src/main.py"));
+        assert_eq!(
+            command.to_string(),
+            "mpremote run /home/dev/project/src/main.py"
+        );
+        let command = run(
+            Some("/dev/ttyACM0"),
+            Path::new("/home/dev/project/src/main.py"),
+        );
+        assert_eq!(
+            command.to_string(),
+            "mpremote connect /dev/ttyACM0 run /home/dev/project/src/main.py"
+        );
+    }
+
+    #[test]
+    fn mip_install_takes_a_package_spec() {
+        let command = mip_install(None, "urequests");
+        assert_eq!(command.to_string(), "mpremote mip install urequests");
+        let command = mip_install(Some("/dev/ttyACM0"), "github:org/repo");
+        assert_eq!(
+            command.to_string(),
+            "mpremote connect /dev/ttyACM0 mip install github:org/repo"
         );
     }
 

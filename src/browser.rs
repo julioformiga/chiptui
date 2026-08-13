@@ -21,6 +21,11 @@ use crate::process::{Outcome, ProcessEvent, ProcessId, ProcessManager, Stream};
 /// Device commands are quick, but a board in a bad state can hang the port.
 pub const DEVICE_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// `run` executes arbitrary user code, which routinely takes longer than a
+/// filesystem operation --- `DEVICE_TIMEOUT` is calibrated for `ls`/`cp`, not
+/// a script that polls a sensor for a while.
+pub const RUN_TIMEOUT: Duration = Duration::from_secs(120);
+
 /// Local files above this are not hashed, to keep the UI thread responsive.
 const MAX_LOCAL_HASH_BYTES: u64 = 32 * 1024 * 1024;
 
@@ -118,6 +123,13 @@ enum Request {
     /// `df` --- filesystem usage of the connected board, device-wide rather than
     /// per-path --- see [`Browser::load_device`].
     Df,
+    /// `run LOCAL_PATH` --- executes a local script on the device without
+    /// copying it, for [`FileAction::Run`](crate::app::FileAction::Run) on a
+    /// local file. See [`Browser::request_run`].
+    Run(PathBuf),
+    /// `mip install PACKAGE` --- for the package-install prompt (`i` on the
+    /// device pane). See [`Browser::request_mip_install`].
+    MipInstall(String),
 }
 
 /// A device `cat` finished --- the viewer's content, or the reason it could
@@ -127,6 +139,15 @@ enum Request {
 pub struct DeviceView {
     pub path: DevicePath,
     pub content: Result<String, String>,
+}
+
+/// A `run` finished --- the local script's captured stdout, or the reason it
+/// could not be run (already logged into `notices` too, same shape as
+/// [`DeviceView`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunOutput {
+    pub path: PathBuf,
+    pub output: Result<String, String>,
 }
 
 /// What a completed transfer was for, carrying what its caller needs to
@@ -745,6 +766,34 @@ impl Browser {
         notices
     }
 
+    /// Queues a run of `name`, in the current local directory, on the device
+    /// --- "Run" on a local file. The script is never copied to the device
+    /// filesystem; only its captured output comes back.
+    pub fn request_run(
+        &mut self,
+        name: &str,
+        processes: &mut ProcessManager,
+        port: Option<&str>,
+    ) -> Vec<Notice> {
+        let local_path = self.local_path.join(name);
+        let mut notices = vec![(Level::Info, format!("running {}", local_path.display()))];
+        notices.extend(self.enqueue(Request::Run(local_path), processes, port));
+        notices
+    }
+
+    /// Queues a `mip install`, for the package-install prompt (`i`) on the
+    /// device pane.
+    pub fn request_mip_install(
+        &mut self,
+        package: &str,
+        processes: &mut ProcessManager,
+        port: Option<&str>,
+    ) -> Vec<Notice> {
+        let mut notices = vec![(Level::Info, format!("installing {package}"))];
+        notices.extend(self.enqueue(Request::MipInstall(package.to_string()), processes, port));
+        notices
+    }
+
     /// Queues a request, starting it if the device is free.
     fn enqueue(
         &mut self,
@@ -790,13 +839,19 @@ impl Browser {
             Request::Touch(path) => commands::touch(port, path),
             Request::Reset => commands::soft_reset(port),
             Request::Df => commands::df(port),
+            Request::Run(path) => commands::run(port, path),
+            Request::MipInstall(package) => commands::mip_install(port, package),
         };
         let command = match &self.tool_path {
             Some(program) => command.with_program(program),
             None => command,
         };
 
-        let id = processes.spawn(command, DEVICE_TIMEOUT);
+        let timeout = match &request {
+            Request::Run(_) => RUN_TIMEOUT,
+            _ => DEVICE_TIMEOUT,
+        };
+        let id = processes.spawn(command, timeout);
         self.in_flight = Some((id, request));
         self.output.insert(id, Output::default());
         Vec::new()
@@ -1209,6 +1264,53 @@ impl Browser {
                     }
                 },
             },
+
+            Request::Run(path) => match failure {
+                Some(error) => {
+                    self.rescan_if_device_lost(output, update);
+                    update.notices.push((
+                        Level::Error,
+                        format!("{}: run failed: {error}", path.display()),
+                    ));
+                    update.run_output = Some(RunOutput {
+                        path: path.clone(),
+                        output: Err(error),
+                    });
+                }
+                None => {
+                    update
+                        .notices
+                        .push((Level::Success, format!("{}: finished", path.display())));
+                    update.run_output = Some(RunOutput {
+                        path: path.clone(),
+                        output: Ok(output.stdout.clone()),
+                    });
+                }
+            },
+
+            Request::MipInstall(package) => match failure {
+                Some(error) => {
+                    self.rescan_if_device_lost(output, update);
+                    update.notices.push((
+                        Level::Error,
+                        format!("installing {package} failed: {error}"),
+                    ));
+                }
+                None => {
+                    update
+                        .notices
+                        .push((Level::Success, format!("{package} installed")));
+                    // `mip install` always writes under `/lib`; a stale cache
+                    // entry there would hide the new package until the user
+                    // manually reloads.
+                    let lib = DevicePath::new("/lib");
+                    self.cache.remove(&lib);
+                    if lib == self.device_path {
+                        self.device_state = PaneState::Loading;
+                        self.queue.push_front(Request::List(lib));
+                    }
+                }
+            },
         }
     }
 
@@ -1272,6 +1374,8 @@ pub struct BrowserUpdate {
     pub device_scan: Option<Result<Vec<crate::device::DeviceInfo>, String>>,
     /// Present when a device `cat` (the viewer's "View" action) finished.
     pub device_view: Option<DeviceView>,
+    /// Present when a `run` (the local file menu's "Run" action) finished.
+    pub run_output: Option<RunOutput>,
     /// Present when a download or upload finished.
     pub transfer: Option<Transfer>,
     /// True if the device is present but did not respond to the command.
