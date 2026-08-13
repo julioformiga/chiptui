@@ -115,6 +115,9 @@ enum Request {
     Touch(DevicePath),
     /// `soft-reset`, offered after a post-edit re-upload lands.
     Reset,
+    /// `df` --- filesystem usage of the connected board, device-wide rather than
+    /// per-path --- see [`Browser::load_device`].
+    Df,
 }
 
 /// A device `cat` finished --- the viewer's content, or the reason it could
@@ -166,10 +169,17 @@ pub struct Browser {
     pub local_entries: Vec<LocalEntry>,
     pub local_error: Option<String>,
     pub local_cursor: usize,
+    /// Recursive size of `local_path`'s whole subtree, for the local pane's
+    /// footer --- cached here rather than walked on every render, since
+    /// [`crate::files::dir_size`] is a synchronous disk walk.
+    pub local_total_size: u64,
 
     pub device_path: DevicePath,
     pub device_state: PaneState,
     pub device_cursor: usize,
+    /// Filesystem usage of the connected board, device-wide --- `None` until the first
+    /// [`Request::Df`] resolves for the current connection.
+    pub device_space: Option<Result<parse::DiskUsage, String>>,
 
     pub focus: Side,
     pub show_hidden: bool,
@@ -193,9 +203,11 @@ impl Browser {
             local_entries: Vec::new(),
             local_error: None,
             local_cursor: 0,
+            local_total_size: 0,
             device_path: DevicePath::root(),
             device_state: PaneState::Idle,
             device_cursor: 0,
+            device_space: None,
             focus: Side::Local,
             show_hidden: false,
             cache: BTreeMap::new(),
@@ -233,6 +245,7 @@ impl Browser {
                 ));
             }
         }
+        self.local_total_size = files::dir_size(&self.local_path);
         self.clamp_cursors();
     }
 
@@ -414,15 +427,27 @@ impl Browser {
         if force {
             self.cache.remove(&self.device_path);
             self.verdicts.clear();
+            self.device_space = None;
         }
+
+        // Free space is device-wide, not per-path, so it is fetched once per connection
+        // rather than on every `enter`/`ascend` --- `enqueue` is safe to call twice here:
+        // `Df` starts immediately and `List` queues behind it (`pump` only starts a request
+        // when nothing is in flight).
+        let mut notices = Vec::new();
+        if self.device_space.is_none() {
+            notices.extend(self.enqueue(Request::Df, processes, port));
+        }
+
         if self.cache.contains_key(&self.device_path) {
             self.device_state = PaneState::Ready;
             self.clamp_cursors();
-            return Vec::new();
+            return notices;
         }
 
         self.device_state = PaneState::Loading;
-        self.enqueue(Request::List(self.device_path.clone()), processes, port)
+        notices.extend(self.enqueue(Request::List(self.device_path.clone()), processes, port));
+        notices
     }
 
     /// Enumerates serial devices.
@@ -764,6 +789,7 @@ impl Browser {
             Request::Mkdir(path) => commands::mkdir(port, path),
             Request::Touch(path) => commands::touch(port, path),
             Request::Reset => commands::soft_reset(port),
+            Request::Df => commands::df(port),
         };
         let command = match &self.tool_path {
             Some(program) => command.with_program(program),
@@ -1165,6 +1191,24 @@ impl Browser {
                         .push_front(Request::List(self.device_path.clone()));
                 }
             },
+
+            Request::Df => match failure {
+                Some(error) => {
+                    update.notices.push((
+                        Level::Warn,
+                        format!("device free space unavailable: {error}"),
+                    ));
+                    self.device_space = Some(Err(error));
+                }
+                None => match parse::parse_df(&output.stdout) {
+                    Some(usage) => self.device_space = Some(Ok(usage)),
+                    None => {
+                        let message = "could not parse device free space".to_string();
+                        update.notices.push((Level::Warn, message.clone()));
+                        self.device_space = Some(Err(message));
+                    }
+                },
+            },
         }
     }
 
@@ -1379,7 +1423,9 @@ mod tests {
         browser.load_device(&mut processes, None, false);
 
         assert!(browser.is_busy());
-        assert_eq!(browser.queue.len(), 1, "the second request waits its turn");
+        // `load_device` queues both `Df` (free space, not yet known) and `List`
+        // behind the scan's `Devices` request, which is still running.
+        assert_eq!(browser.queue.len(), 2, "later requests wait their turn");
     }
 
     #[test]

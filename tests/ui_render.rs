@@ -154,6 +154,10 @@ fn device_pane_shows_chip_and_flash_details_once_esptool_has_reported_them() {
     app.flash = Some(flash);
 
     let frame = render(&mut app, 100, 30);
+    assert!(
+        frame.contains("Device info"),
+        "missing pane title:\n{frame}"
+    );
     assert!(frame.contains("ESP32-S3"), "missing chip family:\n{frame}");
     assert!(frame.contains("revision 3"), "missing revision:\n{frame}");
     assert!(

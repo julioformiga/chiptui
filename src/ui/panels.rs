@@ -112,7 +112,7 @@ pub fn draw_project(frame: &mut Frame, area: Rect, app: &App) {
 /// is spent on the board itself instead of repeating it.
 pub fn draw_detection(frame: &mut Frame, area: Rect, app: &App) {
     let focused = dashboard_focused(app, Focus::Project);
-    let block = pane_block("Device", focused);
+    let block = pane_block("Device info", focused);
     let caps = app.manager.capabilities();
 
     if !caps.contains(Capability::Flash) && !caps.contains(Capability::EraseFlash) {

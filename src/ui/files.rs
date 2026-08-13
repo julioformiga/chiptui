@@ -11,7 +11,7 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{Gauge, List, ListItem, ListState, Paragraph, Wrap};
 
 use crate::app::{App, Focus};
 use crate::browser::{Browser, PaneState};
@@ -51,7 +51,7 @@ fn draw_local(
 ) {
     let focused = dashboard_focused(app, Focus::FilesLocal);
     let title = format!(
-        "Local  {}",
+        "Local files: {}",
         shorten(&browser.local_path.display().to_string(), area.width)
     );
     let block = pane_block(&title, focused);
@@ -66,7 +66,11 @@ fn draw_local(
         return;
     }
 
-    let width = block.inner(area).width;
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let [list_area, footer_area] =
+        Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(inner);
+
     let items: Vec<ListItem> = browser
         .visible_local()
         .into_iter()
@@ -76,12 +80,23 @@ fn draw_local(
                 entry.is_dir,
                 entry.size,
                 statuses.get(&entry.name).copied(),
-                width,
+                list_area.width,
             )
         })
         .collect();
 
-    render_list(frame, area, block, items, browser.local_cursor, focused);
+    render_list(frame, list_area, items, browser.local_cursor, focused);
+    draw_local_footer(frame, footer_area, browser);
+}
+
+/// Total size of the current folder, including subfolders --- deliberately
+/// just the total, not an item count or anything else.
+fn draw_local_footer(frame: &mut Frame, area: Rect, browser: &Browser) {
+    frame.render_widget(
+        Paragraph::new(format!("total: {}", human_size(browser.local_total_size)).dim())
+            .alignment(Alignment::Right),
+        area,
+    );
 }
 
 fn draw_device(
@@ -92,7 +107,7 @@ fn draw_device(
     statuses: &BTreeMap<String, SyncStatus>,
 ) {
     let focused = dashboard_focused(app, Focus::FilesDevice);
-    let title = format!("Device  {}", browser.device_path);
+    let title = format!("Device files: {}", browser.device_path);
     let block = pane_block(&title, focused);
 
     match &browser.device_state {
@@ -130,7 +145,11 @@ fn draw_device(
         PaneState::Ready => {}
     }
 
-    let width = block.inner(area).width;
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let [list_area, footer_area] =
+        Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(inner);
+
     let items: Vec<ListItem> = browser
         .visible_device()
         .into_iter()
@@ -140,31 +159,75 @@ fn draw_device(
                 entry.is_dir,
                 entry.size,
                 statuses.get(&entry.name).copied(),
-                width,
+                list_area.width,
             )
         })
         .collect();
 
-    render_list(frame, area, block, items, browser.device_cursor, focused);
+    render_list(frame, list_area, items, browser.device_cursor, focused);
+    draw_device_footer(frame, footer_area, browser);
+}
+
+/// Free space on the connected board, as a progress bar --- filled by the
+/// used fraction, colored green/yellow/red at 70%/90% used so it doubles as
+/// an early warning before an upload runs out of room.
+fn draw_device_footer(frame: &mut Frame, area: Rect, browser: &Browser) {
+    match &browser.device_space {
+        Some(Ok(usage)) if usage.total > 0 => {
+            // `Gauge::ratio` panics outside 0.0..=1.0; `total > 0` above and the
+            // clamp here keep a malformed or stale reading from crashing the UI.
+            let used_ratio = (usage.used as f64 / usage.total as f64).clamp(0.0, 1.0);
+            let color = if used_ratio >= 0.9 {
+                Color::Red
+            } else if used_ratio >= 0.7 {
+                Color::Yellow
+            } else {
+                Color::Green
+            };
+            // `Gauge::label` is always centered, with no alignment option ---
+            // left-padding the text to the full width forces it flush right
+            // instead, matching the local pane's footer.
+            let label = format!(
+                "total: {}/{}",
+                human_size(usage.used),
+                human_size(usage.total)
+            );
+            let label = format!("{label:>width$}", width = area.width as usize);
+            frame.render_widget(
+                Gauge::default()
+                    .gauge_style(Style::new().fg(color))
+                    .ratio(used_ratio)
+                    .label(label),
+                area,
+            );
+        }
+        Some(Ok(_)) => {
+            frame.render_widget(Paragraph::new("free space: 0".dim()), area);
+        }
+        Some(Err(_)) => {
+            frame.render_widget(Paragraph::new("free space unavailable".dim()), area);
+        }
+        None => {
+            frame.render_widget(Paragraph::new("checking free space…".dim()), area);
+        }
+    }
 }
 
 fn render_list(
     frame: &mut Frame,
     area: Rect,
-    block: ratatui::widgets::Block<'static>,
     items: Vec<ListItem<'static>>,
     cursor: usize,
     focused: bool,
 ) {
     if items.is_empty() {
-        frame.render_widget(Paragraph::new("empty".dim()).block(block), area);
+        frame.render_widget(Paragraph::new("empty".dim()), area);
         return;
     }
 
     let mut state = ListState::default().with_selected(Some(cursor));
     frame.render_stateful_widget(
         List::new(items)
-            .block(block)
             .style(content_style(focused))
             .highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
         area,

@@ -43,6 +43,38 @@ pub fn read_dir(path: &Path) -> io::Result<Vec<LocalEntry>> {
     Ok(entries)
 }
 
+/// Recursively sums file sizes under `path`, for the local pane's folder-total
+/// footer --- unlike [`read_dir`], which only lists immediate entries, this
+/// walks into subdirectories.
+///
+/// A symlink is never followed into (`DirEntry::metadata` reports the link
+/// itself, not its target, so `is_dir` is `false` for it and it is counted as
+/// a zero-length entry) --- the same choice [`read_dir`] already makes for
+/// `is_dir`, and what keeps this from looping on a symlink cycle. An
+/// unreadable subtree just does not contribute to the total, mirroring
+/// `read_dir`'s "skip, don't fail" stance on individual entries. Run
+/// synchronously on the UI thread like the rest of the local pane's I/O ---
+/// acceptable because these are embedded-project trees (source files, not a
+/// `node_modules`), not because the walk is cheap in general.
+pub fn dir_size(path: &Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return 0;
+    };
+
+    let mut total = 0;
+    for entry in entries.flatten() {
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        total += if metadata.is_dir() {
+            dir_size(&entry.path())
+        } else {
+            metadata.len()
+        };
+    }
+    total
+}
+
 fn sort_entries(entries: &mut [LocalEntry]) {
     entries.sort_by(|a, b| {
         b.is_dir
@@ -416,6 +448,32 @@ mod tests {
         assert!(entries[0].is_dir);
         assert_eq!(entries[1].name, "main.py");
         assert_eq!(entries[1].size, 12);
+    }
+
+    #[test]
+    fn dir_size_walks_into_subdirectories() {
+        let dir = std::env::temp_dir().join(format!("chiptui-dirsize-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("lib/nested")).unwrap();
+        std::fs::write(dir.join("main.py"), "print('hi')\n").unwrap(); // 12 bytes
+        std::fs::write(dir.join("lib/simple.py"), "x = 1\n").unwrap(); // 6 bytes
+        std::fs::write(dir.join("lib/nested/deep.py"), "y = 2\n").unwrap(); // 6 bytes
+
+        let total = dir_size(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(total, 12 + 6 + 6, "top-level and nested files both count");
+    }
+
+    #[test]
+    fn dir_size_of_an_empty_or_missing_directory_is_zero() {
+        let dir =
+            std::env::temp_dir().join(format!("chiptui-dirsize-empty-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        assert_eq!(dir_size(&dir), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(dir_size(&dir), 0, "a missing directory contributes nothing");
     }
 
     #[test]

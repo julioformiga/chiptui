@@ -113,6 +113,26 @@ fn lists_the_device_root() {
 }
 
 #[test]
+fn reports_device_free_space() {
+    let project = Project::new("space");
+    let (mut browser, mut processes) = browser_for(&project);
+
+    browser.load_device(&mut processes, None, false);
+    settle(&mut browser, &mut processes);
+
+    let usage = browser
+        .device_space
+        .as_ref()
+        .expect("free space fetched alongside the first listing")
+        .as_ref()
+        .expect("the fake mpremote's df output parses");
+    assert_eq!(usage.mount, "/");
+    assert_eq!(usage.total, 1_441_792);
+    assert_eq!(usage.used, 1_040_384);
+    assert_eq!(usage.free, 401_408);
+}
+
+#[test]
 fn compares_the_two_panes() {
     let project = Project::new("compare");
     let (mut browser, mut processes) = browser_for(&project);
@@ -619,8 +639,23 @@ fn the_browser_renders_both_panes_with_comparison_markers() {
     let mut app = app_in_browser(&project);
     let frame = render(&mut app, 110, 24);
 
-    assert!(frame.contains("Local"), "missing local pane:\n{frame}");
-    assert!(frame.contains("Device"), "missing device pane:\n{frame}");
+    assert!(
+        frame.contains("Local files:"),
+        "missing local pane:\n{frame}"
+    );
+    assert!(
+        frame.contains("Device files:"),
+        "missing device pane:\n{frame}"
+    );
+    assert!(
+        frame.contains("total:"),
+        "missing the local pane's total-size footer:\n{frame}"
+    );
+    assert!(
+        // 1,040,384 used of 1,441,792 total, per the fake mpremote's `df` fixture.
+        frame.contains("total: 1016.0k/1.4M"),
+        "missing the device pane's usage gauge:\n{frame}"
+    );
     assert!(
         frame.contains("local_only.py"),
         "missing a local entry:\n{frame}"

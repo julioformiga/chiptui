@@ -117,6 +117,12 @@ case "$args" in
         printf 'MPY: soft reboot\n'
         ;;
 
+    df)
+        # used + free must equal total: tests/files_view.rs checks the numbers below.
+        printf '%s\n' 'filesystem     size     used    avail use% mounted on'
+        printf '%s %9d %8d %8d %4d %s\n' 'vfs       ' 1441792 1040384 401408 72 '/'
+        ;;
+
     *)
         echo "mpremote: no device found" >&2
         exit 1

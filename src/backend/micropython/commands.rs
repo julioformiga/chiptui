@@ -109,6 +109,12 @@ pub fn repl(port: Option<&str>) -> Command {
     connect(port).arg("repl")
 }
 
+/// `mpremote [connect PORT] df` --- filesystem usage per mount (size/used/avail/use%).
+/// Not under `fs`: like `soft-reset`, `df` is a top-level mpremote command.
+pub fn df(port: Option<&str>) -> Command {
+    connect(port).arg("df")
+}
+
 /// Common prefix for `fs` sub-commands.
 ///
 /// `--no-verbose` suppresses the `ls :path` header mpremote prints by default,
@@ -271,6 +277,15 @@ mod tests {
     #[test]
     fn device_enumeration_takes_no_port() {
         assert_eq!(list_devices().to_string(), "mpremote devs");
+    }
+
+    #[test]
+    fn df_takes_no_path() {
+        assert_eq!(df(None).to_string(), "mpremote df");
+        assert_eq!(
+            df(Some("/dev/ttyACM0")).to_string(),
+            "mpremote connect /dev/ttyACM0 df"
+        );
     }
 
     #[test]

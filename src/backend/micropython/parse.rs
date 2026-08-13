@@ -145,6 +145,58 @@ fn clean_description(text: &str) -> String {
         .join(" ")
 }
 
+/// One mount's usage from `mpremote df`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiskUsage {
+    pub total: u64,
+    pub used: u64,
+    pub free: u64,
+    pub mount: String,
+}
+
+/// Parses `mpremote df` output:
+///
+/// ```text
+/// filesystem     size     used    avail use% mounted on
+/// vfs         1441792    40960  1400832    3 /
+/// ```
+///
+/// Fields are located with `split_whitespace` rather than fixed columns, matching this
+/// file's usual tolerance for upstream formatting drift. When more than one mount is
+/// reported, the one mounted at `/` is preferred --- a MicroPython board almost always
+/// reports exactly one, but this keeps the choice well-defined if it ever reports more
+/// (e.g. an SD card alongside internal flash).
+pub fn parse_df(stdout: &str) -> Option<DiskUsage> {
+    let mut rows: Vec<DiskUsage> = stdout.lines().filter_map(parse_df_row).collect();
+    let root = rows.iter().position(|row| row.mount == "/");
+    match root {
+        Some(index) => Some(rows.swap_remove(index)),
+        None => rows.into_iter().next(),
+    }
+}
+
+fn parse_df_row(line: &str) -> Option<DiskUsage> {
+    let mut fields = line.split_whitespace();
+    let name = fields.next()?;
+    if name == "filesystem" {
+        return None; // header line
+    }
+    let total = fields.next()?.parse().ok()?;
+    let used = fields.next()?.parse().ok()?;
+    let free = fields.next()?.parse().ok()?;
+    fields.next()?; // use%, unused --- recomputed from total/used where needed
+    let mount = fields.collect::<Vec<_>>().join(" ");
+    if mount.is_empty() {
+        return None;
+    }
+    Some(DiskUsage {
+        total,
+        used,
+        free,
+        mount,
+    })
+}
+
 /// Extracts the digest from `mpremote fs sha256sum` output.
 pub fn parse_sha256(stdout: &str) -> Option<String> {
     stdout
@@ -380,6 +432,47 @@ mod tests {
     fn unknown_failures_are_passed_through_verbatim() {
         let message = "mpremote: something entirely new went wrong";
         assert_eq!(explain_error(message), message);
+    }
+
+    const DF_OUTPUT: &str = "filesystem     size     used    avail use% mounted on\n\
+                              vfs         1441792  1040384   401408   72 /\n";
+
+    #[test]
+    fn parses_a_df_reply() {
+        let usage = parse_df(DF_OUTPUT).unwrap();
+        assert_eq!(
+            usage,
+            DiskUsage {
+                total: 1_441_792,
+                used: 1_040_384,
+                free: 401_408,
+                mount: "/".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn prefers_the_root_mount_when_several_are_reported() {
+        let output = "filesystem     size     used    avail use% mounted on\n\
+                       sd          8000000  1000000  7000000   12 /sd\n\
+                       vfs          500000   400000   100000   80 /\n";
+        let usage = parse_df(output).unwrap();
+        assert_eq!(usage.mount, "/");
+        assert_eq!(usage.total, 500_000);
+    }
+
+    #[test]
+    fn header_only_output_has_no_usage() {
+        assert_eq!(
+            parse_df("filesystem     size     used    avail use% mounted on\n"),
+            None
+        );
+    }
+
+    #[test]
+    fn garbage_output_is_not_a_usage() {
+        assert_eq!(parse_df(""), None);
+        assert_eq!(parse_df("mpremote: no device found\n"), None);
     }
 
     #[test]
