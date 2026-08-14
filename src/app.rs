@@ -155,6 +155,16 @@ pub enum Overlay {
         kind: crate::backend::BuildKind,
         confirm: bool,
     },
+    /// The board picker: a filterable `west boards` list, fetched in the
+    /// background the first time it opens. The boards themselves live in
+    /// [`App::build`] ([`crate::build::BuildPanel::boards`]) like the
+    /// viewer's content lives in `App::viewer` --- an overlay holds only
+    /// what a keypress changes, so rebuilding it per key never re-clones
+    /// the list. `input` is the filter text.
+    BoardPicker {
+        input: String,
+        selected: usize,
+    },
     /// The entry under the cursor in the files pane (`enter`): a small menu
     /// of what to do with it. Which actions show up depends on the pane, on
     /// whether it is a directory, and --- for a file --- whether
@@ -1282,6 +1292,12 @@ impl App {
             Some(Overlay::CreateEntry { .. }) => vec![
                 ("type", "name"),
                 ("enter", "create ('name/' for a directory)"),
+                ("esc", "cancel"),
+            ],
+            Some(Overlay::BoardPicker { .. }) => vec![
+                ("type", "filter"),
+                ("↑/↓", "select"),
+                ("enter", "pick (this session)"),
                 ("esc", "cancel"),
             ],
             Some(Overlay::PackageInstall { .. }) => {

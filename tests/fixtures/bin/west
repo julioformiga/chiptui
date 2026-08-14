@@ -3,6 +3,17 @@
 #
 # Echoes its arguments as a line and exits 0, so a test can assert both the
 # exact command the panel composed (the panel logs `$ west build ...` as the
-# first output line) and the success path end to end.
+# first output line) and the success path end to end. `boards` reproduces the
+# `west boards` format (name, whitespace, description) for the board picker.
+case "$1" in
+    boards)
+        printf 'esp32_devkitc_wrover/esp32/procpu  ESP32 DevKitC-WROVER\n'
+        printf 'native/native64                   Native POSIX\n'
+        printf 'nrf52840dk/nrf52840               Nordic nRF52840 DK\n'
+        printf 'nrf52840dk/nrf52840/qspi          Nordic nRF52840 DK (QSPI)\n'
+        printf 'rpi_pico/rp2040                   Raspberry Pi Pico\n'
+        exit 0
+        ;;
+esac
 printf 'fake west: %s\n' "$*"
 exit 0

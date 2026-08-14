@@ -26,13 +26,14 @@ fn key(code: KeyCode) -> AppEvent {
 fn zephyr_app(tag: &str, board: Option<&str>) -> (App, std::path::PathBuf) {
     let root = std::env::temp_dir().join(format!("chiptui-buildview-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(root.join("build/zephyr")).unwrap();
+    std::fs::create_dir_all(&root).unwrap();
     std::fs::write(
         root.join("CMakeLists.txt"),
         "find_package(Zephyr REQUIRED)\n",
     )
     .unwrap();
     if let Some(board) = board {
+        std::fs::create_dir_all(root.join("build/zephyr")).unwrap();
         std::fs::write(
             root.join("build/zephyr/CMakeCache.txt"),
             format!("CACHED_BOARD:STRING={board}\n"),
@@ -106,6 +107,10 @@ fn the_panel_appears_and_is_a_focus_stop_for_a_build_backend() {
     assert!(
         frame.contains("west build -t clean"),
         "literal commands not listed:\n{frame}"
+    );
+    assert!(
+        frame.contains("Board"),
+        "the board action must be listed:\n{frame}"
     );
 }
 
@@ -310,5 +315,177 @@ fn switching_to_micropython_hides_the_panel_and_reclamps_focus() {
         app.focus,
         Focus::FilesLocal,
         "focus must fall back to the local pane, not a pane that is gone"
+    );
+}
+
+#[test]
+fn the_board_picker_fetches_filters_and_picks_for_the_session() {
+    // No CMakeCache: nothing is known until the user picks.
+    let (mut app, root) = zephyr_app("picker", None);
+    app.build.as_mut().unwrap().set_tool_path(fake("west"));
+    app.focus = Focus::Build;
+
+    // The Board action sits after the three lifecycle entries.
+    for _ in 0..3 {
+        app.handle(key(KeyCode::Down));
+    }
+    app.handle(key(KeyCode::Enter));
+    assert!(matches!(app.overlay, Some(Overlay::BoardPicker { .. })));
+
+    // First open kicked off the background `west boards` fetch.
+    assert!(matches!(
+        app.build.as_ref().unwrap().boards,
+        chiptui::build::BoardsState::Loading
+    ));
+    let loaded = pump_until(
+        &mut app,
+        |app| {
+            matches!(
+                app.build.as_ref().unwrap().boards,
+                chiptui::build::BoardsState::Loaded(_)
+            )
+        },
+        10,
+    );
+    assert!(loaded, "the fake west boards never finished");
+
+    // The modal lists the targets.
+    let frame = render(&mut app, 100, 30);
+    assert!(
+        frame.contains("native/native64"),
+        "list not shown:\n{frame}"
+    );
+    assert!(
+        frame.contains("west boards"),
+        "the modal must name its source:\n{frame}"
+    );
+
+    // Typing filters (case-insensitively, name or description)…
+    app.handle(key(KeyCode::Char('N')));
+    app.handle(key(KeyCode::Char('R')));
+    app.handle(key(KeyCode::Char('F')));
+    let frame = render(&mut app, 100, 30);
+    assert!(
+        frame.contains("nrf52840dk/nrf52840"),
+        "filter failed:\n{frame}"
+    );
+    assert!(
+        !frame.contains("native/native64"),
+        "a non-matching target must be filtered out:\n{frame}"
+    );
+
+    // …and Enter picks for this session: commands carry -b, nothing is
+    // written to the project.
+    app.handle(key(KeyCode::Enter));
+    assert_eq!(
+        app.build.as_ref().unwrap().board_name(),
+        Some("nrf52840dk/nrf52840")
+    );
+    assert_eq!(
+        app.build.as_ref().unwrap().board.as_ref().unwrap().origin,
+        chiptui::build::BoardOrigin::Picked
+    );
+    assert!(
+        !root.join("build/zephyr/CMakeCache.txt").exists(),
+        "a pick must not write project configuration"
+    );
+
+    let frame = render(&mut app, 100, 30);
+    assert!(
+        frame.contains("picked"),
+        "the header must say the board's origin:\n{frame}"
+    );
+    let backend = app.manager.backend().unwrap();
+    let build = app
+        .build
+        .as_ref()
+        .unwrap()
+        .command(chiptui::backend::BuildKind::Build, backend)
+        .unwrap();
+    assert!(
+        build.to_string().ends_with("-b nrf52840dk/nrf52840"),
+        "the picked board must reach the first build: {}",
+        build
+    );
+}
+
+#[test]
+fn a_boardless_filter_match_enter_picks_nothing_and_esc_changes_nothing() {
+    let (mut app, _root) = zephyr_app("picker-esc", Some("nrf52840dk/nrf52840"));
+    app.build.as_mut().unwrap().set_tool_path(fake("west"));
+    app.focus = Focus::Build;
+
+    for _ in 0..3 {
+        app.handle(key(KeyCode::Down));
+    }
+    app.handle(key(KeyCode::Enter));
+    assert!(pump_until(
+        &mut app,
+        |app| {
+            matches!(
+                app.build.as_ref().unwrap().boards,
+                chiptui::build::BoardsState::Loaded(_)
+            )
+        },
+        10
+    ));
+
+    // A filter that matches nothing: Enter falls through without a pick…
+    app.handle(key(KeyCode::Char('z')));
+    app.handle(key(KeyCode::Char('z')));
+    app.handle(key(KeyCode::Enter));
+    assert_eq!(
+        app.build.as_ref().unwrap().board_name(),
+        Some("nrf52840dk/nrf52840"),
+        "an impossible selection must not change the board"
+    );
+    assert_eq!(
+        app.build.as_ref().unwrap().board.as_ref().unwrap().origin,
+        chiptui::build::BoardOrigin::Cache
+    );
+
+    // …and Esc leaves the cache answer untouched either way.
+    for _ in 0..3 {
+        app.handle(key(KeyCode::Down));
+    }
+    app.handle(key(KeyCode::Enter));
+    app.handle(key(KeyCode::Esc));
+    assert_eq!(
+        app.build.as_ref().unwrap().board_name(),
+        Some("nrf52840dk/nrf52840")
+    );
+}
+
+#[test]
+fn a_missing_west_explains_itself_in_the_picker() {
+    let (mut app, _root) = zephyr_app("picker-missing", None);
+    // A tool override pointing at a path that does not exist: the fetch
+    // fails to spawn, and the picker must say so instead of hanging.
+    app.build
+        .as_mut()
+        .unwrap()
+        .set_tool_path("/nonexistent/west");
+    app.focus = Focus::Build;
+
+    for _ in 0..3 {
+        app.handle(key(KeyCode::Down));
+    }
+    app.handle(key(KeyCode::Enter));
+
+    let failed = pump_until(
+        &mut app,
+        |app| {
+            matches!(
+                app.build.as_ref().unwrap().boards,
+                chiptui::build::BoardsState::Failed(_)
+            )
+        },
+        10,
+    );
+    assert!(failed, "the failed spawn never reported");
+    let frame = render(&mut app, 100, 30);
+    assert!(
+        frame.contains("is west on PATH?"),
+        "the picker must explain the failure:\n{frame}"
     );
 }

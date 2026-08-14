@@ -31,6 +31,9 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
                 .unwrap_or_else(|| format!("Run {}?", kind.label()));
             draw_confirm(frame, area, &message, confirm);
         }
+        Overlay::BoardPicker { input, selected } => {
+            draw_board_picker(frame, area, app, &input, selected)
+        }
         Overlay::FirmwarePicker { selected } => draw_firmware_picker(frame, area, app, selected),
         Overlay::ProjectSetup { selected } => draw_project_setup(frame, area, selected),
         Overlay::ConfirmDownloadOverwrite { url, dest, confirm } => {
@@ -584,6 +587,100 @@ fn draw_firmware_picker(frame: &mut Frame, area: Rect, app: &App, selected: usiz
             .block(modal("Firmware"))
             .highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
         popup,
+        &mut state,
+    );
+}
+
+/// Board target selection: a filter box over the `west boards` list
+/// (`SPEC.md` §10 --- hundreds of targets make raw navigation useless, and
+/// the choice is session-only, so the header of the modal says so instead of
+/// letting the user discover it from a changed file).
+fn draw_board_picker(frame: &mut Frame, area: Rect, app: &App, input: &str, selected: usize) {
+    use crate::build::BoardsState;
+
+    const SPINNER: [&str; 4] = ["⠋", "⠙", "⠹", "⠸"];
+
+    // Fixed height: the list scrolls inside it (ListState keeps the
+    // selection visible), so the modal does not jump around as the filter
+    // changes.
+    let height = 20u16;
+    let width = 72u16;
+    let popup = centered(area, width, height);
+    frame.render_widget(Clear, popup);
+
+    let Some(panel) = app.build.as_ref() else {
+        return;
+    };
+
+    let title = match &panel.board {
+        Some(choice) => match choice.origin {
+            crate::build::BoardOrigin::Cache => {
+                format!(
+                    "Board (build/ says {} — pick to change for this session)",
+                    choice.name
+                )
+            }
+            crate::build::BoardOrigin::Picked => {
+                format!("Board ({} picked this session)", choice.name)
+            }
+        },
+        None => "Board (none set — the first build needs one)".to_string(),
+    };
+
+    let [filter_area, hint_area, list_area] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(2),
+        Constraint::Min(1),
+    ])
+    .areas(modal(&title).inner(popup));
+
+    frame.render_widget(modal(&title), popup);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("filter ", Style::new().dim()),
+            Span::raw(input.to_string()),
+            Span::styled("▏", Style::new().fg(Color::Cyan)),
+        ])),
+        filter_area,
+    );
+
+    let boards = panel.filtered_boards(input);
+    let hint = match &panel.boards {
+        BoardsState::Idle | BoardsState::Loading => {
+            let spinner = SPINNER[(app.ticks as usize) % SPINNER.len()];
+            format!("{spinner} running west boards…")
+        }
+        BoardsState::Failed(error) => error.clone(),
+        BoardsState::Loaded(_) if boards.is_empty() => "no board matches".to_string(),
+        BoardsState::Loaded(_) => {
+            format!(
+                "{} of {} targets",
+                boards.len(),
+                match &panel.boards {
+                    BoardsState::Loaded(all) => all.len(),
+                    _ => 0,
+                }
+            )
+        }
+    };
+    frame.render_widget(
+        Paragraph::new(hint.dim()).wrap(ratatui::widgets::Wrap { trim: false }),
+        hint_area,
+    );
+
+    let items: Vec<ListItem> = boards
+        .iter()
+        .map(|board| {
+            ListItem::new(Line::from(vec![
+                Span::raw(format!(" {} ", board.name)),
+                board.description.clone().dim(),
+            ]))
+        })
+        .collect();
+    let mut state = ListState::default().with_selected(Some(selected));
+    frame.render_stateful_widget(
+        List::new(items).highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
+        list_area,
         &mut state,
     );
 }

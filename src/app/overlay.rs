@@ -224,6 +224,56 @@ impl App {
                     |_| {},
                 );
             }
+            Overlay::BoardPicker { input, selected } => {
+                // The list the cursor walks is the *filtered* one, so every
+                // filter change re-clamps `selected` against the length the
+                // changed filter produces (typing can only shrink it, but
+                // backspace grows it too).
+                let rebuild = |app: &mut Self, input: String, mut selected: usize| {
+                    if let Some(panel) = app.build.as_ref() {
+                        let count = panel.filtered_boards(&input).len();
+                        // An empty result leaves row 0 highlighted rather
+                        // than an impossible index; `apply` re-checks anyway.
+                        selected = selected.min(count.saturating_sub(1));
+                    }
+                    app.overlay = Some(Overlay::BoardPicker { input, selected });
+                };
+                let count = self
+                    .build
+                    .as_ref()
+                    .map(|panel| panel.filtered_boards(&input).len())
+                    .unwrap_or(0)
+                    .max(1);
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('q') => self.overlay = None,
+                    KeyCode::Backspace => {
+                        let mut input = input;
+                        input.pop();
+                        rebuild(self, input, selected);
+                    }
+                    KeyCode::Char(c) => {
+                        let mut input = input;
+                        input.push(c);
+                        rebuild(self, input, selected);
+                    }
+                    // Arrows only for navigation: every printable char is
+                    // filter text here, including `k`/`j` (typing "dk" must
+                    // not move the cursor).
+                    KeyCode::Up => {
+                        let selected = (selected + count - 1) % count;
+                        rebuild(self, input, selected);
+                    }
+                    KeyCode::Down => {
+                        let selected = (selected + 1) % count;
+                        rebuild(self, input, selected);
+                    }
+                    KeyCode::Enter => {
+                        self.overlay = None;
+                        self.apply_board_picker(&input, selected);
+                    }
+                    _ => {}
+                }
+            }
             Overlay::FileActions {
                 side,
                 name,

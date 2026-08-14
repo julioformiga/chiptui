@@ -98,6 +98,10 @@ impl Backend for ZephyrBackend {
             BuildKind::Rebuild => commands::rebuild(board),
         })
     }
+
+    fn board_list_command(&self) -> Option<crate::process::Command> {
+        Some(commands::boards())
+    }
 }
 
 #[cfg(test)]

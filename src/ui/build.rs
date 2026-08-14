@@ -10,7 +10,6 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{List, ListItem, ListState, Paragraph, Wrap};
 
 use crate::app::{App, Focus};
-use crate::backend::BuildKind;
 use crate::build::{BuildPanel, BuildReport};
 use crate::ui::{content_style, dashboard_focused, pane_block};
 
@@ -30,14 +29,30 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 /// Board + last-result lines. Two lines, never more: the board's origin is
-/// the one nuance worth a word (`from build/` = whatever `west` configured,
-/// which the panel neither chose nor wrote --- `SPEC.md` §10's "board
-/// selection must not silently modify project configuration", read-side).
+/// the one nuance worth a word --- `from build/` (whatever `west`
+/// configured, which the panel neither chose nor wrote) or `picked`
+/// (session-only, `SPEC.md` §10) --- never left to guesswork.
 fn draw_header(frame: &mut Frame, area: Rect, panel: &BuildPanel) {
+    use crate::build::BoardOrigin;
+
     let board_line = match (&panel.board, panel.is_busy()) {
-        (Some(board), _) => Line::from(vec![
+        (
+            Some(
+                choice @ crate::build::BoardChoice {
+                    origin: BoardOrigin::Picked,
+                    ..
+                },
+            ),
+            _,
+        ) => Line::from(vec![
             label("board"),
-            board.clone().fg(Color::Green).bold(),
+            choice.name.clone().fg(Color::Green).bold(),
+            Span::raw(" "),
+            "picked (this session)".dim(),
+        ]),
+        (Some(choice), _) => Line::from(vec![
+            label("board"),
+            choice.name.clone().fg(Color::Green).bold(),
             Span::raw(" "),
             "from build/".dim(),
         ]),
@@ -46,7 +61,7 @@ fn draw_header(frame: &mut Frame, area: Rect, panel: &BuildPanel) {
             label("board"),
             "none".fg(Color::Yellow),
             Span::raw(" "),
-            "the first build needs one: west build -b BOARD".dim(),
+            "pick a target below, or the first build needs -b BOARD".dim(),
         ]),
     };
 
@@ -91,35 +106,51 @@ fn label(text: &str) -> Span<'static> {
     Span::styled(format!("{text:<6}"), Style::new().dim())
 }
 
-/// The action list: `Stop` first while running, then the lifecycle entries,
+/// The action list: `Stop` while a command runs, then the lifecycle entries
 /// each with the command it would run today (board, build directory and
-/// tool-override all reflected --- what you see is what runs).
+/// tool-override all reflected --- what you see is what runs), then `Board`
+/// under [`crate::backend::Capability::BoardSelect`].
 fn draw_actions(frame: &mut Frame, area: Rect, app: &App, panel: &BuildPanel, focused: bool) {
     let backend = app.manager.backend();
+    let board_select = app
+        .manager
+        .capabilities()
+        .contains(crate::backend::Capability::BoardSelect);
     let mut items = Vec::new();
 
-    if panel.is_busy() {
-        items.push(ListItem::new(Line::from(vec![
-            Span::styled("■ ", Style::new().fg(Color::Red)),
-            "Stop".bold(),
-            "   cancel the running command".dim(),
-        ])));
-    }
-
-    for kind in BuildKind::ALL {
-        let command = backend
-            .and_then(|backend| panel.command(*kind, backend))
-            .map(|command| command.to_string())
-            .unwrap_or_else(|| "not available".to_string());
-        items.push(ListItem::new(Line::from(vec![
-            Span::raw("  "),
-            kind.label().bold(),
-            Span::raw("  "),
-            Span::styled(
-                shorten_start(&command, width_for(area.width)),
-                Style::new().dim(),
-            ),
-        ])));
+    for action in panel.actions(board_select) {
+        let item = match action {
+            crate::build::BuildAction::Stop => Line::from(vec![
+                Span::styled("■ ", Style::new().fg(Color::Red)),
+                "Stop".bold(),
+                "   cancel the running command".dim(),
+            ]),
+            crate::build::BuildAction::Build(kind) => {
+                let command = backend
+                    .and_then(|backend| panel.command(kind, backend))
+                    .map(|command| command.to_string())
+                    .unwrap_or_else(|| "not available".to_string());
+                Line::from(vec![
+                    Span::raw("  "),
+                    kind.label().bold(),
+                    Span::raw("  "),
+                    Span::styled(
+                        shorten_start(&command, width_for(area.width)),
+                        Style::new().dim(),
+                    ),
+                ])
+            }
+            crate::build::BuildAction::Board => Line::from(vec![
+                Span::raw("  "),
+                "Board".bold(),
+                Span::raw("  "),
+                Span::styled(
+                    "choose the target (west boards, session-only)",
+                    Style::new().dim(),
+                ),
+            ]),
+        };
+        items.push(ListItem::new(item));
     }
 
     let mut state = ListState::default().with_selected(Some(panel.cursor));

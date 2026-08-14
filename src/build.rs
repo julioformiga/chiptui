@@ -25,6 +25,10 @@ use crate::process::{Outcome, ProcessEvent, ProcessId, ProcessManager};
 /// cold `west` workspace without letting a wedged compiler live forever.
 pub const BUILD_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
+/// `west boards` walks every board root; two minutes covers a full Zephyr
+/// SDK checkout without letting a wedged west live forever.
+pub const BOARDS_TIMEOUT: Duration = Duration::from_secs(120);
+
 /// Lines of build output kept for the Monitor tab. A full Zephyr build
 /// prints thousands; the tail is what diagnoses a failure.
 const OUTPUT_CAPACITY: usize = 2_000;
@@ -49,16 +53,67 @@ struct Running {
     started: Instant,
 }
 
+/// One board target from `west boards`: the name `west build -b` takes and
+/// the human description shown beside it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Board {
+    pub name: String,
+    pub description: String,
+}
+
+/// Where the panel's board answer came from --- the header's one-word hint,
+/// and the guard that keeps a cache read from silently erasing a user pick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoardOrigin {
+    /// Read from `build/zephyr/CMakeCache.txt`.
+    Cache,
+    /// Chosen in the board picker, for this session only: nothing is
+    /// written to the project (`SPEC.md` §10).
+    Picked,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoardChoice {
+    pub name: String,
+    pub origin: BoardOrigin,
+}
+
+/// The board list's lifecycle: `west boards` is slow, so it is fetched in
+/// the background the first time the picker opens and kept afterwards.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum BoardsState {
+    #[default]
+    Idle,
+    Loading,
+    Loaded(Vec<Board>),
+    Failed(String),
+}
+
+/// One row of the build panel's action list. `Stop`/`Board` bookend the
+/// [`BuildKind`] entries exactly when they apply (see [`BuildPanel::actions`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuildAction {
+    Stop,
+    Build(BuildKind),
+    /// Opens the board picker (only under [`crate::backend::Capability::
+    /// BoardSelect`]).
+    Board,
+}
+
 pub struct BuildPanel {
     /// Project root: the working directory every command runs in (`west`
     /// finds its workspace from the cwd).
     pub root: PathBuf,
-    /// Board the build directory was configured for, from `CMakeCache.txt`.
-    /// `None` until a build exists --- or forever, before the first one.
-    pub board: Option<String>,
+    /// The board commands target: from the CMake cache until the user picks
+    /// one for the session (a pick survives, and overrides, cache reads).
+    pub board: Option<BoardChoice>,
     pub cursor: usize,
     pub last: Option<BuildReport>,
     pub output: VecDeque<String>,
+    /// The `west boards` list and its fetch state, for the picker.
+    pub boards: BoardsState,
+    boards_process: Option<ProcessId>,
+    boards_output: String,
     offset: UtcOffset,
     running: Option<Running>,
     /// Overrides the executable the backend's commands name (`west`), the
@@ -69,13 +124,19 @@ pub struct BuildPanel {
 impl BuildPanel {
     pub fn new(root: impl Into<PathBuf>, offset: UtcOffset) -> Self {
         let root = root.into();
-        let board = cached_board(&root);
+        let board = cached_board(&root).map(|name| BoardChoice {
+            name,
+            origin: BoardOrigin::Cache,
+        });
         Self {
             root,
             board,
             cursor: 0,
             last: None,
             output: VecDeque::new(),
+            boards: BoardsState::Idle,
+            boards_process: None,
+            boards_output: String::new(),
             offset,
             running: None,
             tool_path: None,
@@ -94,19 +155,88 @@ impl BuildPanel {
         self.running.is_some()
     }
 
-    /// Rows the action list shows: `Stop` in front of the lifecycle entries
-    /// exactly while a command is running, so cancelling is as discoverable
-    /// as starting (`SPEC.md` §12's cancellation requirement, in UI form).
-    pub fn action_count(&self) -> usize {
-        BuildKind::ALL.len() + usize::from(self.is_busy())
+    /// Rows the action list shows, top to bottom: `Stop` while a command
+    /// runs (cancelling as discoverable as starting, `SPEC.md` §12), the
+    /// build lifecycle, then `Board` when the backend lets the user pick a
+    /// target (`Capability::BoardSelect`).
+    pub fn actions(&self, board_select: bool) -> Vec<BuildAction> {
+        let mut actions = Vec::with_capacity(BuildKind::ALL.len() + 2);
+        if self.is_busy() {
+            actions.push(BuildAction::Stop);
+        }
+        actions.extend(BuildKind::ALL.iter().map(|kind| BuildAction::Build(*kind)));
+        if board_select {
+            actions.push(BuildAction::Board);
+        }
+        actions
     }
 
     /// The action at `index` in the drawn list, mirroring the layout
-    /// [`Self::action_count`] describes: `None` is the `Stop` row (or an
-    /// out-of-range cursor).
-    pub fn action_at(&self, index: usize) -> Option<BuildKind> {
-        let index = index.checked_sub(usize::from(self.is_busy()))?;
-        BuildKind::ALL.get(index).copied()
+    /// [`Self::actions`] describes.
+    pub fn action_at(&self, board_select: bool, index: usize) -> Option<BuildAction> {
+        self.actions(board_select).into_iter().nth(index)
+    }
+
+    /// The board name commands should target, whatever its origin.
+    pub fn board_name(&self) -> Option<&str> {
+        self.board.as_ref().map(|choice| choice.name.as_str())
+    }
+
+    /// Applies a board chosen in the picker: session-only, never written to
+    /// the project (`SPEC.md` §10) --- which is exactly why it outranks the
+    /// cache until the session ends.
+    pub fn set_picked(&mut self, name: impl Into<String>) {
+        self.board = Some(BoardChoice {
+            name: name.into(),
+            origin: BoardOrigin::Picked,
+        });
+    }
+
+    /// The boards matching a picker filter: case-insensitive substring on
+    /// the name or the description, order preserved (west sorts by name).
+    pub fn filtered_boards<'a>(&'a self, filter: &str) -> Vec<&'a Board> {
+        let filter = filter.to_lowercase();
+        match &self.boards {
+            BoardsState::Loaded(boards) => boards
+                .iter()
+                .filter(|board| {
+                    filter.is_empty()
+                        || board.name.to_lowercase().contains(&filter)
+                        || board.description.to_lowercase().contains(&filter)
+                })
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Starts the background `west boards` fetch the picker needs. A no-op
+    /// when one is already running or the list is already here: the fetch is
+    /// once per session, like every other "load this eagerly, once" seam.
+    pub fn start_boards_fetch(
+        &mut self,
+        command: crate::process::Command,
+        processes: &mut ProcessManager,
+    ) {
+        if self.boards_process.is_some() || matches!(self.boards, BoardsState::Loaded(_)) {
+            return;
+        }
+        self.boards = BoardsState::Loading;
+        self.boards_output.clear();
+        self.boards_process = Some(processes.spawn(command, BOARDS_TIMEOUT));
+    }
+
+    /// The board-list command, rooted and tool-overridden like the build
+    /// commands. `None` when the backend offers no board selection.
+    pub fn boards_command(
+        &self,
+        backend: &dyn crate::backend::Backend,
+    ) -> Option<crate::process::Command> {
+        let command = backend.board_list_command()?;
+        let command = command.current_dir(&self.root);
+        Some(match &self.tool_path {
+            Some(program) => command.with_program(program),
+            None => command,
+        })
     }
 
     /// Elapsed time of the running command, for the header's live counter.
@@ -124,7 +254,7 @@ impl BuildPanel {
         kind: BuildKind,
         backend: &dyn crate::backend::Backend,
     ) -> Option<crate::process::Command> {
-        let command = backend.build_command(kind, self.board.as_deref(), self.has_build_dir())?;
+        let command = backend.build_command(kind, self.board_name(), self.has_build_dir())?;
         let command = command.current_dir(&self.root);
         Some(match &self.tool_path {
             Some(program) => command.with_program(program),
@@ -172,6 +302,9 @@ impl BuildPanel {
     }
 
     /// Feeds a process event back into the panel, returning log notices.
+    /// Covers both of its processes: the build command and the background
+    /// `west boards` fetch --- each matched by id, each ignored when it is
+    /// the other's event.
     pub fn on_process(&mut self, event: &ProcessEvent) -> Vec<(Level, String)> {
         match event {
             ProcessEvent::Line { id, text, .. } => {
@@ -181,6 +314,9 @@ impl BuildPanel {
                     .is_some_and(|running| running.id == *id)
                 {
                     self.push_output(text.clone());
+                } else if self.boards_process == Some(*id) {
+                    self.boards_output.push_str(text);
+                    self.boards_output.push('\n');
                 }
                 Vec::new()
             }
@@ -189,6 +325,10 @@ impl BuildPanel {
                 outcome,
                 duration,
             } => {
+                if self.boards_process == Some(*id) {
+                    self.finish_boards_fetch(outcome);
+                    return Vec::new();
+                }
                 let Some(running) = self.running.take() else {
                     return Vec::new();
                 };
@@ -200,6 +340,19 @@ impl BuildPanel {
             }
             ProcessEvent::Started { .. } | ProcessEvent::Output { .. } => Vec::new(),
         }
+    }
+
+    /// Parses the accumulated `west boards` output into the list, or the
+    /// failure the picker should explain instead.
+    fn finish_boards_fetch(&mut self, outcome: &Outcome) {
+        self.boards_process = None;
+        self.boards = match outcome {
+            Outcome::Success => BoardsState::Loaded(parse_boards(&self.boards_output)),
+            Outcome::SpawnFailed(reason) => BoardsState::Failed(format!(
+                "could not start the board list ({reason}) — is west on PATH?"
+            )),
+            _ => BoardsState::Failed(format!("west boards failed ({})", outcome.summary())),
+        };
     }
 
     fn finish(
@@ -241,9 +394,23 @@ impl BuildPanel {
         });
         // A finished build/rebuild leaves a fresh CMakeCache behind: re-read
         // it so the header (and the next `--pristine=always -b …`) tracks
-        // what was just configured.
+        // what was just configured. A pick stays a pick when the cache
+        // agrees with it (rebuilding on the picked board reconfigures the
+        // cache to that name); only a cache the pick does not explain
+        // demotes the answer back to "from build/".
         if ok && matches!(running.kind, BuildKind::Build | BuildKind::Rebuild) {
-            self.board = cached_board(&self.root);
+            let cached = cached_board(&self.root).map(|name| BoardChoice {
+                name,
+                origin: BoardOrigin::Cache,
+            });
+            self.board = match (&self.board, cached) {
+                (Some(picked), Some(cached))
+                    if picked.origin == BoardOrigin::Picked && picked.name == cached.name =>
+                {
+                    Some(picked.clone())
+                }
+                (_, cached) => cached,
+            };
         }
         vec![(level, message)]
     }
@@ -280,6 +447,24 @@ pub fn cached_board(root: &Path) -> Option<String> {
         .map(str::trim)
         .filter(|board| !board.is_empty())
         .map(str::to_string)
+}
+
+/// Parses `west boards` output: one target per line as `name description`
+/// (description optional; HWMv2 names carry a `/`). Blank and non-matching
+/// lines are skipped rather than fatal --- the list is hundreds of lines
+/// long and one odd row must not empty it.
+pub fn parse_boards(text: &str) -> Vec<Board> {
+    text.lines()
+        .filter_map(|line| {
+            let mut parts = line.split_whitespace();
+            let name = parts.next()?;
+            let description = parts.collect::<Vec<_>>().join(" ");
+            Some(Board {
+                name: name.to_string(),
+                description,
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -351,5 +536,86 @@ mod tests {
     fn duration_reads_like_a_person() {
         assert_eq!(BuildPanel::secs(Duration::from_millis(12_400)), "12.4s");
         assert_eq!(BuildPanel::secs(Duration::from_secs(127)), "2m 07s");
+    }
+
+    #[test]
+    fn west_boards_output_parses_into_targets() {
+        let boards = parse_boards(
+            "96b_carbon                   96Boards Carbon (STM32F407VE)\n\
+             \n\
+             nrf52840dk/nrf52840          Nordic nRF52840 DK\n\
+             bare_name\n",
+        );
+        assert_eq!(boards.len(), 3);
+        assert_eq!(boards[0].name, "96b_carbon");
+        assert_eq!(boards[0].description, "96Boards Carbon (STM32F407VE)");
+        // HWMv2 qualifiers stay part of the name; a name-only line is a
+        // target with an empty description, not an error.
+        assert_eq!(boards[1].name, "nrf52840dk/nrf52840");
+        assert_eq!(boards[2].description, "");
+    }
+
+    #[test]
+    fn the_board_filter_matches_names_and_descriptions_case_insensitively() {
+        let mut panel = BuildPanel::new("/nonexistent", UtcOffset::UTC);
+        panel.boards = BoardsState::Loaded(parse_boards(
+            "nrf52840dk/nrf52840  Nordic nRF52840 DK\nsting\n",
+        ));
+
+        assert_eq!(panel.filtered_boards("NRF52").len(), 1);
+        assert_eq!(panel.filtered_boards("carbon").len(), 0);
+        assert_eq!(panel.filtered_boards("st").len(), 1, "matches the name");
+        assert_eq!(
+            panel.filtered_boards("").len(),
+            2,
+            "an empty filter shows everything"
+        );
+    }
+
+    #[test]
+    fn the_action_list_bookends_with_stop_and_board() {
+        let mut panel = BuildPanel::new("/nonexistent", UtcOffset::UTC);
+        assert_eq!(
+            panel.actions(true),
+            vec![
+                BuildAction::Build(BuildKind::Build),
+                BuildAction::Build(BuildKind::Clean),
+                BuildAction::Build(BuildKind::Rebuild),
+                BuildAction::Board,
+            ]
+        );
+        assert_eq!(panel.action_at(true, 3), Some(BuildAction::Board));
+        assert_eq!(panel.action_at(false, 3), None, "no board row, no row 3");
+
+        // With a command running, Stop shifts everything down by one ---
+        // the cursor arithmetic the key handler depends on.
+        let mut processes = ProcessManager::new();
+        panel.start(
+            BuildKind::Build,
+            crate::process::Command::new(fake("west")),
+            &mut processes,
+        );
+        assert_eq!(panel.action_at(true, 0), Some(BuildAction::Stop));
+        assert_eq!(panel.action_at(true, 4), Some(BuildAction::Board));
+    }
+
+    #[test]
+    fn a_picked_board_outranks_the_cache() {
+        let dir = fixture_dir("picked");
+        std::fs::write(
+            dir.join("build/zephyr/CMakeCache.txt"),
+            "CACHED_BOARD:STRING=old_board\n",
+        )
+        .unwrap();
+        let mut panel = BuildPanel::new(&dir, UtcOffset::UTC);
+        assert_eq!(panel.board_name(), Some("old_board"));
+
+        panel.set_picked("nrf52840dk/nrf52840");
+        assert_eq!(panel.board_name(), Some("nrf52840dk/nrf52840"));
+        assert_eq!(panel.board.as_ref().unwrap().origin, BoardOrigin::Picked);
+
+        // The pick reaches the commands: rebuild always passes the target.
+        let rebuild = panel.command(BuildKind::Rebuild, &ZephyrBackend).unwrap();
+        assert!(rebuild.to_string().ends_with("-b nrf52840dk/nrf52840"));
     }
 }

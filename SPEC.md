@@ -499,6 +499,12 @@ to select it.
 
 The board selection should not silently modify project configuration.
 
+> **Status**: implemented. The configured board is read from
+> `build/zephyr/CMakeCache.txt` (`build::cached_board`); the build panel's
+> `Board` action opens a filterable picker over a background `west boards`
+> fetch, and a pick is session-only --- nothing is written, and the panel
+> header says which origin the answer has.
+
 ### Build
 
 The UI should provide:

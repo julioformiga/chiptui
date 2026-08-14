@@ -257,6 +257,14 @@ pub trait Backend {
         let _ = (kind, board, build_dir_exists);
         None
     }
+
+    /// Returns the command listing the board targets this backend can build
+    /// for (`west boards`). Returns `None` if the backend has no board
+    /// selection ([`Capability::BoardSelect`]) or has not implemented it.
+    /// The command may be slow; callers run it in the background.
+    fn board_list_command(&self) -> Option<crate::process::Command> {
+        None
+    }
 }
 
 /// Whether `name` resolves to an executable on `PATH`.

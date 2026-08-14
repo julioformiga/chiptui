@@ -40,8 +40,12 @@ list quoting the literal commands, board from `build/zephyr/CMakeCache.txt` (`ca
 output streaming into the Monitor tab (`MonitorSource::Build`). Commands come from the backend
 (`Backend::build_command`, `src/backend/zephyr/commands.rs`: `west build`[-`b`]/
 `-t clean`/`--pristine=always`), run with the project root as cwd — the UI never names `west`.
-Not done yet: Zephyr flash (the `x` dialog still shows esptool's for any `Flash` backend), the
-board picker, and the Zephyr serial monitor.
+The panel's `Board` action (under `Capability::BoardSelect`) opens `Overlay::BoardPicker`: a
+filterable list over a background `west boards` fetch (`Backend::board_list_command`, parsed by
+`build::parse_boards`); a pick is session-only (`BoardOrigin::Picked` vs `Cache` — the header
+says which), never written to the project.
+Not done yet: Zephyr flash (the `x` dialog still shows esptool's for any `Flash` backend), and
+the Zephyr serial monitor.
 
 `lib.rs` + `main.rs`: everything except `terminal` and `ui` is testable without a tty, and `ui` is
 testable through ratatui's `TestBackend` (see `tests/ui_render.rs`, `tests/files_view.rs`).

@@ -47,6 +47,14 @@ pub fn rebuild(board: Option<&str>) -> Command {
     command
 }
 
+/// `west boards` --- every known board target, `name description` per line
+/// (alphabetical; HWMv2 names carry a `/` qualifier, e.g.
+/// `nrf52840dk/nrf52840`). Slow (it walks every board root), so callers run
+/// it in the background and parse the accumulated lines at the end.
+pub fn boards() -> Command {
+    Command::new(PROGRAM).arg("boards")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -76,6 +84,11 @@ mod tests {
     #[test]
     fn clean_targets_the_existing_build() {
         assert_eq!(clean().to_string(), "west build -t clean");
+    }
+
+    #[test]
+    fn boards_lists_targets() {
+        assert_eq!(boards().to_string(), "west boards");
     }
 
     #[test]

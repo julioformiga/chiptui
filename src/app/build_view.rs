@@ -6,6 +6,7 @@
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
 use crate::backend::BuildKind;
+use crate::build::BuildAction;
 
 use super::{App, Focus, LogTab, MonitorSource, Overlay};
 
@@ -19,39 +20,72 @@ impl App {
         // the whole app (starting a command flips focus and the monitor
         // source), so the decision is computed first and acted on after the
         // panel borrow ends.
-        let mut kind = None;
-        let mut stop = false;
+        let board_select = self
+            .manager
+            .capabilities()
+            .contains(crate::backend::Capability::BoardSelect);
+        let mut action = None;
         if let Some(panel) = self.build.as_mut() {
+            let len = panel.actions(board_select).len();
             match key.code {
                 KeyCode::Up | KeyCode::Char('k') => {
                     panel.cursor = panel.cursor.saturating_sub(1);
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
-                    panel.cursor = (panel.cursor + 1).min(panel.action_count() - 1);
+                    panel.cursor = (panel.cursor + 1).min(len - 1);
                 }
                 KeyCode::PageUp => panel.cursor = panel.cursor.saturating_sub(5),
-                KeyCode::PageDown => {
-                    panel.cursor = (panel.cursor + 5).min(panel.action_count() - 1)
-                }
+                KeyCode::PageDown => panel.cursor = (panel.cursor + 5).min(len - 1),
                 KeyCode::Home => panel.cursor = 0,
-                KeyCode::End => panel.cursor = panel.action_count() - 1,
-                KeyCode::Enter => {
-                    // `Stop` heads the list exactly while a command runs, so
-                    // cursor 0 means "cancel" exactly then.
-                    if panel.is_busy() && panel.cursor == 0 {
-                        stop = true;
-                    } else {
-                        kind = panel.action_at(panel.cursor);
-                    }
-                }
+                KeyCode::End => panel.cursor = len - 1,
+                KeyCode::Enter => action = panel.action_at(board_select, panel.cursor),
                 _ => {}
             }
         }
-        if stop {
-            self.stop_build();
-        } else if let Some(kind) = kind {
-            self.queue_build_action(kind);
+        match action {
+            Some(BuildAction::Stop) => self.stop_build(),
+            Some(BuildAction::Build(kind)) => self.queue_build_action(kind),
+            Some(BuildAction::Board) => self.open_board_picker(),
+            None => {}
         }
+    }
+
+    /// Opens the board picker, kicking off the background `west boards`
+    /// fetch on first open (the list is slow to produce and useless until
+    /// asked for).
+    pub(super) fn open_board_picker(&mut self) {
+        self.overlay = Some(Overlay::BoardPicker {
+            input: String::new(),
+            selected: 0,
+        });
+        let Some(backend) = self.manager.backend() else {
+            return;
+        };
+        let Some(panel) = &mut self.build else {
+            return;
+        };
+        if let Some(command) = panel.boards_command(backend) {
+            let label = command.to_string();
+            panel.start_boards_fetch(command, &mut self.processes);
+            self.logs.info(format!("fetching the board list ({label})"));
+        }
+    }
+
+    /// Applies the board chosen in the picker: session-only, and the panel
+    /// header says so (`SPEC.md` §10 --- a pick must not touch project
+    /// configuration).
+    pub(super) fn apply_board_picker(&mut self, filter: &str, selected: usize) {
+        let Some(panel) = &mut self.build else {
+            return;
+        };
+        let filtered = panel.filtered_boards(filter);
+        let Some(name) = filtered.get(selected).map(|board| board.name.clone()) else {
+            return;
+        };
+        panel.set_picked(name.clone());
+        self.logs.info(format!(
+            "board set to {name} for this session (nothing written)"
+        ));
     }
 
     /// Entry point for a chosen build action: destructive kinds route
