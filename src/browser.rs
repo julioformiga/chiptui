@@ -284,6 +284,14 @@ pub struct Browser {
     /// Overrides the `mpremote` executable. `None` means "resolve on PATH".
     tool_path: Option<String>,
 
+    /// Name to select in the device pane once its listing is available.
+    /// Set by [`Self::ascend`] (yazi-style: leaving a directory leaves its
+    /// entry selected in the parent) and consumed wherever the listing of
+    /// the directory that became current is already cached or finishes
+    /// loading. Only a cache miss can defer it, and any manual cursor move
+    /// cancels it.
+    pending_select: Option<String>,
+
     /// Active sync walk, if [`Self::request_sync`] was called and the
     /// resulting [`SyncPlan`] has not yet been produced.
     sync: Option<SyncState>,
@@ -312,6 +320,7 @@ impl Browser {
             interrupt_gate: false,
             gate_pending: false,
             tool_path: None,
+            pending_select: None,
             sync: None,
         };
         browser.reload_local();
@@ -423,6 +432,7 @@ impl Browser {
     }
 
     pub fn move_cursor(&mut self, delta: isize) {
+        self.pending_select = None;
         let len = self.len(self.focus);
         if len == 0 {
             return;
@@ -436,6 +446,7 @@ impl Browser {
     }
 
     pub fn cursor_to(&mut self, index: usize) {
+        self.pending_select = None;
         let len = self.len(self.focus);
         let index = index.min(len.saturating_sub(1));
         match self.focus {
@@ -513,30 +524,64 @@ impl Browser {
             Side::Device => {
                 self.device_path = self.device_path.join(&name);
                 self.device_cursor = 0;
+                self.pending_select = None;
                 self.load_device(processes, port, false)
             }
         }
     }
 
     /// Moves the focused pane to its parent directory.
+    ///
+    /// Yazi-style: the entry for the directory just left ends up selected in
+    /// the parent, so `← ←` is a no-op walk around the spot you came from.
     pub fn ascend(&mut self, processes: &mut ProcessManager, port: Option<&str>) -> Vec<Notice> {
         match self.focus {
             Side::Local => {
                 if let Some(parent) = self.local_path.parent().map(Path::to_path_buf) {
+                    let left = self
+                        .local_path
+                        .file_name()
+                        .map(|name| name.to_string_lossy().into_owned());
                     self.local_path = parent;
                     self.local_cursor = 0;
                     self.reload_local();
+                    if let Some(left) = left {
+                        self.select_local_by_name(&left);
+                    }
                 }
                 Vec::new()
             }
             Side::Device => match self.device_path.parent() {
                 Some(parent) => {
+                    self.pending_select = Some(self.device_path.name().to_string());
                     self.device_path = parent;
                     self.device_cursor = 0;
                     self.load_device(processes, port, false)
                 }
                 None => Vec::new(),
             },
+        }
+    }
+
+    /// Puts the local cursor on the entry called `name`, if one is visible.
+    fn select_local_by_name(&mut self, name: &str) {
+        if let Some(index) = self
+            .visible_local()
+            .iter()
+            .position(|entry| entry.name == name)
+        {
+            self.local_cursor = index;
+        }
+    }
+
+    /// Consumes [`Self::pending_select`] against the current device listing.
+    fn apply_pending_select(&mut self) {
+        if let Some(index) = self.pending_select.take().and_then(|name| {
+            self.visible_device()
+                .iter()
+                .position(|entry| entry.name == name)
+        }) {
+            self.device_cursor = index;
         }
     }
 
@@ -567,6 +612,7 @@ impl Browser {
         if self.cache.contains_key(&self.device_path) {
             self.device_state = PaneState::Ready;
             self.clamp_cursors();
+            self.apply_pending_select();
             return notices;
         }
 
@@ -1245,6 +1291,7 @@ impl Browser {
                         if current {
                             self.device_state = PaneState::Ready;
                             self.clamp_cursors();
+                            self.apply_pending_select();
                         }
                     }
                 }
@@ -1880,6 +1927,38 @@ mod tests {
 
         browser.ascend(&mut processes, None);
         assert_eq!(browser.local_path, fixture.root);
+    }
+
+    #[test]
+    fn ascending_leaves_the_directory_you_came_from_selected() {
+        // yazi-style: `←` back into the parent keeps the entry for the
+        // directory just left under the cursor, not the first row.
+        let root =
+            std::env::temp_dir().join(format!("chiptui-browser-back-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("aaa")).unwrap();
+        std::fs::create_dir_all(root.join("zzz")).unwrap();
+        std::fs::create_dir_all(root.join("zzz").join("inner")).unwrap();
+        std::fs::write(root.join("main.py"), "print('hi')\n").unwrap();
+        let mut browser = Browser::new(&root);
+        let mut processes = ProcessManager::new();
+
+        browser.cursor_to(1); // zzz/ (aaa/ is first)
+        browser.enter(&mut processes, None);
+        browser.ascend(&mut processes, None);
+        assert_eq!(
+            browser.selected_name(Side::Local).as_deref(),
+            Some("zzz"),
+            "the parent keeps the directory you came from selected"
+        );
+
+        // Entering that entry again goes deeper, and ascending once more
+        // re-selects it --- `← ← →` is a stable loop.
+        browser.enter(&mut processes, None);
+        assert_eq!(browser.local_path, root.join("zzz"));
+        browser.ascend(&mut processes, None);
+        assert_eq!(browser.selected_name(Side::Local).as_deref(), Some("zzz"));
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

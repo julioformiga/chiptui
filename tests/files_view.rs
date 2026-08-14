@@ -269,6 +269,80 @@ fn navigates_into_a_device_directory() {
     );
 }
 
+/// A fake board with nested directories, so ascending can be asserted on a
+/// directory that is not the first row.
+fn fake_mpremote_nested() -> String {
+    format!(
+        "{}/tests/fixtures/bin/mpremote-nested",
+        env!("CARGO_MANIFEST_DIR")
+    )
+}
+
+#[test]
+fn ascending_selects_the_directory_you_came_from_on_the_device() {
+    let project = Project::new("back");
+    let mut browser = Browser::new(&project.root);
+    browser.set_tool_path(fake_mpremote_nested());
+    let mut processes = ProcessManager::new();
+
+    browser.load_device(&mut processes, None, false);
+    settle(&mut browser, &mut processes);
+
+    // Root rows: apps/ (0), lib/ (1), readme.py (2). Descend into lib/, an
+    // entry below the cursor's reset position, then come back: yazi-style,
+    // lib/ stays selected rather than the pane snapping to apps/.
+    browser.focus = Side::Device;
+    browser.cursor_to(1); // lib/
+    browser.enter(&mut processes, None);
+    settle(&mut browser, &mut processes);
+
+    browser.ascend(&mut processes, None);
+    settle(&mut browser, &mut processes);
+    assert_eq!(browser.device_path.as_str(), "/");
+    assert_eq!(browser.cursor(Side::Device), 1);
+    assert_eq!(
+        browser.selected_name(Side::Device).as_deref(),
+        Some("lib"),
+        "the parent keeps the directory you came from selected"
+    );
+}
+
+#[test]
+fn ascending_selects_the_left_directory_even_when_the_parent_needs_a_fresh_listing() {
+    let project = Project::new("back-miss");
+    let mut browser = Browser::new(&project.root);
+    browser.set_tool_path(fake_mpremote_nested());
+    let mut processes = ProcessManager::new();
+
+    browser.load_device(&mut processes, None, false);
+    settle(&mut browser, &mut processes);
+
+    // apps/ rows: tools/ (0), utils/ (1), main.py (2). Descend into utils/,
+    // then drop the cache entirely (`r` at depth) so ascending has to fetch
+    // the parent listing over serial again --- the selection must survive
+    // the round trip instead of landing on row 0.
+    browser.focus = Side::Device;
+    browser.cursor_to(0); // apps/
+    browser.enter(&mut processes, None);
+    settle(&mut browser, &mut processes);
+    browser.cursor_to(1); // utils/
+    browser.enter(&mut processes, None);
+    settle(&mut browser, &mut processes);
+
+    browser.load_device(&mut processes, None, true);
+    settle(&mut browser, &mut processes);
+
+    browser.ascend(&mut processes, None);
+    settle(&mut browser, &mut processes);
+    assert_eq!(browser.device_path.as_str(), "/apps");
+    assert_eq!(browser.cursor(Side::Device), 1);
+    assert_eq!(
+        browser.selected_name(Side::Device).as_deref(),
+        Some("utils"),
+        "the deferred selection lands once the listing arrives"
+    );
+}
+
 #[test]
 fn creating_a_directory_on_the_device_reloads_the_current_listing() {
     let project = Project::new("mkdir");
