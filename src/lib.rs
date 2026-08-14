@@ -8,6 +8,7 @@
 pub mod app;
 pub mod backend;
 pub mod browser;
+pub mod build;
 pub mod console;
 pub mod device;
 pub mod diff;

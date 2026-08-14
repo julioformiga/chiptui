@@ -55,10 +55,11 @@ fn dashboard_shows_project_device_and_log_panes() {
 }
 
 #[test]
-fn zephyr_keeps_the_local_pane_and_a_device_placeholder() {
+fn zephyr_keeps_the_local_pane_and_shows_the_build_panel() {
     // Once the browser exists (the state main.rs produces at startup), row 2
-    // is the local pane plus a device-side placeholder: Zephyr declares no
-    // Capability::Filesystem, but local view/edit/delete still apply.
+    // is the local pane plus the build panel: Zephyr declares no
+    // Capability::Filesystem, but it can build, so the right half lists the
+    // build lifecycle instead of a placeholder.
     let mut app = app_with_backend(BackendKind::Zephyr);
     app.maybe_scan_devices();
     let frame = render(&mut app, 100, 30);
@@ -67,9 +68,10 @@ fn zephyr_keeps_the_local_pane_and_a_device_placeholder() {
         frame.contains("Local files:"),
         "missing the local file pane:\n{frame}"
     );
+    assert!(frame.contains("Build"), "missing the build panel:\n{frame}");
     assert!(
-        frame.contains("no device filesystem"),
-        "missing the device-side placeholder:\n{frame}"
+        frame.contains("west build"),
+        "the panel must quote the literal commands:\n{frame}"
     );
     assert!(
         !frame.contains("Device files:"),

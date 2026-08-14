@@ -1,14 +1,18 @@
 //! Backend abstraction.
 //!
-//! A backend answers two questions and nothing else for now:
+//! A backend answers three questions and nothing else for now:
 //!
 //! 1. *Is this directory a project of my kind?* --- [`Backend::detect`] returns
 //!    weighted evidence, never a boolean, so detection stays explainable.
 //! 2. *What can be done with such a project?* --- [`Backend::capabilities`].
+//! 3. *Which command runs a supported operation?* --- [`Backend::monitor_command`]
+//!    and [`Backend::build_command`], both optional (a backend that offers no
+//!    such operation, or has not implemented it yet, returns `None`).
 //!
 //! The UI consumes capabilities; it never asks "is this MicroPython?".
-//! Operations (`build`, `flash`, `monitor`, ...) are deliberately absent until
-//! there is a process manager to run them.
+//! Operations stay behind small optional trait methods rather than a wider
+//! operations trait: there is exactly one caller shape per operation today,
+//! and `AGENTS.md` §8 asks for no abstraction without a concrete use case.
 
 pub mod micropython;
 pub mod registry;
@@ -54,6 +58,32 @@ impl BackendKind {
 impl fmt::Display for BackendKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.display_name())
+    }
+}
+
+/// Which flavor of the build lifecycle a [`Backend::build_command`] asks
+/// for. Kept as one enum because the panel offers them as one list; the
+/// backend decides what each one maps to (`west build`, `west build -t
+/// clean`, ...).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuildKind {
+    /// Incremental build; configures the first time when needed.
+    Build,
+    /// Removes build artifacts.
+    Clean,
+    /// Discards the build directory and builds from scratch.
+    Rebuild,
+}
+
+impl BuildKind {
+    pub const ALL: &'static [BuildKind] = &[BuildKind::Build, BuildKind::Clean, BuildKind::Rebuild];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Build => "Build",
+            Self::Clean => "Clean",
+            Self::Rebuild => "Rebuild",
+        }
     }
 }
 
@@ -209,6 +239,22 @@ pub trait Backend {
     /// Returns `None` if the backend doesn't support a monitor, or if it isn't implemented.
     fn monitor_command(&self, port: Option<&str>) -> Option<crate::process::Command> {
         let _ = port;
+        None
+    }
+
+    /// Returns the command for one flavor of the build lifecycle
+    /// (`AGENTS.md` §2: delegate to the ecosystem's own tools). `board` is
+    /// the target the backend should configure for, when one is known;
+    /// `build_dir_exists` lets an incremental build skip the flag only a
+    /// first configuration needs. Returns `None` if the backend offers no
+    /// build capability or has not implemented it yet.
+    fn build_command(
+        &self,
+        kind: BuildKind,
+        board: Option<&str>,
+        build_dir_exists: bool,
+    ) -> Option<crate::process::Command> {
+        let _ = (kind, board, build_dir_exists);
         None
     }
 }

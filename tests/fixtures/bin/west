@@ -1,0 +1,8 @@
+#!/bin/sh
+# Fake `west` for ChipTUI tests.
+#
+# Echoes its arguments as a line and exits 0, so a test can assert both the
+# exact command the panel composed (the panel logs `$ west build ...` as the
+# first output line) and the success path end to end.
+printf 'fake west: %s\n' "$*"
+exit 0

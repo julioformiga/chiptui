@@ -572,11 +572,14 @@ configuring an action, not a full-screen replacement. Running an action closes t
 moves focus to row 3's Monitor tab, where its output streams --- there is no separate output
 screen inside the dialog.
 
-> **Status**: row 2's dual-pane file browser is implemented for MicroPython. Zephyr declares no
-> `Capability::Filesystem` (`src/backend/zephyr.rs`), so its row 2 always shows the placeholder ---
-> this layout is spec'd in anticipation of a future Zephyr filesystem integration, not implemented
-> today. The Monitor tab's live device serial session is not implemented yet either --- today it
-> only shows flash/erase output; connecting to the device itself is a follow-up.
+> **Status**: row 2's dual-pane file browser is implemented for MicroPython. Every backend keeps
+> the local pane (view/edit/delete need no device); a backend that can build but exposes no
+> `Capability::Filesystem` (today: Zephyr) fills the right half with a build panel
+> (`src/build.rs`) listing Build/Clean/Rebuild with the literal `west` commands, streaming output
+> into the Monitor tab. The Zephyr dual-pane layout is spec'd in anticipation of a future
+> filesystem integration. The Monitor tab's live device serial session is not implemented yet
+> either --- today it shows flash/erase and build output; connecting to the device itself is a
+> follow-up.
 
 The exact proportions (row heights, column widths) are not fixed.
 

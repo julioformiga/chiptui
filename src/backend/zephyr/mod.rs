@@ -1,9 +1,12 @@
 //! Zephyr backend.
 //!
-//! Detection only, for now. Operations will delegate to `west` (and the CMake
-//! build system it drives); nothing here shells out yet.
+//! Detection plus the operation surface that goes through `west`: command
+//! construction lives in [`commands`], mirroring the MicroPython backend's
+//! split (`SPEC.md` §12 --- one seam per tool).
 
-use crate::backend::{Backend, BackendKind, Capabilities, Capability};
+pub mod commands;
+
+use crate::backend::{Backend, BackendKind, BuildKind, Capabilities, Capability};
 use crate::project::{DirScan, Signal};
 
 /// Test/sample metadata files used across the Zephyr tree.
@@ -81,6 +84,19 @@ impl Backend for ZephyrBackend {
 
     fn required_tools(&self) -> &'static [&'static str] {
         &["west", "cmake", "ninja"]
+    }
+
+    fn build_command(
+        &self,
+        kind: BuildKind,
+        board: Option<&str>,
+        build_dir_exists: bool,
+    ) -> Option<crate::process::Command> {
+        Some(match kind {
+            BuildKind::Build => commands::build(board, build_dir_exists),
+            BuildKind::Clean => commands::clean(),
+            BuildKind::Rebuild => commands::rebuild(board),
+        })
     }
 }
 

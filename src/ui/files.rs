@@ -51,6 +51,8 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
     draw_local(frame, left, app, browser, &statuses);
     if has_filesystem {
         draw_device(frame, right, app, browser, &statuses);
+    } else if app.build_pane_visible() {
+        super::build::draw(frame, right, app);
     } else {
         draw_no_device(frame, right, app);
     }

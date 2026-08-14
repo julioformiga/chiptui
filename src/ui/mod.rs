@@ -5,6 +5,7 @@
 //! Colors come from the terminal's own 16-color palette --- `AGENTS.md` asks
 //! for terminal-native output rather than an imposed theme.
 
+mod build;
 mod files;
 mod flash;
 mod monitor;

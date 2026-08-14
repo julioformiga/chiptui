@@ -33,6 +33,7 @@ impl App {
     /// spawn as a side effect.
     pub fn maybe_scan_devices(&mut self) {
         self.ensure_browser_scanning();
+        self.ensure_build_panel();
     }
 
     /// Creates the browser (once), and starts a device scan with it when the
@@ -52,6 +53,30 @@ impl App {
         if self.manager.capabilities().contains(Capability::Filesystem) {
             self.scan_devices();
         }
+    }
+
+    /// Creates the build panel, once, for the backend that shows it in row
+    /// 2's right half (can build, no device filesystem). Like the browser's
+    /// creation this reads no subprocess --- only the project's own
+    /// `CMakeCache.txt`, if one exists --- so it is safe to call eagerly.
+    fn ensure_build_panel(&mut self) {
+        if !self.build_pane_visible_precondition() || self.build.is_some() {
+            return;
+        }
+        let root = self
+            .manager
+            .root()
+            .map_or_else(|| self.manager.start_dir().to_path_buf(), Path::to_path_buf);
+        self.build = Some(crate::build::BuildPanel::new(root, self.logs.offset()));
+    }
+
+    /// The capability half of [`Self::build_pane_visible`]: whether a build
+    /// panel belongs to this backend at all, independent of whether one
+    /// exists yet (used before creating it, where `is_some` would always be
+    /// false).
+    pub(super) fn build_pane_visible_precondition(&self) -> bool {
+        let caps = self.manager.capabilities();
+        caps.contains(Capability::Build) && !caps.contains(Capability::Filesystem)
     }
 
     /// Files opens on `src/` when the project has one --- the directory kept

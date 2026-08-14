@@ -28,7 +28,20 @@ running a script is never interrupted silently: a short `mpremote repl` probe ru
 first listing (`src/app/probe.rs`), device operations are held behind a confirmation while a
 script runs (`Overlay::ConfirmInterruptDevice`), and an accepted interruption ends with a
 restore prompt (`Overlay::RestoreDeviceScript`: hard reset, `import main`, or leave stopped).
-Zephyr backends still declare detection and capabilities only.
+
+The local pane is backend-agnostic now: every backend gets a browser (`maybe_scan_devices` creates
+one; only the device *scan* waits for `Capability::Filesystem`), and the local menu is
+capability-gated (`FileAction::for_entry`: no `SendToDevice` without `Upload`, no `Diff` without
+`Filesystem`), so Zephyr's local pane offers exactly open/view/edit/delete. A backend that can
+build but has no device filesystem (Zephyr) fills row 2's right half with a **build panel**
+(`src/build.rs`, `src/ui/build.rs`, `src/app/build_view.rs`): Build/Clean/Rebuild as a navigable
+list quoting the literal commands, board from `build/zephyr/CMakeCache.txt` (`cached_board`),
+`Stop` while a command runs, `Clean` behind `Overlay::ConfirmBuild` (destructive capability),
+output streaming into the Monitor tab (`MonitorSource::Build`). Commands come from the backend
+(`Backend::build_command`, `src/backend/zephyr/commands.rs`: `west build`[-`b`]/
+`-t clean`/`--pristine=always`), run with the project root as cwd — the UI never names `west`.
+Not done yet: Zephyr flash (the `x` dialog still shows esptool's for any `Flash` backend), the
+board picker, and the Zephyr serial monitor.
 
 `lib.rs` + `main.rs`: everything except `terminal` and `ui` is testable without a tty, and `ui` is
 testable through ratatui's `TestBackend` (see `tests/ui_render.rs`, `tests/files_view.rs`).

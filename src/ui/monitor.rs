@@ -1,7 +1,8 @@
 //! Row 3's Monitor tab: whichever live process output the user last asked
-//! for --- a running/just-finished flash (`esptool`) command, or (once wired
-//! up) a live device serial session --- rendered in one place instead of a
-//! separate dialog (`SPEC.md` §11).
+//! for --- a running/just-finished flash (`esptool`) command, a backend
+//! build command (`west build`), or (once wired up) a live device serial
+//! session --- rendered in one place instead of a separate dialog
+//! (`SPEC.md` §11).
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -27,7 +28,50 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
         MonitorSource::Flash => draw_flash_output(frame, area, app, focused),
         MonitorSource::Device => draw_device_monitor(frame, area, app, focused),
         MonitorSource::Run => draw_run_output(frame, area, app, focused),
+        MonitorSource::Build => draw_build_output(frame, area, app, focused),
     }
+}
+
+/// Streamed build-command output (`west build`), mirroring the flash
+/// output's shape: the panel's own header carries board/state, so this pane
+/// is just the console, tail-following like the others.
+fn draw_build_output(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
+    let Some(panel) = app.build.as_ref() else {
+        draw_device_monitor(frame, area, app, focused);
+        return;
+    };
+
+    let status = if panel.is_busy() {
+        " (running…)"
+    } else if panel.last.as_ref().is_some_and(|report| report.ok) {
+        " (done)"
+    } else if panel.last.is_some() {
+        " (failed)"
+    } else {
+        ""
+    };
+
+    let block = pane_block(&format!("Build{status}"), focused);
+    let inner_height = block.inner(area).height.max(1) as usize;
+
+    let mut console: Vec<Line> = panel
+        .output
+        .iter()
+        .map(|line| Line::from(line.clone()))
+        .collect();
+    if console.is_empty() {
+        console.push(Line::from("(no output yet)".dim()));
+    }
+
+    let visible_start = console.len().saturating_sub(inner_height);
+    let lines: Vec<Line> = console.split_off(visible_start);
+
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false }),
+        area,
+    );
 }
 
 /// Placeholder body until the live device session (a later change) exists.

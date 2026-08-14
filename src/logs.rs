@@ -68,6 +68,12 @@ impl LogStore {
         self.offset = offset;
     }
 
+    /// The configured offset, for other subsystems that stamp wall-clock
+    /// times (the build panel's report line).
+    pub fn offset(&self) -> UtcOffset {
+        self.offset
+    }
+
     pub fn push(&mut self, level: Level, message: impl Into<String>) {
         if self.entries.len() == self.capacity {
             self.entries.pop_front();

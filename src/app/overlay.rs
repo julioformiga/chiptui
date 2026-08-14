@@ -213,6 +213,17 @@ impl App {
                     |_| {},
                 );
             }
+            Overlay::ConfirmBuild { kind, confirm } => {
+                self.dispatch_confirm(
+                    key.code,
+                    confirm,
+                    move |app, confirm| {
+                        app.overlay = Some(Overlay::ConfirmBuild { kind, confirm });
+                    },
+                    move |app| app.start_build(kind),
+                    |_| {},
+                );
+            }
             Overlay::FileActions {
                 side,
                 name,

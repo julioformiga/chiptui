@@ -20,6 +20,17 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
         Overlay::BackendPicker { selected } => draw_picker(frame, area, app, selected),
         Overlay::DevicePicker { selected } => draw_device_picker(frame, area, app, selected),
         Overlay::Confirm { message, confirm } => draw_confirm(frame, area, &message, confirm),
+        Overlay::ConfirmBuild { kind, confirm } => {
+            // The message is derived, not stored: whatever the panel would
+            // run right now is exactly what the confirm should quote.
+            let message = app
+                .build
+                .as_ref()
+                .and_then(|panel| app.manager.backend().and_then(|b| panel.command(kind, b)))
+                .map(|command| format!("Run {command}?"))
+                .unwrap_or_else(|| format!("Run {}?", kind.label()));
+            draw_confirm(frame, area, &message, confirm);
+        }
         Overlay::FirmwarePicker { selected } => draw_firmware_picker(frame, area, app, selected),
         Overlay::ProjectSetup { selected } => draw_project_setup(frame, area, selected),
         Overlay::ConfirmDownloadOverwrite { url, dest, confirm } => {
@@ -659,6 +670,10 @@ fn draw_help(frame: &mut Frame, area: Rect, app: &App) {
                 "sync local files to the device (upload missing/changed)",
             ),
             ("h", "show or hide dot-files in the file browser"),
+            (
+                "enter (build pane)",
+                "run the selected build action; stop heads the list while one runs",
+            ),
             ("d", "scan for devices (when the backend has a filesystem)"),
             (
                 "i",

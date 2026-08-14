@@ -11,6 +11,7 @@
 //! subsystem instead lives in a submodule so no single file tracks every
 //! concern at once: [`devices`] (scanning/picking a device or backend),
 //! [`file_browser`] (the local/device file panes and viewer),
+//! [`build_view`] (the build panel's list and commands),
 //! [`flash_view`] (the `esptool` menu and online firmware search), and
 //! [`overlay`] (modal key dispatch, including the shared confirm-dialog
 //! machinery). They are `impl App` blocks split by file, not separate
@@ -35,6 +36,7 @@ use crate::logs::LogStore;
 use crate::process::{ProcessId, ProcessManager};
 use crate::project::{DetectionOutcome, DetectionSource, ProjectManager};
 
+pub mod build_view;
 pub mod devices;
 pub mod file_browser;
 pub mod flash_view;
@@ -60,11 +62,13 @@ pub enum View {
 /// --- `Tab` walks just the interactive panes. `FilesLocal`/`FilesDevice` are
 /// the dashboard's two file-browser columns; each is its own stop so `Tab`
 /// walks all columns in one consistent tour instead of a separate sub-focus
-/// inside the files row.
+/// inside the files row. `Build` is the build panel a backend without a
+/// device filesystem shows in the row's right half (`SPEC.md` §10).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     FilesLocal,
     FilesDevice,
+    Build,
     Logs,
 }
 
@@ -91,6 +95,9 @@ pub enum MonitorSource {
     /// A `mpremote run` session, spawned in a PTY so Ctrl+C can send a
     /// KeyboardInterrupt to the device.
     Run,
+    /// A backend build command (`west build`), streamed like the flash
+    /// commands but keyed to its own output buffer.
+    Build,
 }
 
 /// A modal layer drawn above the panes.
@@ -136,6 +143,16 @@ pub enum Overlay {
     ConfirmUpload {
         name: String,
         is_dir: bool,
+        confirm: bool,
+    },
+    /// A destructive build action (`Capability::Clean`) awaiting explicit
+    /// confirmation, showing the literal command (the same rule as the
+    /// esptool confirms, `SPEC.md` §15). The message is rebuilt from the
+    /// panel state at draw time rather than stored: board and build
+    /// directory cannot change while the overlay is open, and this way the
+    /// shown command is always the one that would run.
+    ConfirmBuild {
+        kind: crate::backend::BuildKind,
         confirm: bool,
     },
     /// The entry under the cursor in the files pane (`enter`): a small menu
@@ -498,6 +515,9 @@ pub struct App {
     pub browser: Option<Browser>,
     /// Created the first time the flash view is opened.
     pub flash: Option<FlashPanel>,
+    /// The build panel, created once for a backend that can build and has no
+    /// device filesystem to browse instead (right half of row 2).
+    pub build: Option<crate::build::BuildPanel>,
     /// Backs [`Overlay::FileViewer`] while it is open.
     pub viewer: Option<FileViewer>,
     /// Height of the file viewer, published by the renderer each frame so
@@ -568,6 +588,7 @@ impl App {
             devices: DeviceState::new(),
             browser: None,
             flash: None,
+            build: None,
             viewer: None,
             viewer_viewport: 1,
             pending_edit: None,
@@ -920,6 +941,14 @@ impl App {
             }
         }
 
+        if let Some(mut build) = self.build.take() {
+            let notices = build.on_process(event);
+            self.build = Some(build);
+            for (level, message) in notices {
+                self.logs.push(level, message);
+            }
+        }
+
         if let Some(mut flash) = self.flash.take() {
             let update = flash.on_process(event);
             let fetch_update = flash.on_curl_process(event);
@@ -1039,13 +1068,22 @@ impl App {
         }
     }
 
+    /// Whether row 2's right half shows the build panel: the backend can
+    /// build, and there is no device filesystem pane to show there instead.
+    /// A backend with both would need a third stop --- none exists today
+    /// (MicroPython has no build, Zephyr no filesystem), and the capability
+    /// pair is the gate, never the backend kind (`AGENTS.md` §3).
+    pub fn build_pane_visible(&self) -> bool {
+        self.build.is_some() && self.build_pane_visible_precondition()
+    }
+
     /// Focus order for `Tab`/`BackTab`. The local files column is a stop
     /// whenever the browser exists --- its pane is useful for every backend
     /// (Zephyr has no device filesystem but still views/edits/deletes local
     /// files). The device column is a stop only under
-    /// [`Capability::Filesystem`] (`AGENTS.md` §3 --- gated on the capability,
-    /// not the backend kind). The Project/Device info row is never a stop ---
-    /// it is informational only.
+    /// [`Capability::Filesystem`], the build panel only when it is visible
+    /// ([`Self::build_pane_visible`]). The Project/Device info row is never
+    /// a stop --- it is informational only.
     fn focus_order(&self) -> Vec<Focus> {
         let mut order = Vec::new();
         if self.browser.is_some() {
@@ -1053,6 +1091,9 @@ impl App {
             if self.manager.capabilities().contains(Capability::Filesystem) {
                 order.push(Focus::FilesDevice);
             }
+        }
+        if self.build_pane_visible() {
+            order.push(Focus::Build);
         }
         order.push(Focus::Logs);
         order
@@ -1072,9 +1113,10 @@ impl App {
 
     /// Pulls focus back onto a pane that still exists when a backend switch
     /// removed the one it was sitting on: the device column requires
-    /// [`Capability::Filesystem`] (a switch away from MicroPython drops it,
-    /// landing on the local column, which every backend keeps), and the
-    /// local column requires a browser.
+    /// [`Capability::Filesystem`] (a switch away from MicroPython drops it),
+    /// the build panel requires visibility ([`Self::build_pane_visible`]),
+    /// and the local column requires a browser. Each falls back to the next
+    /// best stop, ending at `Logs`.
     fn clamp_focus(&mut self) {
         match self.focus {
             Focus::FilesDevice if !self.manager.capabilities().contains(Capability::Filesystem) => {
@@ -1084,10 +1126,17 @@ impl App {
                     Focus::Logs
                 };
             }
+            Focus::Build if !self.build_pane_visible() => {
+                self.focus = if self.browser.is_some() {
+                    Focus::FilesLocal
+                } else {
+                    Focus::Logs
+                };
+            }
             Focus::FilesLocal if self.browser.is_none() => {
                 self.focus = Focus::Logs;
             }
-            Focus::FilesLocal | Focus::FilesDevice | Focus::Logs => {}
+            Focus::FilesLocal | Focus::FilesDevice | Focus::Build | Focus::Logs => {}
         }
     }
 
@@ -1141,6 +1190,11 @@ impl App {
             return;
         }
 
+        if self.focus == Focus::Build {
+            self.on_build_key(key);
+            return;
+        }
+
         match key.code {
             KeyCode::Char('s') if self.is_run_view() => {
                 self.save_run_output();
@@ -1185,9 +1239,9 @@ impl App {
                     self.logs.scroll_down(delta as usize);
                 }
             }
-            // FilesLocal/FilesDevice never reach here: on_dashboard_key routes
-            // them to on_files_key first.
-            Focus::FilesLocal | Focus::FilesDevice | Focus::Logs => {}
+            // FilesLocal/FilesDevice/Build never reach here: on_dashboard_key
+            // routes them to their own key handlers first.
+            Focus::FilesLocal | Focus::FilesDevice | Focus::Build | Focus::Logs => {}
         }
     }
 
@@ -1196,14 +1250,14 @@ impl App {
             Focus::Logs if self.log_tab == LogTab::Log => {
                 self.logs.scroll_up(usize::MAX, self.log_viewport);
             }
-            Focus::FilesLocal | Focus::FilesDevice | Focus::Logs => {}
+            Focus::FilesLocal | Focus::FilesDevice | Focus::Build | Focus::Logs => {}
         }
     }
 
     fn jump_to_end(&mut self) {
         match self.focus {
             Focus::Logs if self.log_tab == LogTab::Log => self.logs.scroll_to_bottom(),
-            Focus::FilesLocal | Focus::FilesDevice | Focus::Logs => {}
+            Focus::FilesLocal | Focus::FilesDevice | Focus::Build | Focus::Logs => {}
         }
     }
 
@@ -1245,6 +1299,7 @@ impl App {
             }
             Some(
                 Overlay::Confirm { .. }
+                | Overlay::ConfirmBuild { .. }
                 | Overlay::ConfirmDownloadOverwrite { .. }
                 | Overlay::ConfirmDelete { .. }
                 | Overlay::ConfirmUpload { .. }
@@ -1287,7 +1342,10 @@ impl App {
                 View::Dashboard => {
                     let mut keys = vec![("tab", "focus")];
                     let caps = self.manager.capabilities();
-                    if matches!(self.focus, Focus::FilesLocal | Focus::FilesDevice) {
+                    if self.focus == Focus::Build {
+                        keys.push(("↑/↓", "select"));
+                        keys.push(("enter", "run / stop"));
+                    } else if matches!(self.focus, Focus::FilesLocal | Focus::FilesDevice) {
                         keys.push(("enter", "menu"));
                         keys.push(("→", "descend"));
                         keys.push(("←/bksp", "up"));
@@ -1558,8 +1616,9 @@ mod tests {
     #[test]
     fn tab_stops_on_the_local_column_without_a_device_filesystem() {
         // Zephyr keeps the local pane (view/edit/delete need no device) but
-        // has no device column: the tour is Local -> Logs, and clamping a
-        // backend switch away from MicroPython lands on Local, not Logs.
+        // has no device column: the tour is Local -> Build -> Logs, and
+        // clamping a backend switch away from MicroPython lands on Local,
+        // not Logs.
         let mut app = App::new(std::env::temp_dir());
         app.detect();
         app.manager.set_override(Some(BackendKind::Zephyr));
@@ -1569,6 +1628,8 @@ mod tests {
         app.focus = Focus::Logs;
         app.handle(key(KeyCode::Tab));
         assert_eq!(app.focus, Focus::FilesLocal);
+        app.handle(key(KeyCode::Tab));
+        assert_eq!(app.focus, Focus::Build);
         app.handle(key(KeyCode::Tab));
         assert_eq!(app.focus, Focus::Logs);
 
