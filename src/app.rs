@@ -25,6 +25,7 @@ use time::OffsetDateTime;
 
 use crate::backend::{BackendKind, Capabilities, Capability};
 use crate::browser::{Browser, Side};
+use crate::console::{ConsoleLine, LineConsole};
 use crate::device::{DevicePath, DeviceState};
 use crate::error::Result;
 use crate::event::AppEvent;
@@ -383,6 +384,23 @@ pub struct RunLine {
     pub text: String,
 }
 
+impl ConsoleLine for RunLine {
+    fn blank() -> Self {
+        Self {
+            timestamp: OffsetDateTime::now_utc(),
+            text: String::new(),
+        }
+    }
+
+    fn text(&self) -> &str {
+        &self.text
+    }
+
+    fn text_mut(&mut self) -> &mut String {
+        &mut self.text
+    }
+}
+
 /// A file queued for `$EDITOR`, and where to send it back to afterward.
 /// Built by [`App::take_pending_edit`]'s callers (`main.rs`'s event loop),
 /// which owns the terminal handle needed to actually suspend and run it.
@@ -463,6 +481,10 @@ pub struct App {
     pub device_monitor_process: Option<crate::process::ProcessId>,
     /// Accumulated lines from the PTY session.
     pub device_monitor_output: Vec<String>,
+    /// VT interpretation of the monitor's raw output (cursor position and
+    /// escape-sequence state) --- the REPL echoes redraw sequences that must
+    /// not reach the rendered lines as text.
+    monitor_console: LineConsole,
     pending_monitor: Option<PendingMonitor>,
 
     /// Active or last-finished `mpremote run` session, shown in the Monitor
@@ -470,6 +492,9 @@ pub struct App {
     /// interrupt the script on the device.
     pub run_process: Option<ProcessId>,
     pub run_output: Vec<RunLine>,
+    /// VT interpretation of the run session's raw output, mirroring
+    /// [`Self::monitor_console`].
+    run_console: LineConsole,
     pub run_script: Option<PathBuf>,
     pub run_state: RunState,
     /// Set by [`App::defer_device_info_query`] when a device is newly
@@ -505,9 +530,11 @@ impl App {
             pending_edit: None,
             device_monitor_process: None,
             device_monitor_output: Vec::new(),
+            monitor_console: LineConsole::new(),
             pending_monitor: None,
             run_process: None,
             run_output: Vec::new(),
+            run_console: LineConsole::new(),
             run_script: None,
             run_state: RunState::default(),
             flash_query_pending: false,
@@ -700,31 +727,15 @@ impl App {
                 stream: _,
                 text,
             } if Some(*id) == self.device_monitor_process => {
-                self.device_monitor_output.push(text.clone());
+                self.monitor_console
+                    .push_line(&mut self.device_monitor_output, text.clone());
                 return;
             }
             crate::process::ProcessEvent::Output { id, text }
                 if Some(*id) == self.device_monitor_process =>
             {
-                if self.device_monitor_output.is_empty() {
-                    self.device_monitor_output.push(String::new());
-                }
-                for char in text.chars() {
-                    match char {
-                        '\n' => self.device_monitor_output.push(String::new()),
-                        '\r' => {}
-                        '\x08' | '\x7f' => {
-                            if let Some(last) = self.device_monitor_output.last_mut() {
-                                last.pop();
-                            }
-                        }
-                        _ => {
-                            if let Some(last) = self.device_monitor_output.last_mut() {
-                                last.push(char);
-                            }
-                        }
-                    }
-                }
+                self.monitor_console
+                    .feed(&mut self.device_monitor_output, text);
                 return;
             }
             crate::process::ProcessEvent::Finished {
@@ -733,37 +744,15 @@ impl App {
                 duration: _,
             } if Some(*id) == self.device_monitor_process => {
                 self.device_monitor_process = None;
-                self.device_monitor_output
-                    .push(format!("\r\n[monitor {}]", outcome.summary()));
+                self.monitor_console.push_line(
+                    &mut self.device_monitor_output,
+                    format!("[monitor {}]", outcome.summary()),
+                );
                 return;
             }
             // Run session (PTY): streamed output arrives as raw bytes.
             crate::process::ProcessEvent::Output { id, text } if Some(*id) == self.run_process => {
-                if self.run_output.is_empty() {
-                    self.run_output.push(RunLine {
-                        timestamp: OffsetDateTime::now_utc(),
-                        text: String::new(),
-                    });
-                }
-                for char in text.chars() {
-                    match char {
-                        '\n' => self.run_output.push(RunLine {
-                            timestamp: OffsetDateTime::now_utc(),
-                            text: String::new(),
-                        }),
-                        '\r' => {}
-                        '\x08' | '\x7f' => {
-                            if let Some(last) = self.run_output.last_mut() {
-                                last.text.pop();
-                            }
-                        }
-                        _ => {
-                            if let Some(last) = self.run_output.last_mut() {
-                                last.text.push(char);
-                            }
-                        }
-                    }
-                }
+                self.run_console.feed(&mut self.run_output, text);
                 return;
             }
             crate::process::ProcessEvent::Finished {
@@ -773,10 +762,8 @@ impl App {
             } if Some(*id) == self.run_process => {
                 self.run_process = None;
                 self.run_state = RunState::Finished;
-                self.run_output.push(RunLine {
-                    timestamp: OffsetDateTime::now_utc(),
-                    text: format!("[run {}]", outcome.summary()),
-                });
+                self.run_console
+                    .push_line(&mut self.run_output, format!("[run {}]", outcome.summary()));
                 return;
             }
             _ => {}
@@ -910,6 +897,15 @@ impl App {
         self.focus == Focus::Logs
             && self.log_tab == LogTab::Monitor
             && self.monitor_source == MonitorSource::Run
+    }
+
+    /// Byte offset of the device monitor's cursor within its current (last)
+    /// line, for the renderer to draw where typed text will land. `None`
+    /// unless the session owns the keyboard ([`Self::is_monitor_active`]),
+    /// so no cursor is drawn once it exits or the user tabs away.
+    pub fn monitor_cursor(&self) -> Option<usize> {
+        self.is_monitor_active()
+            .then(|| self.monitor_console.cursor())
     }
 
     fn on_key(&mut self, key: KeyEvent) {
@@ -1243,8 +1239,17 @@ pub const TICK_RATE: Duration = crate::event::DEFAULT_TICK_RATE;
 fn key_to_bytes(key: KeyEvent) -> Option<Vec<u8>> {
     match key.code {
         KeyCode::Char(c) if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            let b = c.to_ascii_uppercase() as u8 ^ 0x40;
-            Some(vec![b])
+            // Crossterm relabels the raw control bytes the terminal sends:
+            // 0x00 arrives as Ctrl+Space and 0x1c..=0x1f (Ctrl+\, Ctrl+],
+            // Ctrl+^, Ctrl+_) as Ctrl+4..=Ctrl+7. Those must be converted
+            // back, not XORed --- '5' ^ 0x40 is 'u', and mpremote exits its
+            // REPL/monitor on Ctrl+] (0x1d), like Ctrl+x (0x18).
+            let byte = match c {
+                ' ' => 0x00,
+                '4'..='7' => c as u8 - b'4' + 0x1c,
+                _ => c.to_ascii_uppercase() as u8 ^ 0x40,
+            };
+            Some(vec![byte])
         }
         KeyCode::Char(c) => {
             let mut b = [0; 4];
@@ -1252,6 +1257,7 @@ fn key_to_bytes(key: KeyEvent) -> Option<Vec<u8>> {
         }
         KeyCode::Enter => Some(vec![b'\r']),
         KeyCode::Backspace => Some(vec![0x7F]), // DEL
+        KeyCode::Tab => Some(vec![b'\t']),      // 0x09: the REPL's tab-complete
         KeyCode::Esc => Some(vec![0x1b]),
         KeyCode::Up => Some(b"\x1b[A".to_vec()),
         KeyCode::Down => Some(b"\x1b[B".to_vec()),
@@ -1271,6 +1277,106 @@ mod tests {
 
     fn app() -> App {
         App::new("/nonexistent-project-dir")
+    }
+
+    /// A live-enough monitor session: a slow fake process owns the monitor
+    /// slot, and the app sits where `is_monitor_active` is true.
+    fn app_in_monitor() -> (App, ProcessId) {
+        let mut app = app();
+        let command = crate::process::Command::new(format!(
+            "{}/tests/fixtures/bin/slow",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .arg("5");
+        let id = app.processes.spawn(command, Duration::from_secs(30));
+        app.device_monitor_process = Some(id);
+        app.focus = Focus::Logs;
+        app.log_tab = LogTab::Monitor;
+        app.monitor_source = MonitorSource::Device;
+        (app, id)
+    }
+
+    #[test]
+    fn tab_reaches_the_monitor_as_a_raw_0x09() {
+        // MicroPython's readline reads byte 9 for tab-completion; a Tab that
+        // maps to `None` would be swallowed before reaching the device.
+        assert_eq!(
+            key_to_bytes(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
+            Some(vec![b'\t'])
+        );
+    }
+
+    /// Crossterm reports the terminal's raw 0x00 and 0x1c..=0x1f bytes as
+    /// Ctrl+Space and Ctrl+4..=Ctrl+7; `key_to_bytes` must restore the
+    /// original byte instead of XORing the relabeled char.
+    #[test]
+    fn relabeled_control_bytes_reach_the_device_as_themselves() {
+        let ctrl = |c: char| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+        // Ctrl+] arrives as Ctrl+5: mpremote's REPL/monitor exit key. The old
+        // XOR turned it into 'u' (0x75).
+        assert_eq!(key_to_bytes(ctrl('5')), Some(vec![0x1d]));
+        assert_eq!(key_to_bytes(ctrl('4')), Some(vec![0x1c])); // Ctrl+\
+        assert_eq!(key_to_bytes(ctrl('6')), Some(vec![0x1e])); // Ctrl+^
+        assert_eq!(key_to_bytes(ctrl('7')), Some(vec![0x1f])); // Ctrl+_
+        assert_eq!(key_to_bytes(ctrl(' ')), Some(vec![0x00])); // Ctrl+Space
+        // The letters were always right, and still are.
+        assert_eq!(key_to_bytes(ctrl('x')), Some(vec![0x18]));
+        assert_eq!(key_to_bytes(ctrl('c')), Some(vec![0x03]));
+        assert_eq!(key_to_bytes(ctrl('d')), Some(vec![0x04]));
+    }
+
+    #[test]
+    fn monitor_cursor_follows_the_echoed_line() {
+        let (mut app, id) = app_in_monitor();
+
+        // Typed text: cursor sits after it.
+        app.handle(AppEvent::Process(crate::process::ProcessEvent::Output {
+            id,
+            text: ">>> ab".to_string(),
+        }));
+        assert_eq!(app.device_monitor_output, vec![">>> ab".to_string()]);
+        assert_eq!(app.monitor_cursor(), Some(6));
+
+        // One backspace echo: the line loses a char and the cursor tracks.
+        app.handle(AppEvent::Process(crate::process::ProcessEvent::Output {
+            id,
+            text: "\x08\x1b[K".to_string(),
+        }));
+        assert_eq!(app.device_monitor_output, vec![">>> a".to_string()]);
+        assert_eq!(app.monitor_cursor(), Some(5));
+
+        // Left arrow moves the cursor without changing the text.
+        app.handle(AppEvent::Process(crate::process::ProcessEvent::Output {
+            id,
+            text: "\x1b[D".to_string(),
+        }));
+        assert_eq!(app.device_monitor_output, vec![">>> a".to_string()]);
+        assert_eq!(app.monitor_cursor(), Some(4));
+
+        app.processes.cancel(id);
+    }
+
+    #[test]
+    fn monitor_cursor_disappears_when_the_session_owns_no_keyboard() {
+        let (mut app, id) = app_in_monitor();
+        app.handle(AppEvent::Process(crate::process::ProcessEvent::Output {
+            id,
+            text: ">>> ".to_string(),
+        }));
+
+        // Focus moved off the monitor: no cursor, even mid-session.
+        app.focus = Focus::FilesLocal;
+        assert_eq!(app.monitor_cursor(), None);
+
+        // Session over: no cursor either.
+        app.focus = Focus::Logs;
+        app.handle(AppEvent::Process(crate::process::ProcessEvent::Finished {
+            id,
+            outcome: crate::process::Outcome::Success,
+            duration: Duration::ZERO,
+        }));
+        assert!(app.device_monitor_process.is_none());
+        assert_eq!(app.monitor_cursor(), None);
     }
 
     #[test]

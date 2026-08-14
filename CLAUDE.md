@@ -137,6 +137,11 @@ These are the decisions that shape most code, and getting them wrong causes wide
   so `parse_devices` keeps only USB devices, matching mpremote's own auto-connect rule.
 - **`=` vs `≈` is a real distinction.** `SameSize` means only that lengths match; `Identical`
   requires a sha256 check (`c`), device side via `mpremote fs sha256sum`, local side via `sha2`.
+- **Monitor/run output is VT-interpreted** (`src/console.rs`): a REPL echo is not plain text —
+  MicroPython's readline redraws the edited line with `\b`, `\x1b[K` and `\x1b[nD`, which a naive
+  append-per-char renderer shows as literal `[K` garbage. `LineConsole` keeps the cursor position
+  and escape-parser state across PTY chunks and edits the current line accordingly; sequences it
+  does not implement (colors, OSC) are consumed, never rendered.
 
 ## Testing
 

@@ -44,6 +44,15 @@ fn draw_device_monitor(frame: &mut Frame, area: Rect, app: &App, focused: bool) 
             .map(|line| Line::from(line.clone()))
             .collect();
 
+        // While the session owns the keyboard, show where typed text will
+        // land: the current line's cursor cell, in reverse video.
+        if let Some(col) = app.monitor_cursor()
+            && let Some(text) = app.device_monitor_output.last().map(String::as_str)
+            && let Some(last) = console.last_mut()
+        {
+            *last = cursor_line(text, col);
+        }
+
         if console.is_empty() {
             console.push(Line::from("(connected)".dim()));
         }
@@ -211,4 +220,78 @@ fn draw_run_output(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
             .wrap(Wrap { trim: false }),
         area,
     );
+}
+
+/// Rebuilds `text` with the cell at byte offset `col` in reverse video ---
+/// a stand-in terminal cursor, since the Monitor is a pane, not the real
+/// screen. The char under the cursor is highlighted; at end of line a
+/// reverse-video blank extends the line by one cell.
+fn cursor_line(text: &str, col: usize) -> Line<'static> {
+    // `LineConsole` keeps `col` on a char boundary and within the line;
+    // `min` only guards a first empty chunk before any text arrived.
+    let col = col.min(text.len());
+    let under = text[col..].chars().next();
+    let rest = col + under.map_or(0, |c| c.len_utf8());
+
+    Line::from(vec![
+        Span::raw(text[..col].to_string()),
+        match under {
+            Some(c) => Span::styled(c.to_string(), Style::new().reversed()),
+            None => Span::styled(" ", Style::new().reversed()),
+        },
+        Span::raw(text[rest..].to_string()),
+    ])
+}
+
+#[cfg(test)]
+mod tests {
+    use ratatui::style::Modifier;
+
+    use super::cursor_line;
+
+    #[test]
+    fn the_cell_under_the_cursor_is_reversed() {
+        let line = cursor_line("abcd", 2);
+        assert_eq!(line.spans.len(), 3);
+        assert_eq!(line.spans[0].content, "ab");
+        assert_eq!(line.spans[1].content, "c");
+        assert!(
+            line.spans[1]
+                .style
+                .add_modifier
+                .contains(Modifier::REVERSED)
+        );
+        assert_eq!(line.spans[2].content, "d");
+        // Untouched spans carry no highlight.
+        assert!(
+            !line.spans[0]
+                .style
+                .add_modifier
+                .contains(Modifier::REVERSED)
+        );
+    }
+
+    #[test]
+    fn end_of_line_shows_a_reversed_blank() {
+        let line = cursor_line("abc", 3);
+        assert_eq!(line.spans[0].content, "abc");
+        assert_eq!(line.spans[1].content, " ");
+        assert!(
+            line.spans[1]
+                .style
+                .add_modifier
+                .contains(Modifier::REVERSED)
+        );
+        assert_eq!(line.spans[2].content, "");
+    }
+
+    #[test]
+    fn multibyte_cells_highlight_whole_chars() {
+        // 'é' is two bytes; the cursor must not split it.
+        let text = "aé";
+        let line = cursor_line(text, 1);
+        assert_eq!(line.spans[0].content, "a");
+        assert_eq!(line.spans[1].content, "é");
+        assert_eq!(line.spans[2].content, "");
+    }
 }

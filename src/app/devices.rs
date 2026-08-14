@@ -203,6 +203,7 @@ impl App {
             self.log_tab = LogTab::Monitor;
             self.monitor_source = MonitorSource::Device;
             self.device_monitor_output.clear();
+            self.monitor_console.reset();
 
             // Spawn the monitor in a PTY so it stays inside the tab
             match self
