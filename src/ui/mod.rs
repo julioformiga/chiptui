@@ -18,7 +18,6 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Wrap};
 
 use crate::app::{App, Focus, LogTab, View};
-use crate::backend::Capability;
 
 /// Below this the panes cannot be rendered legibly.
 const MIN_WIDTH: u16 = 60;
@@ -106,7 +105,13 @@ fn draw_dashboard(frame: &mut Frame, body: Rect, app: &mut App) {
     panels::draw_project(frame, project, app);
     panels::draw_detection(frame, device, app);
 
-    if app.manager.capabilities().contains(Capability::Filesystem) {
+    // Row 2 shows the file browser whenever there is a browser to draw ---
+    // for every backend once `maybe_scan_devices` has run, since the local
+    // pane stands on its own. `files::draw` decides what the right half
+    // shows (device files under `Capability::Filesystem`, a placeholder
+    // otherwise); the full-width placeholder remains for the window before
+    // the browser exists at all.
+    if app.browser.is_some() {
         files::draw(frame, row2, app);
     } else {
         panels::draw_no_filesystem(frame, row2, app);

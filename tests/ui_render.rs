@@ -43,14 +43,42 @@ fn dashboard_shows_project_device_and_log_panes() {
     assert!(frame.contains("Device"), "missing device pane:\n{frame}");
     assert!(frame.contains("Log"), "missing log pane:\n{frame}");
 
-    // Row 2: Zephyr declares no Capability::Filesystem (SPEC.md §11).
+    // Row 2 before any browser exists (bootstrap only, no
+    // maybe_scan_devices yet): the full-width placeholder.
     assert!(
         frame.contains("file browsing not implemented"),
-        "missing the no-filesystem placeholder:\n{frame}"
+        "missing the no-browser placeholder:\n{frame}"
     );
 
     // Footer shortcuts.
     assert!(frame.contains("quit"), "missing footer shortcuts:\n{frame}");
+}
+
+#[test]
+fn zephyr_keeps_the_local_pane_and_a_device_placeholder() {
+    // Once the browser exists (the state main.rs produces at startup), row 2
+    // is the local pane plus a device-side placeholder: Zephyr declares no
+    // Capability::Filesystem, but local view/edit/delete still apply.
+    let mut app = app_with_backend(BackendKind::Zephyr);
+    app.maybe_scan_devices();
+    let frame = render(&mut app, 100, 30);
+
+    assert!(
+        frame.contains("Local files:"),
+        "missing the local file pane:\n{frame}"
+    );
+    assert!(
+        frame.contains("no device filesystem"),
+        "missing the device-side placeholder:\n{frame}"
+    );
+    assert!(
+        !frame.contains("Device files:"),
+        "no device pane may render without a filesystem:\n{frame}"
+    );
+    assert!(
+        !frame.contains("local only"),
+        "the comparison legend is noise without a device pane:\n{frame}"
+    );
 }
 
 #[test]

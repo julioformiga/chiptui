@@ -200,10 +200,11 @@ pub(super) fn device_content(app: &App) -> Vec<Line<'static>> {
     lines
 }
 
-/// Row 2 placeholder when the selected backend declares no
-/// [`Capability::Filesystem`] (today: Zephyr) --- `SPEC.md` §11 spec's a
-/// dual-pane file browser for this row, but only a backend with a device
-/// filesystem can back it.
+/// Row 2 placeholder for the window before a browser exists at all (a
+/// fresh `bootstrap()` that has not yet run `App::maybe_scan_devices`).
+/// Once the browser exists the local pane always renders, whatever the
+/// backend; the right half is the device pane under
+/// [`Capability::Filesystem`], else [`crate::ui::files`]'s placeholder.
 pub fn draw_no_filesystem(frame: &mut Frame, area: Rect, app: &App) {
     let block = pane_block("Files", false);
     let backend = app

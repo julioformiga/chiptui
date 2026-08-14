@@ -263,18 +263,22 @@ impl FileAction {
 
     /// The actions offered for the entry under the cursor, in menu order.
     ///
-    /// A directory gets `Open` first (descend), plus whichever transfer
-    /// makes sense for `side` and `Delete` --- never `View`/`Edit`/`Diff`,
+    /// A directory gets `Open` first (descend), plus `Delete` and, when the
+    /// backend can upload, `SendToDevice` --- never `View`/`Edit`/`Diff`,
     /// which need file contents. A file never offers `Open`; `View`/`Edit`
     /// appear only when `is_text` ([`crate::files::is_text_like`]) --- a binary
     /// file (e.g. a `.mpy`) can still be sent, downloaded and deleted, just
-    /// not previewed or opened in `$EDITOR`. `Run` appears alongside them,
-    /// gated on `capabilities` rather than shape alone --- unlike the rest of
-    /// this function, a backend without [`Capability::Run`] genuinely has no
-    /// such action, not just one this menu chooses not to show. `Diff` is
-    /// offered when `status` marks the entry as differing or as same-size but
-    /// unchecked, since that is exactly when a content diff adds information
-    /// the size markers cannot.
+    /// not previewed or opened in `$EDITOR`.
+    ///
+    /// The transfer actions are capability-gated like `Run`, not just hidden
+    /// by this menu's judgement: a backend without [`Capability::Upload`]
+    /// (Zephyr --- no device filesystem to send *to*) offers no
+    /// `SendToDevice`, so its local pane menu is exactly open/view/edit/
+    /// delete. `Diff` needs [`Capability::Filesystem`] --- there is no second
+    /// copy to compare against without one --- and is offered when `status`
+    /// marks the entry as differing or as same-size but unchecked, since that
+    /// is exactly when a content diff adds information the size markers
+    /// cannot.
     pub fn for_entry(
         side: Side,
         is_dir: bool,
@@ -283,14 +287,23 @@ impl FileAction {
         capabilities: Capabilities,
     ) -> Vec<FileAction> {
         if is_dir {
+            let mut actions = vec![Self::Open];
             match side {
-                Side::Local => vec![Self::Open, Self::SendToDevice, Self::Delete],
-                Side::Device => vec![Self::Open, Self::Download, Self::Delete],
+                Side::Local if capabilities.contains(Capability::Upload) => {
+                    actions.push(Self::SendToDevice);
+                }
+                Side::Device => actions.push(Self::Download),
+                Side::Local => {}
             }
+            actions.push(Self::Delete);
+            actions
         } else {
             let mut actions = match side {
-                Side::Local => vec![Self::SendToDevice],
+                Side::Local if capabilities.contains(Capability::Upload) => {
+                    vec![Self::SendToDevice]
+                }
                 Side::Device => vec![Self::Download],
+                Side::Local => Vec::new(),
             };
             if is_text {
                 if side == Side::Local && capabilities.contains(Capability::Run) {
@@ -298,10 +311,12 @@ impl FileAction {
                 }
                 actions.push(Self::View);
                 actions.push(Self::Edit);
-                if matches!(
-                    status,
-                    Some(SyncStatus::Differs) | Some(SyncStatus::SameSize)
-                ) {
+                if capabilities.contains(Capability::Filesystem)
+                    && matches!(
+                        status,
+                        Some(SyncStatus::Differs) | Some(SyncStatus::SameSize)
+                    )
+                {
                     actions.push(Self::Diff);
                 }
             }
@@ -1024,15 +1039,20 @@ impl App {
         }
     }
 
-    /// Focus order for `Tab`/`BackTab`: the two file-browser columns are only
-    /// stops when the backend actually has something to list there
-    /// (`AGENTS.md` §3 --- gated on the capability, not the backend kind). The
-    /// Project/Device info row is never a stop --- it is informational only.
+    /// Focus order for `Tab`/`BackTab`. The local files column is a stop
+    /// whenever the browser exists --- its pane is useful for every backend
+    /// (Zephyr has no device filesystem but still views/edits/deletes local
+    /// files). The device column is a stop only under
+    /// [`Capability::Filesystem`] (`AGENTS.md` §3 --- gated on the capability,
+    /// not the backend kind). The Project/Device info row is never a stop ---
+    /// it is informational only.
     fn focus_order(&self) -> Vec<Focus> {
         let mut order = Vec::new();
-        if self.manager.capabilities().contains(Capability::Filesystem) {
+        if self.browser.is_some() {
             order.push(Focus::FilesLocal);
-            order.push(Focus::FilesDevice);
+            if self.manager.capabilities().contains(Capability::Filesystem) {
+                order.push(Focus::FilesDevice);
+            }
         }
         order.push(Focus::Logs);
         order
@@ -1050,15 +1070,24 @@ impl App {
         self.focus = order[next];
     }
 
-    /// Pulls focus back onto [`Focus::Logs`] when it was sitting on a files
-    /// column that just lost its capability (a backend switch away from
-    /// MicroPython) --- otherwise it would point at a pane that no longer
-    /// exists in the layout.
+    /// Pulls focus back onto a pane that still exists when a backend switch
+    /// removed the one it was sitting on: the device column requires
+    /// [`Capability::Filesystem`] (a switch away from MicroPython drops it,
+    /// landing on the local column, which every backend keeps), and the
+    /// local column requires a browser.
     fn clamp_focus(&mut self) {
-        if matches!(self.focus, Focus::FilesLocal | Focus::FilesDevice)
-            && !self.manager.capabilities().contains(Capability::Filesystem)
-        {
-            self.focus = Focus::Logs;
+        match self.focus {
+            Focus::FilesDevice if !self.manager.capabilities().contains(Capability::Filesystem) => {
+                self.focus = if self.browser.is_some() {
+                    Focus::FilesLocal
+                } else {
+                    Focus::Logs
+                };
+            }
+            Focus::FilesLocal if self.browser.is_none() => {
+                self.focus = Focus::Logs;
+            }
+            Focus::FilesLocal | Focus::FilesDevice | Focus::Logs => {}
         }
     }
 
@@ -1264,8 +1293,10 @@ impl App {
                         keys.push(("←/bksp", "up"));
                         keys.push(("r", "reload"));
                         keys.push(("a", "new"));
-                        keys.push(("c", "compare"));
-                        keys.push(("shift+s", "sync"));
+                        if caps.contains(Capability::Filesystem) {
+                            keys.push(("c", "compare"));
+                            keys.push(("shift+s", "sync"));
+                        }
                         keys.push(("h", "hidden"));
                         if self.focus == Focus::FilesDevice
                             && caps.contains(Capability::PackageInstall)
@@ -1509,9 +1540,11 @@ mod tests {
         let mut app = App::new(std::env::temp_dir());
         app.detect();
         app.manager.set_override(Some(BackendKind::MicroPython));
-        // detect's clamp_focus moved focus to Logs (no filesystem at detect
-        // time); the override adds filesystem but does not re-clamp.
-        assert_eq!(app.focus, Focus::Logs);
+        // The real flow (main.rs / apply_picker) creates the browser the
+        // moment the backend is known; the local column is a focus stop
+        // only once there is one to land in.
+        app.maybe_scan_devices();
+        app.focus = Focus::Logs;
         app.handle(key(KeyCode::Tab));
         assert_eq!(app.focus, Focus::FilesLocal);
         app.handle(key(KeyCode::Tab));
@@ -1520,6 +1553,90 @@ mod tests {
         assert_eq!(app.focus, Focus::Logs);
         app.handle(key(KeyCode::Tab));
         assert_eq!(app.focus, Focus::FilesLocal);
+    }
+
+    #[test]
+    fn tab_stops_on_the_local_column_without_a_device_filesystem() {
+        // Zephyr keeps the local pane (view/edit/delete need no device) but
+        // has no device column: the tour is Local -> Logs, and clamping a
+        // backend switch away from MicroPython lands on Local, not Logs.
+        let mut app = App::new(std::env::temp_dir());
+        app.detect();
+        app.manager.set_override(Some(BackendKind::Zephyr));
+        app.maybe_scan_devices();
+        assert!(app.browser.is_some(), "the browser exists without a scan");
+
+        app.focus = Focus::Logs;
+        app.handle(key(KeyCode::Tab));
+        assert_eq!(app.focus, Focus::FilesLocal);
+        app.handle(key(KeyCode::Tab));
+        assert_eq!(app.focus, Focus::Logs);
+
+        // A backend switch away from MicroPython while its device column is
+        // focused, through the picker --- the real path that re-clamps.
+        app.manager.set_override(Some(BackendKind::MicroPython));
+        app.focus = Focus::FilesDevice;
+        app.handle(key(KeyCode::Char('o')));
+        app.handle(key(KeyCode::Down)); // to Zephyr
+        app.handle(key(KeyCode::Enter));
+        assert_eq!(app.manager.selected_kind(), Some(BackendKind::Zephyr));
+        assert_eq!(
+            app.focus,
+            Focus::FilesLocal,
+            "clamping must land on the local column, which still exists"
+        );
+    }
+
+    #[test]
+    fn file_actions_without_upload_or_filesystem_are_purely_local() {
+        use crate::backend::Backend as _;
+        // Zephyr's real capability set: the local pane offers exactly
+        // open/view/edit/delete, nothing device-bound.
+        let caps = crate::backend::zephyr::ZephyrBackend.capabilities();
+        assert_eq!(
+            FileAction::for_entry(Side::Local, false, true, None, caps),
+            vec![FileAction::View, FileAction::Edit, FileAction::Delete]
+        );
+        assert_eq!(
+            FileAction::for_entry(Side::Local, false, false, None, caps),
+            vec![FileAction::Delete]
+        );
+        assert_eq!(
+            FileAction::for_entry(Side::Local, true, false, None, caps),
+            vec![FileAction::Open, FileAction::Delete]
+        );
+        // Even a differing verdict cannot offer a diff without a filesystem:
+        // there is no second copy to compare against.
+        assert!(
+            !FileAction::for_entry(Side::Local, false, true, Some(SyncStatus::Differs), caps)
+                .contains(&FileAction::Diff)
+        );
+    }
+
+    #[test]
+    fn file_actions_keep_transfers_under_upload_and_filesystem() {
+        use crate::backend::Backend as _;
+        // MicroPython's real capability set: unchanged behavior.
+        let caps = crate::backend::micropython::MicroPythonBackend.capabilities();
+        assert_eq!(
+            FileAction::for_entry(Side::Local, true, false, None, caps),
+            vec![
+                FileAction::Open,
+                FileAction::SendToDevice,
+                FileAction::Delete
+            ]
+        );
+        assert_eq!(
+            FileAction::for_entry(Side::Local, false, true, Some(SyncStatus::Differs), caps),
+            vec![
+                FileAction::SendToDevice,
+                FileAction::Run,
+                FileAction::View,
+                FileAction::Edit,
+                FileAction::Diff,
+                FileAction::Delete
+            ]
+        );
     }
 
     #[test]

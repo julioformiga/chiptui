@@ -14,29 +14,32 @@ use crate::device::ScriptState;
 use super::{App, LogTab, MonitorSource, Overlay, PickerOption};
 
 impl App {
-    /// Scans for a connected device as soon as the project is known, without
-    /// waiting for the user to move focus onto a file browser pane. A no-op
-    /// once a browser already exists (`AGENTS.md` §5's "one `mpremote` at a
-    /// time" applies just as much to not re-issuing a scan that already ran).
+    /// Ensures the file browser exists and, when the backend declares
+    /// [`Capability::Filesystem`], starts a device scan --- without waiting
+    /// for the user to move focus onto a file browser pane. The browser is
+    /// created for every backend: its local pane is useful on its own
+    /// (view/edit/delete work with no device filesystem); only the *scan*
+    /// is capability-gated, and the device pane stays `Idle` without it.
+    /// A no-op once a browser already exists (`AGENTS.md` §5's "one
+    /// `mpremote` at a time" applies just as much to not re-issuing a scan
+    /// that already ran).
     ///
     /// Called from three places: `main.rs` right after startup, and
     /// [`App::apply_project_setup`]/[`App::apply_picker`] --- any moment the
-    /// selected backend could newly gain [`Capability::Filesystem`].
-    /// Deliberately **not** called from [`App::bootstrap`] itself, for the
-    /// same reason [`App::maybe_open_project_setup`] is not: many existing
+    /// selected backend could change what row 2 can show.
+    /// Deliberately **not** called from [`App::bootstrap`] itself, for
+    /// the same reason [`App::maybe_open_project_setup`] is not: many existing
     /// tests call `bootstrap()` directly and do not expect a subprocess to
     /// spawn as a side effect.
     pub fn maybe_scan_devices(&mut self) {
-        if !self.manager.capabilities().contains(Capability::Filesystem) {
-            return;
-        }
         self.ensure_browser_scanning();
     }
 
-    /// Creates the browser and starts a device scan, if neither has already
-    /// happened. Only the listing itself waits for the scan to name a port:
-    /// issuing the scan now would let mpremote auto-connect to whichever
-    /// board answers first, which is the guess `SPEC.md` §8 forbids.
+    /// Creates the browser (once), and starts a device scan with it when the
+    /// backend has a filesystem to list. Only the listing itself waits for
+    /// the scan to name a port: issuing the scan now would let mpremote
+    /// auto-connect to whichever board answers first, which is the guess
+    /// `SPEC.md` §8 forbids.
     fn ensure_browser_scanning(&mut self) {
         if self.browser.is_some() {
             return;
@@ -46,7 +49,9 @@ impl App {
             .root()
             .map_or_else(|| self.manager.start_dir().to_path_buf(), Path::to_path_buf);
         self.browser = Some(Browser::new(Self::initial_local_dir(root)));
-        self.scan_devices();
+        if self.manager.capabilities().contains(Capability::Filesystem) {
+            self.scan_devices();
+        }
     }
 
     /// Files opens on `src/` when the project has one --- the directory kept

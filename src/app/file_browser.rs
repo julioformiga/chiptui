@@ -41,11 +41,19 @@ impl App {
             _ => Side::Local,
         };
 
+        // `→`/`←` are side-aware: `Browser::enter`/`ascend` navigate the
+        // local pane without touching the device, so they dispatch under any
+        // backend. Comparison, sync and a device-side reload are Filesystem
+        // operations --- without the capability there is nothing on the other
+        // end, and the device column cannot hold focus in the first place
+        // (focus_order/clamp_focus).
+        let has_filesystem = self.manager.capabilities().contains(Capability::Filesystem);
         let reaches_device = match key.code {
-            KeyCode::Right | KeyCode::Left | KeyCode::Backspace | KeyCode::Char('c' | 'S') => true,
+            KeyCode::Right | KeyCode::Left | KeyCode::Backspace => true,
+            KeyCode::Char('c' | 'S') => has_filesystem,
             // A device-pane reload re-lists; a local reload just re-reads the
             // disk, so only the device side needs the guard.
-            KeyCode::Char('r') => browser.focus == Side::Device,
+            KeyCode::Char('r') => has_filesystem && browser.focus == Side::Device,
             _ => false,
         };
         if reaches_device {

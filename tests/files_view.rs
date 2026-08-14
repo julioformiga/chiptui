@@ -687,8 +687,10 @@ fn the_device_picker_renders_a_helpful_empty_state() {
 }
 
 #[test]
-fn the_file_browser_panes_are_only_reachable_when_the_backend_has_a_filesystem() {
-    // AGENTS.md §3: the gate is the capability, not the backend name.
+fn the_file_browser_panes_stay_unreachable_before_a_browser_exists() {
+    // Before `maybe_scan_devices` creates one, there is no browser to focus:
+    // even a Filesystem backend has no files column yet. AGENTS.md §3: the
+    // gate is the browser/capability, not the backend name.
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     let key = |code| AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE));
 
@@ -697,10 +699,16 @@ fn the_file_browser_panes_are_only_reachable_when_the_backend_has_a_filesystem()
 
     app.manager.set_override(Some(BackendKind::Zephyr));
     app.handle(key(KeyCode::Tab));
-    assert_ne!(app.focus, Focus::FilesLocal, "Zephyr exposes no filesystem");
+    assert_ne!(app.focus, Focus::FilesLocal, "no browser exists yet");
     assert!(app.browser.is_none());
 
     app.manager.set_override(Some(BackendKind::MicroPython));
+    app.handle(key(KeyCode::Tab));
+    assert_ne!(
+        app.focus,
+        Focus::FilesLocal,
+        "the override alone does not create a browser"
+    );
     app.maybe_scan_devices();
     app.focus = Focus::Logs;
     app.handle(key(KeyCode::Tab));
@@ -737,17 +745,27 @@ fn startup_scans_for_a_device_without_opening_the_browser() {
 }
 
 #[test]
-fn startup_scanning_is_gated_on_the_filesystem_capability() {
+fn startup_ensures_a_browser_without_scanning_when_there_is_no_filesystem() {
     let mut app = App::new(std::env::temp_dir());
     app.bootstrap();
     app.manager.set_override(Some(BackendKind::Zephyr));
 
     app.maybe_scan_devices();
 
-    assert!(app.browser.is_none(), "Zephyr exposes no filesystem");
+    // The browser exists (the local pane works without a device), but no
+    // scan was issued: the device column is unreachable and the device
+    // state stays untouched.
+    assert!(
+        app.browser.is_some(),
+        "the local pane needs a browser even without a device filesystem"
+    );
     assert_eq!(
         app.devices.discovery,
         chiptui::device::DiscoveryState::Unknown
+    );
+    assert!(
+        app.focus != Focus::FilesDevice,
+        "Zephyr exposes no device column"
     );
 }
 
