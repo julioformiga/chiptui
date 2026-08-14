@@ -8,6 +8,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
+use std::thread;
 
 use crate::backend::micropython::parse::RemoteEntry;
 
@@ -52,27 +56,110 @@ pub fn read_dir(path: &Path) -> io::Result<Vec<LocalEntry>> {
 /// a zero-length entry) --- the same choice [`read_dir`] already makes for
 /// `is_dir`, and what keeps this from looping on a symlink cycle. An
 /// unreadable subtree just does not contribute to the total, mirroring
-/// `read_dir`'s "skip, don't fail" stance on individual entries. Run
-/// synchronously on the UI thread like the rest of the local pane's I/O ---
-/// acceptable because these are embedded-project trees (source files, not a
-/// `node_modules`), not because the walk is cheap in general.
-pub fn dir_size(path: &Path) -> u64 {
-    let Ok(entries) = std::fs::read_dir(path) else {
-        return 0;
-    };
-
+/// `read_dir`'s "skip, don't fail" stance on individual entries.
+///
+/// The recursion is driven by an explicit stack and `cancel` is checked
+/// between entries, so a [`SizeWalk`] told to stop gives up promptly instead
+/// of finishing the disk walk it was started for.
+fn walk_sizes(path: &Path, cancel: &AtomicBool) -> u64 {
     let mut total = 0;
-    for entry in entries.flatten() {
-        let Ok(metadata) = entry.metadata() else {
+    let mut pending = vec![path.to_path_buf()];
+
+    while let Some(dir) = pending.pop() {
+        if cancel.load(Ordering::Relaxed) {
+            return total;
+        }
+        let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
-        total += if metadata.is_dir() {
-            dir_size(&entry.path())
-        } else {
-            metadata.len()
-        };
+        for entry in entries.flatten() {
+            if cancel.load(Ordering::Relaxed) {
+                return total;
+            }
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+            if metadata.is_dir() {
+                pending.push(entry.path());
+            } else {
+                total += metadata.len();
+            }
+        }
     }
     total
+}
+
+/// Synchronous [`walk_sizes`] for callers that are allowed to block (tests,
+/// and the thread [`SizeWalk`] spawns).
+pub fn dir_size(path: &Path) -> u64 {
+    static NEVER_CANCELLED: AtomicBool = AtomicBool::new(false);
+    walk_sizes(path, &NEVER_CANCELLED)
+}
+
+/// A folder-total measurement running off the UI thread: a worker thread
+/// walking the tree, the flag that stops it, and the channel its result
+/// arrives on.
+///
+/// Dropping the value drops the receiving end, so a walk abandoned by
+/// replacement fails its send and simply exits --- a late result can never be
+/// mistaken for the current directory's total, because each [`SizeWalk`]
+/// delivers only to its own receiver.
+pub struct SizeWalk {
+    cancel: Arc<AtomicBool>,
+    handle: Option<thread::JoinHandle<()>>,
+    result: mpsc::Receiver<u64>,
+}
+
+impl SizeWalk {
+    /// Starts summing `path`'s subtree in the background.
+    ///
+    /// If no thread can be spawned (resource exhaustion), the walk runs
+    /// synchronously as a fallback --- no worse than measuring inline, and
+    /// the total is not silently lost.
+    pub fn start(path: &Path) -> Self {
+        let (tx, result) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+
+        let spawned = {
+            let tx = tx.clone();
+            let root = path.to_path_buf();
+            let flag = Arc::clone(&cancel);
+            thread::Builder::new()
+                .name("chiptui-size".into())
+                .spawn(move || {
+                    let _ = tx.send(walk_sizes(&root, &flag));
+                })
+        };
+
+        let handle = match spawned {
+            Ok(handle) => Some(handle),
+            Err(_) => {
+                let _ = tx.send(walk_sizes(path, &cancel));
+                None
+            }
+        };
+        Self {
+            cancel,
+            handle,
+            result,
+        }
+    }
+
+    /// Asks the worker to stop and returns without waiting for it. A worker
+    /// that already exited is joined so finished threads are reaped; a
+    /// still-walking one notices the flag at its next entry and exits on its
+    /// own (its handle detaches).
+    pub fn cancel(&mut self) {
+        self.cancel.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.handle.take_if(|handle| handle.is_finished()) {
+            let _ = handle.join();
+        }
+    }
+
+    /// The finished total, if the walk has delivered one.
+    pub fn try_result(&mut self) -> Option<u64> {
+        self.result.try_recv().ok()
+    }
 }
 
 fn sort_entries(entries: &mut [LocalEntry]) {
@@ -520,6 +607,68 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
 
         assert_eq!(dir_size(&dir), 0, "a missing directory contributes nothing");
+    }
+
+    #[test]
+    fn a_cancelled_walk_stops_instead_of_finishing() {
+        let dir = std::env::temp_dir().join(format!("chiptui-walk-cancel-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("lib/nested")).unwrap();
+        std::fs::write(dir.join("main.py"), "print('hi')\n").unwrap();
+        std::fs::write(dir.join("lib/simple.py"), "x = 1\n").unwrap();
+
+        // The flag already set when the walk starts: it must bail out at the
+        // first check rather than walk (and report) anything.
+        let cancelled = AtomicBool::new(true);
+        assert_eq!(walk_sizes(&dir, &cancelled), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_size_walk_reports_the_same_total_as_dir_size() {
+        let dir = std::env::temp_dir().join(format!("chiptui-walk-start-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("lib")).unwrap();
+        std::fs::write(dir.join("main.py"), "print('hi')\n").unwrap();
+        std::fs::write(dir.join("lib/simple.py"), "x = 1\n").unwrap();
+
+        let expected = dir_size(&dir);
+        let mut walk = SizeWalk::start(&dir);
+        let total = loop {
+            if let Some(total) = walk.try_result() {
+                break total;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(total, expected, "background and sync walks agree");
+    }
+
+    #[test]
+    fn a_walk_started_right_after_cancelling_another_still_reports() {
+        let dir = std::env::temp_dir().join(format!("chiptui-walk-replace-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("lib")).unwrap();
+        std::fs::write(dir.join("main.py"), "print('hi')\n").unwrap();
+        std::fs::write(dir.join("lib/simple.py"), "x = 1\n").unwrap();
+
+        let expected = dir_size(&dir);
+
+        // What reload_local does on navigation: stop the old walk, start a
+        // new one for the new directory (here, the same one). The new walk
+        // must deliver its own accurate total even though the old thread may
+        // still be winding down.
+        let mut first = SizeWalk::start(&dir);
+        first.cancel();
+        let mut second = SizeWalk::start(&dir);
+        let total = loop {
+            if let Some(total) = second.try_result() {
+                break total;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        drop(first);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(total, expected);
     }
 
     #[test]

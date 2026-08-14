@@ -12,6 +12,7 @@ use crate::backend::micropython::commands;
 use crate::browser::{Browser, DeviceView, Notice, Side, Transfer, TransferKind};
 use crate::device::DevicePath;
 use crate::files;
+use crate::flash::FlashPanel;
 use crate::process::ProcessManager;
 
 use super::{
@@ -24,6 +25,11 @@ impl App {
     /// focus. `Tab`/`BackTab`, `o`, `x`, `?` and `d` are dashboard-wide and
     /// already handled by [`App::on_dashboard_key`] before this is reached,
     /// so only the file browser's own navigation remains here.
+    ///
+    /// Keys that can reach the device are routed through
+    /// [`Self::dispatch_browser`]: it keeps the serial port's users from
+    /// racing each other (a run session, the probe), and opens the interrupt
+    /// confirmation should the gate hold the resulting request.
     pub(super) fn on_files_key(&mut self, key: KeyEvent) {
         let Some(mut browser) = self.browser.take() else {
             return;
@@ -34,10 +40,29 @@ impl App {
             super::Focus::FilesDevice => Side::Device,
             _ => Side::Local,
         };
-        let port = self.devices.selected_port().map(str::to_string);
-        let port = port.as_deref();
 
-        let notices = match key.code {
+        let reaches_device = match key.code {
+            KeyCode::Right | KeyCode::Left | KeyCode::Backspace | KeyCode::Char('c' | 'S') => true,
+            // A device-pane reload re-lists; a local reload just re-reads the
+            // disk, so only the device side needs the guard.
+            KeyCode::Char('r') => browser.focus == Side::Device,
+            _ => false,
+        };
+        if reaches_device {
+            self.browser = Some(browser);
+            let code = key.code;
+            self.dispatch_browser(move |browser, processes, port| match code {
+                KeyCode::Right => browser.enter(processes, port),
+                KeyCode::Left | KeyCode::Backspace => browser.ascend(processes, port),
+                KeyCode::Char('c') => browser.verify_selected(processes, port),
+                KeyCode::Char('S') => browser.request_sync(processes, port),
+                KeyCode::Char('r') => browser.load_device(processes, port, true),
+                _ => Vec::new(),
+            });
+            return;
+        }
+
+        let notices: Vec<Notice> = match key.code {
             KeyCode::Up | KeyCode::Char('k') => {
                 browser.move_cursor(-1);
                 Vec::new()
@@ -75,19 +100,9 @@ impl App {
                 }
                 Vec::new()
             }
-            // Left/right stay pure navigation, independent of the action
-            // menu: `→` descends into a directory directly (a no-op on a
-            // file, same as `Browser::enter` already guards), `←`/Backspace
-            // goes back up.
-            KeyCode::Right => browser.enter(&mut self.processes, port),
-            KeyCode::Backspace | KeyCode::Left => browser.ascend(&mut self.processes, port),
             KeyCode::Char('r') => {
-                if browser.focus == Side::Device {
-                    browser.load_device(&mut self.processes, port, true)
-                } else {
-                    browser.reload_local();
-                    Vec::new()
-                }
+                browser.reload_local();
+                Vec::new()
             }
             KeyCode::Char('a') => {
                 self.overlay = Some(Overlay::CreateEntry {
@@ -100,8 +115,6 @@ impl App {
                 browser.toggle_hidden();
                 Vec::new()
             }
-            KeyCode::Char('c') => browser.verify_selected(&mut self.processes, port),
-            KeyCode::Char('S') => browser.request_sync(&mut self.processes, port),
             KeyCode::Char('i')
                 if browser.focus == Side::Device
                     && self
@@ -328,6 +341,18 @@ impl App {
                 .warn("a script is running — wait for it to finish first");
             return;
         }
+        if self.probe.is_some() {
+            self.logs
+                .warn("still checking the device — try again in a moment");
+            return;
+        }
+        // The background esptool query holds the port for a few seconds; an
+        // mpremote request started now would fail to open it.
+        if self.flash.as_ref().is_some_and(FlashPanel::is_busy) {
+            self.logs
+                .warn("reading device info — try again in a moment");
+            return;
+        }
         let Some(mut browser) = self.browser.take() else {
             return;
         };
@@ -337,6 +362,8 @@ impl App {
         for (level, message) in notices {
             self.logs.push(level, message);
         }
+        // The request may have hit the interrupt gate instead of starting.
+        self.check_interrupt_gate();
     }
 
     /// Reads `path` and opens [`Overlay::FileViewer`] over it, synchronously
@@ -433,6 +460,15 @@ impl App {
         if self.browser.as_ref().is_some_and(Browser::is_busy) {
             self.logs
                 .warn("device is busy — wait for the current operation to finish");
+            return;
+        }
+        if self
+            .browser
+            .as_ref()
+            .is_some_and(Browser::held_for_interrupt)
+        {
+            self.logs
+                .warn("a script is running — answer the interrupt prompt first");
             return;
         }
         if self.device_monitor_process.is_some() {
@@ -600,6 +636,23 @@ impl App {
         self.dispatch_browser(|browser, processes, port| browser.request_reset(processes, port));
     }
 
+    /// Runs the choice from [`Overlay::RestoreDeviceScript`]: bring the
+    /// interrupted script back with a hard reset (clean state, board
+    /// reboots), relaunch `main.py` without a reset (fast, but leftover
+    /// state from the interrupted run survives), or leave the device
+    /// stopped for the user to deal with.
+    pub(super) fn apply_restore_device_script(&mut self, selected: usize) {
+        match selected {
+            0 => self.dispatch_browser(|browser, processes, port| {
+                browser.request_hard_reset(processes, port)
+            }),
+            1 => self.dispatch_browser(|browser, processes, port| {
+                browser.request_relaunch_main(processes, port)
+            }),
+            _ => {}
+        }
+    }
+
     /// Scrolls the open file viewer, clamped to the last position that still
     /// keeps the viewport full --- same shape as [`crate::logs::LogStore::scroll_up`], just
     /// counting down from the top instead of up from the tail. A no-op while
@@ -650,6 +703,18 @@ impl App {
     pub fn reload_local_files(&mut self) {
         if let Some(browser) = &mut self.browser {
             browser.reload_local();
+        }
+    }
+
+    /// Lands finished background folder-total measurements, one per tick.
+    ///
+    /// The walk itself never touches this thread ([`Browser::reload_local`]
+    /// spawns and cancels it), so this only promotes a waiting result into
+    /// the local pane's footer --- the tick cadence, not the disk, decides
+    /// when it shows up.
+    pub fn poll_local_size(&mut self) {
+        if let Some(browser) = &mut self.browser {
+            browser.poll_local_size();
         }
     }
 }

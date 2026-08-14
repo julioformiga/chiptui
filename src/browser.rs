@@ -157,6 +157,12 @@ enum Request {
     Touch(DevicePath),
     /// `soft-reset`, offered after a post-edit re-upload lands.
     Reset,
+    /// `reset` (hard reset) --- reboots the board so `boot.py`/`main.py` run
+    /// again after an interruption --- see [`Browser::request_hard_reset`].
+    HardReset,
+    /// `exec --no-follow "import main"` --- restarts `main.py` without a
+    /// reboot --- see [`Browser::request_relaunch_main`].
+    RelaunchMain,
     /// `df` --- filesystem usage of the connected board, device-wide rather than
     /// per-path --- see [`Browser::load_device`].
     Df,
@@ -225,15 +231,29 @@ struct Output {
     stderr: String,
 }
 
+/// The local pane's folder-total footer state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalTotal {
+    /// A [`files::SizeWalk`] is measuring the current directory in the
+    /// background; the footer shows a calculating indicator.
+    Calculating,
+    /// The walk finished: recursive byte total of the current directory.
+    Ready(u64),
+}
+
 pub struct Browser {
     pub local_path: PathBuf,
     pub local_entries: Vec<LocalEntry>,
     pub local_error: Option<String>,
     pub local_cursor: usize,
     /// Recursive size of `local_path`'s whole subtree, for the local pane's
-    /// footer --- cached here rather than walked on every render, since
-    /// [`crate::files::dir_size`] is a synchronous disk walk.
-    pub local_total_size: u64,
+    /// footer --- measured off-thread (see [`files::SizeWalk`]) so a large
+    /// tree cannot freeze the event loop, and re-measured from scratch on
+    /// every [`Self::reload_local`].
+    pub local_total: LocalTotal,
+    /// The in-flight background measurement behind [`Self::local_total`],
+    /// replaced (and its predecessor cancelled) whenever the pane moves.
+    size_walk: Option<files::SizeWalk>,
 
     pub device_path: DevicePath,
     pub device_state: PaneState,
@@ -253,6 +273,14 @@ pub struct Browser {
     in_flight: Option<(ProcessId, Request)>,
     output: HashMap<ProcessId, Output>,
 
+    /// While set, queued device requests are held instead of started --- the
+    /// app believes user code is running on the device, and `mpremote`
+    /// interrupts it (Ctrl-C, then raw REPL) for every command. The user must
+    /// confirm before anything leaves the queue; see [`Browser::held_for_interrupt`].
+    interrupt_gate: bool,
+    /// Set once the gate has actually held something, so the app knows to ask.
+    gate_pending: bool,
+
     /// Overrides the `mpremote` executable. `None` means "resolve on PATH".
     tool_path: Option<String>,
 
@@ -268,7 +296,8 @@ impl Browser {
             local_entries: Vec::new(),
             local_error: None,
             local_cursor: 0,
-            local_total_size: 0,
+            local_total: LocalTotal::Calculating,
+            size_walk: None,
             device_path: DevicePath::root(),
             device_state: PaneState::Idle,
             device_cursor: 0,
@@ -280,6 +309,8 @@ impl Browser {
             queue: VecDeque::new(),
             in_flight: None,
             output: HashMap::new(),
+            interrupt_gate: false,
+            gate_pending: false,
             tool_path: None,
             sync: None,
         };
@@ -316,8 +347,31 @@ impl Browser {
                 ));
             }
         }
-        self.local_total_size = files::dir_size(&self.local_path);
+        // Navigation is the one user action this footer state answers to:
+        // leaving a directory stops its measurement immediately (the walk's
+        // cancel flag, not a join --- the thread exits on its own) and the
+        // new directory starts a fresh walk.
+        if let Some(mut walk) = self.size_walk.take() {
+            walk.cancel();
+        }
+        self.local_total = LocalTotal::Calculating;
+        self.size_walk = Some(files::SizeWalk::start(&self.local_path));
         self.clamp_cursors();
+    }
+
+    /// Applies a finished background measurement to [`Self::local_total`].
+    ///
+    /// Called once per tick by the app: the result lands in the footer on the
+    /// first frame after the walk completes, without the event loop ever
+    /// having waited for it.
+    pub fn poll_local_size(&mut self) {
+        let Some(walk) = &mut self.size_walk else {
+            return;
+        };
+        if let Some(total) = walk.try_result() {
+            self.local_total = LocalTotal::Ready(total);
+            self.size_walk = None;
+        }
     }
 
     /// Entries shown in the local pane, honouring the hidden-files toggle.
@@ -710,6 +764,81 @@ impl Browser {
         notices
     }
 
+    /// Queues a hard reset (`mpremote reset`): the board reboots and runs
+    /// `boot.py` + `main.py` again --- the thorough way to bring back a script
+    /// that was interrupted for a filesystem operation. `--no-follow` inside
+    /// mpremote's expansion keeps the command from waiting on a board that is
+    /// busy rebooting.
+    pub fn request_hard_reset(
+        &mut self,
+        processes: &mut ProcessManager,
+        port: Option<&str>,
+    ) -> Vec<Notice> {
+        let mut notices = vec![(Level::Info, "resetting the device".to_string())];
+        notices.extend(self.enqueue(Request::HardReset, processes, port));
+        notices
+    }
+
+    /// Queues `exec --no-follow "import main"`: starts `main.py` again without
+    /// rebooting. Faster than a reset, but whatever state the interrupted run
+    /// left behind (open sockets, claimed peripherals) is still there.
+    pub fn request_relaunch_main(
+        &mut self,
+        processes: &mut ProcessManager,
+        port: Option<&str>,
+    ) -> Vec<Notice> {
+        let mut notices = vec![(Level::Info, "restarting main.py".to_string())];
+        notices.extend(self.enqueue(Request::RelaunchMain, processes, port));
+        notices
+    }
+
+    /// Turns the interrupt gate on or off. Called by the app whenever its
+    /// belief about a running script changes ([`crate::device::ScriptState`]).
+    ///
+    /// Turning the gate *off* resumes whatever was held --- the usual path is
+    /// the user confirming an interruption, but a script that ends on its own
+    /// releases the queue the same way. An already in-flight request is
+    /// unaffected either way: it started before the belief changed.
+    pub fn set_interrupt_gate(
+        &mut self,
+        active: bool,
+        processes: &mut ProcessManager,
+        port: Option<&str>,
+    ) {
+        if active {
+            self.interrupt_gate = true;
+            return;
+        }
+        if self.interrupt_gate {
+            self.interrupt_gate = false;
+            self.gate_pending = false;
+            self.pump(processes, port);
+        }
+    }
+
+    /// Whether device requests are being held for the user's confirmation.
+    ///
+    /// The app polls this after anything that might have queued a request
+    /// (a key press, a completed command) and opens the confirmation overlay
+    /// when it flips to `true`.
+    pub fn held_for_interrupt(&self) -> bool {
+        self.gate_pending
+    }
+
+    /// Drops every held request, for when the user declined the interruption.
+    /// The device pane lands in an explainable state rather than spinning on
+    /// "loading" forever.
+    pub fn cancel_held_requests(&mut self) {
+        self.queue.clear();
+        self.gate_pending = false;
+        self.device_state = if self.cache.contains_key(&self.device_path) {
+            PaneState::Ready
+        } else {
+            PaneState::Failed("cancelled \u{2014} a script is running on the device".to_string())
+        };
+        self.clamp_cursors();
+    }
+
     /// Queues a deletion of a device file.
     pub fn request_remove_device(
         &mut self,
@@ -929,7 +1058,14 @@ impl Browser {
         if self.in_flight.is_some() {
             return Vec::new();
         }
+        if self.interrupt_gate {
+            // mpremote would interrupt the running script to run any of these;
+            // hold them until the user says that is fine.
+            self.gate_pending = !self.queue.is_empty();
+            return Vec::new();
+        }
         let Some(request) = self.queue.pop_front() else {
+            self.gate_pending = false;
             return Vec::new();
         };
 
@@ -957,6 +1093,8 @@ impl Browser {
             Request::Mkdir(path) => commands::mkdir(port, path),
             Request::Touch(path) => commands::touch(port, path),
             Request::Reset => commands::soft_reset(port),
+            Request::HardReset => commands::hard_reset(port),
+            Request::RelaunchMain => commands::relaunch_main(port),
             Request::Df => commands::df(port),
             Request::Run(path) => commands::run(port, path),
             Request::MipInstall(package) => commands::mip_install(port, package),
@@ -1364,6 +1502,10 @@ impl Browser {
                     update
                         .notices
                         .push((Level::Success, "device reset --- reloading".to_string()));
+                    // The soft reboot happened inside raw REPL, where main.py
+                    // is skipped, and the reload below re-enters raw REPL
+                    // besides: the script is stopped afterwards, not running.
+                    update.script_running = Some(false);
                     // A reboot invalidates whatever was cached; the pane the
                     // user is looking at is worth a fresh look right away
                     // rather than waiting for them to notice and press 'r'.
@@ -1372,6 +1514,46 @@ impl Browser {
                     self.device_state = PaneState::Loading;
                     self.queue
                         .push_front(Request::List(self.device_path.clone()));
+                }
+            },
+
+            Request::HardReset => match failure {
+                Some(error) => {
+                    self.rescan_if_device_lost(output, update);
+                    update
+                        .notices
+                        .push((Level::Error, format!("reset failed: {error}")));
+                }
+                None => {
+                    update.notices.push((
+                        Level::Success,
+                        "device resetting --- boot.py and main.py will run again".to_string(),
+                    ));
+                    // `--no-follow`: mpremote is already gone while the board
+                    // reboots, so from its side the command never "finishes".
+                    update.script_running = Some(true);
+                    // A reboot invalidates whatever was cached.
+                    self.cache.clear();
+                    self.verdicts.clear();
+                    self.device_space = None;
+                }
+            },
+
+            Request::RelaunchMain => match failure {
+                Some(error) => {
+                    self.rescan_if_device_lost(output, update);
+                    update
+                        .notices
+                        .push((Level::Error, format!("restarting main.py failed: {error}")));
+                }
+                None => {
+                    update
+                        .notices
+                        .push((Level::Success, "main.py restarted".to_string()));
+                    // Fire-and-forget by design: the script runs on after the
+                    // command returns, so the next device operation must gate
+                    // again rather than assume an idle board.
+                    update.script_running = Some(true);
                 }
             },
 
@@ -1591,6 +1773,11 @@ pub struct BrowserUpdate {
     pub transfer: Option<Transfer>,
     /// True if the device is present but did not respond to the command.
     pub prompt_micropython_flash: bool,
+    /// Present when a completed request changed what is known about running
+    /// user code: `Some(true)` after `reset`/`exec --no-follow "import main"`
+    /// (the script is running again), `Some(false)` after a soft-reset (raw
+    /// REPL skips `main.py`, and the reload that follows re-interrupts).
+    pub script_running: Option<bool>,
     /// Present when a sync walk finished and produced a plan for review.
     pub sync_plan: Option<SyncPlan>,
 }
@@ -1718,6 +1905,75 @@ mod tests {
     }
 
     #[test]
+    fn the_local_total_is_measured_outside_the_start_directory_too() {
+        let fixture = Fixture::new("total");
+        let mut browser = Browser::new(&fixture.root);
+        assert_eq!(browser.local_total, LocalTotal::Calculating);
+
+        // Landing on a directory the browser did not start in (here: a
+        // sibling of the fixture, standing in for "above the project") is
+        // measured like any other --- the walk is cancellable, so no
+        // directory needs to be fenced off.
+        let outside =
+            std::env::temp_dir().join(format!("chiptui-browser-outside-{}", std::process::id()));
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("data.bin"), [0u8; 64]).unwrap();
+
+        browser.local_path = outside.clone();
+        browser.reload_local();
+        assert_eq!(wait_for_total(&mut browser), LocalTotal::Ready(64));
+
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn navigation_cancels_and_replaces_the_running_walk() {
+        let fixture = Fixture::new("walk");
+        let mut browser = Browser::new(&fixture.root);
+        let mut processes = ProcessManager::new();
+
+        browser.cursor_to(0); // lib/
+        browser.enter(&mut processes, None);
+        assert_eq!(
+            browser.local_total,
+            LocalTotal::Calculating,
+            "the new directory is measured from scratch, not left showing the old total"
+        );
+
+        // Waiting for the result, then leaving, must drop back to Calculating
+        // rather than carry the finished number into the next directory.
+        wait_for_total(&mut browser);
+        browser.ascend(&mut processes, None);
+        assert_eq!(browser.local_total, LocalTotal::Calculating);
+    }
+
+    #[test]
+    fn the_background_walk_lands_through_polling() {
+        let fixture = Fixture::new("poll");
+        let mut browser = Browser::new(&fixture.root);
+
+        // main.py (12 bytes) + .hidden (1 byte): the walk is independent of
+        // the hidden-files toggle, like the footer total always was.
+        assert_eq!(browser.local_total, LocalTotal::Calculating);
+        assert_eq!(wait_for_total(&mut browser), LocalTotal::Ready(13));
+    }
+
+    /// Pumps [`Browser::poll_local_size`] until the walk reports back.
+    ///
+    /// The walk is a real thread over a real (temporary) directory, so the
+    /// test cannot assume the result is immediate --- only that it arrives.
+    fn wait_for_total(browser: &mut Browser) -> LocalTotal {
+        for _ in 0..2000 {
+            browser.poll_local_size();
+            if browser.local_total != LocalTotal::Calculating {
+                return browser.local_total;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        panic!("the size walk never reported a result");
+    }
+
+    #[test]
     fn an_unreadable_local_directory_is_reported_not_fatal() {
         let mut browser = Browser::new("/nonexistent-chiptui-path");
         assert!(browser.local_error.is_some());
@@ -1743,6 +1999,77 @@ mod tests {
         // `load_device` queues both `Df` (free space, not yet known) and `List`
         // behind the scan's `Devices` request, which is still running.
         assert_eq!(browser.queue.len(), 2, "later requests wait their turn");
+    }
+
+    #[test]
+    fn the_interrupt_gate_holds_requests_until_released() {
+        let fixture = Fixture::new("gate");
+        let mut browser = Browser::new(&fixture.root);
+        // `true` exists on every unix box and exits immediately; what is under
+        // test is the queue's behavior, not the tool.
+        browser.set_tool_path("true");
+        let mut processes = ProcessManager::new();
+
+        browser.set_interrupt_gate(true, &mut processes, None);
+        browser.scan_devices(&mut processes, None);
+
+        assert!(!browser.is_busy(), "nothing was allowed to start");
+        assert!(browser.held_for_interrupt(), "the app is asked to confirm");
+
+        // The user confirms: the gate comes off and the held request proceeds.
+        browser.set_interrupt_gate(false, &mut processes, None);
+        assert!(browser.is_busy(), "the held scan starts");
+        assert!(!browser.held_for_interrupt());
+    }
+
+    #[test]
+    fn declining_the_interrupt_drops_the_held_requests() {
+        let fixture = Fixture::new("gate-decline");
+        let mut browser = Browser::new(&fixture.root);
+        browser.set_tool_path("true");
+        let mut processes = ProcessManager::new();
+
+        browser.set_interrupt_gate(true, &mut processes, None);
+        browser.scan_devices(&mut processes, None);
+        assert!(browser.held_for_interrupt());
+
+        browser.cancel_held_requests();
+
+        assert!(!browser.held_for_interrupt());
+        assert!(!browser.is_busy(), "nothing was started");
+        assert!(browser.queue.is_empty(), "the queue is dropped");
+        assert!(
+            matches!(&browser.device_state, PaneState::Failed(message) if message.contains("script")),
+            "the pane explains why nothing is loading: {:?}",
+            browser.device_state
+        );
+    }
+
+    #[test]
+    fn a_cached_pane_stays_ready_when_an_interrupt_is_declined() {
+        let fixture = Fixture::new("gate-cached");
+        let mut browser = Browser::new(&fixture.root);
+        browser.set_tool_path("true");
+        let mut processes = ProcessManager::new();
+
+        // A listing the user is already looking at must survive a declined
+        // interrupt; only the missing-listing case turns into an error.
+        browser.cache.insert(
+            DevicePath::root(),
+            vec![parse::RemoteEntry {
+                name: "main.py".to_string(),
+                size: 10,
+                is_dir: false,
+            }],
+        );
+        browser.device_state = PaneState::Ready;
+        browser.set_interrupt_gate(true, &mut processes, None);
+        browser.load_device(&mut processes, None, false);
+        assert!(browser.held_for_interrupt());
+
+        browser.cancel_held_requests();
+        assert_eq!(browser.device_state, PaneState::Ready);
+        assert_eq!(browser.visible_device().len(), 1);
     }
 
     #[test]

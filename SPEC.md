@@ -372,6 +372,35 @@ Actions:
 Destructive remote filesystem operations require confirmation where
 appropriate.
 
+### Running scripts and interruption
+
+`mpremote` interrupts whatever user code is running (Ctrl-C, then raw REPL)
+for *every* filesystem, `exec` or `df` command, so a board executing a
+blocking `main.py` loop would have its script silently stopped by the first
+listing. The TUI handles this in three parts:
+
+-   **Probe first.** Before the first filesystem operation on a selected
+    device, a short `mpremote repl` session watches the serial output:
+    a `>>> ` prompt means the board is idle, output with no prompt means a
+    script is running. The session is closed with mpremote's own escape
+    (Ctrl-]) --- nothing is sent to the board, so the probe itself never
+    interrupts. A script that never prints is indistinguishable from a
+    silent idle board; the probe gives up and the operation proceeds
+    ungated (the pre-probe behavior). The monitor view reaches the same
+    verdict while it is open.
+-   **Ask before interrupting.** While a script is believed running, device
+    operations are held behind an explicit confirmation instead of silently
+    stopping the board's work. Declining drops the held operations.
+-   **Offer to restore.** After an accepted interruption finishes, the user
+    chooses how to bring the script back: a hard reset (clean state,
+    re-runs `boot.py` and `main.py`), restarting `main.py` without a reset
+    (faster, but leftover state survives), or leaving the device stopped.
+
+A script that swallows Ctrl-C (`except:` around its loop) can hold the REPL
+even against confirmed commands; the resulting "could not enter raw repl"
+failure is reported with the way out (interrupt it from the monitor, or
+restart the board).
+
 ### REPL / Monitor
 
 The REPL view must support interactive input without buffering the

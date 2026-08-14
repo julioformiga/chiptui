@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use crate::backend::{BackendKind, Capability};
 use crate::browser::Browser;
+use crate::device::ScriptState;
 
 use super::{App, LogTab, MonitorSource, Overlay, PickerOption};
 
@@ -74,15 +75,117 @@ impl App {
     }
 
     pub(super) fn load_device_root(&mut self) {
+        let port = self.devices.selected_port().map(str::to_string);
+        // The first listing on a selected device must not be the thing that
+        // silently kills a running script: when nothing is known about the
+        // board's state, probe first and hold the listing until the probe
+        // releases the port ([`super::probe`]). Checked before the browser
+        // is taken below --- `start_device_probe` needs to see it.
+        if self.start_device_probe(port.as_deref()) {
+            if let Some(browser) = &mut self.browser {
+                browser.set_device_loading();
+            }
+            return;
+        }
         let Some(mut browser) = self.browser.take() else {
             return;
         };
-        let port = self.devices.selected_port().map(str::to_string);
         let notices = browser.load_device(&mut self.processes, port.as_deref(), false);
         self.browser = Some(browser);
         for (level, message) in notices {
             self.logs.push(level, message);
         }
+    }
+
+    /// Updates what is believed about running user code on the selected
+    /// device, and keeps the browser's interrupt gate in step: `Running`
+    /// holds device requests until confirmed, anything else releases them
+    /// (resuming whatever was held).
+    ///
+    /// Beliefs come from the probe, the monitor heuristic
+    /// ([`Self::update_script_from_monitor`]), or ChipTUI's own actions ---
+    /// an accepted interruption, a finished `run`, a `reset`. See
+    /// [`ScriptState`] for what each value means and what it cannot know.
+    pub(super) fn set_script_state(&mut self, state: ScriptState) {
+        if self.devices.set_script_state(state) {
+            match state {
+                ScriptState::Running => self.logs.warn(
+                    "device marked as running --- device operations will ask before interrupting",
+                ),
+                ScriptState::Stopped => {
+                    self.logs.info("device script marked as stopped");
+                }
+                ScriptState::Unknown => {}
+            }
+        }
+        if let Some(mut browser) = self.browser.take() {
+            let port = self.devices.selected_port().map(str::to_string);
+            browser.set_interrupt_gate(
+                state == ScriptState::Running,
+                &mut self.processes,
+                port.as_deref(),
+            );
+            self.browser = Some(browser);
+        }
+    }
+
+    /// Applies the monitor heuristic to what the live monitor session has
+    /// shown so far. The monitor is passive --- it sends nothing unless the
+    /// user types --- so this is the one signal that arrives *while* a script
+    /// runs, rather than before or after touching the device.
+    pub(super) fn update_script_from_monitor(&mut self) {
+        let Some(state) = crate::device::monitor_script_activity(&self.device_monitor_output)
+        else {
+            return;
+        };
+        if self.devices.script_state() == state {
+            return;
+        }
+        match state {
+            ScriptState::Running => self.logs.info(
+                "monitor shows a running script --- device operations will ask before interrupting",
+            ),
+            ScriptState::Stopped => self.logs.info("monitor shows an idle REPL"),
+            ScriptState::Unknown => {}
+        }
+        self.set_script_state(state);
+    }
+
+    /// Opens the interrupt confirmation when device requests are being held.
+    ///
+    /// Polled after any key or process event that might have queued a
+    /// request, so the overlay appears no matter which path armed the gate
+    /// (a navigation key, a menu action, an automatic reload), and defers
+    /// politely while another overlay is open.
+    pub(super) fn check_interrupt_gate(&mut self) {
+        if self.overlay.is_some() {
+            return;
+        }
+        if self
+            .browser
+            .as_ref()
+            .is_some_and(Browser::held_for_interrupt)
+        {
+            self.overlay = Some(Overlay::ConfirmInterruptDevice { confirm: false });
+        }
+    }
+
+    /// Asks how to bring an interrupted script back, once the operations the
+    /// user accepted have drained ([`Overlay::RestoreDeviceScript`]).
+    pub(super) fn maybe_offer_restore(&mut self) {
+        if !self.restore_pending
+            || self.overlay.is_some()
+            || self.probe.is_some()
+            || self.browser.as_ref().is_some_and(Browser::is_busy)
+        {
+            return;
+        }
+        self.restore_pending = false;
+        self.overlay = Some(Overlay::RestoreDeviceScript {
+            // "Leave it stopped" is the highlighted default: restarting
+            // re-runs code the user may be mid-way through changing.
+            selected: 2,
+        });
     }
 
     pub(super) fn open_device_picker(&mut self) {
@@ -100,10 +203,20 @@ impl App {
         };
         self.logs.info(format!("device set to {}", device.label()));
 
+        // A different board may be in a different state: probe it before the
+        // first listing interrupts anything, same as the startup path.
+        let port = self.devices.selected_port().map(str::to_string);
+        if self.start_device_probe(port.as_deref()) {
+            if let Some(browser) = &mut self.browser {
+                browser.set_device_loading();
+            }
+            self.defer_device_info_query();
+            return;
+        }
+
         // The cached listing belongs to the previous board.
         match self.browser.take() {
             Some(mut browser) => {
-                let port = self.devices.selected_port().map(str::to_string);
                 let notices = browser.load_device(&mut self.processes, port.as_deref(), true);
                 self.browser = Some(browser);
                 for (level, message) in notices {
@@ -196,6 +309,15 @@ impl App {
             .manager
             .backend()
             .and_then(|b| b.monitor_command(port.as_deref()))
+            .map(|mut command| {
+                // Same `[tools]` override seam the browser and run session
+                // use, so tests (and user overrides) point every mpremote
+                // invocation at the same binary.
+                if let Some(tool) = self.browser.as_ref().and_then(Browser::tool_path) {
+                    command = command.with_program(tool.to_string());
+                }
+                command
+            })
         {
             // Otherwise the process starts receiving keystrokes only once the
             // user separately tabs over to the pane that just opened for it.

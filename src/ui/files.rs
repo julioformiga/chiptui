@@ -14,8 +14,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Gauge, List, ListItem, ListState, Paragraph, Wrap};
 
 use crate::app::{App, Focus};
-use crate::browser::{Browser, PaneState};
-use crate::device::DiscoveryState;
+use crate::browser::{Browser, LocalTotal, PaneState};
+use crate::device::{DiscoveryState, ScriptState};
 use crate::files::SyncStatus;
 use crate::ui::{content_style, dashboard_focused, pane_block};
 
@@ -90,11 +90,16 @@ fn draw_local(
 }
 
 /// Total size of the current folder, including subfolders --- deliberately
-/// just the total, not an item count or anything else.
+/// just the total, not an item count or anything else. While the background
+/// walk is still running the footer says so instead of showing a stale or
+/// missing number.
 fn draw_local_footer(frame: &mut Frame, area: Rect, browser: &Browser) {
+    let label = match browser.local_total {
+        LocalTotal::Ready(total) => format!("total: {}", human_size(total)),
+        LocalTotal::Calculating => "total: …".to_string(),
+    };
     frame.render_widget(
-        Paragraph::new(format!("total: {}", human_size(browser.local_total_size)).dim())
-            .alignment(Alignment::Right),
+        Paragraph::new(label.dim()).alignment(Alignment::Right),
         area,
     );
 }
@@ -107,7 +112,12 @@ fn draw_device(
     statuses: &BTreeMap<String, SyncStatus>,
 ) {
     let focused = dashboard_focused(app, Focus::FilesDevice);
-    let title = format!("Device files: {}", browser.device_path);
+    // The running-script flag rides along in the title rather than the body:
+    // it explains why an overlay may appear, without claiming list space.
+    let mut title = format!("Device files: {}", browser.device_path);
+    if app.devices.script_state() == ScriptState::Running {
+        title.push_str(" · script running");
+    }
     let block = pane_block(&title, focused);
 
     match &browser.device_state {
@@ -120,9 +130,12 @@ fn draw_device(
         }
         PaneState::Loading => {
             let spinner = SPINNER[(app.ticks as usize) % SPINNER.len()];
-            // Finding the board and listing it are both waits, but they fail
-            // for different reasons, so they are named differently.
-            let what = if app.devices.discovery == DiscoveryState::Scanning {
+            // Finding the board, waiting on the user and listing it are all
+            // waits, but they fail or stall for different reasons, so they
+            // are named differently.
+            let what = if browser.held_for_interrupt() {
+                "waiting to interrupt a running script".to_string()
+            } else if app.devices.discovery == DiscoveryState::Scanning {
                 "searching for a device".to_string()
             } else {
                 format!("listing {}", browser.device_path)

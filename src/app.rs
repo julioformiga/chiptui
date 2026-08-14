@@ -39,6 +39,7 @@ pub mod devices;
 pub mod file_browser;
 pub mod flash_view;
 pub mod overlay;
+pub mod probe;
 
 /// Which screen is showing.
 ///
@@ -201,6 +202,22 @@ pub enum Overlay {
     SyncPreview {
         plan: crate::browser::SyncPlan,
         confirm: bool,
+    },
+    /// Device requests are being held: the app believes a script is running
+    /// on the device, and `mpremote` interrupts it (Ctrl-C, then raw REPL)
+    /// for every device command --- including the one the user just asked
+    /// for. Default is No, like every interruption-confirm here. Accepting
+    /// resumes the held queue and arms the restore question for when it
+    /// drains; declining drops the queue.
+    ConfirmInterruptDevice {
+        confirm: bool,
+    },
+    /// An interruption the user accepted has finished: how (or whether) to
+    /// bring the stopped script back. A three-row picker rather than a
+    /// Yes/No, because "restart" has two honest flavors with different
+    /// tradeoffs (see [`Self::apply_restore_device_script`]).
+    RestoreDeviceScript {
+        selected: usize,
     },
 }
 
@@ -505,6 +522,17 @@ pub struct App {
     /// kicks off (`AGENTS.md` §5's "one tool at a time" applies across
     /// tools too, not just within `mpremote`).
     flash_query_pending: bool,
+    /// A short-lived `mpremote repl` session asking a newly selected device
+    /// whether a script is running, *before* the first filesystem operation
+    /// interrupts it --- see [`probe`]. `None` whenever no probe is in flight.
+    probe: Option<probe::DeviceProbe>,
+    /// The port the current (or last) probe covered; the probe runs once per
+    /// selection, not before every command.
+    probed_port: Option<String>,
+    /// Set when the user accepts interrupting a running script: once the
+    /// interrupted operations drain, [`Overlay::RestoreDeviceScript`] asks
+    /// how to bring the script back.
+    restore_pending: bool,
     should_quit: bool,
     last_port_count: Option<usize>,
 }
@@ -538,6 +566,9 @@ impl App {
             run_script: None,
             run_state: RunState::default(),
             flash_query_pending: false,
+            probe: None,
+            probed_port: None,
+            restore_pending: false,
             should_quit: false,
             last_port_count: None,
         }
@@ -672,6 +703,11 @@ impl App {
             AppEvent::Tick => {
                 self.ticks = self.ticks.wrapping_add(1);
                 self.check_device_hotplug();
+                self.tick_probe();
+                self.check_interrupt_gate();
+                self.maybe_offer_restore();
+                self.maybe_run_deferred_flash_query();
+                self.poll_local_size();
             }
             AppEvent::Process(event) => self.on_process(&event),
         }
@@ -693,6 +729,11 @@ impl App {
             return;
         }
         if self.browser.as_ref().is_some_and(Browser::is_busy) {
+            return;
+        }
+        // A probe holds the port exactly like a listing does, and a scan
+        // racing it would ask the same serial port two questions at once.
+        if self.probe.is_some() {
             return;
         }
         if self.device_monitor_process.is_some() {
@@ -722,6 +763,29 @@ impl App {
     /// simpler than tracking ownership here.
     fn on_process(&mut self, event: &crate::process::ProcessEvent) {
         match event {
+            // The script-probe session (PTY): raw output arrives as bytes, and
+            // its exit is what releases the port for the listing it deferred.
+            crate::process::ProcessEvent::Output { id, text }
+                if self
+                    .probe
+                    .as_ref()
+                    .is_some_and(|probe| probe.process == *id) =>
+            {
+                self.on_probe_output(text);
+                return;
+            }
+            crate::process::ProcessEvent::Finished {
+                id,
+                outcome: _,
+                duration: _,
+            } if self
+                .probe
+                .as_ref()
+                .is_some_and(|probe| probe.process == *id) =>
+            {
+                self.finish_probe();
+                return;
+            }
             crate::process::ProcessEvent::Line {
                 id,
                 stream: _,
@@ -729,6 +793,7 @@ impl App {
             } if Some(*id) == self.device_monitor_process => {
                 self.monitor_console
                     .push_line(&mut self.device_monitor_output, text.clone());
+                self.update_script_from_monitor();
                 return;
             }
             crate::process::ProcessEvent::Output { id, text }
@@ -736,6 +801,7 @@ impl App {
             {
                 self.monitor_console
                     .feed(&mut self.device_monitor_output, text);
+                self.update_script_from_monitor();
                 return;
             }
             crate::process::ProcessEvent::Finished {
@@ -764,6 +830,9 @@ impl App {
                 self.run_state = RunState::Finished;
                 self.run_console
                     .push_line(&mut self.run_output, format!("[run {}]", outcome.summary()));
+                // The run *was* the user code: finished means the device sits
+                // at its REPL with nothing executing.
+                self.set_script_state(crate::device::ScriptState::Stopped);
                 return;
             }
             _ => {}
@@ -818,6 +887,13 @@ impl App {
             {
                 self.overlay = Some(Overlay::ConfirmEraseForMicroPython { confirm: false });
             }
+            if let Some(running) = update.script_running {
+                self.set_script_state(if running {
+                    crate::device::ScriptState::Running
+                } else {
+                    crate::device::ScriptState::Stopped
+                });
+            }
             if let Some(transfer) = update.transfer {
                 self.apply_transfer(transfer);
             }
@@ -854,13 +930,15 @@ impl App {
         }
 
         // The deferred query (above, and from `apply_device_picker`) can only
-        // start once `mpremote` has released the port --- checked last, after
-        // both blocks above have had a chance to move `self.browser` back to
-        // idle for this same event.
-        if self.flash_query_pending && !self.browser.as_ref().is_some_and(Browser::is_busy) {
-            self.flash_query_pending = false;
-            self.maybe_query_device_info();
-        }
+        // start once every port holder is gone and the user has nothing to
+        // answer --- checked here for promptness and again on every tick,
+        // because with a held queue (a running script) no process event ever
+        // arrives to reach this line.
+        self.maybe_run_deferred_flash_query();
+
+        // A completed command may have armed either follow-up question.
+        self.check_interrupt_gate();
+        self.maybe_offer_restore();
     }
 
     fn set_device_pane_error(&mut self, message: impl Into<String>) {
@@ -1131,7 +1209,8 @@ impl App {
                 | Overlay::DevicePicker { .. }
                 | Overlay::FirmwarePicker { .. }
                 | Overlay::ProjectSetup { .. }
-                | Overlay::FileActions { .. },
+                | Overlay::FileActions { .. }
+                | Overlay::RestoreDeviceScript { .. },
             ) => {
                 vec![("↑/↓", "select"), ("enter", "apply"), ("esc", "cancel")]
             }
@@ -1142,6 +1221,7 @@ impl App {
                 | Overlay::ConfirmUpload { .. }
                 | Overlay::ConfirmRestartDevice { .. }
                 | Overlay::ConfirmEraseForMicroPython { .. }
+                | Overlay::ConfirmInterruptDevice { .. }
                 | Overlay::SyncPreview { .. },
             ) => {
                 vec![
