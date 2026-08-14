@@ -1,0 +1,41 @@
+#!/bin/sh
+# Fake `mpremote` for ChipTUI tests: a board running a silent blocking loop.
+#
+# Complements `mpremote-busy-board` (which prints): this one says nothing at
+# all, which is the probe's documented blind spot --- a quiet script is
+# indistinguishable from a quiet-but-idle board, so the probe must give up
+# and let the first listing proceed ungated.
+
+args="$*"
+
+case "$args" in
+    "connect "*) args=$(printf '%s' "$args" | cut -d' ' -f3-) ;;
+esac
+
+case "$args" in
+    devs)
+        printf '/dev/ttyACM0 e6614104036e5f24 2e8a:0005 MicroPython Board in FS mode\n'
+        ;;
+
+    repl)
+        # Silence: no banner, no prompt, no output. Exits on ctrl-] (0x1d)
+        # like the real `mpremote repl`.
+        stty raw -echo
+        while [ "$(dd bs=1 count=1 2>/dev/null | od -An -tuC | tr -d ' \n')" != "29" ]; do :; done
+        stty sane
+        ;;
+
+    "fs --no-verbose ls :/")
+        printf '%12d %s\n' 1024 'main.py'
+        ;;
+
+    df)
+        printf '%s\n' 'filesystem     size     used    avail use% mounted on'
+        printf '%s %9d %8d %8d %4d %s\n' 'vfs       ' 524288 262144 262144 50 '/'
+        ;;
+
+    *)
+        echo "mpremote: no device found" >&2
+        exit 1
+        ;;
+esac

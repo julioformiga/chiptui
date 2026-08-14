@@ -18,7 +18,7 @@ mod command;
 use std::collections::HashMap;
 use std::io::{BufReader, Read, Write};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -34,6 +34,23 @@ pub struct ProcessId(u64);
 impl std::fmt::Display for ProcessId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "#{}", self.0)
+    }
+}
+
+/// How long a natural exit will wait for late reader threads before
+/// reporting `Finished` anyway. Bounded so a grandchild still holding the
+/// pipes cannot stall the report indefinitely; generous enough that a
+/// reader merely waiting for scheduling under load still makes it.
+const READ_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Waits until every reader thread has finished, or `READ_DRAIN_TIMEOUT`
+/// passes. Called only on natural exits: a killed process's grandchildren
+/// can keep the pipes open forever, which is exactly the hang the timeout
+/// exists to escape.
+fn wait_for_readers(readers: &Arc<AtomicUsize>) {
+    let deadline = Instant::now() + READ_DRAIN_TIMEOUT;
+    while readers.load(Ordering::Relaxed) > 0 && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(1));
     }
 }
 
@@ -174,6 +191,7 @@ impl ProcessManager {
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
         let cancelled = Arc::new(AtomicBool::new(false));
+        let readers = Arc::new(AtomicUsize::new(0));
 
         self.running.insert(
             id,
@@ -184,12 +202,20 @@ impl ProcessManager {
         );
 
         if let Some(stdout) = stdout {
+            readers.fetch_add(1, Ordering::Relaxed);
             let tx = self.tx.clone();
-            thread::spawn(move || pump(stdout, Stream::Stdout, id, &tx));
+            let readers = Arc::clone(&readers);
+            thread::spawn(move || {
+                pump(stdout, Stream::Stdout, id, &tx, &readers);
+            });
         }
         if let Some(stderr) = stderr {
+            readers.fetch_add(1, Ordering::Relaxed);
             let tx = self.tx.clone();
-            thread::spawn(move || pump(stderr, Stream::Stderr, id, &tx));
+            let readers = Arc::clone(&readers);
+            thread::spawn(move || {
+                pump(stderr, Stream::Stderr, id, &tx, &readers);
+            });
         }
 
         let tx = self.tx.clone();
@@ -197,7 +223,17 @@ impl ProcessManager {
             let outcome = supervise(&mut child, &cancelled, started, timeout);
 
             // Draining the pipes before reporting completion is what lets the
-            // UI treat `Finished` as "all output has arrived".
+            // UI treat `Finished` as "all output has arrived". Joining the
+            // reader threads was removed once (deadlock when a grandchild
+            // holds the pipes, plus toolchain trouble), so this waits on a
+            // counter instead --- bounded, and only for natural exits, where
+            // the pipes are about to close anyway and the readers are merely
+            // waiting to be scheduled. Late lines from a *killed* process are
+            // still dropped on purpose; consumers stop tracking it once it
+            // has finished.
+            if !outcome.was_killed() {
+                wait_for_readers(&readers);
+            }
             //
             // Not so for a process we killed: `kill` reaches only the direct
             // child, and any grandchild it left behind still holds the write
@@ -252,6 +288,7 @@ impl ProcessManager {
         let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
 
         let cancelled = Arc::new(AtomicBool::new(false));
+        let readers = Arc::new(AtomicUsize::new(1));
 
         self.running.insert(
             id,
@@ -262,7 +299,7 @@ impl ProcessManager {
         );
 
         let tx = self.tx.clone();
-        let reader_thread = thread::spawn(move || pump_pty(reader, id, &tx));
+        let reader_thread = thread::spawn(move || pump_pty(reader, id, &tx, &readers));
 
         let tx = self.tx.clone();
         thread::spawn(move || {
@@ -379,7 +416,16 @@ impl Drop for ProcessManager {
 ///
 /// Lines are decoded lossily: a filename with invalid UTF-8 should show up as
 /// replacement characters, not abort the listing.
-fn pump<R: Read>(source: R, stream: Stream, id: ProcessId, tx: &Sender<ProcessEvent>) {
+///
+/// `readers` is decremented on the way out, whatever happened: it is what
+/// the supervisor waits on before reporting a natural exit.
+fn pump<R: Read>(
+    source: R,
+    stream: Stream,
+    id: ProcessId,
+    tx: &Sender<ProcessEvent>,
+    readers: &AtomicUsize,
+) {
     use std::io::BufRead;
 
     let mut reader = BufReader::new(source);
@@ -424,10 +470,16 @@ fn pump<R: Read>(source: R, stream: Stream, id: ProcessId, tx: &Sender<ProcessEv
         let text = String::from_utf8_lossy(&buffer).into_owned();
         let _ = tx.send(ProcessEvent::Line { id, stream, text });
     }
+    readers.fetch_sub(1, Ordering::Relaxed);
 }
 
 /// Forwards unbuffered stream output for interactive pseudo-terminals.
-fn pump_pty<R: Read>(mut source: R, id: ProcessId, tx: &Sender<ProcessEvent>) {
+fn pump_pty<R: Read>(
+    mut source: R,
+    id: ProcessId,
+    tx: &Sender<ProcessEvent>,
+    readers: &AtomicUsize,
+) {
     let mut buffer = [0u8; 1024];
     loop {
         match source.read(&mut buffer) {
@@ -441,6 +493,7 @@ fn pump_pty<R: Read>(mut source: R, id: ProcessId, tx: &Sender<ProcessEvent>) {
             Err(_) => break,
         }
     }
+    readers.fetch_sub(1, Ordering::Relaxed);
 }
 
 /// Waits for the child, killing it on cancellation or timeout.

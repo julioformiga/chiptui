@@ -1,0 +1,8 @@
+#!/bin/sh
+# Writes a burst of lines in one go, right before exiting.
+# Used by the "all output arrives before Finished" regression test.
+i=0
+while [ $i -lt 500 ]; do
+    printf 'burst %d\n' "$i"
+    i=$((i + 1))
+done

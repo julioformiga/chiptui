@@ -6,6 +6,7 @@
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
 use crate::backend::BackendKind;
+use crate::device::ScriptState;
 
 use super::{App, FileAction, Overlay, PendingEdit, PickerOption, ViewerSource};
 
@@ -393,6 +394,52 @@ impl App {
                     },
                     |_| {},
                 );
+            }
+            // Default *no*, like every other interruption: accepting stops
+            // whatever the board is running. Accepting also marks the script
+            // stopped --- which releases the held queue --- and arms the
+            // restore question for when that queue drains.
+            Overlay::ConfirmInterruptDevice { confirm } => {
+                self.dispatch_confirm(
+                    key.code,
+                    confirm,
+                    |app, confirm| {
+                        app.overlay = Some(Overlay::ConfirmInterruptDevice { confirm });
+                    },
+                    |app| {
+                        app.restore_pending = true;
+                        app.set_script_state(ScriptState::Stopped);
+                    },
+                    |app| {
+                        app.dispatch_browser(|browser, _, _| {
+                            browser.cancel_held_requests();
+                            Vec::new()
+                        });
+                    },
+                );
+            }
+            Overlay::RestoreDeviceScript { selected } => {
+                const COUNT: usize = 3;
+                match key.code {
+                    // Dismissing is itself a choice here --- "leave it
+                    // stopped" --- so it needs no separate guard.
+                    KeyCode::Esc | KeyCode::Char('q') => self.overlay = None,
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        self.overlay = Some(Overlay::RestoreDeviceScript {
+                            selected: (selected + COUNT - 1) % COUNT,
+                        });
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        self.overlay = Some(Overlay::RestoreDeviceScript {
+                            selected: (selected + 1) % COUNT,
+                        });
+                    }
+                    KeyCode::Enter => {
+                        self.overlay = None;
+                        self.apply_restore_device_script(selected);
+                    }
+                    _ => {}
+                }
             }
         }
     }

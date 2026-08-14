@@ -133,6 +133,29 @@ case "$args" in
         printf 'MPY: soft reboot\n'
         ;;
 
+    reset)
+        # Hard reset: fire-and-forget (mpremote expands it to an
+        # `exec --no-follow` of `machine.reset()`), so the fake just exits.
+        ;;
+
+    "exec --no-follow import main")
+        # `main.py` restarted without a reboot; --no-follow means mpremote
+        # never waits for the script, so neither does the fake.
+        ;;
+
+    repl)
+        # Idle board: the MicroPython banner, then the prompt --- and, like
+        # the real `mpremote repl`, exits when it reads ctrl-] (0x1d) on its
+        # stdin. Raw mode is needed for the single escape byte to be
+        # delivered without a trailing newline.
+        printf 'MicroPython v1.28.0 on 2026-08-14; Fake board with FakeCPU\n'
+        printf 'Type "help()" for more information.\n'
+        printf '>>> '
+        stty raw -echo
+        while [ "$(dd bs=1 count=1 2>/dev/null | od -An -tuC | tr -d ' \n')" != "29" ]; do :; done
+        stty sane
+        ;;
+
     df)
         # used + free must equal total: tests/files_view.rs checks the numbers below.
         printf '%s\n' 'filesystem     size     used    avail use% mounted on'

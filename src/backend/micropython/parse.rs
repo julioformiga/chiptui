@@ -216,6 +216,11 @@ enum FailureKind {
     DeviceNotFound,
     /// A board was seen but stopped responding mid-command.
     DeviceUnresponsive,
+    /// The board answered, but a running script kept control of the REPL ---
+    /// usually a loop with a `try/except` that swallows the Ctrl-C mpremote
+    /// sends to enter raw REPL (`transport_serial.py` raises "could not
+    /// enter raw repl" after its 10s timeout).
+    ReplBlocked,
     PermissionDenied,
     PathNotFound,
     Empty,
@@ -231,6 +236,8 @@ fn classify(stderr: &str) -> FailureKind {
         FailureKind::DeviceNotFound
     } else if lower.contains("failed to access") {
         FailureKind::DeviceUnresponsive
+    } else if lower.contains("could not enter raw repl") {
+        FailureKind::ReplBlocked
     } else if lower.contains("permission denied") || lower.contains("could not open port") {
         FailureKind::PermissionDenied
     } else if lower.contains("no such file") || lower.contains("enoent") {
@@ -252,6 +259,10 @@ pub fn explain_error(stderr: &str) -> String {
         }
         FailureKind::DeviceUnresponsive => {
             "the device is present but did not respond — try unplugging and reconnecting it"
+                .to_string()
+        }
+        FailureKind::ReplBlocked => {
+            "a running script holds the REPL and swallows Ctrl-C — interrupt it from the monitor (m, then ctrl+c), or restart the board with 'R'"
                 .to_string()
         }
         FailureKind::PermissionDenied => "cannot open the serial port — check that no other program holds it, and that your user is in the 'dialout' group".to_string(),
@@ -488,5 +499,16 @@ mod tests {
             "mpremote: ls: No such file or directory."
         ));
         assert!(!is_device_lost_error(""));
+    }
+
+    #[test]
+    fn a_repl_blocked_by_a_running_script_gets_specific_advice() {
+        let message = explain_error("could not enter raw repl");
+        assert!(message.contains("running script"));
+        assert!(message.contains("monitor"));
+        // Not a lost device and not an unresponsive one: the board is there,
+        // it is just busy --- a rescan or a flash prompt would mislead.
+        assert!(!is_device_lost_error("could not enter raw repl"));
+        assert!(!is_device_unresponsive_error("could not enter raw repl"));
     }
 }

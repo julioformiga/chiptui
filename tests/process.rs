@@ -207,3 +207,20 @@ fn draining_an_idle_manager_yields_nothing() {
     assert!(processes.drain().is_empty());
     assert_eq!(processes.running_count(), 0);
 }
+
+#[test]
+fn output_written_just_before_exit_arrives_before_finished() {
+    // Regression: the supervisor used to report `Finished` without waiting
+    // for the reader threads, so lines still in flight under load were lost
+    // on consumers that stop tracking a process once it finishes --- an
+    // `mpremote devs` reply occasionally parsed as "no devices found".
+    let mut processes = ProcessManager::new();
+    let id = processes.spawn(Command::new(fixture("bursty")), Duration::from_secs(10));
+    let events = run_to_completion(&mut processes, id);
+
+    let stdout = lines(&events, Stream::Stdout);
+    assert_eq!(stdout.len(), 500, "every line of the burst survives");
+    assert_eq!(stdout.first().map(String::as_str), Some("burst 0"));
+    assert_eq!(stdout.last().map(String::as_str), Some("burst 499"));
+    assert!(matches!(events.last(), Some(ProcessEvent::Finished { .. })));
+}

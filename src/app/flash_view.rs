@@ -11,6 +11,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
 use crate::backend::Capability;
 use crate::browser::Browser;
+use crate::device::ScriptState;
 use crate::flash::{FlashAction, FlashPanel, FlashScreen, OptionsField};
 
 use super::{App, Focus, LogTab, MonitorSource, Overlay, View};
@@ -385,10 +386,36 @@ impl App {
     /// Marks a background chip/flash query as due, without starting it yet
     /// --- `esptool` cannot open the serial port while `mpremote` (just
     /// kicked off by `load_device_root`, right before every call site of
-    /// this method) still holds it exclusively. `on_process` starts the
-    /// query for real once [`Self::browser`] reports idle again.
+    /// this method) still holds it exclusively. `maybe_run_deferred_flash_query`
+    /// starts the query for real once every port holder is gone.
     pub(super) fn defer_device_info_query(&mut self) {
         self.flash_query_pending = true;
+    }
+
+    /// Runs the deferred chip/flash query once it is actually safe to, polled
+    /// on every tick and after each process event (a held request queue
+    /// produces no events, so the tick is what keeps a declined interruption
+    /// from stranding the query forever).
+    ///
+    /// "Safe" means more than a free port: `esptool` resets the board into
+    /// its bootloader to read the chip, which stops a running script just
+    /// like an `mpremote` interrupt does --- so a script believed running
+    /// postpones the query too, as does any open overlay (the user may be a
+    /// keypress away from confirming something that also wants the port).
+    pub(super) fn maybe_run_deferred_flash_query(&mut self) {
+        if !self.flash_query_pending
+            || self.overlay.is_some()
+            || self.restore_pending
+            || self.probe.is_some()
+            || self.device_monitor_process.is_some()
+            || self.run_process.is_some()
+            || self.browser.as_ref().is_some_and(Browser::is_busy)
+            || self.devices.script_state() == ScriptState::Running
+        {
+            return;
+        }
+        self.flash_query_pending = false;
+        self.maybe_query_device_info();
     }
 
     /// Kicks off a background `flash-id` so the Dashboard's device panel has

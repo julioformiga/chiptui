@@ -727,25 +727,36 @@ fn picking_a_device_defers_the_esptool_query_until_mpremote_releases_the_port() 
 
     app.devices.set_devices(vec![device("/dev/ttyACM0")]);
     app.overlay = Some(Overlay::DevicePicker { selected: 0 });
-    app.handle(key(KeyCode::Enter)); // apply_device_picker: starts `mpremote fs ls`
+    app.handle(key(KeyCode::Enter)); // apply_device_picker
 
-    assert!(
-        app.browser.as_ref().unwrap().is_busy(),
-        "mpremote's listing must have started"
-    );
+    // The device-script probe now owns the port before the listing (see
+    // `app::probe`); whichever mpremote session runs first, the invariant
+    // under test is the same: esptool must not race it for the port.
     assert!(
         !app.flash.as_ref().unwrap().is_busy(),
         "esptool must not race mpremote for the port"
     );
 
+    // Drive everything to completion: probe, then listing, then the query
+    // this test exists for. Nothing is busy in the instant after Enter (the
+    // probe holds the port without occupying the browser), so the loop keys
+    // on the query's eventual answer rather than on busyness.
     let deadline = Instant::now() + Duration::from_secs(20);
-    while (app.browser.as_ref().is_some_and(Browser::is_busy)
-        || app.flash.as_ref().is_some_and(|flash| flash.is_busy()))
-        && Instant::now() < deadline
-    {
+    loop {
         for event in app.processes.drain() {
             app.handle(AppEvent::Process(event));
         }
+        if app
+            .flash
+            .as_ref()
+            .is_some_and(|flash| flash.details.family.is_some())
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "probe, listing or the deferred esptool query never finished"
+        );
         std::thread::sleep(Duration::from_millis(5));
     }
 

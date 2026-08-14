@@ -23,8 +23,12 @@ entry in the focused pane inline — a trailing `/` on the typed name makes it a
 (`browser::edit_download_path`), never the project tree — the point is to prove a change on the
 device first; `Download` is the separate, explicit step for landing a confirmed-good result in the
 project. On a clean `$EDITOR` exit it re-uploads to the same device path and then offers a
-`soft-reset`, defaulting to *no* (`Overlay::ConfirmRestartDevice`). Zephyr backends still declare
-detection and capabilities only.
+`soft-reset`, defaulting to *no* (`Overlay::ConfirmRestartDevice`). A board believed to be
+running a script is never interrupted silently: a short `mpremote repl` probe runs before the
+first listing (`src/app/probe.rs`), device operations are held behind a confirmation while a
+script runs (`Overlay::ConfirmInterruptDevice`), and an accepted interruption ends with a
+restore prompt (`Overlay::RestoreDeviceScript`: hard reset, `import main`, or leave stopped).
+Zephyr backends still declare detection and capabilities only.
 
 `lib.rs` + `main.rs`: everything except `terminal` and `ui` is testable without a tty, and `ui` is
 testable through ratatui's `TestBackend` (see `tests/ui_render.rs`, `tests/files_view.rs`).
@@ -119,10 +123,11 @@ These are the decisions that shape most code, and getting them wrong causes wide
 - **Processes** (`src/process/`): `spawn` returns immediately; a supervisor thread plus two reader
   threads push `ProcessEvent`s into one channel that `main.rs` drains each frame. Two non-obvious
   rules live here. *Killing reaches only the direct child* — a grandchild keeps the pipes open, so
-  a killed process reports `Finished` **without** joining the readers (otherwise the timeout
-  deadlocks on the very hang it exists to escape); consequently "Finished implies all output
-  arrived" holds only for natural exits. And `ProcessManager` is dropped with `cancel_all`, so no
-  child keeps a serial port after the TUI exits.
+  a killed process reports `Finished` **without** waiting for the readers (otherwise the timeout
+  deadlocks on the very hang it exists to escape). A *natural* exit instead waits (bounded,
+  `READ_DRAIN_TIMEOUT`) on a reader counter before reporting, keeping the invariant that
+  "Finished implies all output arrived" without joining threads. And `ProcessManager` is dropped
+  with `cancel_all`, so no child keeps a serial port after the TUI exits.
 - **`Browser` emits, never logs** (`src/browser.rs`): device results come back as `Notice` values
   and a `BrowserUpdate` that `App` forwards to the log and to `DeviceState`. That is what makes the
   whole state machine testable without a UI.
@@ -142,12 +147,30 @@ These are the decisions that shape most code, and getting them wrong causes wide
   append-per-char renderer shows as literal `[K` garbage. `LineConsole` keeps the cursor position
   and escape-parser state across PTY chunks and edits the current line accordingly; sequences it
   does not implement (colors, OSC) are consumed, never rendered.
+- **A running script is never interrupted silently** (`src/app/probe.rs`, `Browser::set_interrupt_gate`):
+  mpremote Ctrl-C's whatever is executing to enter raw REPL for *any* device command, so before
+  the first listing on a selected port ChipTUI opens a short `mpremote repl` PTY and classifies
+  what it sees (`device::monitor_script_activity`: a `>>> ` prompt means idle, output with no
+  prompt means running, banners filtered, silence inconclusive — a probe verdict is a *belief*,
+  `ScriptState`, reset whenever the selected port changes). A "running" belief turns on the
+  browser's interrupt gate: queued requests are held (`held_for_interrupt`) until the user
+  confirms; accepting marks the script stopped, resumes the queue and arms the restore question
+  for when it drains. Restore deliberately uses no-follow commands (`mpremote reset`, `exec
+  --no-follow "import main"`) because a `soft-reset` leaves the script *stopped* — raw-REPL
+  reboots skip `main.py`. The monitor updates the same belief live; a script that swallows
+  Ctrl-C surfaces as the classified `ReplBlocked` error with its way out. The background
+  `esptool` chip query is also gated on that belief (`maybe_run_deferred_flash_query`,
+  tick-polled): esptool resets the board to read the chip, so it waits for an idle device,
+  a closed overlay and a free port instead of racing a restore decision or silently
+  resetting a script the user just declined to interrupt.
 
 ## Testing
 
 The normal suite must run without hardware. `tests/fixtures/bin/` holds fake executables — a
 `mpremote` reproducing the 1.28 output formats, plus `slow` and `noisy` for timeout/cancel/stderr
-paths. Tests reference them by **absolute path** (`env!("CARGO_MANIFEST_DIR")`) and point the
+paths, `mpremote-busy-board`/`mpremote-quiet-board` for a board stuck in a printing/silent
+blocking loop (see `tests/busy_device.rs`), and `bursty` guarding output-before-`Finished`
+ordering. Tests reference them by **absolute path** (`env!("CARGO_MANIFEST_DIR")`) and point the
 browser at them with `Browser::set_tool_path`; nothing mutates `PATH`, so tests stay parallel-safe.
 Add fakes for `esptool`, `west`, `cmake` and `ninja` the same way. Hardware tests stay separate and
 explicitly documented.

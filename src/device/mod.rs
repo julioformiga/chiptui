@@ -75,6 +75,67 @@ impl DeviceInfo {
     }
 }
 
+/// Whether user code is believed to be running on the selected device.
+///
+/// `mpremote` interrupts whatever is running (Ctrl-C, then raw REPL) for
+/// *every* filesystem or `exec` command, so this is what decides whether a
+/// device operation needs the user's explicit go-ahead first. It is a belief,
+/// not a fact: the serial port offers no non-invasive way to ask the board,
+/// so the state comes from what a passive observer can see (see
+/// [`monitor_script_activity`]) and from ChipTUI's own interruptions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScriptState {
+    /// Nothing observed yet --- operations proceed without asking, which is
+    /// the pre-probe behavior (and the documented limitation for a script
+    /// that never prints: silence is indistinguishable from an idle board).
+    #[default]
+    Unknown,
+    /// User code is believed to be executing. Device operations are held
+    /// until the user confirms the interruption.
+    Running,
+    /// Known idle: an interrupted script not yet restarted, or a visible
+    /// REPL prompt.
+    Stopped,
+}
+
+/// What a stream of rendered REPL/monitor lines says about running user code.
+///
+/// A REPL prompt (`>>> `) means user code is *not* running; a board that only
+/// ever prints output, with no prompt, is running a script. Both facts are
+/// exactly what a human watching the monitor would conclude --- the rule just
+/// automates that judgment so the file browser can ask before interrupting.
+///
+/// Banner lines (mpremote's own, MicroPython's version header and its help
+/// hint) are ignored, so an idle board that has only shown its banner does not
+/// count as "running" while its prompt is still on the way. `None` means
+/// "not enough evidence either way": a silent script looks identical to a
+/// silent board, and pretending otherwise would interrupt on a guess.
+pub fn monitor_script_activity(lines: &[String]) -> Option<ScriptState> {
+    const PROMPT: &str = ">>> ";
+    /// Output lines that carry no signal about who produced them.
+    const MIN_LINES: usize = 3;
+
+    if lines.iter().any(|line| line.contains(PROMPT)) {
+        return Some(ScriptState::Stopped);
+    }
+    let meaningful = lines
+        .iter()
+        .filter(|line| !is_banner(line) && !line.trim().is_empty())
+        .count();
+    (meaningful >= MIN_LINES).then_some(ScriptState::Running)
+}
+
+/// Lines either tool prints on connect, before any board output arrives.
+fn is_banner(line: &str) -> bool {
+    let line = line.trim();
+    line.starts_with("Connected to MicroPython")
+        || line.starts_with("Type Ctrl-")
+        || line.starts_with("Use Ctrl-")
+        // MicroPython's own header: `MicroPython v1.28.0 on 2025-...; board`.
+        || (line.starts_with("MicroPython v") && line.contains(" on "))
+        || line.starts_with("Type \"help()\" for more information")
+}
+
 /// What the device manager currently knows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiscoveryState {
@@ -93,6 +154,9 @@ pub struct DeviceState {
     pub discovery: DiscoveryState,
     /// Why discovery failed, if it did.
     pub error: Option<String>,
+    /// Whether user code is believed to be running on the selected device
+    /// (`ScriptState`'s doc comment explains where the belief comes from).
+    script: ScriptState,
 }
 
 impl DeviceState {
@@ -102,6 +166,7 @@ impl DeviceState {
             selected: None,
             discovery: DiscoveryState::Unknown,
             error: None,
+            script: ScriptState::Unknown,
         }
     }
 
@@ -120,7 +185,13 @@ impl DeviceState {
 
     pub fn select(&mut self, index: usize) -> bool {
         if index < self.known.len() {
+            let previous = self.selected_port().map(str::to_string);
             self.selected = Some(index);
+            // A different board may well be in a different state; what was
+            // true of the old port says nothing about the new one.
+            if previous.as_deref() != self.selected_port() {
+                self.script = ScriptState::Unknown;
+            }
             true
         } else {
             false
@@ -150,6 +221,9 @@ impl DeviceState {
         self.selected = previous
             .and_then(|port| self.known.iter().position(|device| device.port == port))
             .or(if self.known.len() == 1 { Some(0) } else { None });
+        // A hotplug swap can land a different board on the very same port;
+        // whatever was known about the previous one is void.
+        self.script = ScriptState::Unknown;
     }
 
     pub fn set_scanning(&mut self) {
@@ -169,6 +243,18 @@ impl DeviceState {
         self.discovery == DiscoveryState::Ready && self.known.len() > 1 && self.selected.is_none()
     }
 
+    /// The believed script state of the selected device.
+    pub fn script_state(&self) -> ScriptState {
+        self.script
+    }
+
+    /// Updates the believed script state, returning whether it changed.
+    pub fn set_script_state(&mut self, state: ScriptState) -> bool {
+        let changed = self.script != state;
+        self.script = state;
+        changed
+    }
+
     /// Description for the `device` slot in the header.
     pub fn summary(&self) -> String {
         match self.discovery {
@@ -176,10 +262,16 @@ impl DeviceState {
             DiscoveryState::Scanning => "scanning…".to_string(),
             DiscoveryState::Failed => "unavailable".to_string(),
             DiscoveryState::Ready => match self.selected() {
-                Some(device) => match device.vendor() {
-                    Some(vendor) => format!("{} ({vendor})", device.port),
-                    None => device.port.clone(),
-                },
+                Some(device) => {
+                    let mut label = match device.vendor() {
+                        Some(vendor) => format!("{} ({vendor})", device.port),
+                        None => device.port.clone(),
+                    };
+                    if self.script == ScriptState::Running {
+                        label.push_str(" (script running)");
+                    }
+                    label
+                }
                 None if self.known.is_empty() => "none".to_string(),
                 None => format!("{} found, none selected", self.known.len()),
             },
@@ -327,5 +419,97 @@ mod tests {
         assert_eq!(state.summary(), "none");
         state.set_devices(vec![device("/dev/ttyACM0"), device("/dev/ttyUSB0")]);
         assert_eq!(state.summary(), "2 found, none selected");
+    }
+
+    #[test]
+    fn a_running_script_is_announced_in_the_summary() {
+        let mut state = DeviceState::new();
+        state.set_devices(vec![device("/dev/ttyACM0")]);
+        assert_eq!(state.summary(), "/dev/ttyACM0 (Raspberry Pi (RP2040))");
+
+        assert!(state.set_script_state(ScriptState::Running));
+        assert_eq!(
+            state.summary(),
+            "/dev/ttyACM0 (Raspberry Pi (RP2040)) (script running)"
+        );
+        assert!(
+            !state.set_script_state(ScriptState::Running),
+            "no repeat log"
+        );
+    }
+
+    #[test]
+    fn switching_ports_forgets_the_script_state() {
+        let mut state = DeviceState::new();
+        state.set_devices(vec![device("/dev/ttyACM0"), device("/dev/ttyUSB0")]);
+        state.select(0);
+        state.set_script_state(ScriptState::Running);
+
+        state.select(1);
+        assert_eq!(state.script_state(), ScriptState::Unknown);
+    }
+
+    #[test]
+    fn a_rescan_forgets_the_script_state() {
+        // A hotplug swap can land a different board on the same port.
+        let mut state = DeviceState::new();
+        state.set_devices(vec![device("/dev/ttyACM0")]);
+        state.set_script_state(ScriptState::Running);
+
+        state.set_devices(vec![device("/dev/ttyACM0")]);
+        assert_eq!(state.script_state(), ScriptState::Unknown);
+    }
+
+    #[test]
+    fn monitor_output_with_a_prompt_means_idle() {
+        let lines: Vec<String> = vec![
+            "MicroPython v1.28.0 on 2026-08-14; ESP32 board with ESP32S3".into(),
+            "Type \"help()\" for more information.".into(),
+            ">>> ".into(),
+        ];
+        assert_eq!(monitor_script_activity(&lines), Some(ScriptState::Stopped));
+    }
+
+    #[test]
+    fn monitor_output_without_a_prompt_means_a_running_script() {
+        let lines: Vec<String> = vec![
+            "temp: 21.3".into(),
+            "temp: 21.4".into(),
+            "temp: 21.4".into(),
+        ];
+        assert_eq!(monitor_script_activity(&lines), Some(ScriptState::Running));
+    }
+
+    #[test]
+    fn a_banner_alone_is_not_evidence_of_a_script() {
+        // Two banner lines is what an idle board shows before its prompt
+        // arrives; counting them would flag every connect as "running".
+        let lines: Vec<String> = vec![
+            "MicroPython v1.28.0 on 2026-08-14; ESP32 board".into(),
+            "Type \"help()\" for more information.".into(),
+        ];
+        assert_eq!(monitor_script_activity(&lines), None);
+    }
+
+    #[test]
+    fn silence_is_not_evidence_either() {
+        assert_eq!(monitor_script_activity(&[]), None);
+        assert_eq!(
+            monitor_script_activity(&["".to_string(), "   ".to_string()]),
+            None
+        );
+    }
+
+    #[test]
+    fn a_prompt_outranks_accumulated_output() {
+        // A script that ended after printing leaves the REPL prompt behind;
+        // the last word belongs to the prompt.
+        let lines: Vec<String> = vec![
+            "working...".into(),
+            "working...".into(),
+            "done".into(),
+            ">>> ".into(),
+        ];
+        assert_eq!(monitor_script_activity(&lines), Some(ScriptState::Stopped));
     }
 }

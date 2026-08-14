@@ -58,6 +58,12 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
         Overlay::CreateEntry { side, input } => draw_create_entry(frame, area, side, &input),
         Overlay::PackageInstall { input } => draw_package_install(frame, area, &input),
         Overlay::SyncPreview { plan, confirm } => draw_sync_preview(frame, area, &plan, confirm),
+        Overlay::ConfirmInterruptDevice { confirm } => {
+            draw_confirm_interrupt_device(frame, area, confirm)
+        }
+        Overlay::RestoreDeviceScript { selected } => {
+            draw_restore_device_script(frame, area, selected)
+        }
     }
 }
 
@@ -123,6 +129,72 @@ fn draw_confirm_erase_for_micropython(frame: &mut Frame, area: Rect, confirm: bo
         Line::from("Would you like to install MicroPython?".fg(Color::White)),
     ];
     draw_confirm_dialog(frame, area, "Install MicroPython?", message, confirm, 65, 9);
+}
+
+/// A device command is waiting on the user because the board is believed to
+/// be running a script: `mpremote` interrupts it (Ctrl-C, then raw REPL) for
+/// every filesystem operation, so the interruption is the user's call, not a
+/// silent side effect. Naming what happens afterwards matters as much as the
+/// warning --- the script can be brought back.
+fn draw_confirm_interrupt_device(frame: &mut Frame, area: Rect, confirm: bool) {
+    let message = vec![
+        Line::from("A script is running on the device.".fg(Color::Yellow)),
+        Line::from("Every mpremote command interrupts it (Ctrl-C) to use the REPL.".dim()),
+        Line::from(""),
+        Line::from("Run the pending device command anyway?".fg(Color::White)),
+        Line::from("Afterwards you can restart the script from the prompt that follows.".dim()),
+    ];
+    draw_confirm_dialog(frame, area, "Device is busy", message, confirm, 64, 10);
+}
+
+/// How to bring back a script that was interrupted for a device operation:
+/// a three-row picker, since "restart" honestly splits into a clean reset
+/// and a fast relaunch with different tradeoffs. "Leave it stopped" is the
+/// default highlight --- restarting re-runs code the user may still be
+/// changing.
+fn draw_restore_device_script(frame: &mut Frame, area: Rect, selected: usize) {
+    const CHOICES: [(&str, &str); 3] = [
+        ("Reset the board", "reboot; runs boot.py + main.py again"),
+        (
+            "Restart main.py",
+            "no reboot; leftover state from the interrupted run",
+        ),
+        (
+            "Leave it stopped",
+            "start it yourself later (m, or reset by hand)",
+        ),
+    ];
+
+    let items: Vec<ListItem> = CHOICES
+        .iter()
+        .map(|(label, detail)| {
+            ListItem::new(Line::from(vec![
+                Span::raw(format!(" {label} ")),
+                Span::styled(format!("— {detail}"), Style::new().dim()),
+            ]))
+        })
+        .collect();
+
+    let popup = centered(area, 64, CHOICES.len() as u16 + 4);
+    let block = modal("Restart device script?");
+    let inner = block.inner(popup);
+    let [message, list] =
+        Layout::vertical([Constraint::Length(2), Constraint::Min(CHOICES.len() as u16)])
+            .areas(inner);
+
+    frame.render_widget(Clear, popup);
+    frame.render_widget(block, popup);
+    frame.render_widget(
+        Paragraph::new("The script that was interrupted can be brought back:".dim()),
+        message,
+    );
+
+    let mut state = ListState::default().with_selected(Some(selected));
+    frame.render_stateful_widget(
+        List::new(items).highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
+        list,
+        &mut state,
+    );
 }
 
 fn draw_confirm_delete(

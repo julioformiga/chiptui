@@ -100,8 +100,29 @@ pub fn touch(port: Option<&str>, path: &DevicePath) -> Command {
 /// full hardware reset, re-running `boot.py`/`main.py` so a file just
 /// uploaded actually takes effect. Not under `fs`: `soft-reset` is a
 /// top-level mpremote command, unlike every other operation here.
+///
+/// The reboot happens inside raw REPL, where `main.py` is *skipped* --- the
+/// script ends up stopped, not restarted.
 pub fn soft_reset(port: Option<&str>) -> Command {
     connect(port).arg("soft-reset")
+}
+
+/// `mpremote [connect PORT] reset` --- hard reset: the board reboots and runs
+/// `boot.py` + `main.py` again, which is what restores a script ChipTUI
+/// interrupted. Expands (inside mpremote) to
+/// `exec --no-follow "import time, machine; time.sleep_ms(100);
+/// machine.reset()"`; `--no-follow` keeps mpremote from waiting on a reply a
+/// resetting board never sends.
+pub fn hard_reset(port: Option<&str>) -> Command {
+    connect(port).arg("reset")
+}
+
+/// `mpremote [connect PORT] exec --no-follow "import main"` --- runs
+/// `main.py` again *without* rebooting: faster than a reset, but state left
+/// behind by the interrupted run (open sockets, half-written peripherals) is
+/// still there, so a reset is the cleaner option when in doubt.
+pub fn relaunch_main(port: Option<&str>) -> Command {
+    connect(port).args(["exec", "--no-follow", "import main"])
 }
 
 /// `mpremote [connect PORT] repl` --- starts an interactive REPL/serial monitor.
@@ -288,6 +309,32 @@ mod tests {
         assert_eq!(
             soft_reset(Some("/dev/ttyACM0")).to_string(),
             "mpremote connect /dev/ttyACM0 soft-reset"
+        );
+    }
+
+    #[test]
+    fn a_hard_reset_takes_no_path() {
+        assert_eq!(hard_reset(None).to_string(), "mpremote reset");
+        assert_eq!(
+            hard_reset(Some("/dev/ttyACM0")).to_string(),
+            "mpremote connect /dev/ttyACM0 reset"
+        );
+    }
+
+    #[test]
+    fn relaunching_main_runs_it_without_waiting() {
+        assert_eq!(
+            relaunch_main(None).to_string(),
+            "mpremote exec --no-follow \"import main\""
+        );
+        assert_eq!(
+            relaunch_main(Some("/dev/ttyACM0")).to_string(),
+            "mpremote connect /dev/ttyACM0 exec --no-follow \"import main\""
+        );
+        // The code is one argument, not three: no shell is involved.
+        assert_eq!(
+            relaunch_main(None).args_slice(),
+            ["exec", "--no-follow", "import main"]
         );
     }
 

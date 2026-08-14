@@ -1,0 +1,57 @@
+#!/bin/sh
+# Fake `mpremote` for ChipTUI tests: a board whose `main.py` sits in a
+# blocking loop and prints.
+#
+# Complements `mpremote` (the idle-board fake) for the busy-script paths:
+# `repl` streams loop output with no `>>> ` prompt, so the startup probe
+# must classify the board as running a script and hold device operations
+# behind a confirmation instead of silently interrupting the loop.
+
+args="$*"
+
+case "$args" in
+    "connect "*) args=$(printf '%s' "$args" | cut -d' ' -f3-) ;;
+esac
+
+case "$args" in
+    devs)
+        printf '/dev/ttyACM0 e6614104036e5f24 2e8a:0005 MicroPython Board in FS mode\n'
+        ;;
+
+    repl)
+        # A blocking loop that talks: no banner, no prompt --- exactly what
+        # the real board shows when main.py never returns. The first burst
+        # lands before anything else so the probe can classify the board
+        # immediately; a background printer keeps the output flowing after
+        # it, and the foreground loop watches for ctrl-] (0x1d), mpremote
+        # repl's own escape, to shut everything down when the probe closes
+        # the session.
+        printf 'loop: tick\nloop: tick\nloop: tick\n'
+        ( while :; do printf 'loop: tick\n'; sleep 0.05; done ) &
+        printer=$!
+        stty raw -echo
+        while [ "$(dd bs=1 count=1 2>/dev/null | od -An -tuC | tr -d ' \n')" != "29" ]; do :; done
+        stty sane
+        kill $printer 2>/dev/null
+        ;;
+
+    "fs --no-verbose ls :/")
+        printf '%12d %s\n' 1024 'main.py'
+        ;;
+
+    df)
+        printf '%s\n' 'filesystem     size     used    avail use% mounted on'
+        printf '%s %9d %8d %8d %4d %s\n' 'vfs       ' 524288 262144 262144 50 '/'
+        ;;
+
+    reset)
+        ;;
+
+    "exec --no-follow import main")
+        ;;
+
+    *)
+        echo "mpremote: no device found" >&2
+        exit 1
+        ;;
+esac
