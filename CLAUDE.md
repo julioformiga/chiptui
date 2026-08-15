@@ -58,8 +58,10 @@ The **workspace pane**
 half: it resolves the Zephyr *installation* (`src/backend/zephyr/workspace.rs`) from
 configuration and nowhere else --- `chiptui.toml`'s `[zephyr] workspace`, then the user
 config `~/.config/chiptui/config.toml` (both parsed by `src/settings.rs`); no directory
-conventions, no `$ZEPHYR_BASE`. When nothing is configured, `main.rs` calls
-`maybe_open_workspace_picker` right after startup: `Overlay::DirPicker` is a real
+conventions, no `$ZEPHYR_BASE`. Startup focus lands on this pane (`App::place_startup_focus`, after
+`maybe_scan_devices` in `main.rs`): the environment questions come first. When nothing is
+configured, `main.rs` calls
+`maybe_open_workspace_picker` right after: `Overlay::DirPicker` is a real
 filesystem browser (`workspace::dir_rows`, starting at `$HOME`) where the user navigates
 to the installation and accepts it; descending lands on the "use this directory" row so
 the reflex `Enter` accepts the folder just entered. The accepted directory is validated by
@@ -102,13 +104,15 @@ finds it; `ZEPHYR_SDK_INSTALL_DIR`/`PATH`/`VIRTUAL_ENV` when applicable —
 `<build-dir>/zephyr/CMakeCache.txt`, falling
 back to the sysbuild top-level cache; a hand-picked board is session state no finished
 command demotes) or a hand pick, and gates
-Build/Clean/Rebuild/Menuconfig/Flash via
+Menuconfig/Clean/Build/Rebuild/Flash (the list's order; `Stop` heads it only while a command runs)
+via
 `BuildPanel::lifecycle_ready`, the command state pinned to the pane's last line (skipped
-when the rows already fill the pane); `Stop`
-joins the stack as its first row while a command runs (starting a command lands
-the cursor on it), `Clean`
-behind `Overlay::ConfirmBuild` (destructive capability), output
-streaming into the Monitor tab (`MonitorSource::Build`). **Menuconfig** (`west build -t
+when the rows already fill the pane); starting Build/Rebuild shows the Monitor tab
+(`MonitorSource::Build`) but keeps focus on the panel with the cursor on `Stop`, moving it to
+`Flash` on a success and back to `Build` on a failure or after a `Clean` (which parks it on
+`Build` while running — the step a clean clears the way for),
+`Clean`
+behind `Overlay::ConfirmBuild` (destructive capability). **Menuconfig** (`west build -t
 menuconfig`) is interactive ncurses, so it parks a `pending_command` that `main.rs` runs under
 `TerminalGuard::suspend` — the same hand-off as `$EDITOR`. The lifecycle always targets the
 conventional `build` directory inside the project (implicit in commands; the `BuildDirPicker`

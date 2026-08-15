@@ -53,6 +53,9 @@ fn zephyr_app(tag: &str, board: Option<&str>) -> (App, std::path::PathBuf) {
     std::fs::create_dir_all(root.join("home")).unwrap();
     app.set_home_dir(root.join("home"));
     app.maybe_scan_devices();
+    // The binary's startup sequence, mirrored: focus lands on the first
+    // pane row 2 actually shows.
+    app.place_startup_focus();
     (app, root)
 }
 
@@ -94,6 +97,11 @@ fn the_panel_appears_and_is_a_focus_stop_for_a_build_backend() {
 
     assert!(app.build.is_some(), "Zephyr gets a build panel");
     assert!(app.build_pane_visible());
+    assert_eq!(
+        app.focus,
+        Focus::Workspace,
+        "startup focus lands on the workspace pane, not the paneless FilesLocal default"
+    );
 
     // Tab tour: Workspace -> Build -> Logs -> Workspace.
     app.focus = Focus::Logs;
@@ -137,14 +145,28 @@ fn enter_builds_and_streams_into_the_monitor_tab() {
     let mut app = app_with_west("run", "west");
     app.focus = Focus::Build;
 
-    // The Build button is the panel's first row.
+    // The list is Menuconfig, Clean, Build, Rebuild, Flash: two rows down
+    // sits Build.
+    app.handle(key(KeyCode::Down));
+    app.handle(key(KeyCode::Down));
     app.handle(key(KeyCode::Enter));
 
     assert!(app.build.as_ref().unwrap().is_busy());
     assert_eq!(app.view, View::Dashboard);
-    assert_eq!(app.focus, Focus::Logs);
+    // The Monitor tab is *shown*, but focus stays on the panel: the
+    // lifecycle's next step (Stop, then Flash) is right here.
+    assert_eq!(app.focus, Focus::Build);
     assert_eq!(app.log_tab, LogTab::Monitor);
     assert_eq!(app.monitor_source, MonitorSource::Build);
+    let caps = app.manager.capabilities();
+    assert_eq!(
+        app.build
+            .as_ref()
+            .unwrap()
+            .action_at(&caps, app.build.as_ref().unwrap().cursor),
+        Some(chiptui::build::BuildAction::Stop),
+        "a running build parks the cursor on Stop"
+    );
 
     // The build directory exists in the fixture, so the command is the
     // incremental `west build` --- no `-b`, the cache already carries it.
@@ -168,6 +190,15 @@ fn enter_builds_and_streams_into_the_monitor_tab() {
     let last = app.build.as_ref().unwrap().last.as_ref().unwrap();
     assert!(last.ok, "a zero-exit west must report success");
     assert_eq!(last.what, "Build");
+    let caps = app.manager.capabilities();
+    assert_eq!(
+        app.build
+            .as_ref()
+            .unwrap()
+            .action_at(&caps, app.build.as_ref().unwrap().cursor),
+        Some(chiptui::build::BuildAction::Flash),
+        "a successful build moves the cursor to Flash"
+    );
     assert!(
         app.build.as_ref().unwrap().output.len() >= 2,
         "output streamed"
@@ -204,9 +235,19 @@ fn clean_asks_before_running() {
         "the confirm must quote the literal command:\n{frame}"
     );
 
-    // Accept with 'y': the command runs.
+    // Accept with 'y': the command runs, and the cursor waits it out on
+    // Build --- the step a clean exists to clear the way for.
     app.handle(key(KeyCode::Char('y')));
     assert!(app.build.as_ref().unwrap().is_busy());
+    let caps = app.manager.capabilities();
+    assert_eq!(
+        app.build
+            .as_ref()
+            .unwrap()
+            .action_at(&caps, app.build.as_ref().unwrap().cursor),
+        Some(chiptui::build::BuildAction::Build(BuildKind::Build)),
+        "a running clean parks the cursor on Build"
+    );
     assert!(
         app.build
             .as_ref()
@@ -220,9 +261,7 @@ fn clean_asks_before_running() {
     // Declining leaves nothing running.
     let mut app2 = app_with_west("clean-decline", "west");
     app2.focus = Focus::Build;
-    for _ in 0..3 {
-        app2.handle(key(KeyCode::Down));
-    }
+    app2.handle(key(KeyCode::Down)); // Clean
     app2.handle(key(KeyCode::Enter));
     app2.handle(key(KeyCode::Esc));
     assert!(!app2.build.as_ref().unwrap().is_busy());
@@ -233,8 +272,8 @@ fn rebuild_is_pristine_and_pins_the_cached_board() {
     let mut app = app_with_west("rebuild", "west");
     app.focus = Focus::Build;
 
-    for _ in 0..2 {
-        // Build, Clean
+    for _ in 0..3 {
+        // Menuconfig, Clean, Build
         app.handle(key(KeyCode::Down));
     } // Rebuild
     app.handle(key(KeyCode::Enter));
@@ -266,17 +305,16 @@ fn stop_cancels_the_running_command() {
     let mut app = app_with_west("stop", "slow");
     app.focus = Focus::Build;
 
-    // A build command runs from the panel's first row.
+    // Menuconfig, Clean, then Build.
+    app.handle(key(KeyCode::Down));
+    app.handle(key(KeyCode::Down));
     app.handle(key(KeyCode::Enter));
     assert!(app.build.as_ref().unwrap().is_busy());
 
-    // While running, Stop heads the list. Starting the build moved focus to
-    // the Monitor tab; walk back to the panel (Logs -> Workspace -> Build)
-    // and press Enter on Stop.
+    // While running, Stop heads the list and holds the cursor (starting
+    // the build left focus on the panel): Enter cancels.
     let frame = render(&mut app, 100, 30);
     assert!(frame.contains("Stop"), "no stop row:\n{frame}");
-    app.handle(key(KeyCode::Tab));
-    app.handle(key(KeyCode::Tab));
     assert_eq!(app.focus, Focus::Build);
     app.handle(key(KeyCode::Enter));
 
@@ -296,7 +334,9 @@ fn a_failed_command_reports_and_keeps_the_panel_usable() {
     let mut app = app_with_west("fail", "noisy");
     app.focus = Focus::Build;
 
-    // A build command runs from the panel's first row.
+    // Menuconfig, Clean, then Build.
+    app.handle(key(KeyCode::Down));
+    app.handle(key(KeyCode::Down));
     app.handle(key(KeyCode::Enter));
     let finished = pump_until(
         &mut app,
@@ -307,8 +347,18 @@ fn a_failed_command_reports_and_keeps_the_panel_usable() {
     let last = app.build.as_ref().unwrap().last.as_ref().unwrap();
     assert!(!last.ok, "a non-zero exit must be a failure");
 
-    // The panel is idle again and a retry is possible.
+    // The panel is idle again, the cursor fell back on Build (the retry),
+    // and that retry is one Enter away.
     assert!(!app.build.as_ref().unwrap().is_busy());
+    let caps = app.manager.capabilities();
+    assert_eq!(
+        app.build
+            .as_ref()
+            .unwrap()
+            .action_at(&caps, app.build.as_ref().unwrap().cursor),
+        Some(chiptui::build::BuildAction::Build(BuildKind::Build)),
+        "a failed build moves the cursor back to Build"
+    );
     app.focus = Focus::Build;
     app.handle(key(KeyCode::Enter));
     assert!(app.build.as_ref().unwrap().is_busy());
@@ -513,7 +563,7 @@ fn flash_is_listed_confirms_and_runs_through_west() {
     let mut app = app_with_west("flash", "west");
     app.focus = Focus::Build;
 
-    // Flash sits last, after Menuconfig.
+    // Flash sits last: Menuconfig, Clean, Build, Rebuild, then it.
     for _ in 0..4 {
         app.handle(key(KeyCode::Down));
     }
@@ -871,10 +921,7 @@ fn menuconfig_hands_the_terminal_over_instead_of_piping() {
     let mut app = app_with_west("menuconfig", "west");
     app.focus = Focus::Build;
 
-    // Menuconfig sits after the lifecycle buttons.
-    for _ in 0..3 {
-        app.handle(key(KeyCode::Down));
-    }
+    // Menuconfig is the panel's first row.
     app.handle(key(KeyCode::Enter));
 
     let command = app.take_pending_command().expect("a parked command");

@@ -1058,7 +1058,8 @@ impl App {
         }
 
         if let Some(mut build) = self.build.take() {
-            let notices = build.on_process(event);
+            let caps = self.manager.capabilities();
+            let notices = build.on_process(event, &caps);
             self.build = Some(build);
             for (level, message) in notices {
                 self.logs.push(level, message);

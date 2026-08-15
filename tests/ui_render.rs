@@ -498,7 +498,13 @@ fn the_monitor_tab_shows_the_running_command_with_a_spinner() {
         .build
         .as_mut()
         .expect("the build panel exists for a build backend")
-        .start("Build", false, command, &mut app.processes);
+        .start(
+            "Build",
+            false,
+            chiptui::build::Follow::Keep,
+            command,
+            &mut app.processes,
+        );
     assert!(started, "the panel must accept the command");
     app.focus = Focus::Logs;
     app.log_tab = LogTab::Monitor;

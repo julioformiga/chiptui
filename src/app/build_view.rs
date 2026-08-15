@@ -6,7 +6,7 @@
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
 use crate::backend::BuildKind;
-use crate::build::BuildAction;
+use crate::build::{BuildAction, Follow};
 
 use super::{App, Focus, LogTab, MonitorSource, Overlay};
 
@@ -228,22 +228,42 @@ impl App {
         self.overlay = None;
     }
 
-    /// Starts `kind`'s command and moves the user to where its output
-    /// streams. A failure to even compose or start the command is a log
-    /// notice instead: the panel stays usable.
+    /// Starts `kind`'s command and shows its output streaming in the
+    /// Monitor tab --- without pulling focus off the panel: the lifecycle's
+    /// next step is right here (Stop while it runs, then Flash on success).
+    /// A failure to even compose or start the command is a log notice
+    /// instead: the panel stays usable.
     pub(super) fn start_build(&mut self, kind: BuildKind) {
         let updates_board = matches!(kind, BuildKind::Build | BuildKind::Rebuild);
-        self.start_build_command(kind.label(), updates_board, |panel, backend| {
-            panel.command(kind, backend)
-        });
+        let caps = self.manager.capabilities();
+        self.start_build_command(
+            kind.label(),
+            updates_board,
+            Follow::Lifecycle,
+            Focus::Build,
+            |panel, backend| panel.command(kind, backend),
+        );
+        // Clean parks the cursor on Build: the build is the step a clean
+        // exists to clear the way for (a build/rebuild already sits on
+        // Stop, the row `start` lands on).
+        if kind == BuildKind::Clean
+            && let Some(panel) = self.build.as_mut()
+        {
+            panel.focus_action(&caps, BuildAction::Build(BuildKind::Build));
+        }
     }
 
-    /// Starts the flash command, same hand-off as the build kinds. Reached
-    /// only through the confirm overlay (flash is destructive).
+    /// Starts the flash command, same hand-off as the build kinds except
+    /// that focus follows the output (the device is the thing changing).
+    /// Reached only through the confirm overlay (flash is destructive).
     pub(super) fn start_flash(&mut self) {
-        self.start_build_command("Flash", false, |panel, backend| {
-            panel.flash_command(backend)
-        });
+        self.start_build_command(
+            "Flash",
+            false,
+            Follow::Keep,
+            Focus::Logs,
+            |panel, backend| panel.flash_command(backend),
+        );
     }
 
     /// Hands the terminal to `west build -t menuconfig` (`SPEC.md` §11's
@@ -287,12 +307,16 @@ impl App {
     }
 
     /// The shared body of [`Self::start_build`]/[`Self::start_flash`]:
-    /// compose through the panel, run, and move the user to the Monitor
-    /// tab where the output streams.
+    /// compose through the panel, run, and point the Monitor tab at the
+    /// output. `focus` is where the user sits while it runs --- the panel
+    /// for the build lifecycle, the Monitor tab for a flash --- and
+    /// `follow` says where the panel's cursor lands when it finishes.
     fn start_build_command(
         &mut self,
         label: &'static str,
         updates_board: bool,
+        follow: Follow,
+        focus: Focus,
         command: impl FnOnce(
             &mut crate::build::BuildPanel,
             &dyn crate::backend::Backend,
@@ -314,14 +338,14 @@ impl App {
             return;
         };
         let full_label = command.to_string();
-        if !panel.start(label, updates_board, command, &mut self.processes) {
+        if !panel.start(label, updates_board, follow, command, &mut self.processes) {
             return;
         }
         self.logs.info(format!("running {full_label}"));
-        // Same hand-off as the flash dialog: the command's home while it
-        // runs is the Monitor tab (`SPEC.md` §11).
+        // The command's home while it runs is the Monitor tab (`SPEC.md`
+        // §11) --- showing it, without moving the user off the panel.
         self.view = super::View::Dashboard;
-        self.focus = Focus::Logs;
+        self.focus = focus;
         self.log_tab = LogTab::Monitor;
         self.set_monitor_source(MonitorSource::Build);
     }

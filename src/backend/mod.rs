@@ -76,7 +76,9 @@ pub enum BuildKind {
 }
 
 impl BuildKind {
-    pub const ALL: &'static [BuildKind] = &[BuildKind::Build, BuildKind::Clean, BuildKind::Rebuild];
+    /// The lifecycle in its own order: clean clears the way, build makes,
+    /// rebuild makes again from scratch. Also the panel's row order.
+    pub const ALL: &'static [BuildKind] = &[BuildKind::Clean, BuildKind::Build, BuildKind::Rebuild];
 
     pub const fn label(self) -> &'static str {
         match self {

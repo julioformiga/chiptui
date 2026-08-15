@@ -35,6 +35,17 @@ impl App {
         self.maybe_scan_serial_ports();
     }
 
+    /// Places focus for the first frame. By now row 2's panes exist, so the
+    /// tour can start on the workspace pane --- a build backend's
+    /// environment questions come first --- instead of wherever the
+    /// pre-panel clamps left the focus (`App::detect` runs before any pane
+    /// exists, and clamps an unknown backend onto `Logs`). Startup-only:
+    /// later backend switches keep the user's focus where it is, clamped
+    /// to a pane that still exists.
+    pub fn place_startup_focus(&mut self) {
+        self.focus = self.fallback_pane();
+    }
+
     /// The serial-port half of device discovery, for a backend with a
     /// monitor but no listing tool of its own (no `mpremote devs` to lean
     /// on): a plain `/dev` walk, synchronous because it is one cheap

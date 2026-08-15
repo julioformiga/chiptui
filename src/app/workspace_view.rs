@@ -382,7 +382,13 @@ impl App {
             self.logs.warn("a build command is already running");
             return;
         }
-        if !panel.start(label, false, command, &mut self.processes) {
+        if !panel.start(
+            label,
+            false,
+            crate::build::Follow::Keep,
+            command,
+            &mut self.processes,
+        ) {
             return;
         }
         self.view = super::View::Dashboard;

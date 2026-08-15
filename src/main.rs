@@ -36,6 +36,7 @@ fn run() -> Result<()> {
     app.bootstrap();
     app.maybe_open_project_setup();
     app.maybe_scan_devices();
+    app.place_startup_focus();
     // The Zephyr flow's first question: when no config names the
     // installation, ask right away (`SPEC.md` §10's environment) --- the
     // pane alone would leave the answer one keypress away instead of in

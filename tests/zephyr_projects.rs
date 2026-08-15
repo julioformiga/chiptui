@@ -84,10 +84,11 @@ fn press_project_row(app: &mut App) {
     app.handle(key(KeyCode::Enter));
 }
 
-/// The `Build` button --- the project panel's first row now that the
-/// questions moved to the workspace pane.
+/// The `Build` button --- third row of the panel's list (Menuconfig,
+/// Clean, Build, ...) now that the questions moved to the workspace pane.
 fn press_build(app: &mut App) {
     app.focus = Focus::Build;
+    app.build.as_mut().unwrap().cursor = 2;
     app.handle(key(KeyCode::Enter));
 }
 

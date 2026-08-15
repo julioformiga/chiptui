@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use time::{OffsetDateTime, UtcOffset};
 
-use crate::backend::BuildKind;
+use crate::backend::{BuildKind, Capabilities};
 use crate::logs::Level;
 use crate::process::{Outcome, ProcessEvent, ProcessId, ProcessManager};
 
@@ -58,7 +58,20 @@ struct Running {
     /// A successful run leaves a fresh CMakeCache behind (build/rebuild;
     /// `west flash` does not reconfigure). See [`BuildPanel::finish`].
     updates_board: bool,
+    /// Where the cursor lands when this command finishes. See [`Follow`].
+    follow: Follow,
     started: Instant,
+}
+
+/// How the cursor follows the command that just finished: the build
+/// lifecycle's next step is knowable --- Flash after a successful
+/// build/rebuild, Build after anything else (a retry, or the build that
+/// follows a clean) --- while other commands (flash) keep the row they
+/// started from, minus the `Stop` head that just disappeared.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Follow {
+    Lifecycle,
+    Keep,
 }
 
 /// One board target from `west boards`: the name `west build -b` takes and
@@ -140,19 +153,20 @@ pub enum BuildAction {
 }
 
 impl BuildAction {
-    /// Rows the list shows under `caps`: the build lifecycle, menuconfig
-    /// beside it (a build-system target like the others), then flash
-    /// under its capability. With `running`, `Stop` is prepended
-    /// (cancelling as discoverable as starting, `SPEC.md` §12). The
-    /// lifecycle targets the conventional `build` directory inside the
-    /// project --- no directory picker.
-    pub fn list(caps: &crate::backend::Capabilities, running: bool) -> Vec<Self> {
+    /// Rows the list shows under `caps`: menuconfig first (a build-system
+    /// question answered before any artifact exists), then the lifecycle in
+    /// its own order (clean, build, rebuild), then flash under its
+    /// capability. With `running`, `Stop` is prepended (cancelling as
+    /// discoverable as starting, `SPEC.md` §12). The lifecycle targets the
+    /// conventional `build` directory inside the project --- no directory
+    /// picker.
+    pub fn list(caps: &Capabilities, running: bool) -> Vec<Self> {
         let mut actions = Vec::with_capacity(BuildKind::ALL.len() + 3);
         if running {
             actions.push(Self::Stop);
         }
-        actions.extend(BuildKind::ALL.iter().map(|kind| Self::Build(*kind)));
         actions.push(Self::Menuconfig);
+        actions.extend(BuildKind::ALL.iter().map(|kind| Self::Build(*kind)));
         if caps.contains(crate::backend::Capability::Flash) {
             actions.push(Self::Flash);
         }
@@ -488,13 +502,14 @@ impl BuildPanel {
 
     /// Starts `command` as this panel's running process. `what` labels it in
     /// the report line; `updates_board` marks commands whose success leaves
-    /// a fresh CMakeCache behind. `false` (without side effects) when
-    /// something is already running --- one build at a time, same rule as
-    /// the flash panel.
+    /// a fresh CMakeCache behind; `follow` says where the cursor lands when
+    /// it finishes. `false` (without side effects) when something is already
+    /// running --- one build at a time, same rule as the flash panel.
     pub fn start(
         &mut self,
         what: &'static str,
         updates_board: bool,
+        follow: Follow,
         command: crate::process::Command,
         processes: &mut ProcessManager,
     ) -> bool {
@@ -511,6 +526,7 @@ impl BuildPanel {
             id,
             what,
             updates_board,
+            follow,
             started: Instant::now(),
         });
         // `Stop` now heads the list: land the cursor on it, so cancelling
@@ -518,6 +534,19 @@ impl BuildPanel {
         // for free when the lifecycle led the list).
         self.cursor = 0;
         true
+    }
+
+    /// Points the cursor at `action` in the list the panel currently shows:
+    /// the Clean → Build half of the lifecycle tour (a clean exists to be
+    /// followed by a build, so that is where the cursor waits it out).
+    /// A no-op when the list does not show the action.
+    pub fn focus_action(&mut self, caps: &Capabilities, action: BuildAction) {
+        if let Some(index) = BuildAction::list(caps, self.is_busy())
+            .iter()
+            .position(|candidate| *candidate == action)
+        {
+            self.cursor = index;
+        }
     }
 
     /// Cancels the running command at the user's request.
@@ -532,8 +561,13 @@ impl BuildPanel {
     /// Feeds a process event back into the panel, returning log notices.
     /// Covers both of its processes: the build command and the background
     /// `west boards` fetch --- each matched by id, each ignored when it is
-    /// the other's event.
-    pub fn on_process(&mut self, event: &ProcessEvent) -> Vec<(Level, String)> {
+    /// the other's event. `caps` shapes the post-finish cursor target
+    /// (Flash only exists under its capability).
+    pub fn on_process(
+        &mut self,
+        event: &ProcessEvent,
+        caps: &Capabilities,
+    ) -> Vec<(Level, String)> {
         match event {
             ProcessEvent::Line { id, text, .. } => {
                 if self
@@ -564,7 +598,7 @@ impl BuildPanel {
                     self.running = Some(running);
                     return Vec::new();
                 }
-                self.finish(running, outcome, *duration)
+                self.finish(running, outcome, *duration, caps)
             }
             ProcessEvent::Started { .. } | ProcessEvent::Output { .. } => Vec::new(),
         }
@@ -588,6 +622,7 @@ impl BuildPanel {
         running: Running,
         outcome: &Outcome,
         duration: Duration,
+        caps: &Capabilities,
     ) -> Vec<(Level, String)> {
         let ok = outcome.is_success();
         let what = running.what;
@@ -627,6 +662,22 @@ impl BuildPanel {
         // commands pass as `-b`, and a cache that cannot be read (a layout
         // this reader does not know, a build that wrote elsewhere) must not
         // erase the user's explicit choice.
+        // The list just lost its `Stop` head, so the cursor would otherwise
+        // slide onto the row above whatever it sat on. Point it at the
+        // lifecycle's next step instead: Flash after a successful
+        // build/rebuild (flash what was just built), Build otherwise (a
+        // retry, or the build a clean clears the way for); other commands
+        // keep the row they started from.
+        let settled = BuildAction::list(caps, false);
+        let target = match running.follow {
+            Follow::Lifecycle if ok => Some(BuildAction::Flash),
+            Follow::Lifecycle => Some(BuildAction::Build(BuildKind::Build)),
+            Follow::Keep => None,
+        };
+        self.cursor = target
+            .and_then(|action| settled.iter().position(|candidate| *candidate == action))
+            .unwrap_or_else(|| self.cursor.saturating_sub(1));
+
         if ok && running.updates_board {
             let cached = cached_board(&self.root, &self.build_dir).map(|name| BoardChoice {
                 name,
@@ -794,13 +845,17 @@ mod tests {
         assert!(panel.start(
             BuildKind::Build.label(),
             true,
+            Follow::Lifecycle,
             crate::process::Command::new(fake("west")),
             &mut processes,
         ));
         let deadline = Instant::now() + Duration::from_secs(10);
         while Instant::now() < deadline {
             for event in processes.drain() {
-                panel.on_process(&event);
+                panel.on_process(
+                    &event,
+                    &crate::backend::Capabilities::from_slice(&[crate::backend::Capability::Build]),
+                );
             }
             if panel.last.is_some() {
                 break;
@@ -1006,28 +1061,25 @@ mod tests {
         assert_eq!(
             panel.actions(&zephyr),
             vec![
-                BuildAction::Build(BuildKind::Build),
-                BuildAction::Build(BuildKind::Clean),
-                BuildAction::Build(BuildKind::Rebuild),
                 BuildAction::Menuconfig,
+                BuildAction::Build(BuildKind::Clean),
+                BuildAction::Build(BuildKind::Build),
+                BuildAction::Build(BuildKind::Rebuild),
                 BuildAction::Flash,
             ]
         );
-        assert_eq!(
-            panel.action_at(&zephyr, 0),
-            Some(BuildAction::Build(BuildKind::Build))
-        );
+        assert_eq!(panel.action_at(&zephyr, 0), Some(BuildAction::Menuconfig));
         assert_eq!(panel.action_at(&zephyr, 4), Some(BuildAction::Flash));
 
-        // A backend without flash: the lifecycle and menuconfig alone.
+        // A backend without flash: menuconfig and the lifecycle alone.
         let plain = crate::backend::Capabilities::from_slice(&[crate::backend::Capability::Build]);
         assert_eq!(
             panel.actions(&plain),
             vec![
-                BuildAction::Build(BuildKind::Build),
-                BuildAction::Build(BuildKind::Clean),
-                BuildAction::Build(BuildKind::Rebuild),
                 BuildAction::Menuconfig,
+                BuildAction::Build(BuildKind::Clean),
+                BuildAction::Build(BuildKind::Build),
+                BuildAction::Build(BuildKind::Rebuild),
             ]
         );
 
@@ -1044,12 +1096,13 @@ mod tests {
         panel.start(
             BuildKind::Build.label(),
             true,
+            Follow::Lifecycle,
             crate::process::Command::new(fake("west")),
             &mut processes,
         );
         assert_eq!(panel.action_at(&zephyr, 0), Some(BuildAction::Stop));
         assert_eq!(
-            panel.action_at(&zephyr, 3),
+            panel.action_at(&zephyr, 4),
             Some(BuildAction::Build(BuildKind::Rebuild))
         );
     }
