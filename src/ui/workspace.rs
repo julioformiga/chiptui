@@ -31,17 +31,37 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let [status, list] = Layout::vertical([Constraint::Length(7), Constraint::Min(1)]).areas(inner);
+    let [status, list] = Layout::vertical([Constraint::Length(8), Constraint::Min(1)]).areas(inner);
 
     draw_status(frame, status, app);
     draw_actions(frame, list, app, focused);
 }
 /// The environment's status: workspace + origin, west executable, Zephyr
-/// version, SDK. Unresolved states say what to do next --- the actionable
-/// error `SPEC.md` §14 asks for, not a dead pane.
+/// version, SDK, projects folder. Unresolved states say what to do next ---
+/// the actionable error `SPEC.md` §14 asks for, not a dead pane.
 fn draw_status(frame: &mut Frame, area: Rect, app: &App) {
     let Some(panel) = &app.workspace else {
         return;
+    };
+    let projects_line = |panel: &crate::workspace::WorkspacePanel| {
+        let projects_label = || Span::styled("projects ", Style::new().dim());
+        if let Some(message) = &panel.projects_invalid {
+            Line::from(vec![projects_label(), message.clone().fg(Color::Red)])
+        } else if let Some(dir) = &panel.projects {
+            Line::from(vec![
+                projects_label(),
+                shorten_start(
+                    &dir.display().to_string(),
+                    (area.width as usize).saturating_sub(13),
+                )
+                .fg(Color::Green),
+            ])
+        } else {
+            Line::from(vec![
+                projects_label(),
+                "not set (needed when the cwd is not a project)".dim(),
+            ])
+        }
     };
     let lines = match &panel.resolved {
         Some(workspace) => {
@@ -94,6 +114,7 @@ fn draw_status(frame: &mut Frame, area: Rect, app: &App) {
                 Line::from(vec![label("zephyr"), version]),
                 west_line,
                 sdk_line,
+                projects_line(panel),
             ]
         }
         None => {
@@ -110,6 +131,7 @@ fn draw_status(frame: &mut Frame, area: Rect, app: &App) {
                     Line::from(message.clone().fg(Color::Red)),
                     Line::from("Enter: choose the right directory".fg(Color::Yellow)),
                     Line::from(vec!["or fix ".dim(), short_config.dim().bold()]),
+                    projects_line(panel),
                 ]
             } else {
                 // Nothing configured: the picker answers this in three
@@ -129,7 +151,9 @@ fn draw_status(frame: &mut Frame, area: Rect, app: &App) {
                     ]),
                     Line::from("[zephyr]".dim().bold()),
                     Line::from("workspace = \"…\"".dim()),
+                    Line::from("projects = \"…\"  (apps folder)".dim()),
                     Line::from("# sdk = \"…\"  (toolchain)   # west = \"…\"".dim()),
+                    projects_line(panel),
                 ]
             }
         }
@@ -179,6 +203,21 @@ fn draw_actions(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
                     Style::new().dim(),
                 ),
             ]),
+            WorkspaceAction::Projects => {
+                let hint = panel
+                    .projects
+                    .as_ref()
+                    .map(|dir| format!("apps live in {} — pick the one to build", dir.display()))
+                    .unwrap_or_else(|| {
+                        "where do your Zephyr projects live? (saved to the config)".to_string()
+                    });
+                Line::from(vec![
+                    Span::raw("  "),
+                    "Projects".bold(),
+                    Span::raw("  "),
+                    Span::styled(hint, Style::new().dim()),
+                ])
+            }
         };
         items.push(ListItem::new(item));
     }

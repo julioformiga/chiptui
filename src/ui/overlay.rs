@@ -22,7 +22,11 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
         Overlay::Confirm { message, confirm } => draw_confirm(frame, area, &message, confirm),
         Overlay::ConfirmBuild { action, confirm } => {
             // The message is derived, not stored: whatever the panel would
-            // run right now is exactly what the confirm should quote.
+            // run right now is exactly what the confirm should quote. The
+            // literal command (the venv's west path and `ZEPHYR_BASE` env
+            // included) regularly exceeds one dialog line, so it is
+            // shortened from the left --- its tail, not its /tmp prefix,
+            // is its identity (the same rule as ConfirmWorkspace).
             let message = app
                 .build
                 .as_ref()
@@ -40,16 +44,22 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
                     }
                 })
                 .unwrap_or_else(|| "this action".to_string());
-            draw_confirm(frame, area, &format!("Run {message}?"), confirm);
+            draw_confirm(
+                frame,
+                area,
+                &format!("Run {}?", shorten_tail(&message, 60)),
+                confirm,
+            );
         }
         Overlay::BoardPicker { input, selected } => {
             draw_board_picker(frame, area, app, &input, selected)
         }
         Overlay::DirPicker {
+            purpose,
             path,
             selected,
             error,
-        } => draw_dir_picker(frame, area, &path, selected, error.as_deref()),
+        } => draw_dir_picker(frame, area, purpose, &path, selected, error.as_deref()),
         Overlay::ConfirmWorkspace { action, confirm } => {
             // Derived like ConfirmBuild's message: whatever the pane would
             // run right now is what the confirm quotes. The literal command
@@ -69,14 +79,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
                     }
                 })
                 .unwrap_or_else(|| "this action".to_string());
-            let quoted = {
-                let length = command.chars().count();
-                if length <= 64 {
-                    command
-                } else {
-                    format!("…{}", command.chars().skip(length - 63).collect::<String>())
-                }
-            };
+            let quoted = shorten_tail(&command, 63);
             let lines = vec![
                 Line::from("Run this in the shared workspace?".fg(Color::Yellow)),
                 Line::from(quoted),
@@ -86,6 +89,9 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
         }
         Overlay::BuildDirPicker { input, selected } => {
             draw_build_dir_picker(frame, area, app, &input, selected)
+        }
+        Overlay::ProjectPicker { selected, error } => {
+            draw_project_picker(frame, area, app, selected, error.as_deref())
         }
         Overlay::FirmwarePicker { selected } => draw_firmware_picker(frame, area, app, selected),
         Overlay::ProjectSetup { selected } => draw_project_setup(frame, area, selected),
@@ -421,6 +427,23 @@ fn draw_file_viewer(frame: &mut Frame, area: Rect, app: &mut App) {
     }
 }
 
+/// A command too long for one dialog line, cut from the left: the tail
+/// (program name, arguments) is what identifies it, not the `/tmp` or
+/// workspace prefix the environment puts in front.
+fn shorten_tail(text: &str, max_chars: usize) -> String {
+    let length = text.chars().count();
+    if length <= max_chars {
+        text.to_string()
+    } else {
+        format!(
+            "…{}",
+            text.chars()
+                .skip(length - (max_chars - 1))
+                .collect::<String>()
+        )
+    }
+}
+
 fn token_style(kind: TokenKind) -> Style {
     match kind {
         TokenKind::Plain => Style::new(),
@@ -607,17 +630,23 @@ fn draw_confirm(frame: &mut Frame, area: Rect, message: &str, confirm: bool) {
 fn draw_dir_picker(
     frame: &mut Frame,
     area: Rect,
+    purpose: crate::workspace::DirPurpose,
     path: &std::path::Path,
     selected: usize,
     error: Option<&str>,
 ) {
+    let title = match purpose {
+        crate::workspace::DirPurpose::Installation => "Where is the Zephyr installation?",
+        crate::workspace::DirPurpose::Projects => "Where are your Zephyr projects?",
+    };
     let height = 18u16;
     let width = 72u16;
     let popup = centered(area, width, height);
     frame.render_widget(Clear, popup);
-    frame.render_widget(modal("Where is the Zephyr installation?"), popup);
+    let block = modal(title);
+    frame.render_widget(block.clone(), popup);
 
-    let inner = modal("Where is the Zephyr installation?").inner(popup);
+    let inner = block.inner(popup);
     let [path_area, list_area, footer_area] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(1),
@@ -659,6 +688,98 @@ fn draw_dir_picker(
         (None, None) => Line::from(
             "enter: open / accept · ←: up · esc: cancel — the choice is saved to the config".dim(),
         ),
+    };
+    frame.render_widget(
+        Paragraph::new(footer).wrap(ratatui::widgets::Wrap { trim: false }),
+        footer_area,
+    );
+}
+
+/// Project selection from the configured projects folder: every immediate
+/// subdirectory, the buildable ones carrying the elements `west build`
+/// needs and the rest saying so out loud --- the verification the gate
+/// promises, visible before Enter is ever pressed (`SPEC.md` §14).
+fn draw_project_picker(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    selected: usize,
+    error: Option<&str>,
+) {
+    let height = 18u16;
+    let width = 72u16;
+    let popup = centered(area, width, height);
+    frame.render_widget(Clear, popup);
+    let block = modal("Which project?");
+    frame.render_widget(block.clone(), popup);
+
+    let inner = block.inner(popup);
+    let [dir_area, list_area, footer_area] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(1),
+        Constraint::Length(2),
+    ])
+    .areas(inner);
+
+    let dir = app
+        .workspace
+        .as_ref()
+        .and_then(|panel| panel.projects.clone());
+    let Some(dir) = dir else {
+        frame.render_widget(
+            Paragraph::new("no projects folder configured".fg(Color::Yellow)),
+            dir_area,
+        );
+        return;
+    };
+
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("in   ", Style::new().dim()),
+            Span::raw(dir.display().to_string()),
+        ])),
+        dir_area,
+    );
+
+    let (rows, read_error) = crate::backend::zephyr::projects::project_rows(&dir);
+    let items: Vec<ListItem> = rows
+        .iter()
+        .map(|row| {
+            if row.buildable {
+                ListItem::new(Line::from(vec![
+                    Span::raw("  "),
+                    row.name.clone().bold(),
+                    Span::raw("  "),
+                    Span::styled("✓ CMakeLists.txt", Style::new().fg(Color::Green)),
+                ]))
+            } else {
+                ListItem::new(Line::from(vec![
+                    Span::raw("  "),
+                    Span::raw(row.name.clone()),
+                    Span::raw("  "),
+                    Span::styled("no CMakeLists.txt", Style::new().dim()),
+                ]))
+            }
+        })
+        .collect();
+    let mut state = ListState::default().with_selected(Some(selected));
+    frame.render_stateful_widget(
+        List::new(items).highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
+        list_area,
+        &mut state,
+    );
+
+    let footer = if let Some(error) = error {
+        Line::from(error.to_string().fg(Color::Red))
+    } else if let Some(read) = read_error {
+        Line::from(read.fg(Color::Yellow))
+    } else if rows.is_empty() {
+        Line::from(
+            "no subdirectories here — put an application in the folder, or choose another"
+                .fg(Color::Yellow),
+        )
+    } else {
+        Line::from("enter: build this one · esc: cancel — the choice is session-only".dim())
     };
     frame.render_widget(
         Paragraph::new(footer).wrap(ratatui::widgets::Wrap { trim: false }),

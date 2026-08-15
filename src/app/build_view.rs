@@ -87,8 +87,17 @@ impl App {
     /// overlay quoting the literal command; `menuconfig` hands the terminal
     /// to the child; the rest act immediately. This is also the confirm
     /// overlay's accept path, which is why it must not itself confirm
-    /// again.
+    /// again. Every action that runs a *project* command passes through
+    /// [`Self::require_buildable_project`] first --- no command runs in a
+    /// directory that is not a buildable application.
     pub(super) fn run_build_action(&mut self, action: BuildAction) {
+        if matches!(
+            action,
+            BuildAction::Build(_) | BuildAction::Flash | BuildAction::Menuconfig
+        ) && !self.require_buildable_project(&action)
+        {
+            return;
+        }
         match action {
             BuildAction::Stop => self.stop_build(),
             BuildAction::Build(kind) => {
@@ -110,7 +119,111 @@ impl App {
             BuildAction::Board => self.open_board_picker(),
             BuildAction::Menuconfig => self.start_menuconfig(),
             BuildAction::BuildDir => self.open_build_dir_picker(),
+            BuildAction::Project => self.open_project_flow(),
         }
+    }
+
+    /// The project gate (`Capability::ProjectSelect`): every command that
+    /// runs *in the project* (build, clean, rebuild, flash, menuconfig)
+    /// needs a working directory with build elements. A root that has them
+    /// --- the directory ChipTUI was started in, when that is a project ---
+    /// passes without ceremony; one that does not is refused, never
+    /// silently built around: the refusal explains itself and opens the
+    /// flow that answers it (projects folder, then the project itself).
+    fn require_buildable_project(&mut self, action: &BuildAction) -> bool {
+        let Some(panel) = &self.build else {
+            return true;
+        };
+        if !self
+            .manager
+            .capabilities()
+            .contains(crate::backend::Capability::ProjectSelect)
+            || crate::backend::zephyr::projects::is_buildable(&panel.root)
+        {
+            return true;
+        }
+        let what = match action {
+            BuildAction::Build(kind) => kind.label(),
+            BuildAction::Flash => "flash",
+            BuildAction::Menuconfig => "menuconfig",
+            _ => "this command",
+        };
+        self.logs.warn(format!(
+            "{what}: {} is not a Zephyr application (no CMakeLists.txt) — pick a project first",
+            panel.root.display()
+        ));
+        self.open_project_flow();
+        false
+    }
+
+    /// Opens whichever picker the project question needs next: the projects
+    /// folder when none is configured, the project list when one is.
+    pub(super) fn open_project_flow(&mut self) {
+        if self
+            .workspace
+            .as_ref()
+            .is_some_and(|panel| panel.projects.is_some())
+        {
+            self.open_project_picker();
+        } else {
+            self.logs
+                .warn("no projects folder configured — where do your Zephyr applications live?");
+            self.open_projects_dir_picker();
+        }
+    }
+
+    /// Opens the project picker over the configured projects folder. The
+    /// rows (and each one's build-element mark) are read at draw time like
+    /// every other overlay's derived state.
+    pub(super) fn open_project_picker(&mut self) {
+        self.overlay = Some(Overlay::ProjectPicker {
+            selected: 0,
+            error: None,
+        });
+    }
+
+    /// Applies the project chosen in the picker: session-only, re-rooting
+    /// every build command (`west` runs there; nothing is written --- the
+    /// folder is the persisted half of the answer, the project is not).
+    /// Accepting a directory without build elements keeps the picker open
+    /// with the reason: the verification is the point.
+    pub(super) fn apply_project_picker(&mut self, selected: usize) {
+        let Some(dir) = self
+            .workspace
+            .as_ref()
+            .and_then(|panel| panel.projects.clone())
+        else {
+            self.open_project_flow();
+            return;
+        };
+        let (rows, read_error) = crate::backend::zephyr::projects::project_rows(&dir);
+        let Some(row) = rows.get(selected) else {
+            let reason = read_error.unwrap_or_else(|| "nothing to pick".to_string());
+            self.overlay = Some(Overlay::ProjectPicker {
+                selected,
+                error: Some(reason),
+            });
+            return;
+        };
+        if !row.buildable {
+            self.overlay = Some(Overlay::ProjectPicker {
+                selected,
+                error: Some(format!(
+                    "{} has no CMakeLists.txt — west build cannot run there",
+                    row.name
+                )),
+            });
+            return;
+        }
+        let Some(panel) = &mut self.build else {
+            return;
+        };
+        panel.set_project(row.path.clone());
+        self.logs.info(format!(
+            "project set to {} for this session (nothing written)",
+            row.path.display()
+        ));
+        self.overlay = None;
     }
 
     /// Starts `kind`'s command and moves the user to where its output

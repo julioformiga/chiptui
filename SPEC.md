@@ -515,11 +515,37 @@ the workspace itself. Status reads are files, not subprocesses: the
 Zephyr version comes from `zephyr/VERSION`, the SDK version from
 `sdk_version`.
 
+#### Projects folder and project selection
+
+Applications can live anywhere too, unrelated to the installation. Which
+one is being built is never guessed:
+
+1.  the **projects folder** (`[zephyr] projects`) holds the user's
+    applications --- any directory, resolved from the same two config
+    levels as `workspace`. Unset, the workspace pane's chooser (a
+    directory picker, validated by existence only) answers it and saves
+    the pick the same way;
+2.  the **project** is an immediate subdirectory of that folder, chosen in
+    the project picker, which lists every subdirectory and marks whether
+    it holds build elements (a `CMakeLists.txt` --- `west build`'s one
+    hard requirement). A directory without them cannot be accepted: the
+    picker stays open and says why. The choice is session-only; nothing
+    is written;
+3.  before any project command (build, clean, rebuild, menuconfig,
+    flash) runs, its working directory must hold those build elements.
+    The launch directory passes the gate by itself when it is a project;
+    otherwise the command is refused with the reason and the pickers
+    above open --- folder first, then project. The accepted project
+    re-roots every command and resets the per-project facts (build
+    directory, cached board, last report); a hand-picked board survives,
+    as it does across build-directory switches.
+
 The optional keys, shared by both config levels:
 
 ``` toml
 [zephyr]
 workspace = "~/zephyrproject"
+projects = "~/zephyrapps"
 # sdk = "~/zephyr-sdk-0.17.1"
 # west = "/custom/venv/bin/west"
 ```
@@ -529,6 +555,7 @@ workspace = "~/zephyrproject"
 The initial backend should support:
 
 -   environment resolution (workspace/venv/SDK, above);
+-   projects folder and project selection (the gate above);
 -   board selection;
 -   project information;
 -   build (with named build directories, `west build -d`);
@@ -723,6 +750,7 @@ cmake = "cmake"
 
 [zephyr]
 workspace = "~/zephyrproject"
+projects = "~/zephyrapps"
 # sdk = "~/zephyr-sdk-0.17.1"
 # west = "~/zephyrproject/.venv/bin/west"
 

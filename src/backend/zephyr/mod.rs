@@ -5,6 +5,7 @@
 //! split (`SPEC.md` §12 --- one seam per tool).
 
 pub mod commands;
+pub mod projects;
 pub mod workspace;
 
 use crate::backend::{Backend, BackendKind, BuildKind, Capabilities, Capability};
@@ -80,6 +81,7 @@ impl Backend for ZephyrBackend {
             Capability::Flash,
             Capability::Monitor,
             Capability::BoardSelect,
+            Capability::ProjectSelect,
             Capability::WorkspaceSync,
         ])
     }

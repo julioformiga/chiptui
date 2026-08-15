@@ -53,7 +53,21 @@ config stays the single source of truth and later starts never re-ask. The pane 
 shows status read from files rather than subprocesses (`zephyr/VERSION`, `sdk_version`)
 and offers `west update` (confirm-gated --- it rewrites the shared workspace, through
 `Overlay::ConfirmWorkspace`) and `west sdk list` under `Capability::WorkspaceSync`; both
-run through the build panel's one process slot into the Monitor tab. The resolution feeds
+run through the build panel's one process slot into the Monitor tab. The pane also owns the
+environment's second persisted fact: the **projects folder** (`[zephyr] projects`, resolved by
+`src/backend/zephyr/projects.rs` from the same two config levels, or picked through the same
+`DirPicker` with `DirPurpose::Projects` --- existence-only validation, saved via
+`settings::save_projects`); accepting a folder chains straight into the project picker. Under
+`Capability::ProjectSelect` every project command (build/clean/rebuild/menuconfig/flash) passes a
+gate first (`App::require_buildable_project`): the build panel's root must hold build elements
+(`projects::is_buildable` --- a `CMakeLists.txt`, `west build`'s one hard requirement). A root that
+passes (the cwd when it *is* a project) builds without ceremony; one that does not is refused with
+the reason and the flow opens --- folder picker when unconfigured, else `Overlay::ProjectPicker`
+(all immediate subdirectories listed, each marked buildable or not; accepting a directory without
+build elements keeps the picker open with the reason). A valid pick is session-only
+(`BuildPanel::set_project`: re-roots every command, resets build dir/cached board/last report,
+`ProjectOrigin::Picked` vs `WorkingDir` shown in the panel header) --- nothing is written. The
+resolution feeds
 the build panel's commands via
 `BuildPanel::set_tool_path`/`set_tool_env`: the venv's `west` (`<workspace>/.venv/bin/west`,
 executed directly — a venv console script embeds its interpreter path, so no activation is

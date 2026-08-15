@@ -690,8 +690,11 @@ fn an_unconfigured_pane_offers_the_chooser_and_documents_the_config() {
     assert!(panel.invalid.is_none(), "nothing was configured: no error");
     assert_eq!(
         panel.actions(&app.manager.capabilities()),
-        vec![chiptui::workspace::WorkspaceAction::Choose],
-        "choosing is the only action that makes sense"
+        vec![
+            chiptui::workspace::WorkspaceAction::Choose,
+            chiptui::workspace::WorkspaceAction::Projects
+        ],
+        "only the two choosers make sense with nothing configured"
     );
 
     let frame = render(&mut app, 100, 30);
@@ -872,8 +875,9 @@ fn the_build_dir_picker_switches_the_lifecycle_target() {
     .unwrap();
     app.focus = Focus::Build;
 
-    // The Dir action closes the list.
-    for _ in 0..6 {
+    // The Dir action closes the list (one row further down since Project
+    // joined it).
+    for _ in 0..7 {
         app.handle(key(KeyCode::Down));
     }
     app.handle(key(KeyCode::Enter));

@@ -80,6 +80,28 @@ pub enum BoardOrigin {
     Picked,
 }
 
+/// Where the panel's working directory came from: inherited from the
+/// launch directory's detection, or picked in the project picker for this
+/// session (never written anywhere --- the picker's answer is a session
+/// fact, like a board pick).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ProjectOrigin {
+    /// The directory ChipTUI was started in (or its detected project root).
+    #[default]
+    WorkingDir,
+    /// Chosen in the project picker, session-only.
+    Picked,
+}
+
+impl ProjectOrigin {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::WorkingDir => "cwd",
+            Self::Picked => "picked",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoardChoice {
     pub name: String,
@@ -118,6 +140,13 @@ pub enum BuildAction {
     /// Chooses which build directory the lifecycle targets: several boards
     /// can hold parallel configurations (`west build -d`).
     BuildDir,
+    /// Chooses which *project* the lifecycle runs in: the picker lists the
+    /// configured projects folder's subdirectories, and the pick re-roots
+    /// every command (session-only, like [`Self::Board`]). Under
+    /// [`crate::backend::Capability::ProjectSelect`] the panel also gates
+    /// every project command on a buildable root --- see
+    /// [`crate::backend::zephyr::projects::is_buildable`].
+    Project,
 }
 
 impl BuildAction {
@@ -139,6 +168,9 @@ impl BuildAction {
         if caps.contains(crate::backend::Capability::BoardSelect) {
             actions.push(Self::Board);
         }
+        if caps.contains(crate::backend::Capability::ProjectSelect) {
+            actions.push(Self::Project);
+        }
         actions.push(Self::BuildDir);
         actions
     }
@@ -155,6 +187,9 @@ pub struct BuildPanel {
     /// The board commands target: from the CMake cache until the user picks
     /// one for the session (a pick survives, and overrides, cache reads).
     pub board: Option<BoardChoice>,
+    /// Where `root` came from (the header's hint, and the reason a pick
+    /// survives a re-detect).
+    pub project_origin: ProjectOrigin,
     pub cursor: usize,
     pub last: Option<BuildReport>,
     pub output: VecDeque<String>,
@@ -184,6 +219,7 @@ impl BuildPanel {
             root,
             build_dir: DEFAULT_BUILD_DIR.to_string(),
             board,
+            project_origin: ProjectOrigin::default(),
             cursor: 0,
             last: None,
             output: VecDeque::new(),
@@ -243,6 +279,31 @@ impl BuildPanel {
                 origin: BoardOrigin::Cache,
             });
         }
+        self.cursor = 0;
+    }
+
+    /// Points the lifecycle at another project directory (the picker's
+    /// answer). The pick is session-only; everything derived from the old
+    /// root resets with it: the build directory and cached board belong to
+    /// the *project*, while a board picked by hand survives (the same
+    /// board may well be the target of several projects --- the same rule
+    /// a build-directory switch already follows). The last report is
+    /// dropped too: it described the previous project's command.
+    pub fn set_project(&mut self, dir: impl Into<PathBuf>) {
+        self.root = dir.into();
+        self.project_origin = ProjectOrigin::Picked;
+        self.build_dir = DEFAULT_BUILD_DIR.to_string();
+        if self
+            .board
+            .as_ref()
+            .is_none_or(|choice| choice.origin == BoardOrigin::Cache)
+        {
+            self.board = cached_board(&self.root, &self.build_dir).map(|name| BoardChoice {
+                name,
+                origin: BoardOrigin::Cache,
+            });
+        }
+        self.last = None;
         self.cursor = 0;
     }
 
@@ -855,14 +916,15 @@ mod tests {
     }
 
     #[test]
-    fn the_action_list_bookends_with_stop_flash_and_board() {
+    fn the_action_list_bookends_with_stop_flash_board_and_project() {
         let mut panel = BuildPanel::new("/nonexistent", UtcOffset::UTC);
-        // Zephyr's real set: build lifecycle, flash, board.
+        // Zephyr's real set: build lifecycle, flash, board, project.
         let zephyr = crate::backend::Capabilities::from_slice(&[
             crate::backend::Capability::Build,
             crate::backend::Capability::Clean,
             crate::backend::Capability::Flash,
             crate::backend::Capability::BoardSelect,
+            crate::backend::Capability::ProjectSelect,
         ]);
         assert_eq!(
             panel.actions(&zephyr),
@@ -873,12 +935,14 @@ mod tests {
                 BuildAction::Menuconfig,
                 BuildAction::Flash,
                 BuildAction::Board,
+                BuildAction::Project,
                 BuildAction::BuildDir,
             ]
         );
         assert_eq!(panel.action_at(&zephyr, 4), Some(BuildAction::Flash));
         assert_eq!(panel.action_at(&zephyr, 5), Some(BuildAction::Board));
-        assert_eq!(panel.action_at(&zephyr, 6), Some(BuildAction::BuildDir));
+        assert_eq!(panel.action_at(&zephyr, 6), Some(BuildAction::Project));
+        assert_eq!(panel.action_at(&zephyr, 7), Some(BuildAction::BuildDir));
 
         // A backend without flash/board capability: the lifecycle plus the
         // two always-present rows.
@@ -925,5 +989,64 @@ mod tests {
         // The pick reaches the commands: rebuild always passes the target.
         let rebuild = panel.command(BuildKind::Rebuild, &ZephyrBackend).unwrap();
         assert!(rebuild.to_string().ends_with("-b nrf52840dk/nrf52840"));
+    }
+
+    #[test]
+    fn a_picked_project_reroots_the_lifecycle_and_resets_project_facts() {
+        let dir = fixture_dir("setproject");
+        std::fs::create_dir_all(dir.join("build/zephyr")).unwrap();
+        std::fs::write(
+            dir.join("build/zephyr/CMakeCache.txt"),
+            "CACHED_BOARD:STRING=old_board\n",
+        )
+        .unwrap();
+        let mut panel = BuildPanel::new(&dir, UtcOffset::UTC);
+        assert_eq!(panel.project_origin, ProjectOrigin::WorkingDir);
+        panel.set_build_dir("build-custom");
+
+        // The picked project: its own cached board, its own build dirs.
+        let other = dir.join("other-app");
+        std::fs::create_dir_all(other.join("build/zephyr")).unwrap();
+        std::fs::write(
+            other.join("build/zephyr/CMakeCache.txt"),
+            "CACHED_BOARD:STRING=thingy91/nrf9160\n",
+        )
+        .unwrap();
+        panel.set_project(&other);
+
+        assert_eq!(panel.root, other, "commands run in the picked project");
+        assert_eq!(panel.project_origin, ProjectOrigin::Picked);
+        assert_eq!(
+            panel.build_dir, DEFAULT_BUILD_DIR,
+            "the old dir was the other project's"
+        );
+        assert_eq!(
+            panel.board_name(),
+            Some("thingy91/nrf9160"),
+            "the cache re-read belongs to the new project"
+        );
+        assert_eq!(panel.last, None, "the old report described another project");
+        // The lifecycle reflects the new root: its build/ exists, so the
+        // incremental shape (no `-b`) is the right one.
+        assert_eq!(
+            panel
+                .command(BuildKind::Build, &ZephyrBackend)
+                .unwrap()
+                .to_string(),
+            "west build"
+        );
+    }
+
+    #[test]
+    fn a_hand_picked_board_survives_a_project_switch() {
+        let dir = fixture_dir("projboard");
+        let mut panel = BuildPanel::new(&dir, UtcOffset::UTC);
+        panel.set_picked("nrf52840dk/nrf52840");
+        panel.set_project(dir.join("elsewhere"));
+        assert_eq!(
+            panel.board_name(),
+            Some("nrf52840dk/nrf52840"),
+            "a board pick outlives project switches, like directory switches"
+        );
     }
 }

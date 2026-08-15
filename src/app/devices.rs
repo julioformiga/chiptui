@@ -158,8 +158,16 @@ impl App {
         if let crate::backend::zephyr::workspace::Resolution::Invalid(message) = &resolution {
             self.logs.error(message.clone());
         }
+        let projects_resolution = self.resolve_projects();
+        if let crate::backend::zephyr::projects::ProjectsResolution::Invalid(message) =
+            &projects_resolution
+        {
+            self.logs.error(message.clone());
+        }
         let path_env = std::env::var("PATH").unwrap_or_default();
-        self.workspace = Some(crate::workspace::WorkspacePanel::new(resolution, path_env));
+        let mut panel = crate::workspace::WorkspacePanel::new(resolution, path_env);
+        panel.apply_projects(projects_resolution);
+        self.workspace = Some(panel);
     }
 
     /// Assembles both config levels and resolves the installation location
@@ -172,6 +180,19 @@ impl App {
             home: &self.home_dir,
         };
         crate::backend::zephyr::workspace::resolve(&input)
+    }
+
+    /// The projects-folder resolution over the same config levels --- the
+    /// environment's second question, resolved with the same input so both
+    /// answers agree on what "configured" means.
+    pub(super) fn resolve_projects(&self) -> crate::backend::zephyr::projects::ProjectsResolution {
+        let (_root, project_settings, user_settings) = self.zephyr_settings();
+        let input = crate::backend::zephyr::workspace::ResolveInput {
+            project_settings: project_settings.as_ref(),
+            user_settings: user_settings.as_ref(),
+            home: &self.home_dir,
+        };
+        crate::backend::zephyr::projects::resolve(&input)
     }
 
     /// The project root plus both parsed `[zephyr]` sections (project file,

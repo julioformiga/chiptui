@@ -172,9 +172,21 @@ pub enum Overlay {
     /// discovery guesses --- the user knows where their Zephyr lives).
     /// `error` holds the validation message when an accepted directory
     /// turned out not to be an installation, including the install guide
-    /// link; any navigation clears it.
+    /// link; any navigation clears it. `purpose` is which question the
+    /// picker answers (installation or projects folder) --- one navigation
+    /// component, two validations.
     DirPicker {
+        purpose: crate::workspace::DirPurpose,
         path: std::path::PathBuf,
+        selected: usize,
+        error: Option<String>,
+    },
+    /// The project picker: the configured projects folder's subdirectories,
+    /// each marked with whether it holds build elements. Accepting a
+    /// non-buildable directory keeps the picker open with the reason
+    /// (`error`) --- a project without a `CMakeLists.txt` is never built
+    /// silently. The choice itself is session-only (`SPEC.md` §10).
+    ProjectPicker {
         selected: usize,
         error: Option<String>,
     },
@@ -1416,6 +1428,11 @@ impl App {
                 ("type", "name"),
                 ("↑/↓", "select"),
                 ("enter", "choose/create"),
+                ("esc", "cancel"),
+            ],
+            Some(Overlay::ProjectPicker { .. }) => vec![
+                ("↑/↓", "select"),
+                ("enter", "build this one (this session)"),
                 ("esc", "cancel"),
             ],
             Some(Overlay::PackageInstall { .. }) => {

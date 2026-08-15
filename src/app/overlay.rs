@@ -299,10 +299,39 @@ impl App {
                 );
             }
             Overlay::DirPicker {
+                purpose,
                 path,
                 selected,
                 error,
-            } => self.on_dir_picker_key(key, path, selected, error),
+            } => self.on_dir_picker_key(key, purpose, path, selected, error),
+            Overlay::ProjectPicker { selected, error } => {
+                // Same grammar as the other pickers: arrows walk the rows,
+                // Enter accepts, Esc leaves. Navigation clears a previous
+                // error --- it described a row that is no longer selected.
+                let count = self
+                    .workspace
+                    .as_ref()
+                    .and_then(|panel| panel.projects.as_ref())
+                    .map(|dir| crate::backend::zephyr::projects::project_rows(dir).0.len())
+                    .unwrap_or(0)
+                    .max(1);
+                let rebuild = |app: &mut Self, selected: usize, error: Option<String>| {
+                    app.overlay = Some(Overlay::ProjectPicker { selected, error });
+                };
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('q') => self.overlay = None,
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        rebuild(self, (selected + count - 1) % count, None);
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        rebuild(self, (selected + 1) % count, None);
+                    }
+                    KeyCode::Home => rebuild(self, 0, None),
+                    KeyCode::End => rebuild(self, count - 1, None),
+                    KeyCode::Enter => self.apply_project_picker(selected),
+                    _ => rebuild(self, selected, error),
+                }
+            }
             Overlay::BuildDirPicker { input, selected } => {
                 // Same grammar as the board picker: printable characters are
                 // filter/name text, arrows walk, Enter applies.

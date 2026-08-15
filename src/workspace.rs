@@ -22,6 +22,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::backend::Capability;
+use crate::backend::zephyr::projects::ProjectsResolution;
 use crate::backend::zephyr::workspace::{Resolution, Workspace};
 use crate::process::Command;
 
@@ -39,6 +40,11 @@ pub enum WorkspaceAction {
     /// saved to the config (`SPEC.md` §8's never-guess rule, applied to
     /// the environment).
     Choose,
+    /// Opens the directory picker for the *projects* folder: where the
+    /// user's Zephyr applications live. Same never-guess rule, same
+    /// validate-then-save path --- answered before any project command
+    /// needs it (see [`crate::backend::Capability::ProjectSelect`]).
+    Projects,
 }
 
 pub struct WorkspacePanel {
@@ -48,6 +54,12 @@ pub struct WorkspacePanel {
     /// Why a configured location failed validation, when one did
     /// (`Resolution::Invalid`). Includes the install guide link.
     pub invalid: Option<String>,
+    /// The configured projects folder, once resolution or a saved pick
+    /// produced one (the environment's second persisted fact --- the
+    /// build panel's project picker lists its subdirectories).
+    pub projects: Option<PathBuf>,
+    /// Why a configured projects folder failed validation, when one did.
+    pub projects_invalid: Option<String>,
     pub cursor: usize,
     /// The inherited `PATH` at startup, baked into every derived
     /// [`crate::backend::zephyr::workspace::WestEnv`] (the venv's `bin` is
@@ -63,6 +75,8 @@ impl WorkspacePanel {
         let mut panel = Self {
             resolved: None,
             invalid: None,
+            projects: None,
+            projects_invalid: None,
             cursor: 0,
             path_env: path_env.into(),
         };
@@ -100,9 +114,29 @@ impl WorkspacePanel {
         )
     }
 
+    /// Applies a fresh projects-folder resolution, independent of the
+    /// installation's: the two settings answer different questions and can
+    /// be fixed separately.
+    pub fn apply_projects(&mut self, resolution: ProjectsResolution) {
+        match resolution {
+            ProjectsResolution::Configured(dir) => {
+                self.projects = Some(dir);
+                self.projects_invalid = None;
+            }
+            ProjectsResolution::Invalid(message) => {
+                self.projects_invalid = Some(message);
+                self.projects = None;
+            }
+            ProjectsResolution::NotConfigured => {
+                self.projects = None;
+                self.projects_invalid = None;
+            }
+        }
+    }
+
     /// Rows the action list shows: the workspace operations once a
-    /// location is resolved, and the chooser always --- it is both the
-    /// first-run question and the way to change the answer later.
+    /// location is resolved, and the choosers always --- they are both the
+    /// first-run questions and the way to change the answers later.
     pub fn actions(&self, caps: &crate::backend::Capabilities) -> Vec<WorkspaceAction> {
         if !caps.contains(Capability::WorkspaceSync) {
             return Vec::new();
@@ -113,6 +147,9 @@ impl WorkspacePanel {
             actions.push(WorkspaceAction::SdkList);
         }
         actions.push(WorkspaceAction::Choose);
+        if caps.contains(Capability::ProjectSelect) {
+            actions.push(WorkspaceAction::Projects);
+        }
         actions
     }
 
@@ -162,12 +199,27 @@ pub struct DirRow {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DirRowKind {
-    /// Accepts the current directory as the installation location.
+    /// Accepts the current directory as the chosen location.
     Use,
     /// Steps up to the parent.
     Parent,
     /// Descends into the named subdirectory.
     Dir,
+}
+
+/// Which question the directory picker is answering. The navigation is one
+/// component; only the accept-path validation and the title differ --- a
+/// directory is an *installation* when `.west/` says so, a *projects
+/// folder* when it simply exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DirPurpose {
+    /// "Where is the Zephyr installation?" --- validated by
+    /// [`crate::backend::zephyr::workspace::install_check`].
+    Installation,
+    /// "Where are your Zephyr projects?" --- validated by existence only;
+    /// the build-element test belongs to the projects inside it
+    /// ([`crate::backend::zephyr::projects`]).
+    Projects,
 }
 
 /// The directory picker's rows for `path`: "use this directory" first (the
@@ -236,7 +288,7 @@ mod tests {
     }
 
     #[test]
-    fn a_resolved_pane_lists_the_workspace_operations_and_the_chooser() {
+    fn a_resolved_pane_lists_the_workspace_operations_and_the_choosers() {
         let panel = WorkspacePanel::new(Resolution::Single(workspace("/opt/myzephyr")), "");
         assert_eq!(panel.dir(), Some(&PathBuf::from("/opt/myzephyr")));
         assert_eq!(
@@ -244,17 +296,18 @@ mod tests {
             vec![
                 WorkspaceAction::Update,
                 WorkspaceAction::SdkList,
-                WorkspaceAction::Choose
+                WorkspaceAction::Choose,
+                WorkspaceAction::Projects
             ]
         );
     }
 
     #[test]
-    fn an_unresolved_pane_offers_only_the_chooser() {
+    fn an_unresolved_pane_offers_only_the_choosers() {
         let not_configured = WorkspacePanel::new(Resolution::NotConfigured, "");
         assert_eq!(
             not_configured.actions(&zephyr_caps()),
-            vec![WorkspaceAction::Choose]
+            vec![WorkspaceAction::Choose, WorkspaceAction::Projects]
         );
 
         let invalid = WorkspacePanel::new(Resolution::Invalid("no .west/ …".to_string()), "");
@@ -262,7 +315,7 @@ mod tests {
         assert!(invalid.invalid.as_deref().unwrap().contains(".west"));
         assert_eq!(
             invalid.actions(&zephyr_caps()),
-            vec![WorkspaceAction::Choose]
+            vec![WorkspaceAction::Choose, WorkspaceAction::Projects]
         );
     }
 

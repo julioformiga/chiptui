@@ -108,6 +108,11 @@ pub enum Capability {
     DeviceInfo,
     PackageInstall,
     BoardSelect,
+    /// The backend's projects live in a user-chosen folder rather than
+    /// necessarily the working directory: the UI offers a projects-folder
+    /// setting and a project picker, and gates project commands (build,
+    /// clean, ...) on a selected, buildable project.
+    ProjectSelect,
     /// Maintaining the backend's shared environment (`west update`,
     /// `west sdk list`): operations that act on the workspace rather than
     /// the project. Not destructive as a capability --- the pane confirms
@@ -131,6 +136,7 @@ impl Capability {
         Capability::DeviceInfo,
         Capability::PackageInstall,
         Capability::BoardSelect,
+        Capability::ProjectSelect,
         Capability::WorkspaceSync,
     ];
 
@@ -154,6 +160,7 @@ impl Capability {
             Self::DeviceInfo => "device info",
             Self::PackageInstall => "install package",
             Self::BoardSelect => "select board",
+            Self::ProjectSelect => "select project",
             Self::WorkspaceSync => "sync workspace",
         }
     }

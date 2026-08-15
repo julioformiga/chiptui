@@ -19,6 +19,9 @@ pub struct ZephyrSettings {
     /// The west workspace root: the directory holding `.west/`, the Zephyr
     /// checkout and (by convention) `.venv/`.
     pub workspace: Option<String>,
+    /// Where the user's Zephyr *applications* live --- any directory, the
+    /// projects the build panel's picker lists (`SPEC.md` §13).
+    pub projects: Option<String>,
     /// Optional toolchain location, exported as `ZEPHYR_SDK_INSTALL_DIR`.
     pub sdk: Option<String>,
     /// Optional explicit west executable; without one, `<workspace>/.venv/
@@ -29,7 +32,10 @@ pub struct ZephyrSettings {
 impl ZephyrSettings {
     /// Whether the section carries anything usable.
     pub fn is_empty(&self) -> bool {
-        self.workspace.is_none() && self.sdk.is_none() && self.west.is_none()
+        self.workspace.is_none()
+            && self.projects.is_none()
+            && self.sdk.is_none()
+            && self.west.is_none()
     }
 
     /// Extracts the `[zephyr]` section from `text`, ignoring comments, other
@@ -58,6 +64,7 @@ impl ZephyrSettings {
             let value = unquote(value.trim());
             let slot = match key {
                 "workspace" => &mut settings.workspace,
+                "projects" => &mut settings.projects,
                 "sdk" => &mut settings.sdk,
                 "west" => &mut settings.west,
                 _ => continue,
@@ -123,17 +130,27 @@ pub fn load_user(home: &Path) -> Option<ZephyrSettings> {
 /// only the one line is replaced or inserted, and other keys (`sdk`,
 /// `west`) and sections are left byte-for-byte as they were.
 pub fn save_workspace(config: &Path, dir: &Path) -> std::io::Result<()> {
+    save_zephyr_key(config, "workspace", &dir.display().to_string())
+}
+
+/// Persists `projects = dir` the same way [`save_workspace`] persists the
+/// installation: one line replaced or inserted, everything else untouched.
+pub fn save_projects(config: &Path, dir: &Path) -> std::io::Result<()> {
+    save_zephyr_key(config, "projects", &dir.display().to_string())
+}
+
+fn save_zephyr_key(config: &Path, key: &str, value: &str) -> std::io::Result<()> {
     let text = std::fs::read_to_string(config).unwrap_or_default();
-    let updated = upsert_workspace(&text, &dir.display().to_string());
+    let updated = upsert_key(&text, key, value);
     if let Some(parent) = config.parent() {
         std::fs::create_dir_all(parent)?;
     }
     std::fs::write(config, updated)
 }
 
-/// The pure half of [`save_workspace`], so the merge is testable without
-/// touching the filesystem.
-fn upsert_workspace(text: &str, value: &str) -> String {
+/// The pure half of [`save_workspace`]/[`save_projects`], so the merge is
+/// testable without touching the filesystem.
+fn upsert_key(text: &str, key: &str, value: &str) -> String {
     let section_header = |line: &str| {
         line.split('#')
             .next()
@@ -156,21 +173,21 @@ fn upsert_workspace(text: &str, value: &str) -> String {
             continue;
         }
         let stripped = line.split('#').next().unwrap_or("").trim();
-        if let Some((key, _)) = stripped.split_once('=')
-            && key.trim() == "workspace"
+        if let Some((found, _)) = stripped.split_once('=')
+            && found.trim() == key
         {
-            *line = format!("workspace = \"{value}\"");
+            *line = format!("{key} = \"{value}\"");
             replaced = true;
             break;
         }
     }
     if !replaced {
         if let Some(index) = lines.iter().position(|line| section_header(line)) {
-            lines.insert(index + 1, format!("workspace = \"{value}\""));
+            lines.insert(index + 1, format!("{key} = \"{value}\""));
         } else {
             lines.push(String::new());
             lines.push("[zephyr]".to_string());
-            lines.push(format!("workspace = \"{value}\""));
+            lines.push(format!("{key} = \"{value}\""));
         }
     }
     let mut out = lines.join("\n");
@@ -253,7 +270,7 @@ mod tests {
     #[test]
     fn save_replaces_only_the_workspace_line() {
         let existing = "# my setup\n[zephyr]\nworkspace = \"/old\"\nsdk = \"~/sdk-0.17\"\n\n[ui]\nmouse = false\n";
-        let updated = upsert_workspace(existing, "/opt/myzephyr");
+        let updated = upsert_key(existing, "workspace", "/opt/myzephyr");
         assert!(updated.contains("workspace = \"/opt/myzephyr\""));
         assert!(!updated.contains("/old"));
         assert!(
@@ -269,7 +286,7 @@ mod tests {
 
     #[test]
     fn save_inserts_into_an_existing_section_without_workspace() {
-        let updated = upsert_workspace("[zephyr]\nsdk = \"~/sdk\"\n", "/opt/myzephyr");
+        let updated = upsert_key("[zephyr]\nsdk = \"~/sdk\"\n", "workspace", "/opt/myzephyr");
         assert_eq!(
             updated,
             "[zephyr]\nworkspace = \"/opt/myzephyr\"\nsdk = \"~/sdk\"\n"
@@ -278,8 +295,18 @@ mod tests {
 
     #[test]
     fn save_appends_the_section_when_absent() {
-        let updated = upsert_workspace("[ui]\nmouse = false\n", "/opt/myzephyr");
+        let updated = upsert_key("[ui]\nmouse = false\n", "workspace", "/opt/myzephyr");
         assert!(updated.contains("[ui]\nmouse = false"));
         assert!(updated.ends_with("[zephyr]\nworkspace = \"/opt/myzephyr\"\n"));
+    }
+
+    #[test]
+    fn save_projects_touches_only_the_projects_line() {
+        let existing = "[zephyr]\nworkspace = \"/ws\"\nprojects = \"/old\"\n";
+        let updated = upsert_key(existing, "projects", "/opt/apps");
+        assert_eq!(
+            updated,
+            "[zephyr]\nworkspace = \"/ws\"\nprojects = \"/opt/apps\"\n"
+        );
     }
 }

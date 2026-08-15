@@ -9,8 +9,9 @@ use std::path::{Path, PathBuf};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
+use crate::backend::zephyr::projects::{self, ProjectsResolution};
 use crate::backend::zephyr::workspace::{Resolution, WorkspaceOrigin};
-use crate::workspace::WorkspaceAction;
+use crate::workspace::{DirPurpose, WorkspaceAction};
 
 use super::{App, Focus, LogTab, MonitorSource, Overlay};
 
@@ -60,6 +61,7 @@ impl App {
                 });
             }
             WorkspaceAction::Choose => self.open_dir_picker(),
+            WorkspaceAction::Projects => self.open_projects_dir_picker(),
         }
     }
 
@@ -83,12 +85,26 @@ impl App {
     /// live in practice), or `/` when there is no home to start from.
     /// `Esc` leaves everything as it was.
     pub(super) fn open_dir_picker(&mut self) {
+        self.open_purpose_picker(DirPurpose::Installation);
+    }
+
+    /// The projects-folder flavor of the same picker: same navigation,
+    /// existence-only validation, persisted to `[zephyr] projects`. The
+    /// accepted folder feeds the project picker, which opens right after
+    /// the save --- the two answers are one question ("what am I
+    /// building?") asked in order.
+    pub(super) fn open_projects_dir_picker(&mut self) {
+        self.open_purpose_picker(DirPurpose::Projects);
+    }
+
+    fn open_purpose_picker(&mut self, purpose: DirPurpose) {
         let start = if self.home_dir.is_dir() {
             self.home_dir.clone()
         } else {
             PathBuf::from("/")
         };
         self.overlay = Some(Overlay::DirPicker {
+            purpose,
             path: start,
             selected: 0,
             error: None,
@@ -104,6 +120,7 @@ impl App {
     pub(super) fn on_dir_picker_key(
         &mut self,
         key: KeyEvent,
+        purpose: DirPurpose,
         path: PathBuf,
         selected: usize,
         error: Option<String>,
@@ -114,6 +131,7 @@ impl App {
             let (rows, _) = crate::workspace::dir_rows(&path);
             let selected = selected.min(rows.len().saturating_sub(1));
             app.overlay = Some(Overlay::DirPicker {
+                purpose,
                 path,
                 selected,
                 error: None,
@@ -121,9 +139,10 @@ impl App {
         };
         let descend = |app: &mut Self, path: PathBuf| {
             // Landing on the "use this directory" row is the point: the
-            // reflex Enter after navigating *into* the installation
+            // reflex Enter after navigating *into* the right directory
             // accepts it, instead of asking for one more hop.
             app.overlay = Some(Overlay::DirPicker {
+                purpose,
                 path,
                 selected: 0,
                 error: None,
@@ -138,9 +157,10 @@ impl App {
                 rebuild(self, path, (selected + 1) % count);
             }
             KeyCode::Enter | KeyCode::Right => match rows.get(selected).map(|row| row.kind) {
-                Some(crate::workspace::DirRowKind::Use) => {
-                    self.accept_workspace_dir(path);
-                }
+                Some(crate::workspace::DirRowKind::Use) => match purpose {
+                    DirPurpose::Installation => self.accept_workspace_dir(path),
+                    DirPurpose::Projects => self.accept_projects_dir(path),
+                },
                 Some(crate::workspace::DirRowKind::Parent) => {
                     let Some(parent) = path.parent().map(Path::to_path_buf) else {
                         return;
@@ -164,6 +184,7 @@ impl App {
             _ => {
                 if error.is_some() {
                     self.overlay = Some(Overlay::DirPicker {
+                        purpose,
                         path,
                         selected,
                         error,
@@ -222,6 +243,7 @@ impl App {
             }
             Resolution::Invalid(message) => {
                 self.overlay = Some(Overlay::DirPicker {
+                    purpose: DirPurpose::Installation,
                     path: dir,
                     selected: 0,
                     error: Some(message),
@@ -231,15 +253,63 @@ impl App {
         }
     }
 
+    /// Validates the projects folder the picker accepted (it only has to
+    /// exist), persists it beside the installation key, and moves straight
+    /// to the project picker --- the folder alone builds nothing; the
+    /// specific project inside it is the other half of the answer.
+    pub(super) fn accept_projects_dir(&mut self, dir: PathBuf) {
+        match projects::dir_check(dir.clone()) {
+            ProjectsResolution::Configured(_) => {
+                let (root, project_settings, _user_settings) = self.zephyr_settings();
+                let target = if project_settings
+                    .as_ref()
+                    .is_some_and(|settings| settings.workspace.is_some())
+                {
+                    root.join(crate::project::config::FILE_NAME)
+                } else {
+                    crate::settings::user_config_path(&self.home_dir)
+                };
+                match crate::settings::save_projects(&target, &dir) {
+                    Ok(()) => {
+                        self.logs
+                            .info(format!("projects folder saved to {}", target.display()));
+                    }
+                    Err(err) => self
+                        .logs
+                        .error(format!("could not save {}: {err}", target.display())),
+                }
+                self.overlay = None;
+                self.refresh_workspace_resolution();
+                self.open_project_picker();
+            }
+            ProjectsResolution::Invalid(message) => {
+                self.overlay = Some(Overlay::DirPicker {
+                    purpose: DirPurpose::Projects,
+                    path: dir,
+                    selected: 0,
+                    error: Some(message),
+                });
+            }
+            ProjectsResolution::NotConfigured => {}
+        }
+    }
+
     /// Re-runs resolution from the (possibly just-written) configs and
-    /// pushes the answer into the pane and the build panel's commands.
+    /// pushes the answers into the pane and the build panel's commands.
+    /// Both environment facts refresh together: they live in the same
+    /// config section and were saved by the same kind of picker.
     pub(super) fn refresh_workspace_resolution(&mut self) {
         let resolution = self.resolve_workspace();
+        let projects_resolution = self.resolve_projects();
         if let Resolution::Invalid(message) = &resolution {
+            self.logs.error(message.clone());
+        }
+        if let ProjectsResolution::Invalid(message) = &projects_resolution {
             self.logs.error(message.clone());
         }
         if let Some(panel) = &mut self.workspace {
             panel.apply_resolution(resolution);
+            panel.apply_projects(projects_resolution);
         }
         self.apply_west_env();
     }

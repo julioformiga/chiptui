@@ -22,18 +22,33 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let [header, list] = Layout::vertical([Constraint::Length(2), Constraint::Min(1)]).areas(inner);
+    let [header, list] = Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).areas(inner);
 
     draw_header(frame, header, panel);
     draw_actions(frame, list, app, panel, focused);
 }
 
-/// Board + last-result lines. Two lines, never more: the board's origin is
-/// the one nuance worth a word --- `from build/` (whatever `west`
+/// Project + board + last-result lines. The project line says where every
+/// command runs (`cwd` --- inherited from the launch directory --- or
+/// `picked`, a session choice from the projects folder); the board's origin
+/// is the other nuance worth a word --- `from build/` (whatever `west`
 /// configured, which the panel neither chose nor wrote) or `picked`
 /// (session-only, `SPEC.md` §10) --- never left to guesswork.
 fn draw_header(frame: &mut Frame, area: Rect, panel: &BuildPanel) {
     use crate::build::BoardOrigin;
+
+    let project_line = Line::from(vec![
+        label("project"),
+        Span::raw(" "),
+        shorten_start(
+            &panel.root.display().to_string(),
+            (area.width as usize).saturating_sub(16),
+        )
+        .fg(Color::Green)
+        .bold(),
+        Span::raw(" "),
+        panel.project_origin.label().dim(),
+    ]);
 
     let board_line = match (&panel.board, panel.is_busy()) {
         (
@@ -80,7 +95,7 @@ fn draw_header(frame: &mut Frame, area: Rect, panel: &BuildPanel) {
     };
 
     frame.render_widget(
-        Paragraph::new(vec![board_line, last_line]).wrap(Wrap { trim: false }),
+        Paragraph::new(vec![project_line, board_line, last_line]).wrap(Wrap { trim: false }),
         area,
     );
 }
@@ -191,6 +206,22 @@ fn draw_actions(frame: &mut Frame, area: Rect, app: &App, panel: &BuildPanel, fo
                     Style::new().dim(),
                 ),
             ]),
+            crate::build::BuildAction::Project => {
+                let hint = if crate::backend::zephyr::projects::is_buildable(&panel.root) {
+                    format!(
+                        "{}  (the picker lists the projects folder)",
+                        panel.root.display()
+                    )
+                } else {
+                    "none here — pick one before building".to_string()
+                };
+                Line::from(vec![
+                    Span::raw("  "),
+                    "Project".bold(),
+                    Span::raw("  "),
+                    Span::styled(hint, Style::new().dim()),
+                ])
+            }
         };
         items.push(ListItem::new(item));
     }
