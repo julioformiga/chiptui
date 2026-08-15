@@ -16,6 +16,23 @@ use crate::flash::{FlashAction, FlashPanel, FlashScreen, OptionsField};
 
 use super::{App, Focus, LogTab, MonitorSource, Overlay, View};
 
+/// What trying to start the deferred device query concluded, so callers
+/// that chained something behind it (the first device listing,
+/// [`App::hold_root_listing_for_chip_identity`]) know whether to keep
+/// waiting or move on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum DeferredQuery {
+    /// A guard still holds it (an open overlay, a busy port holder, a
+    /// script believed running); it stays pending and will be retried.
+    Waiting,
+    /// The query is running; a `background_query_finished` will follow.
+    Started,
+    /// The query was consumed but could not start (a manual esptool
+    /// command owns the panel, or the port vanished) --- nothing will
+    /// follow it.
+    Dropped,
+}
+
 impl App {
     /// `q`/esc step back one screen (Options/Output to Menu) rather than
     /// leaving straight to the dashboard, mirroring the file browser's "do
@@ -390,26 +407,30 @@ impl App {
         true
     }
 
-    /// Marks a background chip/flash query as due, without starting it yet
-    /// --- `esptool` cannot open the serial port while `mpremote` (just
-    /// kicked off by `load_device_root`, right before every call site of
-    /// this method) still holds it exclusively. `maybe_run_deferred_flash_query`
+    /// Marks a background chip query as due, without starting it yet ---
+    /// `esptool` cannot open the serial port while `mpremote` (just kicked
+    /// off by `load_device_root`, right before every call site of this
+    /// method) still holds it exclusively. The query is the board's
+    /// identity read (`esptool chip-id`), and the first listing of a newly
+    /// selected device is held behind it ([`Self::hold_root_listing_for_chip_identity`]),
+    /// so `mpremote devs` → probe → chip-id → listing is the one order in
+    /// which the port changes hands cleanly. `maybe_run_deferred_flash_query`
     /// starts the query for real once every port holder is gone.
     pub(super) fn defer_device_info_query(&mut self) {
         self.flash_query_pending = true;
     }
 
-    /// Runs the deferred chip/flash query once it is actually safe to, polled
-    /// on every tick and after each process event (a held request queue
-    /// produces no events, so the tick is what keeps a declined interruption
-    /// from stranding the query forever).
+    /// Runs the deferred chip query once it is actually safe to, polled on
+    /// every tick and after each process event (a held request queue
+    /// produces no events, so the tick is what keeps a declined
+    /// interruption from stranding the query forever).
     ///
     /// "Safe" means more than a free port: `esptool` resets the board into
     /// its bootloader to read the chip, which stops a running script just
     /// like an `mpremote` interrupt does --- so a script believed running
     /// postpones the query too, as does any open overlay (the user may be a
     /// keypress away from confirming something that also wants the port).
-    pub(super) fn maybe_run_deferred_flash_query(&mut self) {
+    pub(super) fn maybe_run_deferred_flash_query(&mut self) -> DeferredQuery {
         if !self.flash_query_pending
             || self.overlay.is_some()
             || self.restore_pending
@@ -419,36 +440,85 @@ impl App {
             || self.browser.as_ref().is_some_and(Browser::is_busy)
             || self.devices.script_state() == ScriptState::Running
         {
-            return;
+            return DeferredQuery::Waiting;
         }
         self.flash_query_pending = false;
-        self.maybe_query_device_info();
+        if self.maybe_query_device_info() {
+            DeferredQuery::Started
+        } else {
+            DeferredQuery::Dropped
+        }
     }
 
-    /// Kicks off a background `flash-id` so the Dashboard's device panel has
-    /// something to show without the user ever opening the Flash view ---
-    /// same shape as [`App::maybe_scan_devices`]'s "load this eagerly, once
-    /// the prerequisite is known", just for esptool instead of mpremote.
-    /// Only ever called once [`Self::defer_device_info_query`]'s wait for
-    /// `mpremote` to release the port is satisfied. A no-op when the backend
-    /// has no flash capability or a flash command is already running;
+    /// Kicks off a background `esptool chip-id` so the Dashboard's device
+    /// panel has something to show without the user ever opening the Flash
+    /// view --- same shape as [`App::maybe_scan_devices`]'s "load this
+    /// eagerly, once the prerequisite is known", just for esptool instead
+    /// of mpremote. Only ever called once [`Self::defer_device_info_query`]'s
+    /// wait for `mpremote` to release the port is satisfied. Returns
+    /// whether the query started; a no-op `false` when the backend has no
+    /// flash capability or a flash command is already running (the caller
+    /// decides whether anyone was waiting on it).
     /// [`FlashPanel::query_device_info`]'s synchronous rejection notice is
     /// swallowed on purpose --- a courtesy refresh finding the panel busy is
     /// not something the user needs to hear about, unlike its eventual
     /// success or failure, which still reaches the log the normal way once
     /// the process finishes.
-    pub(super) fn maybe_query_device_info(&mut self) {
+    pub(super) fn maybe_query_device_info(&mut self) -> bool {
         if !self.ensure_flash_panel() {
-            return;
+            return false;
         }
         let Some(port) = self.devices.selected_port().map(str::to_string) else {
-            return;
+            return false;
         };
         let Some(mut flash) = self.flash.take() else {
-            return;
+            return false;
         };
-        flash.query_device_info(&mut self.processes, Some(&port));
+        let started = flash.query_device_info(&mut self.processes, Some(&port));
         self.flash = Some(flash);
+        started
+    }
+
+    /// Holds the first listing of a newly selected device behind the
+    /// background `esptool chip-id`: the board's identity is the cheapest
+    /// question worth asking a port that was just selected, and asking it
+    /// first keeps `esptool`'s board reset from ever landing mid-listing.
+    /// [`Self::load_device_root`] calls this right after the probe (if any)
+    /// released the port.
+    ///
+    /// `false` means the listing should not wait: nothing is pending, the
+    /// query can never run for this backend (no esptool-backed capability,
+    /// in which case the pending flag is dropped rather than held forever),
+    /// a script believed running owns the ordering instead (the listing
+    /// queues and the interrupt gate asks), or the query was refused
+    /// outright. A held listing is released by [`Self::resume_held_root_listing`].
+    pub(super) fn hold_root_listing_for_chip_identity(&mut self) -> bool {
+        if !self.flash_query_pending || self.devices.script_state() == ScriptState::Running {
+            return false;
+        }
+        if !self.ensure_flash_panel() {
+            self.flash_query_pending = false;
+            return false;
+        }
+        // Try to start the query now rather than wait a tick; a guard that
+        // still applies (an open overlay, a busy browser) keeps the listing
+        // held, and whichever event lifts the guard leads back here through
+        // the tick / process-event paths that also poll the query.
+        let outcome = self.maybe_run_deferred_flash_query();
+        self.held_root_listing = outcome != DeferredQuery::Dropped;
+        self.held_root_listing
+    }
+
+    /// Releases a listing held behind the background chip query, listing
+    /// the device root for real ([`Self::load_device_root`], which no
+    /// longer finds a pending query to wait for). A no-op when nothing is
+    /// held --- the common case for the plain courtesy refresh.
+    pub(super) fn resume_held_root_listing(&mut self) {
+        if !self.held_root_listing {
+            return;
+        }
+        self.held_root_listing = false;
+        self.load_device_root();
     }
 
     /// The user confirmed erasing flash to install MicroPython

@@ -26,14 +26,21 @@ fn fake(tool: &str) -> String {
 /// An app with a MicroPython override, a browser pointed at a fake mpremote,
 /// and a fake esptool so the background device query stays deterministic.
 fn app_with(tool: &str) -> App {
+    app_with_tools(tool, "esptool")
+}
+
+/// [`app_with`] with the esptool fake chosen separately --- the ordering
+/// tests want a deliberately slow `chip-id` so the window where the first
+/// listing is held behind the identity query is observable.
+fn app_with_tools(mpremote_tool: &str, esptool_tool: &str) -> App {
     let mut app = App::new(std::env::temp_dir());
     app.bootstrap();
     app.manager.set_override(Some(BackendKind::MicroPython));
     let mut browser = Browser::new(std::env::temp_dir());
-    browser.set_tool_path(fake(tool));
+    browser.set_tool_path(fake(mpremote_tool));
     app.browser = Some(browser);
     let mut flash = FlashPanel::new(std::env::temp_dir());
-    flash.set_tool_path(fake("esptool"));
+    flash.set_tool_path(fake(esptool_tool));
     app.flash = Some(flash);
     app.maybe_scan_devices();
     // Pre-seeding the browser above means `ensure_browser_scanning` finds one
@@ -431,4 +438,40 @@ fn the_device_info_query_waits_while_the_script_runs() {
             .is_some_and(|flash| flash.details.family.is_some()),
         20
     ));
+}
+
+#[test]
+fn the_first_listing_waits_for_the_chip_identity_query() {
+    // The slow fake esptool (~1s chip-id) widens the window in which the
+    // identity query owns the port, so the ordering is observable: chip-id
+    // first, files only after it reports back.
+    let mut app = app_with_tools("mpremote", "esptool-slow-chip");
+
+    // The probe finds the board idle and releases the port; the identity
+    // query is the next tool on it, not the listing.
+    assert!(
+        pump_until(
+            &mut app,
+            |app| app.flash.as_ref().is_some_and(|flash| flash.is_busy()),
+            20
+        ),
+        "the chip query should start once the probe releases the port"
+    );
+    assert!(
+        !app.browser.as_ref().unwrap().is_busy(),
+        "the listing must not race the chip query for the serial port"
+    );
+    assert!(
+        matches!(pane(&app), PaneState::Loading),
+        "the pane waits rather than failing"
+    );
+
+    // The query's finish is the listing's cue; the dashboard ends up with
+    // both the chip identity and the files.
+    assert!(pump_until(
+        &mut app,
+        |app| matches!(pane(app), PaneState::Ready),
+        20
+    ));
+    assert!(app.flash.as_ref().unwrap().details.family.is_some());
 }

@@ -113,6 +113,16 @@ fn several_ports_ask_before_any_is_used() {
         app.processes.drain().is_empty(),
         "no probe, no listing, no query"
     );
+    // Nothing was created to list or query with either: this backend has no
+    // device filesystem to load, so no browser and no esptool panel exist.
+    assert!(
+        app.browser.is_none(),
+        "a Zephyr board must not get a file browser"
+    );
+    assert!(
+        app.flash.is_none(),
+        "a Zephyr board must not get an esptool identity query"
+    );
 }
 
 #[test]

@@ -655,11 +655,16 @@ pub struct App {
     /// Set by [`App::defer_device_info_query`] when a device is newly
     /// selected while `mpremote` is (or is about to be) busy; consumed the
     /// moment [`Self::browser`] next goes idle. `esptool` and `mpremote`
-    /// hold the serial port exclusively, so the background chip/flash query
+    /// hold the serial port exclusively, so the background chip query
     /// must never race the file listing that a fresh device selection also
     /// kicks off (`AGENTS.md` §5's "one tool at a time" applies across
     /// tools too, not just within `mpremote`).
     flash_query_pending: bool,
+    /// The first device listing is being held behind the background
+    /// `esptool chip-id` (the identity query comes first on a newly
+    /// selected device); [`Self::resume_held_root_listing`] releases it
+    /// once the query reports back. See [`flash_view`].
+    held_root_listing: bool,
     /// A short-lived `mpremote repl` session asking a newly selected device
     /// whether a script is running, *before* the first filesystem operation
     /// interrupts it --- see [`probe`]. `None` whenever no probe is in flight.
@@ -718,6 +723,7 @@ impl App {
             run_script: None,
             run_state: RunState::default(),
             flash_query_pending: false,
+            held_root_listing: false,
             probe: None,
             probed_port: None,
             restore_pending: false,
@@ -867,7 +873,11 @@ impl App {
                 self.tick_probe();
                 self.check_interrupt_gate();
                 self.maybe_offer_restore();
-                self.maybe_run_deferred_flash_query();
+                if self.maybe_run_deferred_flash_query() == flash_view::DeferredQuery::Dropped {
+                    // The held listing was waiting on a query that can never
+                    // start now; listing beats waiting forever.
+                    self.resume_held_root_listing();
+                }
                 self.poll_local_size();
             }
             AppEvent::Process(event) => self.on_process(&event),
@@ -1078,6 +1088,7 @@ impl App {
         if let Some(mut flash) = self.flash.take() {
             let update = flash.on_process(event);
             let fetch_update = flash.on_curl_process(event);
+            let query_finished = update.background_query_finished;
             self.flash = Some(flash);
 
             for (level, message) in update.notices {
@@ -1097,6 +1108,12 @@ impl App {
             if fetch_update.download_finished {
                 self.offer_flash_after_download();
             }
+
+            // The background chip query gates the first device listing on a
+            // newly selected device; its finishing is the listing's cue.
+            if query_finished {
+                self.resume_held_root_listing();
+            }
         }
 
         // The deferred query (above, and from `apply_device_picker`) can only
@@ -1104,7 +1121,9 @@ impl App {
         // answer --- checked here for promptness and again on every tick,
         // because with a held queue (a running script) no process event ever
         // arrives to reach this line.
-        self.maybe_run_deferred_flash_query();
+        if self.maybe_run_deferred_flash_query() == flash_view::DeferredQuery::Dropped {
+            self.resume_held_root_listing();
+        }
 
         // A completed command may have armed either follow-up question.
         self.check_interrupt_gate();

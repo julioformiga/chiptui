@@ -587,6 +587,16 @@ impl Browser {
 
     // ---- device requests ------------------------------------------------
 
+    /// Drops every cached device listing, comparison verdict and free-space
+    /// reading: the selection moved to another board, so none of it can be
+    /// shown under the new one. Called before the probe / chip query /
+    /// listing chain re-reads the device.
+    pub fn invalidate_device_cache(&mut self) {
+        self.cache.clear();
+        self.verdicts.clear();
+        self.device_space = None;
+    }
+
     /// Loads the current device directory, reusing the cache unless `force`.
     pub fn load_device(
         &mut self,

@@ -251,6 +251,11 @@ pub struct FlashUpdate {
     pub offer_flash: bool,
     /// Device query finished, chip is known, but firmware folder is empty.
     pub search_online_for_firmware: bool,
+    /// The background device query ([`FlashPanel::query_device_info`])
+    /// finished --- successfully or not. Whatever was chained behind it
+    /// (the first device listing, when `App` holds it for the query) may
+    /// proceed.
+    pub background_query_finished: bool,
 }
 
 impl FlashPanel {
@@ -525,19 +530,27 @@ impl FlashPanel {
         notices
     }
 
-    /// Refreshes chip/flash identity in the background --- e.g. right after
+    /// Refreshes chip identity in the background --- e.g. right after
     /// a device is selected, so the Dashboard's device panel has something
-    /// to show without the user ever opening the Flash view. Unlike
-    /// [`Self::run`], this never touches [`Self::screen`]: it must not
-    /// navigate the user away from whatever they are currently looking at
-    /// (`self.output` still accumulates lines the normal way, but that is
-    /// invisible until [`Self::run`] switches to the output screen, which
-    /// clears it first). A command already running (including one the user
-    /// started by hand) is left alone rather than queued --- there is no
-    /// request queue here (see the module doc), and this is a courtesy
-    /// refresh, not something worth interrupting real work for.
-    pub fn query_device_info(&mut self, processes: &mut ProcessManager, port: Option<&str>) {
-        self.spawn(FlashAction::FlashInfo, processes, port, true);
+    /// to show without the user ever opening the Flash view. `esptool
+    /// chip-id` is the cheapest command that reads the connection banner
+    /// (chip/revision/features/crystal/MAC); unlike [`Self::run`], this
+    /// never touches [`Self::screen`]: it must not navigate the user away
+    /// from whatever they are currently looking at (`self.output` still
+    /// accumulates lines the normal way, but that is invisible until
+    /// [`Self::run`] switches to the output screen, which clears it first).
+    /// A command already running (including one the user started by hand)
+    /// is left alone rather than queued --- there is no request queue here
+    /// (see the module doc), and this is a courtesy refresh, not something
+    /// worth interrupting real work for. Returns whether the query started;
+    /// `false` means it was refused and nothing will follow.
+    pub fn query_device_info(
+        &mut self,
+        processes: &mut ProcessManager,
+        port: Option<&str>,
+    ) -> bool {
+        self.spawn(FlashAction::ChipInfo, processes, port, true)
+            .is_empty()
     }
 
     fn spawn(
@@ -637,6 +650,9 @@ impl FlashPanel {
         }
         self.details
             .merge(parse::parse_device_details(&running.stdout));
+        if running.background {
+            update.background_query_finished = true;
+        }
 
         match failure {
             Some(error) => {
@@ -1170,14 +1186,25 @@ mod tests {
         panel.set_tool_path(fake_esptool());
         let mut processes = ProcessManager::new();
 
-        panel.query_device_info(&mut processes, None);
+        assert!(
+            panel.query_device_info(&mut processes, None),
+            "with the panel idle the query must start"
+        );
         assert!(panel.is_busy());
         assert_eq!(panel.screen, FlashScreen::Menu, "screen must stay put");
 
         let update = settle(&mut panel, &mut processes);
 
         assert_eq!(panel.details.family, Some(ChipFamily::Esp32));
-        assert_eq!(panel.details.flash_size.as_deref(), Some("4MB"));
+        assert_eq!(panel.details.mac.as_deref(), Some("24:6f:28:12:34:56"));
+        assert_eq!(
+            panel.details.flash_size, None,
+            "the background query is chip-id, which never mentions flash"
+        );
+        assert!(
+            update.background_query_finished,
+            "whatever was chained behind the query may proceed"
+        );
         assert_eq!(
             panel.screen,
             FlashScreen::Menu,
@@ -1202,7 +1229,7 @@ mod tests {
         assert!(panel.is_busy());
 
         // Must not queue, replace the in-flight command, or panic.
-        panel.query_device_info(&mut processes, None);
+        assert!(!panel.query_device_info(&mut processes, None));
         settle(&mut panel, &mut processes);
         assert_eq!(panel.details.family, Some(ChipFamily::Esp32));
     }

@@ -737,19 +737,20 @@ fn picking_a_device_defers_the_esptool_query_until_mpremote_releases_the_port() 
         "esptool must not race mpremote for the port"
     );
 
-    // Drive everything to completion: probe, then listing, then the query
-    // this test exists for. Nothing is busy in the instant after Enter (the
-    // probe holds the port without occupying the browser), so the loop keys
-    // on the query's eventual answer rather than on busyness.
+    // Drive everything to completion: probe, then the chip identity query,
+    // then the listing it was holding (the new order --- the query gates the
+    // first listing), then the query's answer. The loop breaks only when
+    // both tools are done.
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         for event in app.processes.drain() {
             app.handle(AppEvent::Process(event));
         }
-        if app
-            .flash
-            .as_ref()
-            .is_some_and(|flash| flash.details.family.is_some())
+        if !app.browser.as_ref().unwrap().is_busy()
+            && app
+                .flash
+                .as_ref()
+                .is_some_and(|flash| flash.details.family.is_some())
         {
             break;
         }

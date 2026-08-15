@@ -277,6 +277,17 @@ impl App {
             }
             return;
         }
+        // Next in line is the board's identity, not its files: hold the
+        // listing behind the background `esptool chip-id` until that query
+        // finishes ([`super::flash_view`]). Backends without the query
+        // (no esptool-backed capability, i.e. no first-listing flow at all
+        // for a build-only backend like Zephyr) never hold here.
+        if self.hold_root_listing_for_chip_identity() {
+            if let Some(browser) = &mut self.browser {
+                browser.set_device_loading();
+            }
+            return;
+        }
         let Some(mut browser) = self.browser.take() else {
             return;
         };
@@ -405,6 +416,12 @@ impl App {
         // A different board may be in a different state: probe it before the
         // first listing interrupts anything, same as the startup path.
         let port = self.devices.selected_port().map(str::to_string);
+        if let Some(browser) = &mut self.browser {
+            // The cached listing belongs to the previous board; drop it
+            // before the probe/chip query/listing chain below can show it
+            // under the new selection.
+            browser.invalidate_device_cache();
+        }
         if self.start_device_probe(port.as_deref()) {
             if let Some(browser) = &mut self.browser {
                 browser.set_device_loading();
@@ -413,21 +430,18 @@ impl App {
             return;
         }
 
-        // The cached listing belongs to the previous board.
-        match self.browser.take() {
-            Some(mut browser) => {
-                let notices = browser.load_device(&mut self.processes, port.as_deref(), true);
-                self.browser = Some(browser);
-                for (level, message) in notices {
-                    self.logs.push(level, message);
-                }
-                // Same port-contention reasoning as the startup path: wait
-                // for this listing to finish before esptool touches the port.
+        match self.browser.as_mut() {
+            // Same port-contention reasoning as the startup path: the chip
+            // query goes first and the listing queues behind it.
+            Some(_) => {
                 self.defer_device_info_query();
+                self.load_device_root();
             }
             // No filesystem capability, so nothing is about to contend for
             // the port --- safe to query right away.
-            None => self.maybe_query_device_info(),
+            None => {
+                self.maybe_query_device_info();
+            }
         }
     }
 

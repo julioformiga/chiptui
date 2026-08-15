@@ -289,10 +289,18 @@ These are the decisions that shape most code, and getting them wrong causes wide
   --no-follow "import main"`) because a `soft-reset` leaves the script *stopped* — raw-REPL
   reboots skip `main.py`. The monitor updates the same belief live; a script that swallows
   Ctrl-C surfaces as the classified `ReplBlocked` error with its way out. The background
-  `esptool` chip query is also gated on that belief (`maybe_run_deferred_flash_query`,
-  tick-polled): esptool resets the board to read the chip, so it waits for an idle device,
-  a closed overlay and a free port instead of racing a restore decision or silently
-  resetting a script the user just declined to interrupt.
+  `esptool chip-id` identity query (`FlashPanel::query_device_info`, chip not flash — the
+  connection banner's identity half; flash geometry stays in the Flash view) runs *first* on a
+  newly selected device: after the probe releases the port, the first device listing is held
+  behind it (`App::hold_root_listing_for_chip_identity`/`held_root_listing`, released by
+  `FlashUpdate::background_query_finished` or, if the query can never start, by the tick's
+  `DeferredQuery::Dropped`), so the port changes hands probe → esptool → mpremote instead of
+  being contended. The query is also gated on the script belief
+  (`maybe_run_deferred_flash_query`, tick-polled): esptool resets the board to read the chip,
+  so it waits for an idle device, a closed overlay and a free port instead of racing a restore
+  decision or silently resetting a script the user just declined to interrupt. A backend
+  without this flow (Zephyr: no filesystem, no esptool) never creates a browser or flash panel
+  and so never lists or queries.
 
 ## Testing
 

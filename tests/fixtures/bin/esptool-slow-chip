@@ -1,0 +1,20 @@
+#!/bin/sh
+# Fake `esptool` whose `chip-id` takes ~1s, for ordering tests: long enough
+# that the test can observe ChipTUI holding the first device listing behind
+# the identity query instead of racing it on the serial port.
+case "$*" in
+    *"chip-id"*)
+        sleep 1
+        printf 'esptool v5.3.1\n'
+        printf 'Serial port /dev/ttyUSB0\n'
+        printf 'Detecting chip type... ESP32\n'
+        printf 'Chip is ESP32-D0WD (revision 3)\n'
+        printf 'Features: WiFi, BT, Dual Core, 240MHz, VRef calibration in efuse, Coding Scheme None\n'
+        printf 'Crystal is 40MHz\n'
+        printf 'MAC: 24:6f:28:12:34:56\n'
+        ;;
+    *)
+        echo "A fatal error occurred: unexpected command: $*" >&2
+        exit 1
+        ;;
+esac
