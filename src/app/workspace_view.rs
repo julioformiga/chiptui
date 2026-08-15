@@ -1,11 +1,15 @@
-//! Workspace-pane driving: the action list's key handling, the workspace
-//! picker, and the confirm gate in front of `west update` (which rewrites
-//! the shared workspace --- `SPEC.md` §15's never-hide-destruction, applied
-//! outside the project). Split out of `app.rs` alongside the other
-//! one-subsystem files.
+//! Workspace-pane driving: the action list's key handling, the directory
+//! picker (choose the Zephyr installation, validated and persisted), the
+//! confirm gate in front of `west update` (which rewrites the shared
+//! workspace --- `SPEC.md` §15's never-hide-destruction, applied outside
+//! the project). Split out of `app.rs` alongside the other one-subsystem
+//! files.
+
+use std::path::{Path, PathBuf};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
+use crate::backend::zephyr::workspace::{Resolution, WorkspaceOrigin};
 use crate::workspace::WorkspaceAction;
 
 use super::{App, Focus, LogTab, MonitorSource, Overlay};
@@ -40,8 +44,8 @@ impl App {
     }
 
     /// Runs a workspace action: `west update` confirms first (it rewrites
-    /// the workspace every project in it shares), `west sdk list` and the
-    /// picker act immediately.
+    /// the workspace every project in it shares), `west sdk list` runs
+    /// immediately, and the chooser opens the directory picker.
     pub(super) fn run_workspace_action(&mut self, action: WorkspaceAction) {
         match action {
             WorkspaceAction::Update => {
@@ -50,48 +54,200 @@ impl App {
                     confirm: false,
                 });
             }
-            WorkspaceAction::SdkList => self
-                .start_workspace_command("SDK list", |panel, backend| {
+            WorkspaceAction::SdkList => {
+                self.start_workspace_command("SDK list", |panel, backend| {
                     panel.sdk_list_command(backend)
-                }),
-            WorkspaceAction::Choose => self.open_workspace_picker(),
+                });
+            }
+            WorkspaceAction::Choose => self.open_dir_picker(),
         }
     }
 
-    /// Opens the workspace picker over the discovered candidates. `Esc`
-    /// leaves everything as it was --- an unresolved pane stays unresolved,
-    /// a resolved one keeps its answer.
-    pub(super) fn open_workspace_picker(&mut self) {
-        if self
+    /// Startup's half of the flow (`SPEC.md` §10's environment): when no
+    /// config names an installation, the question is asked right away, not
+    /// parked in a pane waiting for a keypress. Called from `main.rs` after
+    /// the panes exist. A config that names an *invalid* location does not
+    /// reopen the picker by itself --- its error (with the install guide)
+    /// is the pane's status, and the chooser is one `Enter` away.
+    pub fn maybe_open_workspace_picker(&mut self) {
+        let not_configured = self
             .workspace
             .as_ref()
-            .is_some_and(|panel| panel.candidates.len() > 1)
-        {
-            self.overlay = Some(Overlay::WorkspacePicker { selected: 0 });
+            .is_some_and(|panel| panel.resolved.is_none() && panel.invalid.is_none());
+        if not_configured && self.overlay.is_none() {
+            self.open_dir_picker();
         }
     }
 
-    /// Applies the picker's choice: session-only, never written anywhere
-    /// (the way a workspace is recorded permanently is the config file, and
-    /// only the user edits that).
-    pub(super) fn apply_workspace_picker(&mut self, selected: usize) {
-        if let Some(panel) = &mut self.workspace {
-            panel.set_picked(selected);
-            if let Some(workspace) = panel.resolved.clone() {
-                self.logs.info(format!(
-                    "workspace set to {} for this session (nothing written)",
-                    workspace.dir.display()
-                ));
+    /// Opens the directory picker at the user's home (where installations
+    /// live in practice), or `/` when there is no home to start from.
+    /// `Esc` leaves everything as it was.
+    pub(super) fn open_dir_picker(&mut self) {
+        let start = if self.home_dir.is_dir() {
+            self.home_dir.clone()
+        } else {
+            PathBuf::from("/")
+        };
+        self.overlay = Some(Overlay::DirPicker {
+            path: start,
+            selected: 0,
+            error: None,
+        });
+    }
+
+    /// Applies a key to the open directory picker: arrows walk the rows,
+    /// `Enter` (or `→`) opens the row under the cursor --- descending into
+    /// directories, stepping up at `..`, and *validating* the current
+    /// directory at the "use this directory" row --- and `←`/Backspace go
+    /// up. Any navigation clears a previous validation error: it described
+    /// a directory that is no longer under the cursor.
+    pub(super) fn on_dir_picker_key(
+        &mut self,
+        key: KeyEvent,
+        path: PathBuf,
+        selected: usize,
+        error: Option<String>,
+    ) {
+        let (rows, _) = crate::workspace::dir_rows(&path);
+        let count = rows.len().max(1);
+        let rebuild = |app: &mut Self, path: PathBuf, selected: usize| {
+            let (rows, _) = crate::workspace::dir_rows(&path);
+            let selected = selected.min(rows.len().saturating_sub(1));
+            app.overlay = Some(Overlay::DirPicker {
+                path,
+                selected,
+                error: None,
+            });
+        };
+        let descend = |app: &mut Self, path: PathBuf| {
+            // Landing on the "use this directory" row is the point: the
+            // reflex Enter after navigating *into* the installation
+            // accepts it, instead of asking for one more hop.
+            app.overlay = Some(Overlay::DirPicker {
+                path,
+                selected: 0,
+                error: None,
+            });
+        };
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => self.overlay = None,
+            KeyCode::Up | KeyCode::Char('k') => {
+                rebuild(self, path, (selected + count - 1) % count);
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                rebuild(self, path, (selected + 1) % count);
+            }
+            KeyCode::Enter | KeyCode::Right => match rows.get(selected).map(|row| row.kind) {
+                Some(crate::workspace::DirRowKind::Use) => {
+                    self.accept_workspace_dir(path);
+                }
+                Some(crate::workspace::DirRowKind::Parent) => {
+                    let Some(parent) = path.parent().map(Path::to_path_buf) else {
+                        return;
+                    };
+                    descend(self, parent);
+                }
+                Some(crate::workspace::DirRowKind::Dir) => {
+                    let Some(dir) = rows.get(selected).map(|row| row.path.clone()) else {
+                        return;
+                    };
+                    descend(self, dir);
+                }
+                None => rebuild(self, path, selected),
+            },
+            KeyCode::Left | KeyCode::Backspace => {
+                let Some(parent) = path.parent().map(Path::to_path_buf) else {
+                    return;
+                };
+                descend(self, parent);
+            }
+            _ => {
+                if error.is_some() {
+                    self.overlay = Some(Overlay::DirPicker {
+                        path,
+                        selected,
+                        error,
+                    });
+                }
             }
         }
-        // The build panel's commands must follow the new answer.
+    }
+
+    /// Validates the directory the picker accepted and, when it is a real
+    /// Zephyr installation, persists the choice where resolution reads it:
+    /// the project's `chiptui.toml` when the project pins its own location,
+    /// else the user config. A directory that fails validation keeps the
+    /// picker open with the reason (and the install guide) under the list.
+    pub(super) fn accept_workspace_dir(&mut self, dir: PathBuf) {
+        let (root, project_settings, user_settings) = self.zephyr_settings();
+        // The picker validates through whatever explicit west/sdk keys the
+        // configs carry, so a pick honors them the same way a resolved
+        // location would.
+        let settings = project_settings
+            .clone()
+            .or_else(|| user_settings.clone())
+            .unwrap_or_default();
+        let input = crate::backend::zephyr::workspace::ResolveInput {
+            project_settings: project_settings.as_ref(),
+            user_settings: user_settings.as_ref(),
+            home: &self.home_dir,
+        };
+        let checked = crate::backend::zephyr::workspace::install_check(
+            &input,
+            dir.clone(),
+            WorkspaceOrigin::UserConfig,
+            &settings,
+        );
+        match checked {
+            Resolution::Single(_) => {
+                let target = if project_settings
+                    .as_ref()
+                    .is_some_and(|settings| settings.workspace.is_some())
+                {
+                    root.join(crate::project::config::FILE_NAME)
+                } else {
+                    crate::settings::user_config_path(&self.home_dir)
+                };
+                match crate::settings::save_workspace(&target, &dir) {
+                    Ok(()) => {
+                        self.logs
+                            .info(format!("Zephyr location saved to {}", target.display()));
+                    }
+                    Err(err) => self
+                        .logs
+                        .error(format!("could not save {}: {err}", target.display())),
+                }
+                self.overlay = None;
+                self.refresh_workspace_resolution();
+            }
+            Resolution::Invalid(message) => {
+                self.overlay = Some(Overlay::DirPicker {
+                    path: dir,
+                    selected: 0,
+                    error: Some(message),
+                });
+            }
+            Resolution::NotConfigured => {}
+        }
+    }
+
+    /// Re-runs resolution from the (possibly just-written) configs and
+    /// pushes the answer into the pane and the build panel's commands.
+    pub(super) fn refresh_workspace_resolution(&mut self) {
+        let resolution = self.resolve_workspace();
+        if let Resolution::Invalid(message) = &resolution {
+            self.logs.error(message.clone());
+        }
+        if let Some(panel) = &mut self.workspace {
+            panel.apply_resolution(resolution);
+        }
         self.apply_west_env();
     }
 
     /// Pushes the resolved workspace's west invocation (executable and
     /// environment) into the build panel, whose commands are where it
     /// matters.
-    fn apply_west_env(&mut self) {
+    pub(super) fn apply_west_env(&mut self) {
         let Some(workspace) = &self.workspace else {
             return;
         };

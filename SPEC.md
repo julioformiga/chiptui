@@ -481,21 +481,32 @@ before running anything:
 3.  the **Zephyr SDK** (toolchain), which CMake finds on its own unless a
     location is configured.
 
-Resolution, most explicit first:
+The location of the installation comes from configuration and nowhere
+else --- no directory conventions are assumed, no environment variables are
+consulted. The startup flow:
 
--   `[zephyr] workspace` in the project's `chiptui.toml`;
--   `[zephyr] workspace` in the user config (`~/.config/chiptui/config.toml`);
--   discovery: a `.west/` above the project, `$ZEPHYR_BASE` inherited from
-    the shell, then `~/zephyrproject`. One candidate resolves silently;
-    several open a picker showing each candidate's evidence; none leaves
-    the pane unresolved with the config path to set.
+1.  read `[zephyr] workspace` from the project's `chiptui.toml`, then from
+  the user config (`~/.config/chiptui/config.toml`);
+2.  when neither file names a location, ask immediately: a directory picker
+  (a real filesystem browser, starting at the user's home) where the user
+  navigates to their installation and accepts it;
+3.  validate whatever the config or the picker says through the same rules:
+  a directory without `.west/` is not a Zephyr installation, and a
+  workspace without its checkout is half of one. A failure keeps the
+  picker open (or the pane red) with the reason and a link to the
+  [installation guide](https://docs.zephyrproject.org/latest/develop/getting_started/index.html);
+4.  a validated pick is saved to the config (the user config, or the
+  project's `chiptui.toml` when the project pins its own location), so
+  the file remains the single source of truth and later starts never
+  re-ask.
 
 The `west` executable is the configured `west` key when present, else the
 workspace's `.venv/bin/west` when it exists, else `west` from `PATH`. No
 venv activation is performed or needed: executing the venv's console
 script directly is the activated environment, and the pieces `activate`
-adds are injected per command (`ZEPHYR_BASE` always, so an application
-outside the workspace still finds it; `ZEPHYR_SDK_INSTALL_DIR`, `PATH`
+adds are injected per command (`ZEPHYR_BASE` always --- derived from the
+installation, never set by the user --- so an application outside the
+workspace still finds it; `ZEPHYR_SDK_INSTALL_DIR`, `PATH`
 and `VIRTUAL_ENV` when a venv/SDK is known).
 
 Every command still runs with the project root as its working directory;

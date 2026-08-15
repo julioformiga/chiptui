@@ -298,35 +298,11 @@ impl App {
                     |_| {},
                 );
             }
-            Overlay::WorkspacePicker { selected } => {
-                let count = self
-                    .workspace
-                    .as_ref()
-                    .map(|panel| panel.candidates.len())
-                    .unwrap_or(0);
-                if count == 0 {
-                    self.overlay = None;
-                    return;
-                }
-                match key.code {
-                    KeyCode::Esc | KeyCode::Char('q') => self.overlay = None,
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        self.overlay = Some(Overlay::WorkspacePicker {
-                            selected: (selected + count - 1) % count,
-                        });
-                    }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        self.overlay = Some(Overlay::WorkspacePicker {
-                            selected: (selected + 1) % count,
-                        });
-                    }
-                    KeyCode::Enter => {
-                        self.overlay = None;
-                        self.apply_workspace_picker(selected);
-                    }
-                    _ => {}
-                }
-            }
+            Overlay::DirPicker {
+                path,
+                selected,
+                error,
+            } => self.on_dir_picker_key(key, path, selected, error),
             Overlay::BuildDirPicker { input, selected } => {
                 // Same grammar as the board picker: printable characters are
                 // filter/name text, arrows walk, Enter applies.

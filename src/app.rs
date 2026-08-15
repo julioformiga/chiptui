@@ -168,12 +168,15 @@ pub enum Overlay {
         input: String,
         selected: usize,
     },
-    /// The workspace picker: the west workspaces discovery found, each row
-    /// labelled with its evidence (config file, `.west/` above the project,
-    /// `$ZEPHYR_BASE`, `~/zephyrproject`). The candidates live in
-    /// [`App::workspace`]; a pick is session-only.
-    WorkspacePicker {
+    /// The installation-directory picker: a real filesystem browser (no
+    /// discovery guesses --- the user knows where their Zephyr lives).
+    /// `error` holds the validation message when an accepted directory
+    /// turned out not to be an installation, including the install guide
+    /// link; any navigation clears it.
+    DirPicker {
+        path: std::path::PathBuf,
         selected: usize,
+        error: Option<String>,
     },
     /// A state-changing workspace operation (`west update`) awaiting
     /// confirmation with the literal command --- the same rule as
@@ -1403,6 +1406,12 @@ impl App {
                 ("enter", "pick (this session)"),
                 ("esc", "cancel"),
             ],
+            Some(Overlay::DirPicker { .. }) => vec![
+                ("↑/↓", "select"),
+                ("enter", "open / accept"),
+                ("←", "up"),
+                ("esc", "cancel"),
+            ],
             Some(Overlay::BuildDirPicker { .. }) => vec![
                 ("type", "name"),
                 ("↑/↓", "select"),
@@ -1418,8 +1427,7 @@ impl App {
                 | Overlay::FirmwarePicker { .. }
                 | Overlay::ProjectSetup { .. }
                 | Overlay::FileActions { .. }
-                | Overlay::RestoreDeviceScript { .. }
-                | Overlay::WorkspacePicker { .. },
+                | Overlay::RestoreDeviceScript { .. },
             ) => {
                 vec![("↑/↓", "select"), ("enter", "apply"), ("esc", "cancel")]
             }

@@ -45,7 +45,11 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
         Overlay::BoardPicker { input, selected } => {
             draw_board_picker(frame, area, app, &input, selected)
         }
-        Overlay::WorkspacePicker { selected } => draw_workspace_picker(frame, area, app, selected),
+        Overlay::DirPicker {
+            path,
+            selected,
+            error,
+        } => draw_dir_picker(frame, area, &path, selected, error.as_deref()),
         Overlay::ConfirmWorkspace { action, confirm } => {
             // Derived like ConfirmBuild's message: whatever the pane would
             // run right now is what the confirm quotes. The literal command
@@ -596,43 +600,69 @@ fn draw_confirm(frame: &mut Frame, area: Rect, message: &str, confirm: bool) {
     draw_confirm_dialog(frame, area, "Confirm", lines, confirm, 70, 7);
 }
 
-/// Workspace selection: every candidate discovery found, each with its
-/// evidence --- the explanation is the point (`AGENTS.md` §4). A pick is
-/// session-only; the header says how to make it permanent instead.
-fn draw_workspace_picker(frame: &mut Frame, area: Rect, app: &App, selected: usize) {
-    let Some(panel) = app.workspace.as_ref() else {
-        return;
-    };
-    if panel.candidates.is_empty() {
-        return;
-    }
+/// Installation-directory selection: a real filesystem browser --- "use
+/// this directory" first, the parent, then the subdirectories. The
+/// validation error (with the install guide) sits under the list when an
+/// accepted directory was not a Zephyr installation.
+fn draw_dir_picker(
+    frame: &mut Frame,
+    area: Rect,
+    path: &std::path::Path,
+    selected: usize,
+    error: Option<&str>,
+) {
+    let height = 18u16;
+    let width = 72u16;
+    let popup = centered(area, width, height);
+    frame.render_widget(Clear, popup);
+    frame.render_widget(modal("Where is the Zephyr installation?"), popup);
 
-    let items: Vec<ListItem> = panel
-        .candidates
+    let inner = modal("Where is the Zephyr installation?").inner(popup);
+    let [path_area, list_area, footer_area] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(1),
+        Constraint::Length(2),
+    ])
+    .areas(inner);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("dir  ", Style::new().dim()),
+            Span::raw(path.display().to_string()),
+        ])),
+        path_area,
+    );
+
+    let (rows, read_error) = crate::workspace::dir_rows(path);
+    let items: Vec<ListItem> = rows
         .iter()
-        .map(|workspace| {
-            ListItem::new(Line::from(vec![
-                Span::raw(format!(" {} ", workspace.dir.display())),
-                Span::styled(
-                    format!("({})", workspace.origin.label()),
-                    Style::new().dim(),
-                ),
-            ]))
+        .map(|row| match row.kind {
+            crate::workspace::DirRowKind::Use => ListItem::new(Line::from(vec![
+                Span::styled("→ ", Style::new().fg(Color::Cyan)),
+                "use this directory".bold(),
+            ])),
+            crate::workspace::DirRowKind::Parent | crate::workspace::DirRowKind::Dir => {
+                ListItem::new(Line::from(Span::raw(format!("  {}", row.name))))
+            }
         })
         .collect();
-
-    let height = (panel.candidates.len() as u16 + 4).min(16);
-    let popup = centered(area, 72, height);
-    frame.render_widget(Clear, popup);
     let mut state = ListState::default().with_selected(Some(selected));
     frame.render_stateful_widget(
-        List::new(items)
-            .block(modal(
-                "Workspace (pick for this session — set it in the config to persist)",
-            ))
-            .highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
-        popup,
+        List::new(items).highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
+        list_area,
         &mut state,
+    );
+
+    let footer = match (error, read_error.as_deref()) {
+        (Some(error), _) => Line::from(error.to_string().fg(Color::Red)),
+        (None, Some(read)) => Line::from(read.fg(Color::Yellow)),
+        (None, None) => Line::from(
+            "enter: open / accept · ←: up · esc: cancel — the choice is saved to the config".dim(),
+        ),
+    };
+    frame.render_widget(
+        Paragraph::new(footer).wrap(ratatui::widgets::Wrap { trim: false }),
+        footer_area,
     );
 }
 

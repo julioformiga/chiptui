@@ -603,9 +603,18 @@ fn the_workspace_pane_resolves_from_project_config_and_runs_update() {
     let (mut app, root) = zephyr_app("ws", None);
     let home = root.join("home");
     let ws = workspace_under(&home, "zephyrproject");
+    // A toolchain outside CMake's default locations, pinned through the
+    // same section: everything the environment needs comes from the file.
+    let sdk = home.join("opt/zephyr-sdk-0.17.1");
+    std::fs::create_dir_all(&sdk).unwrap();
+    std::fs::write(sdk.join("sdk_version"), "0.17.1\n").unwrap();
     std::fs::write(
         root.join("chiptui.toml"),
-        format!("[zephyr]\nworkspace = \"{}\"\n", ws.display()),
+        format!(
+            "[zephyr]\nworkspace = \"{}\"\nsdk = \"{}\"\n",
+            ws.display(),
+            sdk.display()
+        ),
     )
     .unwrap();
     // Re-run resolution now that the config exists.
@@ -615,6 +624,11 @@ fn the_workspace_pane_resolves_from_project_config_and_runs_update() {
 
     let panel = app.workspace.as_ref().unwrap();
     assert_eq!(panel.dir(), Some(&ws), "the explicit config resolves");
+    assert_eq!(
+        panel.resolved.as_ref().unwrap().sdk.as_deref(),
+        Some(sdk.as_path()),
+        "the toolchain location comes from the same section"
+    );
     // The venv's west is what every command runs, and the environment says
     // which workspace it belongs to.
     assert!(
@@ -631,6 +645,10 @@ fn the_workspace_pane_resolves_from_project_config_and_runs_update() {
     assert!(frame.contains("zephyrproject"), "the path shows:\n{frame}");
     assert!(frame.contains("chiptui.toml"), "the origin shows:\n{frame}");
     assert!(frame.contains("4.1"), "the Zephyr version shows:\n{frame}");
+    assert!(
+        frame.contains("zephyr-sdk-0.17.1"),
+        "the configured toolchain and its version show:\n{frame}"
+    );
 
     // Enter on Update confirms first (it rewrites the shared workspace)…
     app.focus = Focus::Workspace;
@@ -645,11 +663,14 @@ fn the_workspace_pane_resolves_from_project_config_and_runs_update() {
         "the confirm quotes the command:\n{frame}"
     );
 
-    // …and accepting runs it in the workspace with the derived environment.
+    // …and accepting runs it in the workspace with the derived environment:
+    // ZEPHYR_BASE computed from the workspace (never required from the
+    // shell) and the configured toolchain exported alongside it.
     app.handle(key(KeyCode::Char('y')));
     assert!(app.build.as_ref().unwrap().is_busy());
     let command = app.build.as_ref().unwrap().output.front().unwrap().clone();
     assert!(command.contains(&format!("ZEPHYR_BASE={}", ws.join("zephyr").display())));
+    assert!(command.contains(&format!("ZEPHYR_SDK_INSTALL_DIR={}", sdk.display())));
     assert!(command.ends_with("west update"));
     let finished = pump_until(
         &mut app,
@@ -661,23 +682,162 @@ fn the_workspace_pane_resolves_from_project_config_and_runs_update() {
 }
 
 #[test]
-fn an_unresolved_pane_explains_the_config_instead_of_offering_actions() {
+fn an_unconfigured_pane_offers_the_chooser_and_documents_the_config() {
     let (mut app, _root) = zephyr_app("ws-missing", None);
 
     let panel = app.workspace.as_ref().unwrap();
     assert!(panel.dir().is_none());
     assert!(panel.invalid.is_none(), "nothing was configured: no error");
-    assert!(panel.actions(&app.manager.capabilities()).is_empty());
+    assert_eq!(
+        panel.actions(&app.manager.capabilities()),
+        vec![chiptui::workspace::WorkspaceAction::Choose],
+        "choosing is the only action that makes sense"
+    );
 
     let frame = render(&mut app, 100, 30);
     assert!(
-        frame.contains("no west workspace found"),
+        frame.contains("no location configured"),
         "the guidance must show:\n{frame}"
     );
     assert!(
         frame.contains("config.toml"),
         "the config path must be named:\n{frame}"
     );
+    // The template is the pane's own documentation: every [zephyr] key
+    // shows, so the sdk location is not spec-only knowledge.
+    assert!(
+        frame.contains("sdk ="),
+        "the sdk key must be offered:\n{frame}"
+    );
+    assert!(
+        frame.contains("west ="),
+        "the west override must be offered:\n{frame}"
+    );
+}
+
+#[test]
+fn startup_asks_where_the_installation_is_when_nothing_is_configured() {
+    let (mut app, root) = zephyr_app("ws-ask", None);
+    let home = root.join("home");
+    // A real installation exists under the (fixture) home: the picker's
+    // target.
+    let ws = workspace_under(&home, "myzephyr");
+
+    app.maybe_open_workspace_picker();
+    let Overlay::DirPicker { path, .. } = app.overlay.clone().unwrap() else {
+        panic!("startup must ask immediately");
+    };
+    assert_eq!(path, home, "the picker starts at the user's home");
+
+    // Navigate to the installation: Down past ".." onto it, Enter to
+    // descend (which lands on "use this directory")…
+    app.handle(key(KeyCode::Down));
+    app.handle(key(KeyCode::Down));
+    app.handle(key(KeyCode::Enter));
+    // …and the reflex Enter accepts it.
+    app.handle(key(KeyCode::Enter));
+    assert!(
+        app.overlay.is_none(),
+        "a valid installation closes the picker"
+    );
+
+    // The choice was validated and persisted to the user config…
+    let config = chiptui::settings::user_config_path(&home);
+    let saved = std::fs::read_to_string(&config).unwrap();
+    assert!(
+        saved.contains(&format!("workspace = \"{}\"", ws.display())),
+        "the pick must be saved where resolution reads it:\n{saved}"
+    );
+    // …and the session already runs against it: the pane resolved, and the
+    // build panel's commands point at the venv's west.
+    let panel = app.workspace.as_ref().unwrap();
+    assert_eq!(panel.dir(), Some(&ws));
+    assert!(
+        app.build
+            .as_ref()
+            .unwrap()
+            .tool_path()
+            .unwrap()
+            .starts_with(ws.join(".venv/bin/west").to_str().unwrap())
+    );
+}
+
+#[test]
+fn a_configured_location_never_re_asks() {
+    let (mut app, root) = zephyr_app("ws-ask2", None);
+    let home = root.join("home");
+    let ws = workspace_under(&home, "myzephyr");
+    chiptui::settings::save_workspace(&chiptui::settings::user_config_path(&home), &ws).unwrap();
+
+    app.workspace = None;
+    app.build = None;
+    app.maybe_scan_devices();
+    app.maybe_open_workspace_picker();
+
+    assert!(app.overlay.is_none(), "the config answers, no picker");
+    assert_eq!(
+        app.workspace.as_ref().unwrap().dir(),
+        Some(&ws),
+        "resolution reads the saved location"
+    );
+}
+
+#[test]
+fn a_wrong_directory_is_rejected_with_the_install_guide() {
+    let (mut app, _root) = zephyr_app("ws-wrong", None);
+
+    app.maybe_open_workspace_picker();
+
+    // Accept the home itself: not an installation (no .west/).
+    app.handle(key(KeyCode::Enter));
+    let Overlay::DirPicker { error, .. } = app.overlay.clone().unwrap() else {
+        panic!("a rejection must keep the picker open");
+    };
+    let error = error.expect("the rejection must explain itself");
+    assert!(error.contains(".west"), "names the marker: {error}");
+    assert!(
+        error.contains("docs.zephyrproject.org"),
+        "points at the install guide: {error}"
+    );
+
+    // The pane is still unresolved after cancelling.
+    app.handle(key(KeyCode::Esc));
+    assert!(app.workspace.as_ref().unwrap().dir().is_none());
+}
+
+#[test]
+fn a_configured_but_broken_location_reports_the_guide_and_still_lets_you_choose() {
+    let (mut app, root) = zephyr_app("ws-broken", None);
+    std::fs::write(
+        root.join("chiptui.toml"),
+        format!(
+            "[zephyr]\nworkspace = \"{}\"\n",
+            root.join("home/not-an-install").display()
+        ),
+    )
+    .unwrap();
+    app.workspace = None;
+    app.build = None;
+    app.maybe_scan_devices();
+
+    // The pane reports the invalid location with the install guide…
+    let panel = app.workspace.as_ref().unwrap();
+    let message = panel.invalid.as_ref().unwrap();
+    assert!(message.contains(".west"));
+    assert!(message.contains("docs.zephyrproject.org"));
+    let frame = render(&mut app, 100, 30);
+    assert!(
+        frame.contains("docs.zephyrproject.org"),
+        "the guide must show:\n{frame}"
+    );
+    // …and does not auto-open the picker: the error is the answer's
+    // context, the chooser is one Enter away.
+    assert!(app.overlay.is_none());
+
+    // Enter opens the directory picker from the pane.
+    app.focus = Focus::Workspace;
+    app.handle(key(KeyCode::Enter));
+    assert!(matches!(app.overlay, Some(Overlay::DirPicker { .. })));
 }
 
 #[test]

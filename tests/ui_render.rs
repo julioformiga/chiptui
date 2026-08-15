@@ -77,7 +77,7 @@ fn zephyr_shows_the_workspace_and_build_panes_in_row_two() {
         "missing the workspace pane:\n{frame}"
     );
     assert!(
-        frame.contains("no west workspace found"),
+        frame.contains("no location configured"),
         "an unresolved pane must explain itself:\n{frame}"
     );
     assert!(frame.contains("Build"), "missing the build panel:\n{frame}");

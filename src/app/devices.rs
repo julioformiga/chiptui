@@ -117,9 +117,9 @@ impl App {
     /// 2 (can build, no device filesystem), and --- for a backend that also
     /// maintains a workspace --- resolves the west environment first so the
     /// panel's commands carry it. Like the browser's creation this reads no
-    /// subprocess: workspace discovery is directory walking plus two config
-    /// files, and the build panel reads only the project's own
-    /// `CMakeCache.txt`, if one exists.
+    /// subprocess: resolution reads two config files and walks the
+    /// configured directory, and the build panel reads only the project's
+    /// own `CMakeCache.txt`, if one exists.
     fn ensure_build_panel(&mut self) {
         if !self.build_pane_visible_precondition() || self.build.is_some() {
             return;
@@ -138,12 +138,13 @@ impl App {
         self.build = Some(panel);
     }
 
-    /// Resolves the west workspace for a [`Capability::WorkspaceSync`]
-    /// backend, once per session: both config levels (`chiptui.toml`'s
-    /// `[zephyr]`, then the user config), then discovery (`.west/` above the
-    /// project, `$ZEPHYR_BASE`, `~/zephyrproject`). An ambiguous discovery
-    /// is stored unresolved --- the pane prompts and the picker decides
-    /// (`SPEC.md` §7's ask-don't-guess, applied to the environment).
+    /// Resolves the Zephyr installation for a [`Capability::WorkspaceSync`]
+    /// backend, once per session, from configuration and nowhere else: the
+    /// project's `chiptui.toml` first, then the user config. Neither names
+    /// a location → `NotConfigured`, and startup asks with the directory
+    /// picker (`maybe_open_workspace_picker`); a configured location that is
+    /// not an installation → `Invalid`, with the install guide in the
+    /// message. No directory conventions, no environment variables.
     fn ensure_workspace_panel(&mut self) {
         if !self
             .manager
@@ -153,6 +154,37 @@ impl App {
         {
             return;
         }
+        let resolution = self.resolve_workspace();
+        if let crate::backend::zephyr::workspace::Resolution::Invalid(message) = &resolution {
+            self.logs.error(message.clone());
+        }
+        let path_env = std::env::var("PATH").unwrap_or_default();
+        self.workspace = Some(crate::workspace::WorkspacePanel::new(resolution, path_env));
+    }
+
+    /// Assembles both config levels and resolves the installation location
+    /// against them.
+    pub(super) fn resolve_workspace(&self) -> crate::backend::zephyr::workspace::Resolution {
+        let (_root, project_settings, user_settings) = self.zephyr_settings();
+        let input = crate::backend::zephyr::workspace::ResolveInput {
+            project_settings: project_settings.as_ref(),
+            user_settings: user_settings.as_ref(),
+            home: &self.home_dir,
+        };
+        crate::backend::zephyr::workspace::resolve(&input)
+    }
+
+    /// The project root plus both parsed `[zephyr]` sections (project file,
+    /// then user config), the shared input of resolution and picker
+    /// validation. Reading them together is what keeps one definition of
+    /// "what is configured" across both doors.
+    pub(super) fn zephyr_settings(
+        &self,
+    ) -> (
+        PathBuf,
+        Option<crate::settings::ZephyrSettings>,
+        Option<crate::settings::ZephyrSettings>,
+    ) {
         let root = self
             .manager
             .root()
@@ -163,20 +195,7 @@ impl App {
                 .map(|text| crate::settings::ZephyrSettings::parse(&text))
                 .filter(|settings| !settings.is_empty());
         let user_settings = crate::settings::load_user(&self.home_dir);
-        let zephyr_base_env = std::env::var_os("ZEPHYR_BASE").map(PathBuf::from);
-        let input = crate::backend::zephyr::workspace::ResolveInput {
-            project_root: &root,
-            project_settings: project_settings.as_ref(),
-            user_settings: user_settings.as_ref(),
-            zephyr_base_env: zephyr_base_env.as_deref(),
-            home: &self.home_dir,
-        };
-        let resolution = crate::backend::zephyr::workspace::resolve(&input);
-        if let crate::backend::zephyr::workspace::Resolution::Invalid(message) = &resolution {
-            self.logs.error(message.clone());
-        }
-        let path_env = std::env::var("PATH").unwrap_or_default();
-        self.workspace = Some(crate::workspace::WorkspacePanel::new(resolution, path_env));
+        (root, project_settings, user_settings)
     }
 
     /// The capability half of [`Self::build_pane_visible`]: whether a build

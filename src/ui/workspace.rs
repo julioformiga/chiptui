@@ -31,7 +31,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let [status, list] = Layout::vertical([Constraint::Length(5), Constraint::Min(1)]).areas(inner);
+    let [status, list] = Layout::vertical([Constraint::Length(7), Constraint::Min(1)]).areas(inner);
 
     draw_status(frame, status, app);
     draw_actions(frame, list, app, focused);
@@ -56,7 +56,11 @@ fn draw_status(frame: &mut Frame, area: Rect, app: &App) {
                     "from PATH".dim(),
                 ])
             } else {
-                Line::from(vec![label("west"), workspace.west.clone().fg(Color::Green)])
+                Line::from(vec![
+                    label("west"),
+                    shorten_start(&workspace.west, (area.width as usize).saturating_sub(9))
+                        .fg(Color::Green),
+                ])
             };
             let sdk_line = match &workspace.sdk {
                 Some(sdk) => {
@@ -66,10 +70,14 @@ fn draw_status(frame: &mut Frame, area: Rect, app: &App) {
                         .unwrap_or_default();
                     Line::from(vec![
                         label("sdk"),
-                        format!("{}{version}", sdk.display()).fg(Color::Green),
+                        shorten_start(
+                            &format!("{}{version}", sdk.display()),
+                            (area.width as usize).saturating_sub(11),
+                        )
+                        .fg(Color::Green),
                     ])
                 }
-                None => Line::from(vec![label("sdk"), "auto (CMake discovery)".dim()]),
+                None => Line::from(vec![label("sdk"), "auto (set [zephyr] sdk to pin)".dim()]),
             };
             vec![
                 Line::from(vec![
@@ -89,26 +97,41 @@ fn draw_status(frame: &mut Frame, area: Rect, app: &App) {
             ]
         }
         None => {
-            let first = if let Some(message) = &panel.invalid {
-                Line::from(message.clone().fg(Color::Red))
-            } else if !panel.candidates.is_empty() {
-                Line::from(vec![
-                    "several workspaces found --- ".into(),
-                    "press Enter to choose".fg(Color::Yellow),
-                ])
-            } else {
-                Line::from("no west workspace found".fg(Color::Yellow))
-            };
             let config_path = crate::settings::user_config_path(app.home_dir());
-            vec![
-                first,
-                Line::from(vec![
-                    "set one in ".dim(),
-                    config_path.display().to_string().dim().bold(),
-                ]),
-                Line::from("[zephyr]".dim().bold()),
-                Line::from("workspace = \"~/zephyrproject\"".dim()),
-            ]
+            let short_config = shorten_start(
+                &config_path.display().to_string(),
+                (area.width as usize).saturating_sub(13),
+            );
+            if let Some(message) = &panel.invalid {
+                // A configured location that is not an installation: the
+                // reason (which carries the install guide link), then the
+                // two ways out --- pick a real directory, or fix the file.
+                vec![
+                    Line::from(message.clone().fg(Color::Red)),
+                    Line::from("Enter: choose the right directory".fg(Color::Yellow)),
+                    Line::from(vec!["or fix ".dim(), short_config.dim().bold()]),
+                ]
+            } else {
+                // Nothing configured: the picker answers this in three
+                // keys, and the template below documents the config file
+                // for whoever prefers setting it by hand --- every
+                // `[zephyr]` key with its meaning.
+                vec![
+                    Line::from("no location configured".fg(Color::Yellow)),
+                    Line::from(vec![
+                        "Enter: ".dim(),
+                        "choose the Zephyr installation directory".fg(Color::Yellow),
+                    ]),
+                    Line::from(vec![
+                        "or set it in ".dim(),
+                        short_config.dim().bold(),
+                        ":".dim(),
+                    ]),
+                    Line::from("[zephyr]".dim().bold()),
+                    Line::from("workspace = \"…\"".dim()),
+                    Line::from("# sdk = \"…\"  (toolchain)   # west = \"…\"".dim()),
+                ]
+            }
         }
     };
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
@@ -151,7 +174,10 @@ fn draw_actions(frame: &mut Frame, area: Rect, app: &App, focused: bool) {
                 Span::raw("  "),
                 "Choose".bold(),
                 Span::raw("  "),
-                Span::styled("pick among the discovered workspaces", Style::new().dim()),
+                Span::styled(
+                    "where is the Zephyr installation? (saved to the config)",
+                    Style::new().dim(),
+                ),
             ]),
         };
         items.push(ListItem::new(item));

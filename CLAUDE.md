@@ -35,14 +35,26 @@ claims the *whole* row with a **Workspace | Build** pair (`maybe_scan_devices`/
 project's own sources is the user's editor's job; MicroPython's dual-pane browser and its
 capability-gated `FileAction::for_entry` menu are unchanged). The **workspace pane**
 (`src/workspace.rs`, `src/ui/workspace.rs`, `src/app/workspace_view.rs`) is the environment
-half: it resolves the west workspace (`src/backend/zephyr/workspace.rs`: `chiptui.toml`'s
-`[zephyr]` → the user config `~/.config/chiptui/config.toml`, parsed by `src/settings.rs` →
-discovery, which walks up for `.west/`, honors an inherited `ZEPHYR_BASE`, then tries
-`~/zephyrproject`, and asks through `Overlay::WorkspacePicker` when several candidates exist),
-shows status read from files rather than subprocesses (`zephyr/VERSION`, `sdk_version`), and
-offers `west update` (confirm-gated — it rewrites the shared workspace) and `west sdk list`
-under `Capability::WorkspaceSync`; both run through the build panel's one process slot into
-the Monitor tab. The resolution feeds the build panel's commands via
+half: it resolves the Zephyr *installation* (`src/backend/zephyr/workspace.rs`) from
+configuration and nowhere else --- `chiptui.toml`'s `[zephyr] workspace`, then the user
+config `~/.config/chiptui/config.toml` (both parsed by `src/settings.rs`); no directory
+conventions, no `$ZEPHYR_BASE`. When nothing is configured, `main.rs` calls
+`maybe_open_workspace_picker` right after startup: `Overlay::DirPicker` is a real
+filesystem browser (`workspace::dir_rows`, starting at `$HOME`) where the user navigates
+to the installation and accepts it; descending lands on the "use this directory" row so
+the reflex `Enter` accepts the folder just entered. The accepted directory is validated by
+the *same* `install_check` the config goes through (`.west/` present, the manifest's
+checkout present) --- a failure keeps the picker open with the reason plus the
+getting-started link (`workspace::GETTING_STARTED`), and a configured-but-broken location
+turns the pane red with the same message. A validated pick is persisted
+(`settings::save_workspace`, a line-level merge that preserves every other key/section) to
+the user config, or to `chiptui.toml` when the project pins its own location --- so the
+config stays the single source of truth and later starts never re-ask. The pane also
+shows status read from files rather than subprocesses (`zephyr/VERSION`, `sdk_version`)
+and offers `west update` (confirm-gated --- it rewrites the shared workspace, through
+`Overlay::ConfirmWorkspace`) and `west sdk list` under `Capability::WorkspaceSync`; both
+run through the build panel's one process slot into the Monitor tab. The resolution feeds
+the build panel's commands via
 `BuildPanel::set_tool_path`/`set_tool_env`: the venv's `west` (`<workspace>/.venv/bin/west`,
 executed directly — a venv console script embeds its interpreter path, so no activation is
 needed) plus per-command env (`ZEPHYR_BASE` always, so an app outside the workspace still

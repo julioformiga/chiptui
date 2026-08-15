@@ -113,6 +113,73 @@ pub fn load_user(home: &Path) -> Option<ZephyrSettings> {
     (!settings.is_empty()).then_some(settings)
 }
 
+/// Persists `workspace = dir` into the `[zephyr]` section of the config at
+/// `path`, creating the file (and its parent directories) when needed.
+///
+/// This is how the directory picker's answer outlives the session: the
+/// choice is written to the user config (or the project's `chiptui.toml`
+/// when the project pins its own location), so the next start resolves from
+/// the file instead of asking again. Everything else in the file survives:
+/// only the one line is replaced or inserted, and other keys (`sdk`,
+/// `west`) and sections are left byte-for-byte as they were.
+pub fn save_workspace(config: &Path, dir: &Path) -> std::io::Result<()> {
+    let text = std::fs::read_to_string(config).unwrap_or_default();
+    let updated = upsert_workspace(&text, &dir.display().to_string());
+    if let Some(parent) = config.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(config, updated)
+}
+
+/// The pure half of [`save_workspace`], so the merge is testable without
+/// touching the filesystem.
+fn upsert_workspace(text: &str, value: &str) -> String {
+    let section_header = |line: &str| {
+        line.split('#')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .strip_prefix('[')
+            .and_then(|l| l.strip_suffix(']'))
+            .is_some_and(|name| name.trim() == "zephyr")
+    };
+
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let mut in_section = false;
+    let mut replaced = false;
+    for line in &mut lines {
+        if section_header(line) {
+            in_section = true;
+            continue;
+        }
+        if !in_section {
+            continue;
+        }
+        let stripped = line.split('#').next().unwrap_or("").trim();
+        if let Some((key, _)) = stripped.split_once('=')
+            && key.trim() == "workspace"
+        {
+            *line = format!("workspace = \"{value}\"");
+            replaced = true;
+            break;
+        }
+    }
+    if !replaced {
+        if let Some(index) = lines.iter().position(|line| section_header(line)) {
+            lines.insert(index + 1, format!("workspace = \"{value}\""));
+        } else {
+            lines.push(String::new());
+            lines.push("[zephyr]".to_string());
+            lines.push(format!("workspace = \"{value}\""));
+        }
+    }
+    let mut out = lines.join("\n");
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -166,5 +233,53 @@ mod tests {
             PathBuf::from("/opt/ws"),
             "absolute paths pass through"
         );
+    }
+
+    #[test]
+    fn save_creates_the_file_and_round_trips() {
+        let dir =
+            std::env::temp_dir().join(format!("chiptui-save-{}-{}", std::process::id(), line!()));
+        let config = dir.join("chiptui/config.toml");
+        save_workspace(&config, Path::new("/opt/myzephyr")).unwrap();
+
+        let text = std::fs::read_to_string(&config).unwrap();
+        assert_eq!(
+            ZephyrSettings::parse(&text).workspace.as_deref(),
+            Some("/opt/myzephyr")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_replaces_only_the_workspace_line() {
+        let existing = "# my setup\n[zephyr]\nworkspace = \"/old\"\nsdk = \"~/sdk-0.17\"\n\n[ui]\nmouse = false\n";
+        let updated = upsert_workspace(existing, "/opt/myzephyr");
+        assert!(updated.contains("workspace = \"/opt/myzephyr\""));
+        assert!(!updated.contains("/old"));
+        assert!(
+            updated.contains("sdk = \"~/sdk-0.17\""),
+            "sibling keys survive:\n{updated}"
+        );
+        assert!(
+            updated.contains("[ui]\nmouse = false"),
+            "other sections survive:\n{updated}"
+        );
+        assert!(updated.contains("# my setup"), "comments survive");
+    }
+
+    #[test]
+    fn save_inserts_into_an_existing_section_without_workspace() {
+        let updated = upsert_workspace("[zephyr]\nsdk = \"~/sdk\"\n", "/opt/myzephyr");
+        assert_eq!(
+            updated,
+            "[zephyr]\nworkspace = \"/opt/myzephyr\"\nsdk = \"~/sdk\"\n"
+        );
+    }
+
+    #[test]
+    fn save_appends_the_section_when_absent() {
+        let updated = upsert_workspace("[ui]\nmouse = false\n", "/opt/myzephyr");
+        assert!(updated.contains("[ui]\nmouse = false"));
+        assert!(updated.ends_with("[zephyr]\nworkspace = \"/opt/myzephyr\"\n"));
     }
 }
