@@ -262,6 +262,17 @@ impl LogStore {
     }
 }
 
+/// Visual rows `text` occupies when wrapped to `width` columns. Shared with
+/// the Monitor pane, whose scrollbar counts console lines the same way.
+pub(crate) fn wrap_rows(text: &str, width: usize) -> usize {
+    if width == 0 {
+        return 1;
+    }
+    text.split('\n')
+        .map(|paragraph| wrap_text(paragraph, width).len())
+        .sum()
+}
+
 /// Greedy word wrap of `text` to `width` columns, counted in characters.
 ///
 /// Breaks at spaces; runs of spaces inside a line are preserved (build output

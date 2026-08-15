@@ -201,7 +201,10 @@ These are the decisions that shape most code, and getting them wrong causes wide
   height (and the wrap width, into `LogStore::set_view_width`, so clamping matches too). Long log
   entries wrap with a hanging indent past the stamp (`logs::PREFIX_WIDTH`); scrolling, the clamp and
   the pane's scrollbar all count *visual* (post-wrap) lines, and the buffer is capped at 1_000
-  entries. Rendering is otherwise a pure function of `App`.
+  entries. The Monitor tab scrolls the same way (`App::monitor_scroll`), across its four
+  consoles — anchored to the *top* of the document so live output never shifts a scrolled view,
+  gutter reserved via block padding, one `render_console`/`window_console` path doing the row
+  windowing. Rendering is otherwise a pure function of `App`.
 - **Processes** (`src/process/`): `spawn` returns immediately; a supervisor thread plus two reader
   threads push `ProcessEvent`s into one channel that `main.rs` drains each frame. Two non-obvious
   rules live here. *Killing reaches only the direct child* — a grandchild keeps the pipes open, so

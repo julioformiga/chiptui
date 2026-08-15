@@ -328,7 +328,7 @@ impl App {
         self.view = super::View::Dashboard;
         self.focus = Focus::Logs;
         self.log_tab = LogTab::Monitor;
-        self.monitor_source = MonitorSource::Build;
+        self.set_monitor_source(MonitorSource::Build);
     }
 
     /// Cancels the running build command at the user's request.

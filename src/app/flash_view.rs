@@ -334,7 +334,7 @@ impl App {
         self.view = View::Dashboard;
         self.focus = Focus::Logs;
         self.log_tab = LogTab::Monitor;
-        self.monitor_source = MonitorSource::Flash;
+        self.set_monitor_source(MonitorSource::Flash);
     }
 
     /// Opens the flash view, if the selected backend can flash or erase.

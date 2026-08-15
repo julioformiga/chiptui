@@ -103,6 +103,37 @@ pub enum MonitorSource {
     Build,
 }
 
+/// Scroll state for the Monitor tab. Unlike the Log pane (whose scroll counts
+/// back from the tail, holding the view as output arrives), the monitor
+/// anchors `offset` to the **top** of its content: live output grows the
+/// document downward, so a scrolled view holds without compensation, and
+/// `following` re-pins to the tail exactly like `LogStore::is_following`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MonitorScroll {
+    pub following: bool,
+    /// First visible visual (post-wrap) row; meaningful while scrolled.
+    pub offset: usize,
+}
+
+impl Default for MonitorScroll {
+    fn default() -> Self {
+        Self {
+            following: true,
+            offset: 0,
+        }
+    }
+}
+
+/// Row metrics of the Monitor console currently on screen, published by the
+/// renderer each frame (mirrors [`App::log_viewport`]) so key handlers clamp
+/// to what is actually drawn. `rows` counts visual (post-wrap) lines.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MonitorView {
+    pub rows: usize,
+    pub viewport: usize,
+    pub width: usize,
+}
+
 /// A modal layer drawn above the panes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Overlay {
@@ -550,6 +581,11 @@ pub struct App {
     pub log_tab: LogTab,
     /// Which live feed the Monitor tab renders.
     pub monitor_source: MonitorSource,
+    /// The Monitor tab's scroll position, reset whenever the source changes
+    /// (a new feed starts at its tail).
+    pub monitor_scroll: MonitorScroll,
+    /// The Monitor tab's on-screen geometry, published by the renderer.
+    pub monitor_view: MonitorView,
     pub overlay: Option<Overlay>,
     /// Height of the log pane, published by the renderer so page-scrolling and
     /// clamping match what is actually on screen.
@@ -648,6 +684,8 @@ impl App {
             focus: Focus::FilesLocal,
             log_tab: LogTab::default(),
             monitor_source: MonitorSource::default(),
+            monitor_scroll: MonitorScroll::default(),
+            monitor_view: MonitorView::default(),
             overlay: None,
             log_viewport: 1,
             ticks: 0,
@@ -1108,6 +1146,43 @@ impl App {
             .then(|| self.monitor_console.cursor())
     }
 
+    /// Switches the Monitor tab's feed and re-pins it to the new output's
+    /// tail --- a fresh session must not inherit the previous one's scroll.
+    pub fn set_monitor_source(&mut self, source: MonitorSource) {
+        self.monitor_source = source;
+        self.monitor_scroll = MonitorScroll::default();
+    }
+
+    /// The highest first-visible row of the Monitor console, from the
+    /// renderer-published geometry.
+    fn monitor_max_offset(&self) -> usize {
+        self.monitor_view
+            .rows
+            .saturating_sub(self.monitor_view.viewport)
+    }
+
+    /// Scrolls the Monitor tab towards older output, leaving the tail.
+    pub fn monitor_scroll_up(&mut self, rows: usize) {
+        let max = self.monitor_max_offset();
+        self.monitor_scroll.offset = if self.monitor_scroll.following {
+            max.saturating_sub(rows)
+        } else {
+            self.monitor_scroll.offset.saturating_sub(rows)
+        };
+        self.monitor_scroll.following = false;
+    }
+
+    /// Scrolls the Monitor tab towards newer output; reaching the bottom
+    /// resumes following.
+    pub fn monitor_scroll_down(&mut self, rows: usize) {
+        if self.monitor_scroll.following {
+            return;
+        }
+        let max = self.monitor_max_offset();
+        self.monitor_scroll.offset = (self.monitor_scroll.offset + rows).min(max);
+        self.monitor_scroll.following = self.monitor_scroll.offset >= max;
+    }
+
     fn on_key(&mut self, key: KeyEvent) {
         if self.is_monitor_active() {
             if let Some((id, bytes)) = self.device_monitor_process.zip(key_to_bytes(key)) {
@@ -1339,6 +1414,7 @@ impl App {
     /// Page size for the focused pane.
     fn page(&self) -> usize {
         match self.focus {
+            Focus::Logs if self.log_tab == LogTab::Monitor => self.monitor_view.viewport.max(1),
             Focus::Logs => self.log_viewport.max(1),
             _ => 5,
         }
@@ -1346,13 +1422,22 @@ impl App {
 
     fn move_cursor(&mut self, delta: isize) {
         match self.focus {
-            // The Monitor tab always tails its live output; only Log scrolls.
+            // The Monitor tab tails live output only while following; once
+            // the user scrolls it holds its top-anchored position (new
+            // output grows the document below the view).
             Focus::Logs if self.log_tab == LogTab::Log => {
                 // The log pane scrolls; up means "towards older entries".
                 if delta < 0 {
                     self.logs.scroll_up(delta.unsigned_abs(), self.log_viewport);
                 } else {
                     self.logs.scroll_down(delta as usize);
+                }
+            }
+            Focus::Logs if self.log_tab == LogTab::Monitor => {
+                if delta < 0 {
+                    self.monitor_scroll_up(delta.unsigned_abs());
+                } else {
+                    self.monitor_scroll_down(delta as usize);
                 }
             }
             // FilesLocal/FilesDevice/Workspace/Build never reach here:
@@ -1370,6 +1455,10 @@ impl App {
             Focus::Logs if self.log_tab == LogTab::Log => {
                 self.logs.scroll_up(usize::MAX, self.log_viewport);
             }
+            Focus::Logs if self.log_tab == LogTab::Monitor => {
+                self.monitor_scroll.following = false;
+                self.monitor_scroll.offset = 0;
+            }
             Focus::FilesLocal
             | Focus::FilesDevice
             | Focus::Workspace
@@ -1381,6 +1470,9 @@ impl App {
     fn jump_to_end(&mut self) {
         match self.focus {
             Focus::Logs if self.log_tab == LogTab::Log => self.logs.scroll_to_bottom(),
+            Focus::Logs if self.log_tab == LogTab::Monitor => {
+                self.monitor_scroll = MonitorScroll::default();
+            }
             Focus::FilesLocal
             | Focus::FilesDevice
             | Focus::Workspace
@@ -1613,7 +1705,7 @@ mod tests {
         app.device_monitor_process = Some(id);
         app.focus = Focus::Logs;
         app.log_tab = LogTab::Monitor;
-        app.monitor_source = MonitorSource::Device;
+        app.set_monitor_source(MonitorSource::Device);
         (app, id)
     }
 
@@ -1903,6 +1995,81 @@ mod tests {
         assert_eq!(app.logs.scroll(), 2, "one page is one viewport height");
         app.handle(key(KeyCode::End));
         assert!(app.logs.is_following());
+    }
+
+    #[test]
+    fn monitor_scrolling_leaves_and_resumes_the_tail() {
+        let mut app = app();
+        app.focus = Focus::Logs;
+        app.log_tab = LogTab::Monitor;
+        // The renderer-published geometry: 40 wrapped rows in a 10-row pane.
+        app.monitor_view = MonitorView {
+            rows: 40,
+            viewport: 10,
+            width: 80,
+        };
+
+        app.handle(key(KeyCode::Up));
+        assert!(!app.monitor_scroll.following);
+        assert_eq!(app.monitor_scroll.offset, 29, "one row up from the tail");
+
+        app.handle(key(KeyCode::PageUp));
+        assert_eq!(app.monitor_scroll.offset, 19, "a page is the viewport");
+
+        app.handle(key(KeyCode::Home));
+        assert_eq!(app.monitor_scroll.offset, 0);
+
+        app.handle(key(KeyCode::PageDown));
+        assert_eq!(app.monitor_scroll.offset, 10);
+
+        app.handle(key(KeyCode::End));
+        assert!(app.monitor_scroll.following, "End resumes following");
+    }
+
+    #[test]
+    fn monitor_scroll_clamps_to_the_published_geometry() {
+        let mut app = app();
+        app.focus = Focus::Logs;
+        app.log_tab = LogTab::Monitor;
+        app.monitor_view = MonitorView {
+            rows: 10,
+            viewport: 10,
+            width: 80,
+        };
+
+        app.handle(key(KeyCode::PageUp));
+        assert_eq!(
+            app.monitor_scroll.offset, 0,
+            "nothing to scroll when the console fits"
+        );
+        assert!(
+            !app.monitor_scroll.following,
+            "the user still left the tail; the thumb distinguishes top from bottom"
+        );
+
+        app.handle(key(KeyCode::End));
+        app.monitor_view.rows = 0; // e.g. the buffer was cleared
+        app.handle(key(KeyCode::Up));
+        assert_eq!(app.monitor_scroll.offset, 0, "clamped to an empty console");
+    }
+
+    #[test]
+    fn switching_the_monitor_source_re_pins_the_new_feed() {
+        let mut app = app();
+        app.monitor_view = MonitorView {
+            rows: 40,
+            viewport: 10,
+            width: 80,
+        };
+        app.monitor_scroll_up(5);
+        assert!(!app.monitor_scroll.following);
+
+        app.set_monitor_source(MonitorSource::Build);
+        assert!(
+            app.monitor_scroll.following,
+            "a new feed must start at its tail"
+        );
+        assert_eq!(app.monitor_scroll.offset, 0);
     }
 
     #[test]

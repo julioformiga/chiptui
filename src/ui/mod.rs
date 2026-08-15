@@ -17,7 +17,9 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Flex, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Wrap};
+use ratatui::widgets::{
+    Block, BorderType, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap,
+};
 
 use crate::app::{App, Focus, LogTab, View};
 
@@ -224,4 +226,43 @@ fn pane_block(title: &str, focused: bool) -> Block<'static> {
         .border_type(BorderType::Rounded)
         .border_style(border)
         .title(Span::styled(format!(" {title} "), title_style))
+}
+
+/// The discreet one-column scrollbar shared by the Log and Monitor panes:
+/// thin dim track, slightly brighter thumb, no arrow heads. Drawn just inside
+/// `inner`'s right edge --- callers reserve that column (the Log pane shrinks
+/// its wrap width; the Monitor pane pads its block) so wrapped text never
+/// reflows when the bar appears. `content` and `viewport` are visual
+/// (post-wrap) rows; `position` is the first visible row.
+pub(crate) fn draw_scrollbar(
+    frame: &mut Frame,
+    inner: Rect,
+    content: usize,
+    viewport: usize,
+    position: usize,
+) {
+    if content <= viewport || inner.width == 0 || inner.height == 0 {
+        return;
+    }
+    let top = position.min(content - viewport);
+    let mut state = ScrollbarState::new(content)
+        .viewport_content_length(viewport)
+        .position(top);
+    let bar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+        .begin_symbol(None)
+        .end_symbol(None)
+        .track_symbol(Some("│"))
+        .thumb_symbol("┃")
+        .track_style(Style::new().fg(Color::DarkGray))
+        .thumb_style(Style::new().fg(Color::Gray));
+    frame.render_stateful_widget(
+        bar,
+        Rect {
+            x: inner.right() - 1,
+            y: inner.y,
+            width: 1,
+            height: inner.height,
+        },
+        &mut state,
+    );
 }

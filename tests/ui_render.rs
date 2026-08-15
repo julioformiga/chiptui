@@ -8,6 +8,7 @@
 
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
+use ratatui::crossterm::event::KeyCode;
 
 use chiptui::app::{App, Focus, LogTab, Overlay};
 use chiptui::backend::BackendKind;
@@ -21,6 +22,13 @@ fn render(app: &mut App, width: u16, height: u16) -> String {
         .draw(|frame| chiptui::ui::draw(frame, app))
         .expect("draw succeeds");
     terminal.backend().to_string()
+}
+
+fn key(code: KeyCode) -> chiptui::event::AppEvent {
+    chiptui::event::AppEvent::Key(ratatui::crossterm::event::KeyEvent::new(
+        code,
+        ratatui::crossterm::event::KeyModifiers::NONE,
+    ))
 }
 
 /// An app whose detection has been forced to a known backend, so the assertions
@@ -345,4 +353,86 @@ fn the_log_pane_shows_a_scrollbar_once_content_overflows_it() {
     app.logs.scroll_up(usize::MAX, app.log_viewport);
     let scrolled = render(&mut app, 100, 30);
     assert_ne!(frame, scrolled, "scrolling must move the thumb");
+}
+
+#[test]
+fn the_monitor_tab_shows_the_same_scrollbar_once_output_overflows_it() {
+    // The Monitor tab always tails its live output, so its scrollbar is an
+    // indicator: shown when the wrapped console outgrows the pane, thumb
+    // pinned to the bottom.
+    let mut app = app_with_backend(BackendKind::MicroPython);
+    app.log_tab = LogTab::Monitor;
+
+    let short = render(&mut app, 100, 30);
+    assert!(
+        !short.contains('┃'),
+        "no scrollbar before the session has output:\n{short}"
+    );
+
+    for i in 0..60 {
+        app.device_monitor_output
+            .push(format!("monitor line {i:02}"));
+    }
+    let frame = render(&mut app, 100, 30);
+    assert!(frame.contains('┃'), "missing the scrollbar thumb:\n{frame}");
+    assert!(
+        frame.contains("monitor line 59"),
+        "the console must still tail the newest output:\n{frame}"
+    );
+    assert!(
+        !frame.contains("monitor line 00"),
+        "older output scrolls out of the fixed-height pane:\n{frame}"
+    );
+
+    // A short session loses the bar again once the buffer is empty.
+    app.device_monitor_output.clear();
+    let cleared = render(&mut app, 100, 30);
+    assert!(
+        !cleared.contains('┃'),
+        "the bar must leave with the output:\n{cleared}"
+    );
+}
+
+#[test]
+fn the_monitor_tab_scrolls_back_through_its_output() {
+    // Unlike the Log pane, the Monitor tab always followed its tail and
+    // could not be scrolled; now the same keys work on it. Scrolling up
+    // reveals older output, live output does not shift a scrolled view, and
+    // End returns to the tail.
+    let mut app = app_with_backend(BackendKind::MicroPython);
+    app.focus = Focus::Logs;
+    app.log_tab = LogTab::Monitor;
+    for i in 0..60 {
+        app.device_monitor_output
+            .push(format!("monitor line {i:02}"));
+    }
+
+    let tail = render(&mut app, 100, 30);
+    assert!(
+        !tail.contains("monitor line 00"),
+        "the tail view shows the newest output:\n{tail}"
+    );
+
+    app.handle(key(KeyCode::Home));
+    let top = render(&mut app, 100, 30);
+    assert!(
+        top.contains("monitor line 00"),
+        "Home must reach the oldest output:\n{top}"
+    );
+
+    // New output arriving while scrolled must not move the view.
+    app.device_monitor_output
+        .push("monitor line 60".to_string());
+    let held = render(&mut app, 100, 30);
+    assert!(
+        held.contains("monitor line 00"),
+        "live output must not shift a scrolled monitor view:\n{held}"
+    );
+
+    app.handle(key(KeyCode::End));
+    let bottom = render(&mut app, 100, 30);
+    assert!(
+        bottom.contains("monitor line 60"),
+        "End must re-pin the tail:\n{bottom}"
+    );
 }

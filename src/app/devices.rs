@@ -517,7 +517,7 @@ impl App {
             // user separately tabs over to the pane that just opened for it.
             self.focus = super::Focus::Logs;
             self.log_tab = LogTab::Monitor;
-            self.monitor_source = MonitorSource::Device;
+            self.set_monitor_source(MonitorSource::Device);
             self.device_monitor_output.clear();
             self.monitor_console.reset();
 

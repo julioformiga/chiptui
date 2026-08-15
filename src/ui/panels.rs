@@ -4,7 +4,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Tabs, Wrap};
+use ratatui::widgets::{Paragraph, Tabs, Wrap};
 
 use crate::app::{App, Focus, LogTab};
 use crate::backend::Capability;
@@ -305,37 +305,18 @@ pub fn draw_logs(frame: &mut Frame, area: Rect, app: &mut App) {
     draw_log_scrollbar(frame, inner, app);
 }
 
-/// A one-column scrollbar hugging the pane's right border: thin track, heavy
-/// thumb, both in dim terminal grays --- shown only while the wrapped log is
-/// taller than the pane, and reflecting visual (post-wrap) lines.
+/// The log pane's scrollbar: the shared bar (see [`crate::ui::draw_scrollbar`])
+/// over visual (post-wrap) lines, with the thumb reflecting the scroll
+/// position (bottom while following the tail).
 fn draw_log_scrollbar(frame: &mut Frame, inner: Rect, app: &App) {
     let total = app.logs.total_lines();
     let viewport = app.log_viewport;
-    if total <= viewport || inner.width == 0 || inner.height == 0 {
+    if total <= viewport {
         return;
     }
     let max_scroll = total - viewport;
     let top = max_scroll - app.logs.scroll().min(max_scroll);
-    let mut state = ScrollbarState::new(total)
-        .viewport_content_length(viewport)
-        .position(top);
-    let bar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
-        .begin_symbol(None)
-        .end_symbol(None)
-        .track_symbol(Some("│"))
-        .thumb_symbol("┃")
-        .track_style(Style::new().fg(Color::DarkGray))
-        .thumb_style(Style::new().fg(Color::Gray));
-    frame.render_stateful_widget(
-        bar,
-        Rect {
-            x: inner.right() - 1,
-            y: inner.y,
-            width: 1,
-            height: inner.height,
-        },
-        &mut state,
-    );
+    crate::ui::draw_scrollbar(frame, inner, total, viewport, top);
 }
 
 /// Row 3's tab strip: `Log` / `Monitor`. `Monitor` is omitted entirely when

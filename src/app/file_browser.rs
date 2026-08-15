@@ -498,7 +498,7 @@ impl App {
         self.run_output.clear();
         self.run_console.reset();
         self.run_state = RunState::Running;
-        self.monitor_source = super::MonitorSource::Run;
+        self.set_monitor_source(super::MonitorSource::Run);
         self.focus = super::Focus::Logs;
         self.log_tab = super::LogTab::Monitor;
 

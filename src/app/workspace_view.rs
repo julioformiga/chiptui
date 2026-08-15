@@ -363,7 +363,7 @@ impl App {
         self.view = super::View::Dashboard;
         self.focus = Focus::Logs;
         self.log_tab = LogTab::Monitor;
-        self.monitor_source = MonitorSource::Build;
+        self.set_monitor_source(MonitorSource::Build);
     }
 
     /// The confirm overlay's accept path for `west update`.
