@@ -46,6 +46,7 @@ fn is_checklist(action: &&WorkspaceAction) -> bool {
             | WorkspaceAction::Projects
             | WorkspaceAction::Project
             | WorkspaceAction::Board
+            | WorkspaceAction::Shield
     )
 }
 
@@ -166,6 +167,29 @@ fn draw_rows(frame: &mut Frame, area: Rect, app: &App) {
                         "Board",
                         answer_value(value, false, area.width),
                     ),
+                    selected,
+                );
+            }
+            WorkspaceAction::Shield => {
+                // The optional answer under the board it rides on: a picked
+                // name shows like any other answer, while "none" is stated
+                // as such rather than left as an open question --- the
+                // shield is the one checklist row whose empty answer is
+                // valid.
+                let shield = app.build.as_ref().and_then(|panel| panel.shield.clone());
+                let value = match shield {
+                    Some(name) => answer_value(Some(name), false, area.width),
+                    None => Span::raw("none (optional)").dim(),
+                };
+                let done = app
+                    .build
+                    .as_ref()
+                    .is_some_and(|panel| panel.shield.is_some());
+                y = render_row(
+                    frame,
+                    area,
+                    y,
+                    checklist_row(done, false, "Shield", value),
                     selected,
                 );
             }

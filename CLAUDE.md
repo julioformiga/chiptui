@@ -118,14 +118,18 @@ menuconfig`) is interactive ncurses, so it parks a `pending_command` that `main.
 conventional `build` directory inside the project (implicit in commands; the `BuildDirPicker`
 overlay and `set_build_dir` plumbing remain but no row offers them). Commands come from the
 backend (`Backend::build_command`,
-`src/backend/zephyr/commands.rs`: `west build`[-`b`]/`-t clean`/`--pristine=always`,
+`src/backend/zephyr/commands.rs`: `west build`[-`b`][`--shield`]/`-t clean`/`--pristine=always`,
 `west update`, `west sdk list`), run with the project root as cwd — the UI never names `west`
 (workspace-scoped commands run in the workspace). The panel's `Board` checklist row (under
 `Capability::BoardSelect`) opens `Overlay::BoardPicker`: a
 filterable list over a background `west boards` fetch (`Backend::board_list_command`, parsed by
 `build::parse_boards`); a pick is session-only (`BoardOrigin::Picked` vs `Cache` — the row
-says which), never written to the project. `Flash` (`west flash`, the board's own runner from
-`runner.yml` — never a hard-coded programmer) sits last under
+says which), never written to the project. The optional `Shield` row right below (under
+`Capability::ShieldSelect`) opens `Overlay::ShieldPicker` over a background `west shields`
+fetch — same `ListFetch` machinery as boards — with a leading `(none)` row to clear the pick;
+the session-only answer reaches only first-configuration builds as `--shield` (never an
+incremental build of an already-configured directory). `Flash` (`west flash`, the board's own
+runner from `runner.yml` — never a hard-coded programmer) sits last under
 `Capability::Flash`, always behind `Overlay::ConfirmBuild` (destructive); the dashboard's `x`
 routes a build-panel backend there instead of esptool's dialog, and the esptool-specific
 "Device info" pane now gates on `DeviceInfo`/`EraseFlash` so Zephyr gets an honest placeholder.

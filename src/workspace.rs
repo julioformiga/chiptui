@@ -56,6 +56,11 @@ pub enum WorkspaceAction {
     /// beside the other prerequisites). Under
     /// [`crate::backend::Capability::BoardSelect`].
     Board,
+    /// Opens the shield picker (the build panel's optional shield answer,
+    /// asked right under the board it rides on). A pick is session-only
+    /// like a board one, and the picker's `(none)` row is how it clears.
+    /// Under [`crate::backend::Capability::ShieldSelect`].
+    Shield,
 }
 
 pub struct WorkspacePanel {
@@ -145,11 +150,11 @@ impl WorkspacePanel {
         }
     }
 
-    /// Rows the action list shows: the four checklist questions first (the
-    /// installation, the projects folder, the project, the board --- the
-    /// prerequisites in the order they are answered), then the workspace
-    /// operations as buttons that stay visible but dim until the
-    /// installation is resolved.
+    /// Rows the action list shows: the checklist questions first (the
+    /// installation, the projects folder, the project, the board and its
+    /// optional shield --- the prerequisites in the order they are
+    /// answered), then the workspace operations as buttons that stay
+    /// visible but dim until the installation is resolved.
     pub fn actions(&self, caps: &crate::backend::Capabilities) -> Vec<WorkspaceAction> {
         if !caps.contains(Capability::WorkspaceSync) {
             return Vec::new();
@@ -162,6 +167,9 @@ impl WorkspacePanel {
         }
         if caps.contains(Capability::BoardSelect) {
             actions.push(WorkspaceAction::Board);
+        }
+        if caps.contains(Capability::ShieldSelect) {
+            actions.push(WorkspaceAction::Shield);
         }
         actions.push(WorkspaceAction::Update);
         actions.push(WorkspaceAction::SdkList);
@@ -177,7 +185,8 @@ impl WorkspacePanel {
             WorkspaceAction::Choose
             | WorkspaceAction::Projects
             | WorkspaceAction::Project
-            | WorkspaceAction::Board => true,
+            | WorkspaceAction::Board
+            | WorkspaceAction::Shield => true,
             WorkspaceAction::Update | WorkspaceAction::SdkList => self.resolved.is_some(),
         }
     }
@@ -327,6 +336,7 @@ mod tests {
                 WorkspaceAction::Projects,
                 WorkspaceAction::Project,
                 WorkspaceAction::Board,
+                WorkspaceAction::Shield,
                 WorkspaceAction::Update,
                 WorkspaceAction::SdkList
             ]
@@ -349,6 +359,7 @@ mod tests {
                 WorkspaceAction::Projects,
                 WorkspaceAction::Project,
                 WorkspaceAction::Board,
+                WorkspaceAction::Shield,
                 WorkspaceAction::Update,
                 WorkspaceAction::SdkList
             ]
@@ -357,6 +368,7 @@ mod tests {
         assert!(not_configured.action_enabled(WorkspaceAction::Projects));
         assert!(not_configured.action_enabled(WorkspaceAction::Project));
         assert!(not_configured.action_enabled(WorkspaceAction::Board));
+        assert!(not_configured.action_enabled(WorkspaceAction::Shield));
         assert!(
             !not_configured.action_enabled(WorkspaceAction::Update),
             "west update has nothing to run against yet"

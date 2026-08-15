@@ -29,8 +29,9 @@ pub const BUILD_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 /// the ecosystem's own convention.
 pub const DEFAULT_BUILD_DIR: &str = "build";
 
-/// `west boards` walks every board root; two minutes covers a full Zephyr
-/// SDK checkout without letting a wedged west live forever.
+/// `west boards` walks every board root, and `west shields` the shield
+/// roots; two minutes covers a full Zephyr SDK checkout without letting a
+/// wedged west live forever.
 pub const BOARDS_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Lines of build output kept for the Monitor tab. A full Zephyr build
@@ -82,6 +83,15 @@ pub struct Board {
     pub description: String,
 }
 
+/// One shield from `west shields`: the name `west build --shield` takes and
+/// the human description shown beside it. The same `name description` line
+/// shape as the board list, which is why the parse is shared.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Shield {
+    pub name: String,
+    pub description: String,
+}
+
 /// Where the panel's board answer came from --- the header's one-word hint,
 /// and the guard that keeps a cache read from silently erasing a user pick.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -123,13 +133,93 @@ pub struct BoardChoice {
 
 /// The board list's lifecycle: `west boards` is slow, so it is fetched in
 /// the background the first time the picker opens and kept afterwards.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub enum BoardsState {
-    #[default]
+/// Generic because the shield list (`west shields`) walks the same path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ListState<T> {
     Idle,
     Loading,
-    Loaded(Vec<Board>),
+    Loaded(Vec<T>),
     Failed(String),
+}
+
+impl<T> Default for ListState<T> {
+    /// Every fetch starts idle; the derive macro's `T: Default` bound
+    /// would wrongly demand it of the entries (`Idle` carries none).
+    fn default() -> Self {
+        Self::Idle
+    }
+}
+
+/// A background list fetch (`west boards`, `west shields`): the state the
+/// picker shows, the process id its lines belong to, and the accumulated
+/// output the parse runs over at the end --- one lifecycle, shared by every
+/// slow `west` listing the pickers need.
+#[derive(Debug)]
+pub struct ListFetch<T> {
+    pub state: ListState<T>,
+    process: Option<ProcessId>,
+    output: String,
+}
+
+impl<T> Default for ListFetch<T> {
+    fn default() -> Self {
+        Self {
+            state: ListState::Idle,
+            process: None,
+            output: String::new(),
+        }
+    }
+}
+
+impl<T> ListFetch<T> {
+    /// Starts `command` unless a fetch is already running or the list is
+    /// already here: each fetch is once per session.
+    fn start(&mut self, command: crate::process::Command, processes: &mut ProcessManager) {
+        if self.process.is_some() || matches!(self.state, ListState::Loaded(_)) {
+            return;
+        }
+        self.state = ListState::Loading;
+        self.output.clear();
+        self.process = Some(processes.spawn(command, BOARDS_TIMEOUT));
+    }
+
+    /// Records an output line when `id` is this fetch's process. Whether it
+    /// was --- each fetch ignores the other's events.
+    fn on_line(&mut self, id: ProcessId, text: &str) -> bool {
+        if self.process == Some(id) {
+            self.output.push_str(text);
+            self.output.push('\n');
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Finishes the fetch when `id` matches, parsing the accumulated output
+    /// into the list, or into the failure the picker should explain instead.
+    /// `what` names the list and `command` the invocation for the error
+    /// messages. Whether the event belonged to this fetch.
+    fn on_finished(
+        &mut self,
+        id: ProcessId,
+        outcome: &Outcome,
+        parse: impl FnOnce(&str) -> Vec<T>,
+        what: &str,
+        command: &str,
+    ) -> bool {
+        if self.process != Some(id) {
+            return false;
+        }
+        self.process = None;
+        self.state = match outcome {
+            Outcome::Success => ListState::Loaded(parse(&self.output)),
+            Outcome::SpawnFailed(reason) => ListState::Failed(format!(
+                "could not start the {what} ({reason}) — is west on PATH?"
+            )),
+            _ => ListState::Failed(format!("{command} failed ({})", outcome.summary())),
+        };
+        true
+    }
 }
 
 /// One row of the project panel's action list: the operation buttons
@@ -185,16 +275,20 @@ pub struct BuildPanel {
     /// The board commands target: from the CMake cache until the user picks
     /// one for the session (a pick survives, and overrides, cache reads).
     pub board: Option<BoardChoice>,
+    /// The optional shield riding on the board answer: session-only, like a
+    /// picked board, and with no cache fallback --- a shield is optional, so
+    /// `None` (build without one) is itself an answer.
+    pub shield: Option<String>,
     /// Where `root` came from (the header's hint, and the reason a pick
     /// survives a re-detect).
     pub project_origin: ProjectOrigin,
     pub cursor: usize,
     pub last: Option<BuildReport>,
     pub output: VecDeque<String>,
-    /// The `west boards` list and its fetch state, for the picker.
-    pub boards: BoardsState,
-    boards_process: Option<ProcessId>,
-    boards_output: String,
+    /// The `west boards` fetch, for the board picker.
+    pub boards: ListFetch<Board>,
+    /// The `west shields` fetch, for the shield picker.
+    pub shields: ListFetch<Shield>,
     offset: UtcOffset,
     running: Option<Running>,
     /// Overrides the executable the backend's commands name (`west`), the
@@ -217,13 +311,13 @@ impl BuildPanel {
             root,
             build_dir: DEFAULT_BUILD_DIR.to_string(),
             board,
+            shield: None,
             project_origin: ProjectOrigin::default(),
             cursor: 0,
             last: None,
             output: VecDeque::new(),
-            boards: BoardsState::Idle,
-            boards_process: None,
-            boards_output: String::new(),
+            boards: ListFetch::default(),
+            shields: ListFetch::default(),
             offset,
             running: None,
             tool_path: None,
@@ -352,6 +446,11 @@ impl BuildPanel {
         self.board.as_ref().map(|choice| choice.name.as_str())
     }
 
+    /// The shield commands should configure for, when one is picked.
+    pub fn shield_name(&self) -> Option<&str> {
+        self.shield.as_deref()
+    }
+
     /// Whether the lifecycle buttons can run: both checklist answers exist
     /// --- a buildable project root (`project_ok`, the caller's judgement,
     /// since buildability is a backend fact the panel stays agnostic
@@ -370,18 +469,32 @@ impl BuildPanel {
         });
     }
 
+    /// Applies a shield chosen in the picker: session-only, like a board
+    /// pick. `None` (the picker's `(none)` row) builds without one.
+    pub fn set_picked_shield(&mut self, name: Option<String>) {
+        self.shield = name;
+    }
+
     /// The boards matching a picker filter: case-insensitive substring on
     /// the name or the description, order preserved (west sorts by name).
     pub fn filtered_boards<'a>(&'a self, filter: &str) -> Vec<&'a Board> {
         let filter = filter.to_lowercase();
-        match &self.boards {
-            BoardsState::Loaded(boards) => boards
+        match &self.boards.state {
+            ListState::Loaded(boards) => boards
                 .iter()
-                .filter(|board| {
-                    filter.is_empty()
-                        || board.name.to_lowercase().contains(&filter)
-                        || board.description.to_lowercase().contains(&filter)
-                })
+                .filter(|board| matches_filter(&board.name, &board.description, &filter))
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The shields matching a picker filter, same rule as the boards.
+    pub fn filtered_shields<'a>(&'a self, filter: &str) -> Vec<&'a Shield> {
+        let filter = filter.to_lowercase();
+        match &self.shields.state {
+            ListState::Loaded(shields) => shields
+                .iter()
+                .filter(|shield| matches_filter(&shield.name, &shield.description, &filter))
                 .collect(),
             _ => Vec::new(),
         }
@@ -395,12 +508,16 @@ impl BuildPanel {
         command: crate::process::Command,
         processes: &mut ProcessManager,
     ) {
-        if self.boards_process.is_some() || matches!(self.boards, BoardsState::Loaded(_)) {
-            return;
-        }
-        self.boards = BoardsState::Loading;
-        self.boards_output.clear();
-        self.boards_process = Some(processes.spawn(command, BOARDS_TIMEOUT));
+        self.boards.start(command, processes);
+    }
+
+    /// Starts the background `west shields` fetch, same rule as the boards.
+    pub fn start_shields_fetch(
+        &mut self,
+        command: crate::process::Command,
+        processes: &mut ProcessManager,
+    ) {
+        self.shields.start(command, processes);
     }
 
     /// The board-list command, rooted, tool- and environment-decorated like
@@ -410,6 +527,16 @@ impl BuildPanel {
         backend: &dyn crate::backend::Backend,
     ) -> Option<crate::process::Command> {
         let command = backend.board_list_command()?;
+        Some(self.decorated(command.current_dir(&self.root)))
+    }
+
+    /// The shield-list command, rooted and decorated like the others.
+    /// `None` when the backend offers no shield selection.
+    pub fn shields_command(
+        &self,
+        backend: &dyn crate::backend::Backend,
+    ) -> Option<crate::process::Command> {
+        let command = backend.shield_list_command()?;
         Some(self.decorated(command.current_dir(&self.root)))
     }
 
@@ -469,6 +596,7 @@ impl BuildPanel {
         let command = backend.build_command(
             kind,
             self.board_name(),
+            self.shield_name(),
             self.has_build_dir(),
             &self.build_dir,
         )?;
@@ -559,10 +687,10 @@ impl BuildPanel {
     }
 
     /// Feeds a process event back into the panel, returning log notices.
-    /// Covers both of its processes: the build command and the background
-    /// `west boards` fetch --- each matched by id, each ignored when it is
-    /// the other's event. `caps` shapes the post-finish cursor target
-    /// (Flash only exists under its capability).
+    /// Covers all of its processes: the build command and the background
+    /// `west boards`/`west shields` fetches --- each matched by id, each
+    /// ignored when it is another's event. `caps` shapes the post-finish
+    /// cursor target (Flash only exists under its capability).
     pub fn on_process(
         &mut self,
         event: &ProcessEvent,
@@ -576,9 +704,9 @@ impl BuildPanel {
                     .is_some_and(|running| running.id == *id)
                 {
                     self.push_output(text.clone());
-                } else if self.boards_process == Some(*id) {
-                    self.boards_output.push_str(text);
-                    self.boards_output.push('\n');
+                } else {
+                    self.boards.on_line(*id, text);
+                    self.shields.on_line(*id, text);
                 }
                 Vec::new()
             }
@@ -587,8 +715,17 @@ impl BuildPanel {
                 outcome,
                 duration,
             } => {
-                if self.boards_process == Some(*id) {
-                    self.finish_boards_fetch(outcome);
+                if self
+                    .boards
+                    .on_finished(*id, outcome, parse_boards, "board list", "west boards")
+                    || self.shields.on_finished(
+                        *id,
+                        outcome,
+                        parse_shields,
+                        "shield list",
+                        "west shields",
+                    )
+                {
                     return Vec::new();
                 }
                 let Some(running) = self.running.take() else {
@@ -602,19 +739,6 @@ impl BuildPanel {
             }
             ProcessEvent::Started { .. } | ProcessEvent::Output { .. } => Vec::new(),
         }
-    }
-
-    /// Parses the accumulated `west boards` output into the list, or the
-    /// failure the picker should explain instead.
-    fn finish_boards_fetch(&mut self, outcome: &Outcome) {
-        self.boards_process = None;
-        self.boards = match outcome {
-            Outcome::Success => BoardsState::Loaded(parse_boards(&self.boards_output)),
-            Outcome::SpawnFailed(reason) => BoardsState::Failed(format!(
-                "could not start the board list ({reason}) — is west on PATH?"
-            )),
-            _ => BoardsState::Failed(format!("west boards failed ({})", outcome.summary())),
-        };
     }
 
     fn finish(
@@ -739,20 +863,36 @@ fn parse_cached_board(cache: &Path) -> Option<String> {
         .map(str::to_string)
 }
 
+/// The picker filters' shared rule: everything when the filter is empty,
+/// else a case-insensitive substring on the name or the description.
+fn matches_filter(name: &str, description: &str, lowercase_filter: &str) -> bool {
+    lowercase_filter.is_empty()
+        || name.to_lowercase().contains(lowercase_filter)
+        || description.to_lowercase().contains(lowercase_filter)
+}
+
 /// Parses `west boards` output: one target per line as `name description`
 /// (description optional; HWMv2 names carry a `/`). Blank and non-matching
 /// lines are skipped rather than fatal --- the list is hundreds of lines
 /// long and one odd row must not empty it.
 pub fn parse_boards(text: &str) -> Vec<Board> {
+    parse_entries(text, |name, description| Board { name, description })
+}
+
+/// Parses `west shields` output: the same one-entry-per-line
+/// `name description` shape `west boards` prints, so the entries share the
+/// parse and differ only in what they feed.
+pub fn parse_shields(text: &str) -> Vec<Shield> {
+    parse_entries(text, |name, description| Shield { name, description })
+}
+
+fn parse_entries<T>(text: &str, make: impl Fn(String, String) -> T) -> Vec<T> {
     text.lines()
         .filter_map(|line| {
             let mut parts = line.split_whitespace();
             let name = parts.next()?;
             let description = parts.collect::<Vec<_>>().join(" ");
-            Some(Board {
-                name: name.to_string(),
-                description,
-            })
+            Some(make(name.to_string(), description))
         })
         .collect()
 }
@@ -1032,7 +1172,7 @@ mod tests {
     #[test]
     fn the_board_filter_matches_names_and_descriptions_case_insensitively() {
         let mut panel = BuildPanel::new("/nonexistent", UtcOffset::UTC);
-        panel.boards = BoardsState::Loaded(parse_boards(
+        panel.boards.state = ListState::Loaded(parse_boards(
             "nrf52840dk/nrf52840  Nordic nRF52840 DK\nsting\n",
         ));
 
@@ -1043,6 +1183,59 @@ mod tests {
             panel.filtered_boards("").len(),
             2,
             "an empty filter shows everything"
+        );
+    }
+
+    #[test]
+    fn west_shields_output_parses_and_filters_like_boards() {
+        let mut panel = BuildPanel::new("/nonexistent", UtcOffset::UTC);
+        panel.shields.state = ListState::Loaded(parse_shields(
+            "link_board_eth  WIZnet W5500 Ethernet Shield\nnrf7002ek\n",
+        ));
+        assert_eq!(panel.shields.state, {
+            ListState::Loaded(vec![
+                Shield {
+                    name: "link_board_eth".to_string(),
+                    description: "WIZnet W5500 Ethernet Shield".to_string(),
+                },
+                Shield {
+                    name: "nrf7002ek".to_string(),
+                    description: String::new(),
+                },
+            ])
+        });
+        assert_eq!(panel.filtered_shields("eth").len(), 1);
+        assert_eq!(panel.filtered_shields("wiznet").len(), 1);
+        assert_eq!(panel.filtered_shields("").len(), 2);
+    }
+
+    #[test]
+    fn a_picked_shield_reaches_the_lifecycle_and_none_clears_it() {
+        // No build directory: the lifecycle is the first configuration,
+        // where the shield (like the board) is a flag the command carries.
+        let dir = fixture_dir("shield");
+        let _ = std::fs::remove_dir_all(dir.join("build"));
+        let mut panel = BuildPanel::new(&dir, UtcOffset::UTC);
+        assert_eq!(panel.shield_name(), None);
+        // The shield never gates the lifecycle: it is optional, and `None`
+        // ("no shield") is as valid an answer as a name.
+        assert!(!panel.lifecycle_ready(false));
+
+        panel.set_picked_shield(Some("nrf7002ek".to_string()));
+        let build = panel.command(BuildKind::Build, &ZephyrBackend).unwrap();
+        assert_eq!(build.to_string(), "west build --shield nrf7002ek");
+        let rebuild = panel.command(BuildKind::Rebuild, &ZephyrBackend).unwrap();
+        assert_eq!(
+            rebuild.to_string(),
+            "west build --pristine=always --shield nrf7002ek"
+        );
+
+        panel.set_picked_shield(None);
+        let build = panel.command(BuildKind::Build, &ZephyrBackend).unwrap();
+        assert_eq!(
+            build.to_string(),
+            "west build",
+            "no shield is no flag at all"
         );
     }
 

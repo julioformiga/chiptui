@@ -82,6 +82,50 @@ impl App {
         ));
     }
 
+    /// Opens the shield picker, kicking off the background `west shields`
+    /// fetch on first open, like the board picker does for `west boards`.
+    pub(super) fn open_shield_picker(&mut self) {
+        self.overlay = Some(Overlay::ShieldPicker {
+            input: String::new(),
+            selected: 0,
+        });
+        let Some(backend) = self.manager.backend() else {
+            return;
+        };
+        let Some(panel) = &mut self.build else {
+            return;
+        };
+        if let Some(command) = panel.shields_command(backend) {
+            let label = command.to_string();
+            panel.start_shields_fetch(command, &mut self.processes);
+            self.logs
+                .info(format!("fetching the shield list ({label})"));
+        }
+    }
+
+    /// Applies the shield picker's answer: session-only, and row 0 --- the
+    /// `(none)` row --- clears it (the shield is optional, so no pick is a
+    /// valid answer, unlike the board).
+    pub(super) fn apply_shield_picker(&mut self, filter: &str, selected: usize) {
+        let Some(panel) = &mut self.build else {
+            return;
+        };
+        if selected == 0 {
+            panel.set_picked_shield(None);
+            self.logs
+                .info("shield cleared for this session (nothing written)");
+            return;
+        }
+        let filtered = panel.filtered_shields(filter);
+        let Some(name) = filtered.get(selected - 1).map(|shield| shield.name.clone()) else {
+            return;
+        };
+        panel.set_picked_shield(Some(name.clone()));
+        self.logs.info(format!(
+            "shield set to {name} for this session (nothing written)"
+        ));
+    }
+
     /// Runs a panel action: destructive ones (`Clean`, `Flash` --- both
     /// destructive capabilities, `SPEC.md` §15) route through a confirm
     /// overlay quoting the literal command; `menuconfig` hands the terminal

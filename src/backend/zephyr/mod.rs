@@ -81,6 +81,7 @@ impl Backend for ZephyrBackend {
             Capability::Flash,
             Capability::Monitor,
             Capability::BoardSelect,
+            Capability::ShieldSelect,
             Capability::ProjectSelect,
             Capability::WorkspaceSync,
         ])
@@ -94,18 +95,23 @@ impl Backend for ZephyrBackend {
         &self,
         kind: BuildKind,
         board: Option<&str>,
+        shield: Option<&str>,
         build_dir_exists: bool,
         build_dir: &str,
     ) -> Option<crate::process::Command> {
         Some(match kind {
-            BuildKind::Build => commands::build(board, build_dir_exists, build_dir),
+            BuildKind::Build => commands::build(board, shield, build_dir_exists, build_dir),
             BuildKind::Clean => commands::clean(build_dir),
-            BuildKind::Rebuild => commands::rebuild(board, build_dir),
+            BuildKind::Rebuild => commands::rebuild(board, shield, build_dir),
         })
     }
 
     fn board_list_command(&self) -> Option<crate::process::Command> {
         Some(commands::boards())
+    }
+
+    fn shield_list_command(&self) -> Option<crate::process::Command> {
+        Some(commands::shields())
     }
 
     fn flash_command(&self, build_dir: &str) -> Option<crate::process::Command> {

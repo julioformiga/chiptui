@@ -401,15 +401,15 @@ fn the_board_picker_fetches_filters_and_picks_for_the_session() {
 
     // First open kicked off the background `west boards` fetch.
     assert!(matches!(
-        app.build.as_ref().unwrap().boards,
-        chiptui::build::BoardsState::Loading
+        app.build.as_ref().unwrap().boards.state,
+        chiptui::build::ListState::Loading
     ));
     let loaded = pump_until(
         &mut app,
         |app| {
             matches!(
-                app.build.as_ref().unwrap().boards,
-                chiptui::build::BoardsState::Loaded(_)
+                app.build.as_ref().unwrap().boards.state,
+                chiptui::build::ListState::Loaded(_)
             )
         },
         10,
@@ -477,6 +477,116 @@ fn the_board_picker_fetches_filters_and_picks_for_the_session() {
 }
 
 #[test]
+fn the_shield_picker_lists_picks_and_clears_for_the_session() {
+    // No CMakeCache and no build directory: the first build carries every
+    // configuration flag the answers produce.
+    let (mut app, root) = zephyr_app("shield", None);
+    app.build.as_mut().unwrap().set_tool_path(fake("west"));
+    app.focus = Focus::Workspace;
+
+    // The Shield checklist row sits right under the Board one: four downs
+    // from the cursor's start on Zephyr Base.
+    for _ in 0..4 {
+        app.handle(key(KeyCode::Down));
+    }
+    let frame = render(&mut app, 100, 30);
+    assert!(
+        frame.contains("Shield"),
+        "the shield checklist row must show:\n{frame}"
+    );
+    assert!(
+        frame.contains("none (optional)"),
+        "an unset shield states itself as none, not as an open question:\n{frame}"
+    );
+    app.handle(key(KeyCode::Enter));
+    assert!(matches!(app.overlay, Some(Overlay::ShieldPicker { .. })));
+
+    // First open kicked off the background `west shields` fetch.
+    assert!(matches!(
+        app.build.as_ref().unwrap().shields.state,
+        chiptui::build::ListState::Loading
+    ));
+    let loaded = pump_until(
+        &mut app,
+        |app| {
+            matches!(
+                app.build.as_ref().unwrap().shields.state,
+                chiptui::build::ListState::Loaded(_)
+            )
+        },
+        10,
+    );
+    assert!(loaded, "the fake west shields never finished");
+
+    // The modal lists the shields, with the (none) row to clear one.
+    let frame = render(&mut app, 100, 30);
+    assert!(frame.contains("nrf7002ek"), "list not shown:\n{frame}");
+    assert!(
+        frame.contains("(none)"),
+        "the clear row must show:\n{frame}"
+    );
+
+    // Typing filters; the first Down steps past the (none) row onto the
+    // first match, and Enter picks for this session.
+    for c in ['n', 'r', 'f', '7'] {
+        app.handle(key(KeyCode::Char(c)));
+    }
+    app.handle(key(KeyCode::Down));
+    app.handle(key(KeyCode::Enter));
+    assert_eq!(
+        app.build.as_ref().unwrap().shield_name(),
+        Some("nrf7002ek"),
+        "the pick must land"
+    );
+    assert!(
+        !root.join("build/zephyr/CMakeCache.txt").exists(),
+        "a shield pick must not write project configuration"
+    );
+
+    // The pick reaches the first build as --shield.
+    let backend = app.manager.backend().unwrap();
+    let build = app
+        .build
+        .as_ref()
+        .unwrap()
+        .command(chiptui::backend::BuildKind::Build, backend)
+        .unwrap();
+    assert!(
+        build.to_string().ends_with("west build --shield nrf7002ek"),
+        "the picked shield must reach the first build: {build}"
+    );
+
+    // The checklist row shows the answer, and the (none) row clears it.
+    // (The workspace cursor never moved: it still sits on the Shield row.)
+    let frame = render(&mut app, 100, 30);
+    assert!(
+        frame.contains("nrf7002ek"),
+        "the answer must show:\n{frame}"
+    );
+    app.focus = Focus::Workspace;
+    app.handle(key(KeyCode::Enter));
+    app.handle(key(KeyCode::Enter));
+    assert_eq!(
+        app.build.as_ref().unwrap().shield_name(),
+        None,
+        "Enter on the (none) row clears the shield"
+    );
+    let build = app
+        .build
+        .as_ref()
+        .unwrap()
+        .command(
+            chiptui::backend::BuildKind::Build,
+            app.manager.backend().unwrap(),
+        )
+        .unwrap();
+    assert!(
+        build.to_string().ends_with("west build"),
+        "no shield is no flag at all: {build}"
+    );
+}
+
+#[test]
 fn a_boardless_filter_match_enter_picks_nothing_and_esc_changes_nothing() {
     let (mut app, _root) = zephyr_app("picker-esc", Some("nrf52840dk/nrf52840"));
     app.build.as_mut().unwrap().set_tool_path(fake("west"));
@@ -490,8 +600,8 @@ fn a_boardless_filter_match_enter_picks_nothing_and_esc_changes_nothing() {
         &mut app,
         |app| {
             matches!(
-                app.build.as_ref().unwrap().boards,
-                chiptui::build::BoardsState::Loaded(_)
+                app.build.as_ref().unwrap().boards.state,
+                chiptui::build::ListState::Loaded(_)
             )
         },
         10
@@ -544,8 +654,8 @@ fn a_missing_west_explains_itself_in_the_picker() {
         &mut app,
         |app| {
             matches!(
-                app.build.as_ref().unwrap().boards,
-                chiptui::build::BoardsState::Failed(_)
+                app.build.as_ref().unwrap().boards.state,
+                chiptui::build::ListState::Failed(_)
             )
         },
         10,
@@ -716,9 +826,9 @@ fn the_workspace_pane_resolves_from_project_config_and_runs_update() {
     );
 
     // Enter on the Update Zephyr button confirms first (it rewrites the
-    // shared workspace)… four rows past the checklist.
+    // shared workspace)… five rows past the checklist.
     app.focus = Focus::Workspace;
-    for _ in 0..4 {
+    for _ in 0..5 {
         app.handle(key(KeyCode::Down));
     }
     app.handle(key(KeyCode::Enter));
@@ -764,6 +874,7 @@ fn an_unconfigured_pane_shows_the_open_checklist_and_dim_buttons() {
             chiptui::workspace::WorkspaceAction::Projects,
             chiptui::workspace::WorkspaceAction::Project,
             chiptui::workspace::WorkspaceAction::Board,
+            chiptui::workspace::WorkspaceAction::Shield,
             chiptui::workspace::WorkspaceAction::Update,
             chiptui::workspace::WorkspaceAction::SdkList
         ],

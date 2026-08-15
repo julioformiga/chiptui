@@ -36,12 +36,23 @@ fn build_dir(command: Command, dir: &str) -> Command {
 /// the first configuration, which needs `-b BOARD` (Zephyr has no default
 /// target). Passing `-b` on an already-configured build directory is legal
 /// only for the *same* board, so it is attached exactly once: on the first
-/// build, where it belongs.
-pub fn build(board: Option<&str>, build_dir_exists: bool, dir: &str) -> Command {
+/// build, where it belongs. `--shield` follows the same rule as `-b`: it is
+/// a configuration-time answer, so it rides along only on the first
+/// configuration of this build directory (`west` applies a shield through
+/// SHIELD at configure time).
+pub fn build(
+    board: Option<&str>,
+    shield: Option<&str>,
+    build_dir_exists: bool,
+    dir: &str,
+) -> Command {
     let mut command = Command::new(PROGRAM).arg("build");
     command = build_dir(command, dir);
-    if !build_dir_exists && let Some(board) = board {
-        command = command.arg("-b").arg(board);
+    if !build_dir_exists {
+        if let Some(board) = board {
+            command = command.arg("-b").arg(board);
+        }
+        command = shield_args(command, shield);
     }
     command
 }
@@ -55,17 +66,27 @@ pub fn clean(dir: &str) -> Command {
         .arg("clean")
 }
 
-/// `west build --pristine=always [-b BOARD]` --- discards the build directory
-/// and configures from scratch, then builds. The board is attached whenever
-/// one is known (from the cache of the build directory being discarded), so
-/// the fresh configuration lands on the same target instead of asking the
-/// user again.
-pub fn rebuild(board: Option<&str>, dir: &str) -> Command {
+/// `west build --pristine=always [-b BOARD] [--shield SHIELD]` --- discards
+/// the build directory and configures from scratch, then builds. The board
+/// and shield are attached whenever one is known (the board from the cache of
+/// the build directory being discarded), so the fresh configuration lands on
+/// the same target instead of asking the user again.
+pub fn rebuild(board: Option<&str>, shield: Option<&str>, dir: &str) -> Command {
     let mut command = build_dir(Command::new(PROGRAM).arg("build"), dir).arg("--pristine=always");
     if let Some(board) = board {
         command = command.arg("-b").arg(board);
     }
-    command
+    shield_args(command, shield)
+}
+
+/// Appends `--shield NAME` when one is chosen (`--shield` with no value is
+/// how `west` *clears* a cached shield, never how it leaves it alone --- so
+/// `None` must mean no flag at all).
+fn shield_args(command: Command, shield: Option<&str>) -> Command {
+    match shield {
+        Some(shield) => command.arg("--shield").arg(shield),
+        None => command,
+    }
 }
 
 /// `west build -t menuconfig` --- the interactive Kconfig editor over the
@@ -102,6 +123,14 @@ pub fn boards() -> Command {
     Command::new(PROGRAM).arg("boards")
 }
 
+/// `west shields` --- every known shield, `name (description)` per line
+/// (alphabetical). Fast compared to `west boards` (it walks the boards'
+/// shield roots only), but still a subprocess: callers run it in the
+/// background like the board list.
+pub fn shields() -> Command {
+    Command::new(PROGRAM).arg("shields")
+}
+
 /// `west flash` --- builds (incrementally, if anything changed) and writes
 /// the image to the board through the *board's own* runner, which `west`
 /// reads from the build directory's `runner.yml` (pyocd, openocd, nrfjprog,
@@ -127,23 +156,48 @@ mod tests {
     use super::*;
 
     #[test]
-    fn first_build_carries_the_board() {
-        let command = build(Some("nrf52840dk/nrf52840"), false, BUILD_DIR_DEFAULT);
+    fn first_build_carries_the_board_and_shield() {
+        let command = build(Some("nrf52840dk/nrf52840"), None, false, BUILD_DIR_DEFAULT);
         assert_eq!(command.to_string(), "west build -b nrf52840dk/nrf52840");
+
+        let command = build(
+            Some("nrf52840dk/nrf52840"),
+            Some("nrf7002ek"),
+            false,
+            BUILD_DIR_DEFAULT,
+        );
+        assert_eq!(
+            command.to_string(),
+            "west build -b nrf52840dk/nrf52840 --shield nrf7002ek"
+        );
     }
 
     #[test]
-    fn incremental_build_never_passes_the_board() {
-        // A configured build/ directory already carries the board; `-b` on it
-        // is at best redundant and at worst an error when the names disagree.
-        let command = build(Some("nrf52840dk/nrf52840"), true, BUILD_DIR_DEFAULT);
+    fn a_shield_without_a_board_still_reaches_the_first_build() {
+        // `-b` is the required answer, `--shield` the optional one; the
+        // shield must not wait for the board.
+        let command = build(None, Some("link_board_eth"), false, BUILD_DIR_DEFAULT);
+        assert_eq!(command.to_string(), "west build --shield link_board_eth");
+    }
+
+    #[test]
+    fn incremental_build_never_passes_the_board_or_shield() {
+        // A configured build/ directory already carries the board and shield;
+        // `-b`/`--shield` on it is at best redundant and at worst an error
+        // when the names disagree.
+        let command = build(
+            Some("nrf52840dk/nrf52840"),
+            Some("nrf7002ek"),
+            true,
+            BUILD_DIR_DEFAULT,
+        );
         assert_eq!(command.to_string(), "west build");
     }
 
     #[test]
     fn a_named_build_dir_reaches_every_lifecycle_command() {
         assert_eq!(
-            build(None, true, "build-nrf52840").to_string(),
+            build(None, None, true, "build-nrf52840").to_string(),
             "west build -d build-nrf52840"
         );
         assert_eq!(
@@ -151,7 +205,7 @@ mod tests {
             "west build -d build-nrf52840 -t clean"
         );
         assert_eq!(
-            rebuild(Some("nrf52840dk/nrf52840"), "build-nrf52840").to_string(),
+            rebuild(Some("nrf52840dk/nrf52840"), None, "build-nrf52840").to_string(),
             "west build -d build-nrf52840 --pristine=always -b nrf52840dk/nrf52840"
         );
         assert_eq!(
@@ -169,7 +223,7 @@ mod tests {
         // actionable message ("no board specified"), which is more useful
         // than the panel guessing a substitute.
         assert_eq!(
-            build(None, false, BUILD_DIR_DEFAULT).to_string(),
+            build(None, None, false, BUILD_DIR_DEFAULT).to_string(),
             "west build"
         );
     }
@@ -198,8 +252,9 @@ mod tests {
     }
 
     #[test]
-    fn boards_lists_targets() {
+    fn boards_and_shields_list_their_targets() {
         assert_eq!(boards().to_string(), "west boards");
+        assert_eq!(shields().to_string(), "west shields");
     }
 
     #[test]
@@ -219,12 +274,23 @@ mod tests {
     #[test]
     fn rebuild_is_always_pristine() {
         assert_eq!(
-            rebuild(Some("nrf52840dk/nrf52840"), BUILD_DIR_DEFAULT).to_string(),
+            rebuild(Some("nrf52840dk/nrf52840"), None, BUILD_DIR_DEFAULT).to_string(),
             "west build --pristine=always -b nrf52840dk/nrf52840"
         );
         assert_eq!(
-            rebuild(None, BUILD_DIR_DEFAULT).to_string(),
+            rebuild(None, None, BUILD_DIR_DEFAULT).to_string(),
             "west build --pristine=always"
+        );
+        // A pristine rebuild reconfigures, so the shield rides along like
+        // the board does.
+        assert_eq!(
+            rebuild(
+                Some("nrf52840dk/nrf52840"),
+                Some("nrf7002ek"),
+                BUILD_DIR_DEFAULT
+            )
+            .to_string(),
+            "west build --pristine=always -b nrf52840dk/nrf52840 --shield nrf7002ek"
         );
     }
 }

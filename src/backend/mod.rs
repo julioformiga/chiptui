@@ -110,6 +110,10 @@ pub enum Capability {
     DeviceInfo,
     PackageInstall,
     BoardSelect,
+    /// The backend's targets can carry an optional add-on board (a Zephyr
+    /// shield): the UI offers a shield picker beside the board one, and the
+    /// answer is session-only like a board pick.
+    ShieldSelect,
     /// The backend's projects live in a user-chosen folder rather than
     /// necessarily the working directory: the UI offers a projects-folder
     /// setting and a project picker, and gates project commands (build,
@@ -138,6 +142,7 @@ impl Capability {
         Capability::DeviceInfo,
         Capability::PackageInstall,
         Capability::BoardSelect,
+        Capability::ShieldSelect,
         Capability::ProjectSelect,
         Capability::WorkspaceSync,
     ];
@@ -162,6 +167,7 @@ impl Capability {
             Self::DeviceInfo => "device info",
             Self::PackageInstall => "install package",
             Self::BoardSelect => "select board",
+            Self::ShieldSelect => "select shield",
             Self::ProjectSelect => "select project",
             Self::WorkspaceSync => "sync workspace",
         }
@@ -261,19 +267,22 @@ pub trait Backend {
     /// Returns the command for one flavor of the build lifecycle
     /// (`AGENTS.md` §2: delegate to the ecosystem's own tools). `board` is
     /// the target the backend should configure for, when one is known;
-    /// `build_dir_exists` lets an incremental build skip the flag only a
-    /// first configuration needs; `build_dir` names the directory the
-    /// lifecycle targets (a backend with a single fixed directory may
-    /// ignore it). Returns `None` if the backend offers no build capability
-    /// or has not implemented it yet.
+    /// `shield` the optional add-on board riding on it (`None` means no
+    /// shield, and must lead to no shield flag at all); `build_dir_exists`
+    /// lets an incremental build skip the flags only a first configuration
+    /// needs; `build_dir` names the directory the lifecycle targets (a
+    /// backend with a single fixed directory may ignore it). Returns `None`
+    /// if the backend offers no build capability or has not implemented it
+    /// yet.
     fn build_command(
         &self,
         kind: BuildKind,
         board: Option<&str>,
+        shield: Option<&str>,
         build_dir_exists: bool,
         build_dir: &str,
     ) -> Option<crate::process::Command> {
-        let _ = (kind, board, build_dir_exists, build_dir);
+        let _ = (kind, board, shield, build_dir_exists, build_dir);
         None
     }
 
@@ -282,6 +291,13 @@ pub trait Backend {
     /// selection ([`Capability::BoardSelect`]) or has not implemented it.
     /// The command may be slow; callers run it in the background.
     fn board_list_command(&self) -> Option<crate::process::Command> {
+        None
+    }
+
+    /// Returns the command listing the shields the backend's targets can
+    /// carry (`west shields`). Returns `None` if the backend has no shield
+    /// selection ([`Capability::ShieldSelect`]) or has not implemented it.
+    fn shield_list_command(&self) -> Option<crate::process::Command> {
         None
     }
 

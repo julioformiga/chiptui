@@ -199,6 +199,15 @@ pub enum Overlay {
         input: String,
         selected: usize,
     },
+    /// The shield picker: the same filterable list grammar over `west
+    /// shields`, with a leading `(none)` row --- the shield is optional, and
+    /// that row is how an existing pick gets cleared. The list itself lives
+    /// in [`App::build`] ([`crate::build::BuildPanel::shields`]) like the
+    /// boards do. `input` is the filter text.
+    ShieldPicker {
+        input: String,
+        selected: usize,
+    },
     /// The installation-directory picker: a real filesystem browser (no
     /// discovery guesses --- the user knows where their Zephyr lives).
     /// `error` holds the validation message when an accepted directory
@@ -1568,6 +1577,12 @@ impl App {
                 ("type", "filter"),
                 ("↑/↓", "select"),
                 ("enter", "pick (this session)"),
+                ("esc", "cancel"),
+            ],
+            Some(Overlay::ShieldPicker { .. }) => vec![
+                ("type", "filter"),
+                ("↑/↓", "select"),
+                ("enter", "pick / (none) clears (this session)"),
                 ("esc", "cancel"),
             ],
             Some(Overlay::DirPicker { .. }) => vec![

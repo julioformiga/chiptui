@@ -3,8 +3,9 @@
 #
 # Echoes its arguments as a line and exits 0, so a test can assert both the
 # exact command the panel composed (the panel logs `$ west build ...` as the
-# first output line) and the success path end to end. `boards` reproduces the
-# `west boards` format (name, whitespace, description) for the board picker.
+# first output line) and the success path end to end. `boards` and `shields`
+# reproduce the `west boards`/`west shields` formats (name, whitespace,
+# description) for the pickers.
 case "$1" in
     boards)
         printf 'esp32_devkitc_wrover/esp32/procpu  ESP32 DevKitC-WROVER\n'
@@ -12,6 +13,12 @@ case "$1" in
         printf 'nrf52840dk/nrf52840               Nordic nRF52840 DK\n'
         printf 'nrf52840dk/nrf52840/qspi          Nordic nRF52840 DK (QSPI)\n'
         printf 'rpi_pico/rp2040                   Raspberry Pi Pico\n'
+        exit 0
+        ;;
+    shields)
+        printf 'link_board_eth  WIZnet W5500 Ethernet Shield\n'
+        printf 'nrf7002ek       Nordic nRF7002 EK\n'
+        printf 'x_nucleo_iks02a1 ST IKS02A1 MEMS shield\n'
         exit 0
         ;;
 esac

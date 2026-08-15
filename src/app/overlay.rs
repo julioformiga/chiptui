@@ -281,6 +281,51 @@ impl App {
                     _ => {}
                 }
             }
+            Overlay::ShieldPicker { input, selected } => {
+                // Same grammar as the board picker, over a list whose row 0
+                // is the `(none)` row --- the shield is optional, and that
+                // row is how it clears.
+                let rebuild = |app: &mut Self, input: String, mut selected: usize| {
+                    let count = app
+                        .build
+                        .as_ref()
+                        .map(|panel| panel.filtered_shields(&input).len() + 1)
+                        .unwrap_or(1);
+                    selected = selected.min(count.saturating_sub(1));
+                    app.overlay = Some(Overlay::ShieldPicker { input, selected });
+                };
+                let count = self
+                    .build
+                    .as_ref()
+                    .map(|panel| panel.filtered_shields(&input).len() + 1)
+                    .unwrap_or(1);
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('q') => self.overlay = None,
+                    KeyCode::Backspace => {
+                        let mut input = input;
+                        input.pop();
+                        rebuild(self, input, selected);
+                    }
+                    KeyCode::Char(c) => {
+                        let mut input = input;
+                        input.push(c);
+                        rebuild(self, input, selected);
+                    }
+                    KeyCode::Up => {
+                        let selected = (selected + count - 1) % count;
+                        rebuild(self, input, selected);
+                    }
+                    KeyCode::Down => {
+                        let selected = (selected + 1) % count;
+                        rebuild(self, input, selected);
+                    }
+                    KeyCode::Enter => {
+                        self.overlay = None;
+                        self.apply_shield_picker(&input, selected);
+                    }
+                    _ => {}
+                }
+            }
             Overlay::ConfirmWorkspace { action, confirm } => {
                 self.dispatch_confirm(
                     key.code,

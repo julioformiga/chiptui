@@ -561,6 +561,7 @@ The initial backend should support:
 -   environment resolution (workspace/venv/SDK, above);
 -   projects folder and project selection (the gate above);
 -   board selection;
+-   shield selection (optional, `--shield`);
 -   project information;
 -   build (targeting the conventional `build` directory in the project);
 -   clean;
@@ -591,6 +592,19 @@ The board selection should not silently modify project configuration.
 > `Board` action opens a filterable picker over a background `west boards`
 > fetch, and a pick is session-only --- nothing is written, and the panel
 > header says which origin the answer has.
+
+### Shield selection
+
+A shield (an add-on board) is optional: the target builds without one.
+
+When chosen, the shield enters the build's first configuration as
+`--shield`; a pick must not silently modify project configuration.
+
+> **Status**: implemented. The workspace pane's `Shield` row (right under
+> the board) opens the same filterable picker over a background `west
+> shields` fetch, with a leading `(none)` row --- that is how a pick
+> clears. The answer is session-only, and `west build` / `west build
+> --pristine=always` carry it only while one is set.
 
 ### Build
 

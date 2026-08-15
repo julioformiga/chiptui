@@ -87,6 +87,7 @@ impl App {
                 self.open_project_flow();
             }
             WorkspaceAction::Board => self.open_board_picker(),
+            WorkspaceAction::Shield => self.open_shield_picker(),
         }
     }
 
