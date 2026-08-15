@@ -75,7 +75,10 @@ needed) plus per-command env (`ZEPHYR_BASE` always, so an app outside the worksp
 finds it; `ZEPHYR_SDK_INSTALL_DIR`/`PATH`/`VIRTUAL_ENV` when applicable —
 `process::Command::env`). The **build panel** (`src/build.rs`, `src/ui/build.rs`,
 `src/app/build_view.rs`): Build/Clean/Rebuild/Menuconfig as a navigable list quoting the
-literal commands, board from `<build-dir>/zephyr/CMakeCache.txt` (`cached_board`), `Stop`
+literal commands, board from the build dir's CMake cache (`cached_board` — classic
+`<build-dir>/zephyr/CMakeCache.txt` first, then the sysbuild top-level
+`<build-dir>/CMakeCache.txt`; a hand-picked board is session state that no finished command
+demotes back to the cache), `Stop`
 while a command runs, `Clean` behind `Overlay::ConfirmBuild` (destructive capability), output
 streaming into the Monitor tab (`MonitorSource::Build`). **Menuconfig** (`west build -t
 menuconfig`) is interactive ncurses, so it parks a `pending_command` that `main.rs` runs under
@@ -195,7 +198,10 @@ These are the decisions that shape most code, and getting them wrong causes wide
   by tolerant hand-rolled parsers (`src/project/config.rs`, `src/settings.rs`) — still no TOML
   dependency, per the same bias as the other one-shape parsers.
 - **The renderer publishes `App::log_viewport`** each frame so page-scrolling matches the drawn
-  height. Rendering is otherwise a pure function of `App`.
+  height (and the wrap width, into `LogStore::set_view_width`, so clamping matches too). Long log
+  entries wrap with a hanging indent past the stamp (`logs::PREFIX_WIDTH`); scrolling, the clamp and
+  the pane's scrollbar all count *visual* (post-wrap) lines, and the buffer is capped at 1_000
+  entries. Rendering is otherwise a pure function of `App`.
 - **Processes** (`src/process/`): `spawn` returns immediately; a supervisor thread plus two reader
   threads push `ProcessEvent`s into one channel that `main.rs` drains each frame. Two non-obvious
   rules live here. *Killing reaches only the direct child* — a grandchild keeps the pipes open, so

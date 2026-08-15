@@ -620,23 +620,25 @@ impl BuildPanel {
         });
         // A finished build/rebuild leaves a fresh CMakeCache behind: re-read
         // it so the header (and the next `--pristine=always -b …`) tracks
-        // what was just configured. A pick stays a pick when the cache
-        // agrees with it (rebuilding on the picked board reconfigures the
-        // cache to that name); only a cache the pick does not explain
-        // demotes the answer back to "from build/".
+        // what was just configured --- but a hand-picked board is session
+        // state and is never demoted by a command: the pick is what the
+        // commands pass as `-b`, and a cache that cannot be read (a layout
+        // this reader does not know, a build that wrote elsewhere) must not
+        // erase the user's explicit choice.
         if ok && running.updates_board {
             let cached = cached_board(&self.root, &self.build_dir).map(|name| BoardChoice {
                 name,
                 origin: BoardOrigin::Cache,
             });
-            self.board = match (&self.board, cached) {
-                (Some(picked), Some(cached))
-                    if picked.origin == BoardOrigin::Picked && picked.name == cached.name =>
-                {
-                    Some(picked.clone())
-                }
-                (_, cached) => cached,
-            };
+            if !matches!(
+                self.board,
+                Some(BoardChoice {
+                    origin: BoardOrigin::Picked,
+                    ..
+                })
+            ) {
+                self.board = cached;
+            }
         }
         vec![(level, message)]
     }
@@ -661,12 +663,21 @@ impl BuildPanel {
     }
 }
 
-/// Reads the board a configured build directory targets, from
-/// `<dir>/zephyr/CMakeCache.txt`'s `CACHED_BOARD:STRING=` entry. `None` when
-/// that build directory does not exist yet, or holds a cache without the
-/// entry (a cache written by something other than a Zephyr app build).
+/// Reads the board a configured build directory targets, from the
+/// `CACHED_BOARD:STRING=` entry of its CMake cache. The cache lives where
+/// the generation roots the build system: classic builds at
+/// `<dir>/zephyr/CMakeCache.txt`, sysbuild (the modern default) at the
+/// top-level `<dir>/CMakeCache.txt` with per-image directories below it.
+/// `None` when neither exists or neither holds the entry (a cache written
+/// by something other than a Zephyr app build).
 pub fn cached_board(root: &Path, build_dir: &str) -> Option<String> {
-    let cache = std::fs::read_to_string(root.join(build_dir).join("zephyr/CMakeCache.txt")).ok()?;
+    let build = root.join(build_dir);
+    parse_cached_board(&build.join("zephyr/CMakeCache.txt"))
+        .or_else(|| parse_cached_board(&build.join("CMakeCache.txt")))
+}
+
+fn parse_cached_board(cache: &Path) -> Option<String> {
+    let cache = std::fs::read_to_string(cache).ok()?;
     cache
         .lines()
         .find_map(|line| line.strip_prefix(CACHED_BOARD_KEY))
@@ -738,6 +749,69 @@ mod tests {
             None,
             "an empty board is no board"
         );
+    }
+
+    #[test]
+    fn the_board_is_read_from_a_sysbuild_top_level_cache_too() {
+        let dir = fixture_dir("sysbuild");
+        // Sysbuild roots the build system at build/ itself, with the
+        // images' own caches below it --- the app's zephyr/ cache never
+        // appears at the path the classic layout uses.
+        std::fs::write(
+            dir.join("build/CMakeCache.txt"),
+            "CACHED_BOARD:STRING=nrf52840dk/nrf52840\n",
+        )
+        .unwrap();
+        assert_eq!(
+            cached_board(&dir, DEFAULT_BUILD_DIR).as_deref(),
+            Some("nrf52840dk/nrf52840")
+        );
+
+        // When both spell a board, the classic entry wins: it is the
+        // application's own configuration.
+        std::fs::write(
+            dir.join("build/zephyr/CMakeCache.txt"),
+            "CACHED_BOARD:STRING=thingy91/nrf9160\n",
+        )
+        .unwrap();
+        assert_eq!(
+            cached_board(&dir, DEFAULT_BUILD_DIR).as_deref(),
+            Some("thingy91/nrf9160")
+        );
+    }
+
+    #[test]
+    fn a_picked_board_survives_a_finished_build() {
+        let dir = fixture_dir("survive");
+        // The fake west writes no CMakeCache: a build that leaves no cache
+        // this reader can find must not erase the user's explicit pick.
+        let mut panel = BuildPanel::new(&dir, UtcOffset::UTC);
+        panel.set_picked("nrf52840dk/nrf52840");
+
+        let mut processes = ProcessManager::new();
+        assert!(panel.start(
+            BuildKind::Build.label(),
+            true,
+            crate::process::Command::new(fake("west")),
+            &mut processes,
+        ));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            for event in processes.drain() {
+                panel.on_process(&event);
+            }
+            if panel.last.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(panel.last.as_ref().is_some_and(|report| report.ok));
+        assert_eq!(
+            panel.board_name(),
+            Some("nrf52840dk/nrf52840"),
+            "a finished command must never erase a hand-picked board"
+        );
+        assert_eq!(panel.board.as_ref().unwrap().origin, BoardOrigin::Picked);
     }
 
     #[test]

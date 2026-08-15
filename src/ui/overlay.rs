@@ -961,7 +961,7 @@ fn draw_board_picker(frame: &mut Frame, area: Rect, app: &App, input: &str, sele
         BoardsState::Loaded(_) if boards.is_empty() => "no board matches".to_string(),
         BoardsState::Loaded(_) => {
             format!(
-                "{} of {} targets",
+                "{} of {} targets (west boards)",
                 boards.len(),
                 match &panel.boards {
                     BoardsState::Loaded(all) => all.len(),

@@ -4,11 +4,11 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Paragraph, Tabs, Wrap};
+use ratatui::widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Tabs, Wrap};
 
 use crate::app::{App, Focus, LogTab};
 use crate::backend::Capability;
-use crate::logs::Level;
+use crate::logs::{Level, PREFIX_WIDTH};
 use crate::project::{DetectionOutcome, DetectionSource};
 use crate::ui::{content_style, dashboard_focused, pane_block};
 
@@ -234,6 +234,10 @@ pub fn draw_no_filesystem(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 /// Rolling status/log output.
+///
+/// Long entries wrap at the pane's width with a hanging indent past the
+/// stamp, so a wrapped paragraph stays visually tied to its timestamp
+/// instead of overflowing or being cut off at the terminal edge.
 pub fn draw_logs(frame: &mut Frame, area: Rect, app: &mut App) {
     let following = app.logs.is_following();
     let title = if following {
@@ -244,34 +248,50 @@ pub fn draw_logs(frame: &mut Frame, area: Rect, app: &mut App) {
     let focused = dashboard_focused(app, Focus::Logs);
     let block = pane_block(&title, focused);
 
-    // Publish the usable height so page-scrolling matches the rendered view.
-    let viewport = block.inner(area).height as usize;
-    app.log_viewport = viewport.max(1);
+    // Publish the usable height so page-scrolling matches the rendered view,
+    // and the wrapping width so clamping matches too. One column is reserved
+    // for the scrollbar whether or not it is showing, so text never reflows
+    // the moment the log outgrows the pane.
+    let inner = block.inner(area);
+    let gutter = if inner.width > 0 { 1 } else { 0 };
+    app.log_viewport = (inner.height as usize).max(1);
+    app.logs
+        .set_view_width(inner.width.saturating_sub(gutter) as usize);
 
     let lines: Vec<Line> = app
         .logs
-        .visible(app.log_viewport)
-        .map(|entry| {
-            let style = match entry.level {
+        .visible_rows(app.log_viewport)
+        .into_iter()
+        .map(|row| {
+            let style = match row.entry.level {
                 Level::Info => Style::new(),
                 Level::Success => Style::new().fg(Color::Green),
                 Level::Warn => Style::new().fg(Color::Yellow),
                 Level::Error => Style::new().fg(Color::Red),
             };
-            let centis = entry.at.millisecond() / 10;
-            Line::from(vec![
-                Span::styled(
-                    format!(
-                        "{:02}:{:02}:{:02}.{centis:02} ",
-                        entry.at.hour(),
-                        entry.at.minute(),
-                        entry.at.second()
+            if row.first {
+                let centis = row.entry.at.millisecond() / 10;
+                Line::from(vec![
+                    Span::styled(
+                        format!(
+                            "{:02}:{:02}:{:02}.{centis:02} ",
+                            row.entry.at.hour(),
+                            row.entry.at.minute(),
+                            row.entry.at.second()
+                        ),
+                        Style::new().dim(),
                     ),
-                    Style::new().dim(),
-                ),
-                Span::styled(format!("{} ", entry.level.marker()), style),
-                Span::styled(entry.message.clone(), style),
-            ])
+                    Span::styled(format!("{} ", row.entry.level.marker()), style),
+                    Span::styled(row.text, style),
+                ])
+            } else {
+                // Continuation of a wrapped entry: indented past the stamp so
+                // the whole paragraph reads as one timestamped line.
+                Line::from(vec![
+                    Span::raw(" ".repeat(PREFIX_WIDTH)),
+                    Span::styled(row.text, style),
+                ])
+            }
         })
         .collect();
 
@@ -280,6 +300,41 @@ pub fn draw_logs(frame: &mut Frame, area: Rect, app: &mut App) {
             .block(block)
             .style(content_style(focused)),
         area,
+    );
+
+    draw_log_scrollbar(frame, inner, app);
+}
+
+/// A one-column scrollbar hugging the pane's right border: thin track, heavy
+/// thumb, both in dim terminal grays --- shown only while the wrapped log is
+/// taller than the pane, and reflecting visual (post-wrap) lines.
+fn draw_log_scrollbar(frame: &mut Frame, inner: Rect, app: &App) {
+    let total = app.logs.total_lines();
+    let viewport = app.log_viewport;
+    if total <= viewport || inner.width == 0 || inner.height == 0 {
+        return;
+    }
+    let max_scroll = total - viewport;
+    let top = max_scroll - app.logs.scroll().min(max_scroll);
+    let mut state = ScrollbarState::new(total)
+        .viewport_content_length(viewport)
+        .position(top);
+    let bar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+        .begin_symbol(None)
+        .end_symbol(None)
+        .track_symbol(Some("│"))
+        .thumb_symbol("┃")
+        .track_style(Style::new().fg(Color::DarkGray))
+        .thumb_style(Style::new().fg(Color::Gray));
+    frame.render_stateful_widget(
+        bar,
+        Rect {
+            x: inner.right() - 1,
+            y: inner.y,
+            width: 1,
+            height: inner.height,
+        },
+        &mut state,
     );
 }
 

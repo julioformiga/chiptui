@@ -307,3 +307,42 @@ fn focus_is_visible_in_the_rendered_frame() {
         "moving focus must change what is drawn"
     );
 }
+
+#[test]
+fn long_log_entries_wrap_with_a_hanging_indent_past_the_stamp() {
+    // A message wider than the pane must wrap, and every continuation row is
+    // indented past the stamp so the paragraph stays tied to its timestamp.
+    let mut app = app_with_backend(BackendKind::Zephyr);
+    let message = format!("start {}end", "x".repeat(300));
+    app.logs.info(message);
+
+    let frame = render(&mut app, 100, 30);
+    assert!(frame.contains("start xxx"), "first row missing:\n{frame}");
+    assert!(
+        frame.contains(&format!("{}xxxx", " ".repeat(chiptui::logs::PREFIX_WIDTH))),
+        "continuation rows must be indented past the stamp:\n{frame}"
+    );
+}
+
+#[test]
+fn the_log_pane_shows_a_scrollbar_once_content_overflows_it() {
+    let mut app = app_with_backend(BackendKind::Zephyr);
+    for i in 0..60 {
+        app.logs.info(format!("entry {i:02}"));
+    }
+
+    let frame = render(&mut app, 100, 30);
+    assert!(frame.contains('┃'), "missing the scrollbar thumb:\n{frame}");
+    assert!(app.logs.total_lines() >= 60);
+    assert_eq!(
+        app.logs.total_lines(),
+        app.logs.len(),
+        "short entries occupy exactly one visual line each"
+    );
+
+    // Scrolling moves the thumb: the bar reflects the visual position.
+    app.focus = Focus::Logs;
+    app.logs.scroll_up(usize::MAX, app.log_viewport);
+    let scrolled = render(&mut app, 100, 30);
+    assert_ne!(frame, scrolled, "scrolling must move the thumb");
+}
