@@ -1242,6 +1242,65 @@ impl App {
             && !caps.contains(Capability::Filesystem)
     }
 
+    /// The header's `project` field. A backend that makes the project a
+    /// question ([`Capability::ProjectSelect`]) answers it with the build
+    /// panel's root --- and only once that root is a buildable application:
+    /// picked in the panel, or a launch directory that already is one;
+    /// `header_project` then names the picked folder. Until then the field
+    /// stays empty, because the cwd is not a project just because ChipTUI
+    /// was started in it. Other backends keep the detection root's
+    /// directory name as before.
+    pub fn header_project(&self) -> String {
+        if self
+            .manager
+            .capabilities()
+            .contains(Capability::ProjectSelect)
+            && let Some(panel) = &self.build
+        {
+            return if self.project_gate_ok() {
+                panel
+                    .root
+                    .file_name()
+                    .map_or_else(String::new, |name| name.to_string_lossy().into_owned())
+            } else {
+                String::new()
+            };
+        }
+        self.manager.name().unwrap_or("--").to_string()
+    }
+
+    /// The project half of the panel's checklist: whether the current root
+    /// is a buildable application. Backends without
+    /// [`Capability::ProjectSelect`] have no such question --- the root is
+    /// theirs by definition.
+    pub fn project_gate_ok(&self) -> bool {
+        let Some(panel) = &self.build else {
+            return true;
+        };
+        !self
+            .manager
+            .capabilities()
+            .contains(Capability::ProjectSelect)
+            || crate::backend::zephyr::projects::is_buildable(&panel.root)
+    }
+
+    /// Whether `Enter` runs this project-panel action: the operation
+    /// buttons need both checklist answers (asked in the workspace pane)
+    /// first --- a disabled button is dimmed, never hidden.
+    pub fn build_action_enabled(&self, action: crate::build::BuildAction) -> bool {
+        let Some(panel) = &self.build else {
+            return true;
+        };
+        match action {
+            crate::build::BuildAction::Stop => true,
+            crate::build::BuildAction::Build(_)
+            | crate::build::BuildAction::Flash
+            | crate::build::BuildAction::Menuconfig => {
+                panel.lifecycle_ready(self.project_gate_ok())
+            }
+        }
+    }
+
     /// Focus order for `Tab`/`BackTab`. The file columns are stops whenever
     /// row 2 shows the browser --- which is exactly when the backend has no
     /// build panel claiming the row instead (a build backend without a

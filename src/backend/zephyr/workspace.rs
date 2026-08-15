@@ -170,6 +170,20 @@ impl Workspace {
             .map(|text| text.trim().to_string())
             .filter(|text| !text.is_empty())
     }
+
+    /// The venv's Python version, read from `<venv>/pyvenv.cfg`'s
+    /// `version =` line --- the file the venv itself owns, so no
+    /// subprocess is needed for a fact it already records. `None`
+    /// without a venv or a readable file.
+    pub fn python_version(&self) -> Option<String> {
+        let venv = self.venv.as_ref()?;
+        let text = std::fs::read_to_string(venv.join("pyvenv.cfg")).ok()?;
+        text.lines().find_map(|line| {
+            let value = line.trim().strip_prefix("version")?.trim_start();
+            let value = value.strip_prefix('=')?.trim();
+            (!value.is_empty()).then(|| value.to_string())
+        })
+    }
 }
 
 /// Everything resolution needs, with the config levels passed in rather
@@ -370,6 +384,14 @@ mod tests {
         assert_eq!(workspace.dir, ws);
         assert_eq!(workspace.origin, WorkspaceOrigin::ProjectConfig);
         assert_eq!(workspace.zephyr_version().as_deref(), Some("4.1"));
+        // The venv's Python comes from pyvenv.cfg, never a subprocess.
+        assert_eq!(workspace.python_version(), None, "no pyvenv.cfg yet");
+        std::fs::write(
+            ws.join(".venv/pyvenv.cfg"),
+            "home = /usr/bin\nversion = 3.12.4\n",
+        )
+        .unwrap();
+        assert_eq!(workspace.python_version().as_deref(), Some("3.12.4"));
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

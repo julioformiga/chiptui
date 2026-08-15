@@ -46,8 +46,18 @@ impl App {
 
     /// Runs a workspace action: `west update` confirms first (it rewrites
     /// the workspace every project in it shares), `west sdk list` runs
-    /// immediately, and the chooser opens the directory picker.
+    /// immediately, and the choosers open the directory picker. The
+    /// operation buttons do nothing before the installation is resolved
+    /// ([`WorkspacePanel::action_enabled`]) --- the dimmed row is the
+    /// explanation.
     pub(super) fn run_workspace_action(&mut self, action: WorkspaceAction) {
+        if !self
+            .workspace
+            .as_ref()
+            .is_some_and(|panel| panel.action_enabled(action))
+        {
+            return;
+        }
         match action {
             WorkspaceAction::Update => {
                 self.overlay = Some(Overlay::ConfirmWorkspace {
@@ -62,6 +72,21 @@ impl App {
             }
             WorkspaceAction::Choose => self.open_dir_picker(),
             WorkspaceAction::Projects => self.open_projects_dir_picker(),
+            WorkspaceAction::Project => {
+                // The checklist row doubles as the gate's explanation: a
+                // root without build elements says so before the flow that
+                // answers it opens.
+                if !self.project_gate_ok()
+                    && let Some(panel) = &self.build
+                {
+                    let root = panel.root.display().to_string();
+                    self.logs.warn(format!(
+                        "{root} is not a Zephyr application (no CMakeLists.txt) — pick a project first"
+                    ));
+                }
+                self.open_project_flow();
+            }
+            WorkspaceAction::Board => self.open_board_picker(),
         }
     }
 

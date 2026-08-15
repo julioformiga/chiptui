@@ -85,12 +85,17 @@ impl App {
     /// Runs a panel action: destructive ones (`Clean`, `Flash` --- both
     /// destructive capabilities, `SPEC.md` §15) route through a confirm
     /// overlay quoting the literal command; `menuconfig` hands the terminal
-    /// to the child; the rest act immediately. This is also the confirm
-    /// overlay's accept path, which is why it must not itself confirm
-    /// again. Every action that runs a *project* command passes through
-    /// [`Self::require_buildable_project`] first --- no command runs in a
-    /// directory that is not a buildable application.
+    /// to the child; the rest act immediately. Disabled rows (the lifecycle
+    /// before the checklist is complete --- [`Self::build_action_enabled`])
+    /// do nothing: the dimmed row is the explanation. This is also the
+    /// confirm overlay's accept path, which is why it must not itself
+    /// confirm again. Every action that runs a *project* command passes
+    /// through [`Self::require_buildable_project`] first --- no command runs
+    /// in a directory that is not a buildable application.
     pub(super) fn run_build_action(&mut self, action: BuildAction) {
+        if !self.build_action_enabled(action) {
+            return;
+        }
         if matches!(
             action,
             BuildAction::Build(_) | BuildAction::Flash | BuildAction::Menuconfig
@@ -116,10 +121,7 @@ impl App {
                     confirm: false,
                 });
             }
-            BuildAction::Board => self.open_board_picker(),
             BuildAction::Menuconfig => self.start_menuconfig(),
-            BuildAction::BuildDir => self.open_build_dir_picker(),
-            BuildAction::Project => self.open_project_flow(),
         }
     }
 
@@ -266,18 +268,11 @@ impl App {
         self.pending_command = Some(command);
     }
 
-    /// Opens the build-directory picker over the project's configured
-    /// directories; a typed name that matches nothing starts a new one.
-    pub(super) fn open_build_dir_picker(&mut self) {
-        self.overlay = Some(Overlay::BuildDirPicker {
-            input: String::new(),
-            selected: 0,
-        });
-    }
-
     /// Applies the build-directory choice (picked row or typed name):
     /// session-only --- the directory is an argument on the next command,
     /// never a persisted setting (`SPEC.md` §10's no-silent-writes rule).
+    /// The panel's list no longer offers the picker (the lifecycle targets
+    /// the conventional `build`), but the overlay and this path remain.
     pub(super) fn apply_build_dir_picker(&mut self, filter: &str, selected: usize) {
         let Some(panel) = &mut self.build else {
             return;

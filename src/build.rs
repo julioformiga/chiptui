@@ -119,10 +119,13 @@ pub enum BoardsState {
     Failed(String),
 }
 
-/// One row of the build panel's action list. `Stop`/`Board` bookend the
-/// [`BuildKind`] entries exactly when they apply (see
-/// [`BuildPanel::actions`]); `Flash` sits between them under
-/// [`crate::backend::Capability::Flash`].
+/// One row of the project panel's action list: the operation buttons
+/// only --- the `Project path`/`Board` checklist questions live in the
+/// workspace pane, next to the other environment answers, so the two
+/// panes are "what is defined" and "what runs". The buttons stay
+/// visible but disabled until both answers exist (see
+/// [`BuildPanel::lifecycle_ready`]). `Stop` heads the list exactly while
+/// a command runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuildAction {
     Stop,
@@ -130,33 +133,21 @@ pub enum BuildAction {
     /// Writes the built image to the device --- destructive (`SPEC.md` §15),
     /// so it always routes through the confirm overlay.
     Flash,
-    /// Opens the board picker (only under [`crate::backend::Capability::
-    /// BoardSelect`]).
-    Board,
     /// The interactive Kconfig editor (`west build -t menuconfig`): run with
     /// the terminal suspended like `$EDITOR`, never through the piped
     /// process manager --- its whole value is the interactive screen.
     Menuconfig,
-    /// Chooses which build directory the lifecycle targets: several boards
-    /// can hold parallel configurations (`west build -d`).
-    BuildDir,
-    /// Chooses which *project* the lifecycle runs in: the picker lists the
-    /// configured projects folder's subdirectories, and the pick re-roots
-    /// every command (session-only, like [`Self::Board`]). Under
-    /// [`crate::backend::Capability::ProjectSelect`] the panel also gates
-    /// every project command on a buildable root --- see
-    /// [`crate::backend::zephyr::projects::is_buildable`].
-    Project,
 }
 
 impl BuildAction {
-    /// Rows for an idle panel under `caps`: the build lifecycle (menuconfig
-    /// beside it, a build-system target like the others), then flash and
-    /// board when the capabilities allow, and the build-directory row last.
-    /// With `running`, `Stop` is prepended (cancelling as discoverable as
-    /// starting, `SPEC.md` §12).
+    /// Rows the list shows under `caps`: the build lifecycle, menuconfig
+    /// beside it (a build-system target like the others), then flash
+    /// under its capability. With `running`, `Stop` is prepended
+    /// (cancelling as discoverable as starting, `SPEC.md` §12). The
+    /// lifecycle targets the conventional `build` directory inside the
+    /// project --- no directory picker.
     pub fn list(caps: &crate::backend::Capabilities, running: bool) -> Vec<Self> {
-        let mut actions = Vec::with_capacity(BuildKind::ALL.len() + 5);
+        let mut actions = Vec::with_capacity(BuildKind::ALL.len() + 3);
         if running {
             actions.push(Self::Stop);
         }
@@ -165,13 +156,6 @@ impl BuildAction {
         if caps.contains(crate::backend::Capability::Flash) {
             actions.push(Self::Flash);
         }
-        if caps.contains(crate::backend::Capability::BoardSelect) {
-            actions.push(Self::Board);
-        }
-        if caps.contains(crate::backend::Capability::ProjectSelect) {
-            actions.push(Self::Project);
-        }
-        actions.push(Self::BuildDir);
         actions
     }
 }
@@ -354,6 +338,14 @@ impl BuildPanel {
         self.board.as_ref().map(|choice| choice.name.as_str())
     }
 
+    /// Whether the lifecycle buttons can run: both checklist answers exist
+    /// --- a buildable project root (`project_ok`, the caller's judgement,
+    /// since buildability is a backend fact the panel stays agnostic
+    /// about) and a board, picked or read from the build cache.
+    pub fn lifecycle_ready(&self, project_ok: bool) -> bool {
+        project_ok && self.board.is_some()
+    }
+
     /// Applies a board chosen in the picker: session-only, never written to
     /// the project (`SPEC.md` §10) --- which is exactly why it outranks the
     /// cache until the session ends.
@@ -521,6 +513,10 @@ impl BuildPanel {
             updates_board,
             started: Instant::now(),
         });
+        // `Stop` now heads the list: land the cursor on it, so cancelling
+        // is one Enter away (the same alignment the insertion used to get
+        // for free when the lifecycle led the list).
+        self.cursor = 0;
         true
     }
 
@@ -996,9 +992,10 @@ mod tests {
     }
 
     #[test]
-    fn the_action_list_bookends_with_stop_flash_board_and_project() {
+    fn the_lifecycle_buttons_stand_alone_and_stop_heads_them_when_running() {
         let mut panel = BuildPanel::new("/nonexistent", UtcOffset::UTC);
-        // Zephyr's real set: build lifecycle, flash, board, project.
+        // Zephyr's real set: the lifecycle, menuconfig, flash --- the
+        // project/board questions live in the workspace pane.
         let zephyr = crate::backend::Capabilities::from_slice(&[
             crate::backend::Capability::Build,
             crate::backend::Capability::Clean,
@@ -1014,18 +1011,15 @@ mod tests {
                 BuildAction::Build(BuildKind::Rebuild),
                 BuildAction::Menuconfig,
                 BuildAction::Flash,
-                BuildAction::Board,
-                BuildAction::Project,
-                BuildAction::BuildDir,
             ]
         );
+        assert_eq!(
+            panel.action_at(&zephyr, 0),
+            Some(BuildAction::Build(BuildKind::Build))
+        );
         assert_eq!(panel.action_at(&zephyr, 4), Some(BuildAction::Flash));
-        assert_eq!(panel.action_at(&zephyr, 5), Some(BuildAction::Board));
-        assert_eq!(panel.action_at(&zephyr, 6), Some(BuildAction::Project));
-        assert_eq!(panel.action_at(&zephyr, 7), Some(BuildAction::BuildDir));
 
-        // A backend without flash/board capability: the lifecycle plus the
-        // two always-present rows.
+        // A backend without flash: the lifecycle and menuconfig alone.
         let plain = crate::backend::Capabilities::from_slice(&[crate::backend::Capability::Build]);
         assert_eq!(
             panel.actions(&plain),
@@ -1034,9 +1028,15 @@ mod tests {
                 BuildAction::Build(BuildKind::Clean),
                 BuildAction::Build(BuildKind::Rebuild),
                 BuildAction::Menuconfig,
-                BuildAction::BuildDir,
             ]
         );
+
+        // The lifecycle needs both answers: a boardless project and a
+        // projectless board each leave the buttons disabled.
+        assert!(!panel.lifecycle_ready(true), "no board yet");
+        assert!(!panel.lifecycle_ready(false), "no project yet");
+        panel.set_picked("nrf52840dk/nrf52840");
+        assert!(panel.lifecycle_ready(true));
 
         // With a command running, Stop shifts everything down by one ---
         // the cursor arithmetic the key handler depends on.
@@ -1048,7 +1048,10 @@ mod tests {
             &mut processes,
         );
         assert_eq!(panel.action_at(&zephyr, 0), Some(BuildAction::Stop));
-        assert_eq!(panel.action_at(&zephyr, 6), Some(BuildAction::Board));
+        assert_eq!(
+            panel.action_at(&zephyr, 3),
+            Some(BuildAction::Build(BuildKind::Rebuild))
+        );
     }
 
     #[test]

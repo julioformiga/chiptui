@@ -11,7 +11,7 @@ use crate::app::{App, Focus, LogTab, MonitorSource};
 use crate::backend::Capability;
 use crate::flash::RunState;
 use crate::logs::{Level, PREFIX_WIDTH};
-use crate::project::{DetectionOutcome, DetectionSource};
+use crate::project::DetectionOutcome;
 use crate::ui::{SPINNER, content_style, dashboard_focused, pane_block, pane_border};
 
 /// Project identity: where it is, what it is, and how sure we are.
@@ -40,10 +40,22 @@ pub(super) fn project_content(app: &App, width: usize) -> Vec<Line<'static>> {
     // Deep embedded trees produce long paths; the tail identifies the project,
     // so they are shortened from the left instead of wrapping over three lines.
     let path_budget = width.saturating_sub(2 + LABEL_WIDTH);
-    let root = app.manager.root().map_or_else(
-        || app.manager.start_dir().display().to_string(),
-        |root| root.display().to_string(),
-    );
+    // A backend that makes the project a question (`ProjectSelect`) answers
+    // it with the build panel's root, so a picked project re-roots this
+    // field too; every other backend keeps the detection root.
+    let root = if app
+        .manager
+        .capabilities()
+        .contains(Capability::ProjectSelect)
+        && let Some(panel) = &app.build
+    {
+        panel.root.display().to_string()
+    } else {
+        app.manager.root().map_or_else(
+            || app.manager.start_dir().display().to_string(),
+            |root| root.display().to_string(),
+        )
+    };
     lines.push(field("root", truncate_start(&root, path_budget)));
 
     // Only worth showing when the search climbed out of the working directory.
@@ -86,13 +98,25 @@ pub(super) fn project_content(app: &App, width: usize) -> Vec<Line<'static>> {
         None => lines.push(field("type", "not detected yet".to_string())),
     }
 
-    if let Some(detection) = detection {
-        let source = match detection.source {
-            DetectionSource::Automatic => "automatic",
-            DetectionSource::Manual => "manual override",
-            DetectionSource::Config => "saved in chiptui.toml",
-        };
-        lines.push(field("source", source.to_string()));
+    // The environment's versions, once a workspace resolves: read from
+    // files (`zephyr/VERSION`, the venv's `pyvenv.cfg`), never from a
+    // subprocess. Where the detection answer came from stays in the log
+    // and the picker; this pane reports the state it builds against.
+    if let Some(workspace) = app
+        .workspace
+        .as_ref()
+        .and_then(|panel| panel.resolved.as_ref())
+    {
+        let mut versions = format!(
+            "zephyr {}",
+            workspace
+                .zephyr_version()
+                .unwrap_or_else(|| "unknown".to_string())
+        );
+        if let Some(python) = workspace.python_version() {
+            versions.push_str(&format!(" · python {python}"));
+        }
+        lines.push(field("versions", versions));
     }
 
     // Tool availability, since a capability whose tool is missing is not usable.

@@ -66,8 +66,9 @@ fn dashboard_shows_project_device_and_log_panes() {
 fn zephyr_shows_the_workspace_and_build_panes_in_row_two() {
     // Once startup has run, row 2 belongs entirely to the build backend: the
     // workspace pane (no filesystem to browse, no file listing --- that is
-    // the editor's job) beside the build panel quoting the literal `west`
-    // commands.
+    // the editor's job) beside the project panel, both as checklists ---
+    // the open questions above a separator, the operation buttons dimmed
+    // below it until their answers exist.
     let mut app = app_with_backend(BackendKind::Zephyr);
     // Empty fixture /dev and an isolated home keep the render deterministic
     // (a machine with several USB ports would open the device picker; one
@@ -85,13 +86,24 @@ fn zephyr_shows_the_workspace_and_build_panes_in_row_two() {
         "missing the workspace pane:\n{frame}"
     );
     assert!(
-        frame.contains("no location configured"),
-        "an unresolved pane must explain itself:\n{frame}"
+        frame.contains("□ Zephyr Base"),
+        "the checklist must ask for the installation:\n{frame}"
     );
-    assert!(frame.contains("Build"), "missing the build panel:\n{frame}");
     assert!(
-        frame.contains("west build"),
-        "the panel must quote the literal commands:\n{frame}"
+        frame.contains("Project path"),
+        "the project checklist must ask for the project:\n{frame}"
+    );
+    assert!(
+        frame.contains("Project actions"),
+        "the project panel must be titled as the actions pane:\n{frame}"
+    );
+    assert!(
+        frame.contains("▶ Build"),
+        "the lifecycle buttons must stay visible:\n{frame}"
+    );
+    assert!(
+        frame.contains("─"),
+        "the separator must divide checklist from buttons:\n{frame}"
     );
     assert!(
         !frame.contains("Local files:"),
@@ -151,16 +163,16 @@ fn switching_to_the_monitor_tab_changes_row_three() {
 }
 
 #[test]
-fn dashboard_shows_the_working_directory_and_detection_source() {
+fn dashboard_shows_the_working_directory_and_backend() {
     let mut app = app_with_backend(BackendKind::MicroPython);
     let frame = render(&mut app, 120, 30);
 
     assert!(frame.contains("root:"), "missing root field:\n{frame}");
-    assert!(
-        frame.contains("manual override"),
-        "missing detection source:\n{frame}"
-    );
     assert!(frame.contains("MicroPython"), "missing backend:\n{frame}");
+    assert!(
+        !frame.contains("source:"),
+        "the detection source no longer has a field:\n{frame}"
+    );
 }
 
 #[test]

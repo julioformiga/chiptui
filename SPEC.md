@@ -530,15 +530,19 @@ one is being built is never guessed:
     it holds build elements (a `CMakeLists.txt` --- `west build`'s one
     hard requirement). A directory without them cannot be accepted: the
     picker stays open and says why. The choice is session-only; nothing
-    is written;
+    is written. The header's `project` field follows it: it names the
+    picked folder, and stays empty until a project is chosen (a launch
+    directory that already is one fills it by itself);
 3.  before any project command (build, clean, rebuild, menuconfig,
     flash) runs, its working directory must hold those build elements.
     The launch directory passes the gate by itself when it is a project;
     otherwise the command is refused with the reason and the pickers
     above open --- folder first, then project. The accepted project
     re-roots every command and resets the per-project facts (build
-    directory, cached board, last report); a hand-picked board survives,
-    as it does across build-directory switches.
+    directory, cached board, last report); a hand-picked board survives
+    the re-root. The lifecycle buttons stay dimmed in the project panel
+    until both answers exist --- the questions themselves are asked in the
+    workspace pane's checklist, below `Projects Base`.
 
 The optional keys, shared by both config levels:
 
@@ -558,7 +562,7 @@ The initial backend should support:
 -   projects folder and project selection (the gate above);
 -   board selection;
 -   project information;
--   build (with named build directories, `west build -d`);
+-   build (targeting the conventional `build` directory in the project);
 -   clean;
 -   `menuconfig` (interactive: the TUI suspends, like `$EDITOR`);
 -   flash;
@@ -599,10 +603,10 @@ Rebuild
 Menuconfig
 ```
 
-The lifecycle targets a build directory: the conventional `build` by
-default, any configured sibling (`build*` holding a `zephyr/CMakeCache.txt`)
-or a typed new name through the picker --- so configurations for different
-boards stop erasing each other (`west build -d`).
+The lifecycle targets the conventional `build` directory inside the
+project (`west`'s own default, so commands stay implicit); the panel's
+list offers no directory picker --- keeping several parallel
+configurations is the shell's job, not the TUI's.
 
 Build output should stream into a log pane and show:
 
@@ -619,7 +623,7 @@ rather than assuming a single programmer.
 The TUI should expose a simple `Flash` action while preserving
 backend-specific configuration.
 
-> **Status**: implemented as the build panel's `Flash` row --- a plain
+> **Status**: implemented as the project panel's `Flash` button --- a plain
 > `west flash`, which delegates to the board's own runner from the build
 > directory's `runner.yml` (no port or programmer is ever assumed). The
 > dashboard's `x` routes a build-panel backend here and a filesystem backend
@@ -665,13 +669,28 @@ one-line contextual shortcut footer:
 └───────────────────────────────────────────────────────────────┘
 ```
 
-- **Row 1** --- Project and Device, side by side.
+- **Row 1** --- Project and Device, side by side. The Project pane reports the state being
+  built against: `root` (following the project picker's answer for a backend that makes the
+  project a question), `type`, the environment `versions` (Zephyr and venv Python, read from
+  files once a workspace resolves) and `tools` availability.
 - **Row 2** --- the dual-pane local/device file browser, shown whenever the selected backend
   declares `Capability::Filesystem`; for a backend that builds without a device filesystem
-  (today: Zephyr) the whole row is the pair **Workspace | Build**: the environment pane
-  (workspace/venv/SDK status, `west update`, `west sdk list`, §10) beside the build panel.
-  No file listing for such a backend --- editing the project's own sources is the user's
-  editor's job; otherwise a single full-width placeholder while no pane exists yet.
+  (today: Zephyr) the whole row is the pair **Workspace | Project actions**: the environment
+  pane (§10's workspace/venv/SDK environment, `west update`, `west sdk list`) beside the
+  project panel (the build lifecycle). The workspace pane is a checklist first --- every
+  prerequisite asked in answering order: `Zephyr Base`, then `Projects Base`, then `Project
+  path`, then `Board` (a `□` while open, a `✓` once answered, a red `✗` when a configured
+  answer fails validation) --- before a horizontal separator and the operation buttons they
+  gate; the buttons are a
+  monochrome custom widget --- a stacked group sharing one rounded border, one centered icon
+  label per row with a divider between them, no colors --- that stays visible but dimmed
+  until the answers exist, with
+  the selection highlighting only the button's own row. The project panel is buttons only
+  (the lifecycle, menuconfig, flash, `Stop` while a command runs). A
+  broken location's reason sits directly under its row, outside the navigation. No file
+  listing for such a backend --- editing the project's own sources is
+  the user's editor's job; otherwise a single full-width placeholder while no pane exists
+  yet.
 - **Row 3** --- a one-line `Log`/`Monitor` tab strip over the selected tab's body, full width.
   `Left`/`Right` switch tabs while row 3 has focus. `Log` is the rolling status/notice feed
   (unchanged). `Monitor` shows whichever live process output the user last asked for: a
@@ -685,11 +704,15 @@ moves focus to row 3's Monitor tab, where its output streams --- there is no sep
 screen inside the dialog.
 
 > **Status**: implemented. Row 2 is capability-driven: the dual-pane file browser for
-> MicroPython; for Zephyr the full row is Workspace (§10's environment resolution, with the
-> `ZEPHYR_BASE`/venv/SDK status and `west update`/`west sdk list` behind
-> `Capability::WorkspaceSync`) | Build (`src/build.rs`: Build/Clean/Rebuild/Menuconfig/Flash/
-> Board/build-directory picker, streaming into the Monitor tab). The Monitor tab shows the
-> device serial session (`m`), flash/erase output, and build output.
+> MicroPython; for Zephyr the full row is Workspace (§10's environment resolution as a
+> checklist --- `Zephyr Base`, `Projects Base`, `Project path`, `Board`, a separator, then
+> `west update`/`west sdk list` as stacked boxed buttons enabled once the installation
+> resolves, behind `Capability::WorkspaceSync`; the resolved versions report in row 1's
+> Project pane)
+> | Project actions (`src/build.rs`: the lifecycle buttons only, gated on both answers,
+> streaming into
+> the Monitor tab; commands are quoted by the confirm overlays, not on the rows). The
+> Monitor tab shows the device serial session (`m`), flash/erase output, and build output.
 
 The exact proportions (row heights, column widths) are not fixed.
 

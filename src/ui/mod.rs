@@ -6,6 +6,7 @@
 //! for terminal-native output rather than an imposed theme.
 
 mod build;
+mod button;
 mod files;
 mod flash;
 mod monitor;
@@ -107,8 +108,20 @@ fn draw_dashboard(frame: &mut Frame, body: Rect, app: &mut App) {
 
     let [row1, rest] =
         Layout::vertical([Constraint::Length(info_height), Constraint::Min(0)]).areas(body);
-    let [row2, row3] =
-        Layout::vertical([Constraint::Percentage(60), Constraint::Percentage(40)]).areas(rest);
+    // Row 2 leans on its content when the workspace/project panes claim
+    // it: their stacked button groups (checklist rows, a separator, a rule
+    // per button edge, the pinned state line) are the tallest content on
+    // the dashboard, so the row is sized to fit them and the log pane
+    // (which scrolls) takes the remainder. The browser keeps the
+    // historical 60/40 split.
+    let [row2, row3] = if app.workspace_pane_visible() {
+        let needed = row2_content_height(app)
+            .saturating_add(3) // the state line, then the pane's borders
+            .min(rest.height.saturating_sub(3).max(1));
+        Layout::vertical([Constraint::Length(needed), Constraint::Min(0)]).areas(rest)
+    } else {
+        Layout::vertical([Constraint::Percentage(60), Constraint::Percentage(40)]).areas(rest)
+    };
     let [project, device] =
         Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(row1);
 
@@ -138,6 +151,37 @@ fn draw_dashboard(frame: &mut Frame, body: Rect, app: &mut App) {
     panels::draw_log_tabs(frame, row3, app);
 }
 
+/// The taller row-2 pane's inner content height: its checklist rows (plus
+/// an invalid location's wrapped reason in the workspace pane), the
+/// separator, and the stacked button group --- one row per button, one
+/// rule at each edge and one divider between each pair.
+fn row2_content_height(app: &App) -> u16 {
+    let caps = app.manager.capabilities();
+    let workspace = app.workspace.as_ref().map_or(0, |panel| {
+        let actions = panel.actions(&caps);
+        let checklist = actions
+            .iter()
+            .take_while(|action| {
+                matches!(
+                    action,
+                    crate::workspace::WorkspaceAction::Choose
+                        | crate::workspace::WorkspaceAction::Projects
+                        | crate::workspace::WorkspaceAction::Project
+                        | crate::workspace::WorkspaceAction::Board
+                )
+            })
+            .count();
+        let buttons = actions.len() - checklist;
+        let invalid = if panel.invalid.is_some() { 4 } else { 0 };
+        (checklist + invalid + 2 * buttons + 2) as u16
+    });
+    let build = app.build.as_ref().map_or(0, |panel| {
+        let buttons = panel.actions(&caps).len();
+        (2 * buttons + 2) as u16
+    });
+    workspace.max(build)
+}
+
 fn draw_too_small(frame: &mut Frame, area: Rect) {
     let message = Paragraph::new(vec![
         Line::from("Terminal too small".bold()),
@@ -152,7 +196,7 @@ fn draw_too_small(frame: &mut Frame, area: Rect) {
 }
 
 fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
-    let project = app.manager.name().unwrap_or("--");
+    let project = app.header_project();
     let backend = app
         .manager
         .selected_kind()

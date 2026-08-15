@@ -73,7 +73,19 @@ fn app_dir(parent: &std::path::Path, name: &str, with_cmake: bool) -> std::path:
     dir
 }
 
-/// The first row of the build panel's list: `Build`.
+/// The checklist's `Project path` row --- it lives in the workspace pane
+/// now, two rows below the folder question: Enter opens the project flow
+/// (the projects-folder question when nothing is configured, the project
+/// picker when one is).
+fn press_project_row(app: &mut App) {
+    app.focus = Focus::Workspace;
+    app.handle(key(KeyCode::Down));
+    app.handle(key(KeyCode::Down));
+    app.handle(key(KeyCode::Enter));
+}
+
+/// The `Build` button --- the project panel's first row now that the
+/// questions moved to the workspace pane.
 fn press_build(app: &mut App) {
     app.focus = Focus::Build;
     app.handle(key(KeyCode::Enter));
@@ -83,6 +95,15 @@ fn log_mentions(app: &App, needle: &str) -> bool {
     app.logs
         .visible(usize::MAX)
         .any(|entry| entry.message.contains(needle))
+}
+
+fn render(app: &mut App, width: u16, height: u16) -> String {
+    let mut terminal =
+        ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+    terminal
+        .draw(|frame| chiptui::ui::draw(frame, app))
+        .unwrap();
+    terminal.backend().to_string()
 }
 
 /// Drains process events into the app until the build panel reports a
@@ -106,7 +127,7 @@ fn pump_build(app: &mut App, secs: u64) -> bool {
 fn build_outside_a_project_refuses_and_asks_for_the_folder_first() {
     let (mut app, root) = bare_app("gate-none", None);
 
-    press_build(&mut app);
+    press_project_row(&mut app);
     assert!(
         !app.build.as_ref().unwrap().is_busy(),
         "nothing may run in a directory without build elements"
@@ -142,7 +163,7 @@ fn with_a_folder_configured_the_gate_opens_the_project_picker_instead() {
         "the pane resolved the folder from the user config at creation"
     );
 
-    press_build(&mut app);
+    press_project_row(&mut app);
     assert!(matches!(app.overlay, Some(Overlay::ProjectPicker { .. })));
     assert!(!app.build.as_ref().unwrap().is_busy());
     let _ = std::fs::remove_dir_all(&root);
@@ -153,7 +174,7 @@ fn a_directory_without_build_elements_cannot_be_accepted() {
     let (mut app, root) = bare_app("reject", Some(&root_for("reject").join("apps")));
     app_dir(&root.join("apps"), "notes", false);
 
-    press_build(&mut app); // the folder is configured: the project picker
+    press_project_row(&mut app); // the folder is configured: the project picker
     assert!(matches!(app.overlay, Some(Overlay::ProjectPicker { .. })));
 
     app.handle(key(KeyCode::Enter)); // the only row: notes (not buildable)
@@ -179,10 +200,22 @@ fn a_directory_without_build_elements_cannot_be_accepted() {
 fn picking_a_buildable_project_reroots_and_builds() {
     let (mut app, root) = bare_app("pick", Some(&root_for("pick").join("apps")));
     let blinky = app_dir(&root.join("apps"), "blinky", true);
+    // A cached board in the picked project: the checklist's other half, so
+    // the Build button is enabled once the pick lands.
+    std::fs::create_dir_all(blinky.join("build/zephyr")).unwrap();
+    std::fs::write(
+        blinky.join("build/zephyr/CMakeCache.txt"),
+        "CACHED_BOARD:STRING=nrf52840dk/nrf52840\n",
+    )
+    .unwrap();
     app_dir(&root.join("apps"), "notes", false);
     app.build.as_mut().unwrap().set_tool_path(fake("west"));
 
-    press_build(&mut app); // gate -> project picker
+    // The header must not name a project that has not been chosen yet:
+    // the cwd is not a project just because ChipTUI started in it.
+    assert_eq!(app.header_project(), "");
+
+    press_project_row(&mut app); // gate -> project picker
     app.handle(key(KeyCode::Enter)); // rows sorted: blinky first
     assert_eq!(app.overlay, None, "a buildable pick closes the picker");
     let panel = app.build.as_ref().unwrap();
@@ -191,9 +224,27 @@ fn picking_a_buildable_project_reroots_and_builds() {
         "every command now runs in the picked app"
     );
     assert_eq!(panel.project_origin, chiptui::build::ProjectOrigin::Picked);
+    assert_eq!(
+        app.header_project(),
+        "blinky",
+        "the header names the picked project's folder"
+    );
 
-    // The gate is satisfied by the pick: Build runs, and succeeds.
-    app.handle(key(KeyCode::Enter));
+    // The Project pane's root field follows the pick too (it would still
+    // name the bare cwd otherwise).
+    let frame = render(&mut app, 100, 30);
+    let root_line = frame
+        .lines()
+        .find(|line| line.contains("root:"))
+        .expect("the root field must render");
+    assert!(
+        root_line.contains("blinky"),
+        "the root field must name the picked project, got: {root_line}"
+    );
+
+    // The gate is satisfied by the pick (and its cached board): Build
+    // runs, and succeeds.
+    press_build(&mut app);
     assert!(app.build.as_ref().unwrap().is_busy());
     assert!(pump_build(&mut app, 10));
     assert!(
@@ -260,6 +311,14 @@ fn a_cwd_that_is_already_a_project_never_asks() {
     std::fs::write(
         root.join("CMakeLists.txt"),
         "find_package(Zephyr REQUIRED)\n",
+    )
+    .unwrap();
+    // The checklist's other half: a cached board, so the Build button is
+    // enabled for the working directory's own project.
+    std::fs::create_dir_all(root.join("build/zephyr")).unwrap();
+    std::fs::write(
+        root.join("build/zephyr/CMakeCache.txt"),
+        "CACHED_BOARD:STRING=nrf52840dk/nrf52840\n",
     )
     .unwrap();
 

@@ -30,10 +30,30 @@ script runs (`Overlay::ConfirmInterruptDevice`), and an accepted interruption en
 restore prompt (`Overlay::RestoreDeviceScript`: hard reset, `import main`, or leave stopped).
 
 Row 2 is capability-driven now: a backend that can build without a device filesystem (Zephyr)
-claims the *whole* row with a **Workspace | Build** pair (`maybe_scan_devices`/
+claims the *whole* row with a **Workspace | Project** pair (`maybe_scan_devices`/
 `ensure_browser_scanning` skip the browser entirely for such a backend — listing/editing the
 project's own sources is the user's editor's job; MicroPython's dual-pane browser and its
-capability-gated `FileAction::for_entry` menu are unchanged). The **workspace pane**
+capability-gated `FileAction::for_entry` menu are unchanged). The **workspace pane** owns
+*every* prerequisite as one checklist: the open questions lead, marked `□` while open (the
+icon that says *this needs defining*), `✓` once answered, a red `✗` when a configured
+answer fails validation --- `Zephyr Base`, `Projects Base`, `Project path`, `Board` (the
+last two answered by the build panel but asked here, under `ProjectSelect`/`BoardSelect`:
+`WorkspaceAction::Project`/`Board` open the same flows) --- over a horizontal separator and
+the operation buttons --- a small monochrome custom widget (`src/ui/button.rs`: one stacked
+group sharing a rounded border, a centered icon label per row, a `├─┤` divider between each
+pair --- N buttons cost 2N+1 lines, and `draw_dashboard`'s `row2_content_height` sizes row 2
+to that content (the log pane, which scrolls, takes the remainder; the browser row keeps
+60/40); bold/dim/reversed only, no colors, the REVERSED
+selection confined to the button's row, never the shared rules or dividers), which stay
+visible but dimmed until their answers exist (`WorkspacePanel::action_enabled`,
+`App::build_action_enabled`) --- Enter on a dimmed row is a no-op; rows carry no trailing
+text (the confirm overlays quote the literal commands, `SPEC.md` §15, not the rows). The
+header's `project` field is the project question's other half (`App::header_project`):
+empty while the root is not a buildable application, then the picked project's folder name;
+row 1's Project pane follows the same answer (`root:` comes from the build panel under
+`ProjectSelect`) and reports the environment's `versions:` (Zephyr + venv Python, read from
+files) in place of the old detection-`source:` line.
+The **workspace pane**
 (`src/workspace.rs`, `src/ui/workspace.rs`, `src/app/workspace_view.rs`) is the environment
 half: it resolves the Zephyr *installation* (`src/backend/zephyr/workspace.rs`) from
 configuration and nowhere else --- `chiptui.toml`'s `[zephyr] workspace`, then the user
@@ -46,13 +66,15 @@ the reflex `Enter` accepts the folder just entered. The accepted directory is va
 the *same* `install_check` the config goes through (`.west/` present, the manifest's
 checkout present) --- a failure keeps the picker open with the reason plus the
 getting-started link (`workspace::GETTING_STARTED`), and a configured-but-broken location
-turns the pane red with the same message. A validated pick is persisted
+turns the pane red with the same message (wrapped under the row --- the pane's info lines
+are not navigable). A validated pick is persisted
 (`settings::save_workspace`, a line-level merge that preserves every other key/section) to
 the user config, or to `chiptui.toml` when the project pins its own location --- so the
-config stays the single source of truth and later starts never re-ask. The pane also
-shows status read from files rather than subprocesses (`zephyr/VERSION`, `sdk_version`)
-and offers `west update` (confirm-gated --- it rewrites the shared workspace, through
-`Overlay::ConfirmWorkspace`) and `west sdk list` under `Capability::WorkspaceSync`; both
+config stays the single source of truth and later starts never re-ask. Below the separator
+it offers
+`west update` (confirm-gated --- it rewrites the shared workspace,
+through `Overlay::ConfirmWorkspace`) and `west sdk list` as buttons enabled once the
+installation resolves, under `Capability::WorkspaceSync`; both
 run through the build panel's one process slot into the Monitor tab. The pane also owns the
 environment's second persisted fact: the **projects folder** (`[zephyr] projects`, resolved by
 `src/backend/zephyr/projects.rs` from the same two config levels, or picked through the same
@@ -60,41 +82,46 @@ environment's second persisted fact: the **projects folder** (`[zephyr] projects
 `settings::save_projects`); accepting a folder chains straight into the project picker. Under
 `Capability::ProjectSelect` every project command (build/clean/rebuild/menuconfig/flash) passes a
 gate first (`App::require_buildable_project`): the build panel's root must hold build elements
-(`projects::is_buildable` --- a `CMakeLists.txt`, `west build`'s one hard requirement). A root that
+(`projects::is_buildable` --- a `CMakeLists.txt`, `west build`'s one hard requirement); the
+`Project path` checklist row doubles as the gate's explanation when the root does not. A root that
 passes (the cwd when it *is* a project) builds without ceremony; one that does not is refused with
 the reason and the flow opens --- folder picker when unconfigured, else `Overlay::ProjectPicker`
 (all immediate subdirectories listed, each marked buildable or not; accepting a directory without
 build elements keeps the picker open with the reason). A valid pick is session-only
 (`BuildPanel::set_project`: re-roots every command, resets build dir/cached board/last report,
-`ProjectOrigin::Picked` vs `WorkingDir` shown in the panel header) --- nothing is written. The
+`ProjectOrigin::Picked` vs `WorkingDir` shown on the workspace checklist row) --- nothing is written. The
 resolution feeds
 the build panel's commands via
 `BuildPanel::set_tool_path`/`set_tool_env`: the venv's `west` (`<workspace>/.venv/bin/west`,
 executed directly — a venv console script embeds its interpreter path, so no activation is
 needed) plus per-command env (`ZEPHYR_BASE` always, so an app outside the workspace still
 finds it; `ZEPHYR_SDK_INSTALL_DIR`/`PATH`/`VIRTUAL_ENV` when applicable —
-`process::Command::env`). The **build panel** (`src/build.rs`, `src/ui/build.rs`,
-`src/app/build_view.rs`): Build/Clean/Rebuild/Menuconfig as a navigable list quoting the
-literal commands, board from the build dir's CMake cache (`cached_board` — classic
-`<build-dir>/zephyr/CMakeCache.txt` first, then the sysbuild top-level
-`<build-dir>/CMakeCache.txt`; a hand-picked board is session state that no finished command
-demotes back to the cache), `Stop`
-while a command runs, `Clean` behind `Overlay::ConfirmBuild` (destructive capability), output
+`process::Command::env`). The **project panel** (`src/build.rs`, `src/ui/build.rs`,
+`src/app/build_view.rs`, titled "Project actions") is buttons only --- no checklist rows
+(the board answer comes from the build dir's CMake cache (`cached_board` ---
+`<build-dir>/zephyr/CMakeCache.txt`, falling
+back to the sysbuild top-level cache; a hand-picked board is session state no finished
+command demotes) or a hand pick, and gates
+Build/Clean/Rebuild/Menuconfig/Flash via
+`BuildPanel::lifecycle_ready`, the command state pinned to the pane's last line (skipped
+when the rows already fill the pane); `Stop`
+joins the stack as its first row while a command runs (starting a command lands
+the cursor on it), `Clean`
+behind `Overlay::ConfirmBuild` (destructive capability), output
 streaming into the Monitor tab (`MonitorSource::Build`). **Menuconfig** (`west build -t
 menuconfig`) is interactive ncurses, so it parks a `pending_command` that `main.rs` runs under
-`TerminalGuard::suspend` — the same hand-off as `$EDITOR`. **Build directories** are named
-(`west build -d`): `Overlay::BuildDirPicker` lists configured `build*` directories (those
-holding a `zephyr/CMakeCache.txt`) plus a typed new name; the board answer follows each
-directory's cache, a session pick outlives directory switches, and the default `build` stays
-implicit in commands. Commands come from the backend (`Backend::build_command`,
-`src/backend/zephyr/commands.rs`: `west build`[-`d`][-`b`]/`-t clean`/`--pristine=always`,
+`TerminalGuard::suspend` — the same hand-off as `$EDITOR`. The lifecycle always targets the
+conventional `build` directory inside the project (implicit in commands; the `BuildDirPicker`
+overlay and `set_build_dir` plumbing remain but no row offers them). Commands come from the
+backend (`Backend::build_command`,
+`src/backend/zephyr/commands.rs`: `west build`[-`b`]/`-t clean`/`--pristine=always`,
 `west update`, `west sdk list`), run with the project root as cwd — the UI never names `west`
-(workspace-scoped commands run in the workspace). The panel's `Board` action (under
+(workspace-scoped commands run in the workspace). The panel's `Board` checklist row (under
 `Capability::BoardSelect`) opens `Overlay::BoardPicker`: a
 filterable list over a background `west boards` fetch (`Backend::board_list_command`, parsed by
-`build::parse_boards`); a pick is session-only (`BoardOrigin::Picked` vs `Cache` — the header
+`build::parse_boards`); a pick is session-only (`BoardOrigin::Picked` vs `Cache` — the row
 says which), never written to the project. `Flash` (`west flash`, the board's own runner from
-`runner.yml` — never a hard-coded programmer) sits after Menuconfig under
+`runner.yml` — never a hard-coded programmer) sits last under
 `Capability::Flash`, always behind `Overlay::ConfirmBuild` (destructive); the dashboard's `x`
 routes a build-panel backend there instead of esptool's dialog, and the esptool-specific
 "Device info" pane now gates on `DeviceInfo`/`EraseFlash` so Zephyr gets an honest placeholder.

@@ -45,6 +45,17 @@ pub enum WorkspaceAction {
     /// validate-then-save path --- answered before any project command
     /// needs it (see [`crate::backend::Capability::ProjectSelect`]).
     Projects,
+    /// Chooses which *project* the lifecycle runs in (the build panel's
+    /// root): the picker lists the configured projects folder's
+    /// subdirectories, and the pick re-roots every command (session-only).
+    /// The build panel's answers are asked here --- beside the other
+    /// prerequisites --- and answered there. Under
+    /// [`crate::backend::Capability::ProjectSelect`].
+    Project,
+    /// Opens the board picker (the build panel's board answer, asked
+    /// beside the other prerequisites). Under
+    /// [`crate::backend::Capability::BoardSelect`].
+    Board,
 }
 
 pub struct WorkspacePanel {
@@ -134,23 +145,41 @@ impl WorkspacePanel {
         }
     }
 
-    /// Rows the action list shows: the workspace operations once a
-    /// location is resolved, and the choosers always --- they are both the
-    /// first-run questions and the way to change the answers later.
+    /// Rows the action list shows: the four checklist questions first (the
+    /// installation, the projects folder, the project, the board --- the
+    /// prerequisites in the order they are answered), then the workspace
+    /// operations as buttons that stay visible but dim until the
+    /// installation is resolved.
     pub fn actions(&self, caps: &crate::backend::Capabilities) -> Vec<WorkspaceAction> {
         if !caps.contains(Capability::WorkspaceSync) {
             return Vec::new();
         }
         let mut actions = Vec::new();
-        if self.resolved.is_some() {
-            actions.push(WorkspaceAction::Update);
-            actions.push(WorkspaceAction::SdkList);
-        }
         actions.push(WorkspaceAction::Choose);
         if caps.contains(Capability::ProjectSelect) {
             actions.push(WorkspaceAction::Projects);
+            actions.push(WorkspaceAction::Project);
         }
+        if caps.contains(Capability::BoardSelect) {
+            actions.push(WorkspaceAction::Board);
+        }
+        actions.push(WorkspaceAction::Update);
+        actions.push(WorkspaceAction::SdkList);
         actions
+    }
+
+    /// Whether `Enter` runs the action: the choosers always answer (they
+    /// are also how to *change* an answer later), while the operations need
+    /// a resolved installation --- a disabled button is dimmed, never
+    /// hidden, so the checklist state explains itself.
+    pub fn action_enabled(&self, action: WorkspaceAction) -> bool {
+        match action {
+            WorkspaceAction::Choose
+            | WorkspaceAction::Projects
+            | WorkspaceAction::Project
+            | WorkspaceAction::Board => true,
+            WorkspaceAction::Update | WorkspaceAction::SdkList => self.resolved.is_some(),
+        }
     }
 
     pub fn action_at(
@@ -288,35 +317,56 @@ mod tests {
     }
 
     #[test]
-    fn a_resolved_pane_lists_the_workspace_operations_and_the_choosers() {
+    fn the_checklist_questions_come_before_the_operation_buttons() {
         let panel = WorkspacePanel::new(Resolution::Single(workspace("/opt/myzephyr")), "");
         assert_eq!(panel.dir(), Some(&PathBuf::from("/opt/myzephyr")));
         assert_eq!(
             panel.actions(&zephyr_caps()),
             vec![
-                WorkspaceAction::Update,
-                WorkspaceAction::SdkList,
                 WorkspaceAction::Choose,
-                WorkspaceAction::Projects
+                WorkspaceAction::Projects,
+                WorkspaceAction::Project,
+                WorkspaceAction::Board,
+                WorkspaceAction::Update,
+                WorkspaceAction::SdkList
             ]
         );
+        for action in panel.actions(&zephyr_caps()) {
+            assert!(
+                panel.action_enabled(action),
+                "a resolved pane enables every action"
+            );
+        }
     }
 
     #[test]
-    fn an_unresolved_pane_offers_only_the_choosers() {
+    fn an_unresolved_pane_keeps_the_buttons_visible_but_disabled() {
         let not_configured = WorkspacePanel::new(Resolution::NotConfigured, "");
         assert_eq!(
             not_configured.actions(&zephyr_caps()),
-            vec![WorkspaceAction::Choose, WorkspaceAction::Projects]
+            vec![
+                WorkspaceAction::Choose,
+                WorkspaceAction::Projects,
+                WorkspaceAction::Project,
+                WorkspaceAction::Board,
+                WorkspaceAction::Update,
+                WorkspaceAction::SdkList
+            ]
         );
+        assert!(not_configured.action_enabled(WorkspaceAction::Choose));
+        assert!(not_configured.action_enabled(WorkspaceAction::Projects));
+        assert!(not_configured.action_enabled(WorkspaceAction::Project));
+        assert!(not_configured.action_enabled(WorkspaceAction::Board));
+        assert!(
+            !not_configured.action_enabled(WorkspaceAction::Update),
+            "west update has nothing to run against yet"
+        );
+        assert!(!not_configured.action_enabled(WorkspaceAction::SdkList));
 
         let invalid = WorkspacePanel::new(Resolution::Invalid("no .west/ …".to_string()), "");
         assert!(invalid.dir().is_none());
         assert!(invalid.invalid.as_deref().unwrap().contains(".west"));
-        assert_eq!(
-            invalid.actions(&zephyr_caps()),
-            vec![WorkspaceAction::Choose, WorkspaceAction::Projects]
-        );
+        assert!(!invalid.action_enabled(WorkspaceAction::Update));
     }
 
     #[test]

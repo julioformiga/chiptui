@@ -104,7 +104,7 @@ fn the_panel_appears_and_is_a_focus_stop_for_a_build_backend() {
     app.handle(key(KeyCode::Tab));
     assert_eq!(app.focus, Focus::Logs);
 
-    // And it renders, quoting board and commands.
+    // And it renders: the checklist with its answers, the buttons below.
     app.focus = Focus::Build;
     let frame = render(&mut app, 100, 30);
     assert!(frame.contains("Build"), "missing panel:\n{frame}");
@@ -113,12 +113,12 @@ fn the_panel_appears_and_is_a_focus_stop_for_a_build_backend() {
         "cached board not shown:\n{frame}"
     );
     assert!(
-        frame.contains("west build -t clean"),
-        "literal commands not listed:\n{frame}"
+        frame.contains("× Clean"),
+        "the lifecycle buttons must show:\n{frame}"
     );
     assert!(
         frame.contains("Board"),
-        "the board action must be listed:\n{frame}"
+        "the board checklist row must show:\n{frame}"
     );
 }
 
@@ -137,6 +137,7 @@ fn enter_builds_and_streams_into_the_monitor_tab() {
     let mut app = app_with_west("run", "west");
     app.focus = Focus::Build;
 
+    // The Build button is the panel's first row.
     app.handle(key(KeyCode::Enter));
 
     assert!(app.build.as_ref().unwrap().is_busy());
@@ -185,8 +186,8 @@ fn clean_asks_before_running() {
     let mut app = app_with_west("clean", "west");
     app.focus = Focus::Build;
 
-    app.handle(key(KeyCode::Down)); // Clean
-    app.handle(key(KeyCode::Enter));
+    app.handle(key(KeyCode::Down)); // Build
+    app.handle(key(KeyCode::Enter)); // Clean
 
     // Destructive capability (Capability::Clean): a confirm quoting the
     // literal command, defaulting to No.
@@ -219,7 +220,9 @@ fn clean_asks_before_running() {
     // Declining leaves nothing running.
     let mut app2 = app_with_west("clean-decline", "west");
     app2.focus = Focus::Build;
-    app2.handle(key(KeyCode::Down));
+    for _ in 0..3 {
+        app2.handle(key(KeyCode::Down));
+    }
     app2.handle(key(KeyCode::Enter));
     app2.handle(key(KeyCode::Esc));
     assert!(!app2.build.as_ref().unwrap().is_busy());
@@ -230,8 +233,10 @@ fn rebuild_is_pristine_and_pins_the_cached_board() {
     let mut app = app_with_west("rebuild", "west");
     app.focus = Focus::Build;
 
-    app.handle(key(KeyCode::Down));
-    app.handle(key(KeyCode::Down)); // Rebuild
+    for _ in 0..2 {
+        // Build, Clean
+        app.handle(key(KeyCode::Down));
+    } // Rebuild
     app.handle(key(KeyCode::Enter));
 
     assert!(
@@ -261,6 +266,7 @@ fn stop_cancels_the_running_command() {
     let mut app = app_with_west("stop", "slow");
     app.focus = Focus::Build;
 
+    // A build command runs from the panel's first row.
     app.handle(key(KeyCode::Enter));
     assert!(app.build.as_ref().unwrap().is_busy());
 
@@ -290,6 +296,7 @@ fn a_failed_command_reports_and_keeps_the_panel_usable() {
     let mut app = app_with_west("fail", "noisy");
     app.focus = Focus::Build;
 
+    // A build command runs from the panel's first row.
     app.handle(key(KeyCode::Enter));
     let finished = pump_until(
         &mut app,
@@ -333,9 +340,10 @@ fn the_board_picker_fetches_filters_and_picks_for_the_session() {
     app.build.as_mut().unwrap().set_tool_path(fake("west"));
     app.focus = Focus::Build;
 
-    // The Board action sits after the three lifecycle entries, Menuconfig
-    // and Flash.
-    for _ in 0..5 {
+    // The Board checklist row lives in the workspace pane now, below the
+    // other three questions.
+    app.focus = Focus::Workspace;
+    for _ in 0..3 {
         app.handle(key(KeyCode::Down));
     }
     app.handle(key(KeyCode::Enter));
@@ -422,11 +430,11 @@ fn the_board_picker_fetches_filters_and_picks_for_the_session() {
 fn a_boardless_filter_match_enter_picks_nothing_and_esc_changes_nothing() {
     let (mut app, _root) = zephyr_app("picker-esc", Some("nrf52840dk/nrf52840"));
     app.build.as_mut().unwrap().set_tool_path(fake("west"));
-    app.focus = Focus::Build;
+    app.focus = Focus::Workspace;
 
-    for _ in 0..5 {
+    for _ in 0..3 {
         app.handle(key(KeyCode::Down));
-    }
+    } // the Board checklist row
     app.handle(key(KeyCode::Enter));
     assert!(pump_until(
         &mut app,
@@ -454,7 +462,8 @@ fn a_boardless_filter_match_enter_picks_nothing_and_esc_changes_nothing() {
     );
 
     // …and Esc leaves the cache answer untouched either way.
-    for _ in 0..5 {
+    app.focus = Focus::Workspace;
+    for _ in 0..3 {
         app.handle(key(KeyCode::Down));
     }
     app.handle(key(KeyCode::Enter));
@@ -474,11 +483,11 @@ fn a_missing_west_explains_itself_in_the_picker() {
         .as_mut()
         .unwrap()
         .set_tool_path("/nonexistent/west");
-    app.focus = Focus::Build;
+    app.focus = Focus::Workspace;
 
-    for _ in 0..5 {
+    for _ in 0..3 {
         app.handle(key(KeyCode::Down));
-    }
+    } // the Board checklist row
     app.handle(key(KeyCode::Enter));
 
     let failed = pump_until(
@@ -504,7 +513,7 @@ fn flash_is_listed_confirms_and_runs_through_west() {
     let mut app = app_with_west("flash", "west");
     app.focus = Focus::Build;
 
-    // Flash sits after Menuconfig.
+    // Flash sits last, after Menuconfig.
     for _ in 0..4 {
         app.handle(key(KeyCode::Down));
     }
@@ -643,15 +652,25 @@ fn the_workspace_pane_resolves_from_project_config_and_runs_update() {
     let frame = render(&mut app, 100, 30);
     assert!(frame.contains("Workspace"), "the pane renders:\n{frame}");
     assert!(frame.contains("zephyrproject"), "the path shows:\n{frame}");
-    assert!(frame.contains("chiptui.toml"), "the origin shows:\n{frame}");
-    assert!(frame.contains("4.1"), "the Zephyr version shows:\n{frame}");
     assert!(
-        frame.contains("zephyr-sdk-0.17.1"),
-        "the configured toolchain and its version show:\n{frame}"
+        frame.contains("zephyr 4.1"),
+        "the Project pane's versions field must report the environment:\n{frame}"
+    );
+    assert!(
+        frame.contains("versions:"),
+        "the versions field must be named:\n{frame}"
+    );
+    assert!(
+        !frame.contains("source:"),
+        "the detection source no longer has a field:\n{frame}"
     );
 
-    // Enter on Update confirms first (it rewrites the shared workspace)…
+    // Enter on the Update Zephyr button confirms first (it rewrites the
+    // shared workspace)… four rows past the checklist.
     app.focus = Focus::Workspace;
+    for _ in 0..4 {
+        app.handle(key(KeyCode::Down));
+    }
     app.handle(key(KeyCode::Enter));
     assert!(matches!(
         app.overlay,
@@ -682,7 +701,7 @@ fn the_workspace_pane_resolves_from_project_config_and_runs_update() {
 }
 
 #[test]
-fn an_unconfigured_pane_offers_the_chooser_and_documents_the_config() {
+fn an_unconfigured_pane_shows_the_open_checklist_and_dim_buttons() {
     let (mut app, _root) = zephyr_app("ws-missing", None);
 
     let panel = app.workspace.as_ref().unwrap();
@@ -692,29 +711,33 @@ fn an_unconfigured_pane_offers_the_chooser_and_documents_the_config() {
         panel.actions(&app.manager.capabilities()),
         vec![
             chiptui::workspace::WorkspaceAction::Choose,
-            chiptui::workspace::WorkspaceAction::Projects
+            chiptui::workspace::WorkspaceAction::Projects,
+            chiptui::workspace::WorkspaceAction::Project,
+            chiptui::workspace::WorkspaceAction::Board,
+            chiptui::workspace::WorkspaceAction::Update,
+            chiptui::workspace::WorkspaceAction::SdkList
         ],
-        "only the two choosers make sense with nothing configured"
+        "the checklist questions first, then the (disabled) buttons"
+    );
+    assert!(
+        !panel.action_enabled(chiptui::workspace::WorkspaceAction::Update),
+        "west update has nothing to run against yet"
     );
 
+    // The checklist asks, the buttons stay visible but dim --- the state
+    // explains itself without a separate guidance block.
     let frame = render(&mut app, 100, 30);
     assert!(
-        frame.contains("no location configured"),
-        "the guidance must show:\n{frame}"
+        frame.contains("□ Zephyr Base"),
+        "the open question must show:\n{frame}"
     );
     assert!(
-        frame.contains("config.toml"),
-        "the config path must be named:\n{frame}"
-    );
-    // The template is the pane's own documentation: every [zephyr] key
-    // shows, so the sdk location is not spec-only knowledge.
-    assert!(
-        frame.contains("sdk ="),
-        "the sdk key must be offered:\n{frame}"
+        frame.contains("Projects Base"),
+        "the second question must show:\n{frame}"
     );
     assert!(
-        frame.contains("west ="),
-        "the west override must be offered:\n{frame}"
+        frame.contains("↻ Update Zephyr"),
+        "the button must stay visible:\n{frame}"
     );
 }
 
@@ -848,7 +871,7 @@ fn menuconfig_hands_the_terminal_over_instead_of_piping() {
     let mut app = app_with_west("menuconfig", "west");
     app.focus = Focus::Build;
 
-    // Menuconfig sits after the lifecycle entries.
+    // Menuconfig sits after the lifecycle buttons.
     for _ in 0..3 {
         app.handle(key(KeyCode::Down));
     }
@@ -875,13 +898,13 @@ fn the_build_dir_picker_switches_the_lifecycle_target() {
     .unwrap();
     app.focus = Focus::Build;
 
-    // The Dir action closes the list (one row further down since Project
-    // joined it).
-    for _ in 0..7 {
-        app.handle(key(KeyCode::Down));
-    }
-    app.handle(key(KeyCode::Enter));
-    assert!(matches!(app.overlay, Some(Overlay::BuildDirPicker { .. })));
+    // The panel's list no longer offers a Dir row (the lifecycle targets
+    // the conventional `build` inside the project), but the picker and its
+    // plumbing remain, reachable here directly for the switch itself.
+    app.overlay = Some(Overlay::BuildDirPicker {
+        input: String::new(),
+        selected: 0,
+    });
 
     // Filter to the configured directory and pick it.
     app.handle(key(KeyCode::Char('t')));
