@@ -21,7 +21,7 @@ use crate::backend::Capability;
 use crate::flash::{OptionsField, RunState};
 use crate::logs::wrap_rows;
 use crate::ui::flash::{field_label, field_value};
-use crate::ui::{content_style, dashboard_focused, draw_scrollbar, pane_block};
+use crate::ui::{content_style, dashboard_focused, draw_scrollbar, pane_border};
 
 /// Chip + offset, always meaningful for `WriteFlash`/`VerifyFlash` on the
 /// recap above the console --- the options screen's full field list
@@ -40,23 +40,14 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
 }
 
 /// Streamed build-command output (`west build`), mirroring the flash
-/// output's shape: the panel's own header carries board/state, so this pane
-/// is just the console.
+/// output's shape: the panel's own header carries board/state, and the tab
+/// strip carries the live status (see `panels::monitor_status`), so this
+/// pane is just the console.
 fn draw_build_output(frame: &mut Frame, area: Rect, app: &mut App, focused: bool) {
-    let (title, doc): (String, Vec<Line>) = {
+    let doc: Vec<Line> = {
         let Some(panel) = app.build.as_ref() else {
             draw_device_monitor(frame, area, app, focused);
             return;
-        };
-
-        let status = if panel.is_busy() {
-            " (running…)"
-        } else if panel.last.as_ref().is_some_and(|report| report.ok) {
-            " (done)"
-        } else if panel.last.is_some() {
-            " (failed)"
-        } else {
-            ""
         };
 
         let mut doc: Vec<Line> = panel
@@ -67,10 +58,10 @@ fn draw_build_output(frame: &mut Frame, area: Rect, app: &mut App, focused: bool
         if doc.is_empty() {
             doc.push(Line::from("(no output yet)".dim()));
         }
-        (format!("Build{status}"), doc)
+        doc
     };
 
-    let block = console_block(&title, focused);
+    let block = console_block(focused);
     let layout = console_layout(&block, area);
     render_console(frame, area, block, layout, &doc, app);
 }
@@ -78,7 +69,7 @@ fn draw_build_output(frame: &mut Frame, area: Rect, app: &mut App, focused: bool
 /// The live device serial/REPL session, or its placeholders.
 fn draw_device_monitor(frame: &mut Frame, area: Rect, app: &mut App, focused: bool) {
     if app.device_monitor_process.is_some() || !app.device_monitor_output.is_empty() {
-        let block = console_block("Monitor", focused);
+        let block = console_block(focused);
         let layout = console_layout(&block, area);
 
         let mut console: Vec<Line> = app
@@ -104,7 +95,7 @@ fn draw_device_monitor(frame: &mut Frame, area: Rect, app: &mut App, focused: bo
         return;
     }
 
-    let block = pane_block("Monitor", focused);
+    let block = pane_border(focused);
 
     let message = if app.manager.capabilities().contains(Capability::Monitor) {
         "not connected — press 'm' to start".to_string()
@@ -133,22 +124,17 @@ fn draw_flash_output(frame: &mut Frame, area: Rect, app: &mut App, focused: bool
     };
 
     let action = flash.selected_action();
-    let status = match &flash.state {
-        RunState::Idle => "",
-        RunState::Running => " (running…)",
-        RunState::Succeeded => " (done)",
-        RunState::Failed(_) => " (failed)",
-    };
 
     // `WriteFlash`/`VerifyFlash` get a short read-only recap of what is
     // actually running above the console --- `SPEC.md` §15's "never hide
     // what is running behind a paraphrase" applies here too, not just to the
     // confirmation overlay. Other actions have nothing to recap, so the
-    // block title carries the status instead and the console gets the whole
-    // pane. The recap scrolls with the console (one document), so the
-    // scrollbar stays honest about where the view is.
+    // console gets the whole pane. The recap scrolls with the console (one
+    // document), so the scrollbar stays honest about where the view is; the
+    // live status icon and title ride on the tab strip instead
+    // (`panels::monitor_status`).
     let (block, mut doc) = if action.needs_firmware() {
-        let block = console_block(action.label(), focused);
+        let block = console_block(focused);
         let rule = "─".repeat(block.inner(area).width as usize);
 
         let mut lines: Vec<Line> = RECAP_FIELDS
@@ -167,13 +153,10 @@ fn draw_flash_output(frame: &mut Frame, area: Rect, app: &mut App, focused: bool
             ]));
         }
         lines.push(Line::from(rule.dim()));
-        lines.push(Line::from(format!("console{status}").dim()));
+        lines.push(Line::from("console".dim()));
         (block, lines)
     } else {
-        (
-            console_block(&format!("Monitor{status}"), focused),
-            Vec::new(),
-        )
+        (console_block(focused), Vec::new())
     };
     let layout = console_layout(&block, area);
 
@@ -199,20 +182,7 @@ fn draw_flash_output(frame: &mut Frame, area: Rect, app: &mut App, focused: bool
 
 /// Streamed output of a `mpremote run` session, one timestamped line per row.
 fn draw_run_output(frame: &mut Frame, area: Rect, app: &mut App, focused: bool) {
-    let script = app
-        .run_script
-        .as_ref()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|| "script".to_string());
-
-    let status = match app.run_state {
-        crate::app::RunState::Idle => "",
-        crate::app::RunState::Running => " (running…)",
-        crate::app::RunState::Finished => " (done)",
-    };
-
-    let title = format!("Run: {script}{status}");
-    let block = console_block(&title, focused);
+    let block = console_block(focused);
     let layout = console_layout(&block, area);
 
     let mut lines: Vec<Line> = app
@@ -241,12 +211,12 @@ fn draw_run_output(frame: &mut Frame, area: Rect, app: &mut App, focused: bool) 
     render_console(frame, area, block, layout, &lines, app);
 }
 
-/// A console pane's block: like [`pane_block`], but with the rightmost
-/// content column reserved for the scrollbar --- always, so wrapped lines
-/// do not reflow the moment the console outgrows the pane (the same rule the
-/// Log pane follows).
-fn console_block(title: &str, focused: bool) -> Block<'static> {
-    pane_block(title, focused).padding(Padding::right(1))
+/// A console pane's block: like [`pane_border`] (the Log/Monitor tab strip
+/// owns the border row), but with the rightmost content column reserved for
+/// the scrollbar --- always, so wrapped lines do not reflow the moment the
+/// console outgrows the pane (the same rule the Log pane follows).
+fn console_block(focused: bool) -> Block<'static> {
+    pane_border(focused).padding(Padding::right(1))
 }
 
 /// The pane geometry every console renderer needs: the inner area *with* the

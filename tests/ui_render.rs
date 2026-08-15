@@ -419,6 +419,10 @@ fn the_monitor_tab_scrolls_back_through_its_output() {
         top.contains("monitor line 00"),
         "Home must reach the oldest output:\n{top}"
     );
+    assert!(
+        top.contains('\u{2191}'),
+        "a scrolled monitor must carry the lines-below indicator:\n{top}"
+    );
 
     // New output arriving while scrolled must not move the view.
     app.device_monitor_output
@@ -434,5 +438,109 @@ fn the_monitor_tab_scrolls_back_through_its_output() {
     assert!(
         bottom.contains("monitor line 60"),
         "End must re-pin the tail:\n{bottom}"
+    );
+}
+
+/// A Zephyr app with deterministic serial/home dirs, so the render shows the
+/// workspace and build panes instead of a device picker.
+fn zephyr_app() -> App {
+    let mut app = app_with_backend(BackendKind::Zephyr);
+    let root = std::env::temp_dir().join(format!("chiptui-render-tabs-{}", std::process::id()));
+    std::fs::create_dir_all(root.join("dev")).unwrap();
+    std::fs::create_dir_all(root.join("home")).unwrap();
+    app.set_serial_dir(root.join("dev"));
+    app.set_home_dir(root.join("home"));
+    app.maybe_scan_devices();
+    app
+}
+
+#[test]
+fn the_log_and_monitor_tabs_live_on_the_panes_border_row() {
+    // The tab strip is not a row of its own anymore: like the Ratatui `Tabs`
+    // example it sits on the pane's top border, separated by the standard
+    // divider, and the pane gains the row as content.
+    let mut app = zephyr_app();
+    let frame = render(&mut app, 100, 30);
+    assert!(
+        frame.contains("Log • Monitor"),
+        "the tabs must share the border row with the dot divider:\n{frame}"
+    );
+
+    // Switching tabs highlights the other title on the same border.
+    app.focus = Focus::Logs;
+    app.handle(key(KeyCode::Right));
+    assert_eq!(app.log_tab, LogTab::Monitor);
+}
+
+#[test]
+fn the_monitor_tab_shows_the_running_command_with_a_spinner() {
+    // While the build panel's command runs (build, clean, west update, SDK
+    // list --- one slot), the Monitor tab carries its label and an animated
+    // spinner, visible from the Log tab too.
+    let mut app = zephyr_app();
+    let command = chiptui::process::Command::new(format!(
+        "{}/tests/fixtures/bin/slow",
+        env!("CARGO_MANIFEST_DIR")
+    ));
+    let started = app
+        .build
+        .as_mut()
+        .expect("the build panel exists for a build backend")
+        .start("Build", false, command, &mut app.processes);
+    assert!(started, "the panel must accept the command");
+    app.focus = Focus::Logs;
+    app.log_tab = LogTab::Monitor;
+    app.set_monitor_source(chiptui::app::MonitorSource::Build);
+
+    let frame = render(&mut app, 100, 30);
+    assert!(
+        frame.contains("⠋ Build ("),
+        "a running command must show its label, spinner and row count:\n{frame}"
+    );
+    assert!(
+        !frame.contains('\u{2191}'),
+        "no scrolled indicator while tailing:\n{frame}"
+    );
+}
+
+#[test]
+fn the_monitor_tab_marks_the_last_finished_command() {
+    // A finished command leaves a green check behind; a failed one a red
+    // cross --- both with the command's label, so the Log tab answers
+    // "what did the last build do" without switching.
+    let mut app = zephyr_app();
+    app.focus = Focus::Logs;
+    app.log_tab = LogTab::Monitor;
+    app.set_monitor_source(chiptui::app::MonitorSource::Build);
+    let report = |ok| chiptui::build::BuildReport {
+        what: "Build",
+        ok,
+        duration: std::time::Duration::from_secs(3),
+        at: time::OffsetDateTime::now_utc(),
+    };
+    app.build.as_mut().unwrap().last = Some(report(true));
+    let ok = render(&mut app, 100, 30);
+    assert!(
+        ok.contains("✓ Build ("),
+        "a finished command must be checked green with its row count:\n{ok}"
+    );
+
+    app.build.as_mut().unwrap().last = Some(report(false));
+    let failed = render(&mut app, 100, 30);
+    assert!(
+        failed.contains("✗ Build ("),
+        "a failed command must be crossed red:\n{failed}"
+    );
+
+    // Before any command ran, the title stands alone with the row count.
+    app.build.as_mut().unwrap().last = None;
+    let bare = render(&mut app, 100, 30);
+    assert!(
+        bare.contains("Build ("),
+        "the source title still names the feed:\n{bare}"
+    );
+    assert!(
+        !bare.contains("✓ Build") && !bare.contains("✗ Build"),
+        "no verdict without a command:\n{bare}"
     );
 }

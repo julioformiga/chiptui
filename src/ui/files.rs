@@ -18,10 +18,7 @@ use crate::backend::Capability;
 use crate::browser::{Browser, LocalTotal, PaneState};
 use crate::device::{DiscoveryState, ScriptState};
 use crate::files::SyncStatus;
-use crate::ui::{content_style, dashboard_focused, pane_block};
-
-/// Frames of the "waiting on the device" spinner.
-const SPINNER: [&str; 4] = ["⠋", "⠙", "⠹", "⠸"];
+use crate::ui::{SPINNER, content_style, dashboard_focused, pane_block};
 
 pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
     let Some(browser) = &app.browser else {

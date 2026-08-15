@@ -328,6 +328,12 @@ impl BuildPanel {
         self.running.is_some()
     }
 
+    /// The running command's label ("Build", "Clean", "West update", ...),
+    /// for the Monitor tab's live status.
+    pub fn running_label(&self) -> Option<&'static str> {
+        self.running.as_ref().map(|running| running.what)
+    }
+
     /// Rows the action list shows --- see [`BuildAction::list`].
     pub fn actions(&self, caps: &crate::backend::Capabilities) -> Vec<BuildAction> {
         BuildAction::list(caps, self.is_busy())

@@ -904,8 +904,7 @@ fn draw_firmware_picker(frame: &mut Frame, area: Rect, app: &App, selected: usiz
 /// letting the user discover it from a changed file).
 fn draw_board_picker(frame: &mut Frame, area: Rect, app: &App, input: &str, selected: usize) {
     use crate::build::BoardsState;
-
-    const SPINNER: [&str; 4] = ["⠋", "⠙", "⠹", "⠸"];
+    use crate::ui::SPINNER;
 
     // Fixed height: the list scrolls inside it (ListState keeps the
     // selection visible), so the modal does not jump around as the filter

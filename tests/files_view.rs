@@ -1441,10 +1441,7 @@ fn the_run_tab_renders_timestamps_on_each_line() {
         frame.contains("world"),
         "missing second output line:\n{frame}"
     );
-    assert!(
-        frame.contains("(done)"),
-        "missing finished status:\n{frame}"
-    );
+    assert!(frame.contains("✓"), "missing finished status:\n{frame}");
 }
 
 #[test]

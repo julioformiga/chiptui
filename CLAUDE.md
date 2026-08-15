@@ -204,7 +204,17 @@ These are the decisions that shape most code, and getting them wrong causes wide
   entries. The Monitor tab scrolls the same way (`App::monitor_scroll`), across its four
   consoles — anchored to the *top* of the document so live output never shifts a scrolled view,
   gutter reserved via block padding, one `render_console`/`window_console` path doing the row
-  windowing. Rendering is otherwise a pure function of `App`.
+  windowing. Row 3 is one bordered pane whose top border carries the Log/Monitor tab strip
+  (the Ratatui `Tabs` example pattern, `panels::draw_log_tabs`, drawn *after* the pane so it sits on
+  the border; `symbols::DOT` divider, the active tab underlined and bold --- cyan when focused,
+  default color otherwise --- vs the dim inactive one). At the
+  strip's right edge rides the active tab's status (a leading space keeps the dashes off it): for
+  Monitor, the source's title with a live icon
+  and the output's row count — an animated spinner (`ui::SPINNER`, keyed off `App::ticks`) while a
+  command runs, a green ✓ (red ✗ on failure) for the last finished one — plus `↑N` (rows below the
+  view) once the user leaves the tail, mirroring Log's indicator; for Log, the entry count
+  (plus `↑N` while scrolled). The panes themselves are untitled (`pane_border`). Rendering is
+  otherwise a pure function of `App`.
 - **Processes** (`src/process/`): `spawn` returns immediately; a supervisor thread plus two reader
   threads push `ProcessEvent`s into one channel that `main.rs` drains each frame. Two non-obvious
   rules live here. *Killing reaches only the direct child* — a grandchild keeps the pipes open, so

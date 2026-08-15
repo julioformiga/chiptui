@@ -27,6 +27,11 @@ use crate::app::{App, Focus, LogTab, View};
 const MIN_WIDTH: u16 = 60;
 const MIN_HEIGHT: u16 = 14;
 
+/// Frames of the shared "something is running" spinner, animated off
+/// [`App::ticks`] (one frame per tick). Used by the file panes' waits, the
+/// board picker's fetch, and the Monitor tab's live status.
+pub(crate) const SPINNER: [&str; 4] = ["⠋", "⠙", "⠹", "⠸"];
+
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
 
@@ -86,8 +91,9 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
 
 /// Row 1: Project | Device, split evenly. Row 2: the dual-pane file browser
 /// when the backend has `Capability::Filesystem`, else a full-width
-/// placeholder. Row 3: a one-line Log/Monitor tab strip over the tab's body,
-/// full width (`SPEC.md` §11).
+/// placeholder. Row 3: one bordered pane whose top border carries the
+/// Log/Monitor tab strip over the selected tab's body, full width
+/// (`SPEC.md` §11).
 ///
 /// Row 1's height adapts to its content: the taller of the two info panes
 /// plus borders. Both are informational (never focused), and `memory:` shares
@@ -122,13 +128,14 @@ fn draw_dashboard(frame: &mut Frame, body: Rect, app: &mut App) {
         panels::draw_no_filesystem(frame, row2, app);
     }
 
-    let [tabs, tab_body] =
-        Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(row3);
-    panels::draw_log_tabs(frame, tabs, app);
+    // Row 3 is one bordered pane for the whole width: the Log/Monitor tab
+    // strip lives on the pane's own top border (`SPEC.md` §11), like the
+    // Ratatui `Tabs` example, and the selected tab's body fills the pane.
     match app.log_tab {
-        LogTab::Log => panels::draw_logs(frame, tab_body, app),
-        LogTab::Monitor => monitor::draw(frame, tab_body, app),
+        LogTab::Log => panels::draw_logs(frame, row3, app),
+        LogTab::Monitor => monitor::draw(frame, row3, app),
     }
+    panels::draw_log_tabs(frame, row3, app);
 }
 
 fn draw_too_small(frame: &mut Frame, area: Rect) {
@@ -211,21 +218,30 @@ fn content_style(focused: bool) -> Style {
 
 /// A bordered block that shows whether it holds focus.
 fn pane_block(title: &str, focused: bool) -> Block<'static> {
+    pane_border(focused).title(title_span(title, focused))
+}
+
+/// An untitled bordered block that shows whether it holds focus: row 3's
+/// pane, whose border row belongs to the Log/Monitor tab strip (with the
+/// active tab's status at its right --- see `panels::draw_log_tabs`).
+pub(crate) fn pane_border(focused: bool) -> Block<'static> {
     let border = if focused {
         Style::new().fg(Color::Cyan)
     } else {
         Style::new().fg(Color::DarkGray)
     };
+    Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(border)
+}
+
+fn title_span(title: &str, focused: bool) -> Line<'static> {
     let title_style = if focused {
         Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD)
     } else {
         Style::new().dim()
     };
-
-    Block::bordered()
-        .border_type(BorderType::Rounded)
-        .border_style(border)
-        .title(Span::styled(format!(" {title} "), title_style))
+    Line::from(Span::styled(format!(" {title} "), title_style))
 }
 
 /// The discreet one-column scrollbar shared by the Log and Monitor panes:

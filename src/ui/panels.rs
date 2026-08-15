@@ -1,16 +1,18 @@
 //! Dashboard panes: project, device, the no-filesystem placeholder, and log.
 
 use ratatui::Frame;
-use ratatui::layout::Rect;
+use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
+use ratatui::symbols;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Tabs, Wrap};
 
-use crate::app::{App, Focus, LogTab};
+use crate::app::{App, Focus, LogTab, MonitorSource};
 use crate::backend::Capability;
+use crate::flash::RunState;
 use crate::logs::{Level, PREFIX_WIDTH};
 use crate::project::{DetectionOutcome, DetectionSource};
-use crate::ui::{content_style, dashboard_focused, pane_block};
+use crate::ui::{SPINNER, content_style, dashboard_focused, pane_block, pane_border};
 
 /// Project identity: where it is, what it is, and how sure we are.
 ///
@@ -239,14 +241,10 @@ pub fn draw_no_filesystem(frame: &mut Frame, area: Rect, app: &App) {
 /// stamp, so a wrapped paragraph stays visually tied to its timestamp
 /// instead of overflowing or being cut off at the terminal edge.
 pub fn draw_logs(frame: &mut Frame, area: Rect, app: &mut App) {
-    let following = app.logs.is_following();
-    let title = if following {
-        format!("Log ({})", app.logs.len())
-    } else {
-        format!("Log ({}) ↑{}", app.logs.len(), app.logs.scroll())
-    };
+    // The tab strip owns the border row (see `draw_log_tabs`), so the pane
+    // itself carries no title.
     let focused = dashboard_focused(app, Focus::Logs);
-    let block = pane_block(&title, focused);
+    let block = pane_border(focused);
 
     // Publish the usable height so page-scrolling matches the rendered view,
     // and the wrapping width so clamping matches too. One column is reserved
@@ -319,36 +317,192 @@ fn draw_log_scrollbar(frame: &mut Frame, inner: Rect, app: &App) {
     crate::ui::draw_scrollbar(frame, inner, total, viewport, top);
 }
 
-/// Row 3's tab strip: `Log` / `Monitor`. `Monitor` is omitted entirely when
-/// the backend has no `Capability::Monitor` --- capability-gated, never
-/// backend-kind-gated (`AGENTS.md` §3).
-pub fn draw_log_tabs(frame: &mut Frame, area: Rect, app: &App) {
+/// Row 3's tab strip, drawn over the pane's own top border like the Ratatui
+/// `Tabs` example: ` Log • Monitor `. `Monitor` is omitted entirely when the
+/// backend has no `Capability::Monitor` --- capability-gated, never
+/// backend-kind-gated (`AGENTS.md` §3). At the strip's right edge rides the
+/// active tab's status: for Monitor, the source's title, a live icon (an
+/// animated spinner while a command runs, a green check --- red cross on
+/// failure --- for the last finished one) and the output's row count; for
+/// Log, the entry count and, while scrolled, how far up the view sits.
+pub fn draw_log_tabs(frame: &mut Frame, pane: Rect, app: &App) {
+    // The strip spans the border row between the corners; drawn after the
+    // pane's own widgets so it sits on top of the border.
+    let strip = Rect {
+        x: pane.x.saturating_add(1),
+        y: pane.y,
+        width: pane.width.saturating_sub(2),
+        height: 1,
+    };
+    if strip.width == 0 {
+        return;
+    }
+
     let focused = dashboard_focused(app, Focus::Logs);
     let has_monitor = app.manager.capabilities().contains(Capability::Monitor);
 
-    let mut titles = vec![" Log "];
-    if has_monitor {
-        titles.push(" Monitor ");
-    }
+    // The active tab reads brighter than the dim inactive one even without
+    // focus, and like every focused pane goes cyan while Logs holds focus;
+    // the underline makes the selection unmistakable either way (a
+    // background highlight would vanish against some color schemes when the
+    // pane is unfocused).
+    let active_style = if focused {
+        Style::new()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+    } else {
+        Style::new().add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+    };
+    let inactive_style = Style::new().dim();
+
+    let monitor = vec![Span::styled(
+        "Monitor",
+        if app.log_tab == LogTab::Monitor {
+            active_style
+        } else {
+            inactive_style
+        },
+    )];
+
+    let titles = vec![
+        Line::from(Span::styled(
+            "Log",
+            if app.log_tab == LogTab::Log {
+                active_style
+            } else {
+                inactive_style
+            },
+        )),
+        Line::from(monitor),
+    ];
 
     let selected_index = match app.log_tab {
-        LogTab::Log => 0,
-        LogTab::Monitor => 1,
+        LogTab::Log => Some(0),
+        LogTab::Monitor => has_monitor.then_some(1),
     };
 
-    let highlight_style = if focused {
-        Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD)
-    } else {
-        Style::new().dim().add_modifier(Modifier::BOLD)
-    };
-
+    // The selection style lives on the titles themselves; the highlight
+    // style adds nothing.
     let tabs = Tabs::new(titles)
         .select(selected_index)
-        .style(Style::new().dim())
-        .highlight_style(highlight_style)
-        .divider(" ");
+        .style(inactive_style)
+        .highlight_style(Style::new())
+        .padding(" ", " ")
+        .divider(symbols::DOT);
 
-    frame.render_widget(tabs, area);
+    frame.render_widget(tabs, strip);
+    frame.render_widget(
+        Paragraph::new(tab_status(app)).alignment(Alignment::Right),
+        strip,
+    );
+}
+
+/// The active tab's status, drawn at the strip's right edge. A leading
+/// space keeps the pane's border dashes from touching it.
+fn tab_status(app: &App) -> Line<'static> {
+    match app.log_tab {
+        LogTab::Log => {
+            let mut text = format!(" Log ({})", app.logs.total_lines());
+            if !app.logs.is_following() {
+                text.push_str(&format!(" \u{2191}{}", app.logs.scroll()));
+            }
+            Line::from(text).dim()
+        }
+        LogTab::Monitor => monitor_status(app),
+    }
+}
+
+/// The Monitor tab's status: the source's title with its live icon and the
+/// output's row count (`App::monitor_view.rows`, published by the console's
+/// renderer --- the strip draws after it, so the count is fresh).
+fn monitor_status(app: &App) -> Line<'static> {
+    let spinner = || {
+        Some((
+            SPINNER[(app.ticks as usize) % SPINNER.len()],
+            Style::new().fg(Color::Yellow),
+        ))
+    };
+    let check = || ("\u{2713}", Style::new().fg(Color::Green));
+    let cross = || ("\u{2717}", Style::new().fg(Color::Red));
+
+    let (icon, title): (Option<(&str, Style)>, String) = match app.monitor_source {
+        MonitorSource::Build => match app.build.as_ref() {
+            Some(panel) => {
+                if let Some(label) = panel.running_label() {
+                    (spinner(), label.to_string())
+                } else if let Some(report) = panel.last.as_ref() {
+                    let icon = if report.ok { check() } else { cross() };
+                    (Some(icon), report.what.to_string())
+                } else {
+                    (None, "Build".to_string())
+                }
+            }
+            None => (None, "Monitor".to_string()),
+        },
+        MonitorSource::Flash => match app.flash.as_ref() {
+            Some(flash) => {
+                let icon = match &flash.state {
+                    RunState::Running => spinner(),
+                    RunState::Succeeded => Some(check()),
+                    RunState::Failed(_) => Some(cross()),
+                    RunState::Idle => None,
+                };
+                let action = flash.selected_action();
+                let title = if action.needs_firmware() {
+                    action.label().to_string()
+                } else {
+                    "Monitor".to_string()
+                };
+                (icon, title)
+            }
+            None => (None, "Monitor".to_string()),
+        },
+        MonitorSource::Run => {
+            let icon = match app.run_state {
+                crate::app::RunState::Running => spinner(),
+                crate::app::RunState::Finished => Some(check()),
+                crate::app::RunState::Idle => None,
+            };
+            let title = app.run_script.as_ref().map_or_else(
+                || "Run".to_string(),
+                |path| format!("Run: {}", path.display()),
+            );
+            (icon, title)
+        }
+        MonitorSource::Device => {
+            let icon = if app.device_monitor_process.is_some() {
+                spinner()
+            } else {
+                None
+            };
+            (icon, "Monitor".to_string())
+        }
+    };
+
+    let mut spans = vec![Span::raw(" ")];
+    if let Some((icon, style)) = icon {
+        spans.push(Span::styled(icon.to_string(), style));
+        spans.push(Span::raw(" "));
+    }
+    spans.push(Span::styled(title, Style::new().dim()));
+    spans.push(Span::styled(
+        format!(" ({})", app.monitor_view.rows),
+        Style::new().dim(),
+    ));
+    // The scrolled indicator Log shows: `↑N` with the rows *below* the view
+    // (the same meaning as `LogStore::scroll`), shown only once the user
+    // leaves the tail.
+    if !app.monitor_scroll.following {
+        let below = app
+            .monitor_view
+            .rows
+            .saturating_sub(app.monitor_view.viewport + app.monitor_scroll.offset);
+        spans.push(Span::styled(
+            format!(" \u{2191}{below}"),
+            Style::new().dim(),
+        ));
+    }
+    Line::from(spans)
 }
 
 /// Width of the field-label column, including its colon and trailing space.
