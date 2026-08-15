@@ -608,9 +608,6 @@ mod tests {
         };
         let command = west_env.apply(crate::process::Command::new("west").arg("build"));
         assert_eq!(command.program(), "/ws/.venv/bin/west");
-        assert_eq!(
-            command.to_string(),
-            "ZEPHYR_BASE=/ws/zephyr /ws/.venv/bin/west build"
-        );
+        assert_eq!(command.to_string(), "west build");
     }
 }

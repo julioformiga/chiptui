@@ -1046,15 +1046,16 @@ mod tests {
         )]);
 
         let menuconfig = panel.menuconfig_command(&ZephyrBackend).unwrap();
+        assert_eq!(menuconfig.to_string(), "west build -t menuconfig");
         assert_eq!(
-            menuconfig.to_string(),
-            format!(
-                "ZEPHYR_BASE={}/zephyr west build -t menuconfig",
-                dir.display()
-            )
+            menuconfig.envs_slice(),
+            [(
+                "ZEPHYR_BASE".to_string(),
+                dir.join("zephyr").display().to_string()
+            )]
         );
         let boards = panel.boards_command(&ZephyrBackend).unwrap();
-        assert!(boards.to_string().starts_with("ZEPHYR_BASE="));
+        assert!(boards.to_string().starts_with("west boards"));
     }
 
     #[test]

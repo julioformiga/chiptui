@@ -134,15 +134,16 @@ impl Command {
 /// Renders the command for the log pane.
 ///
 /// Quoting here is for human readability only --- this string is never parsed
-/// or executed. Environment overrides lead the line the way the equivalent
-/// shell spelling would, so what the log shows is the environment the command
-/// really ran with (west's `ZEPHYR_BASE`, for one).
+/// or executed. Only the program's file name is shown (the venv `west`'s full
+/// path is execution detail), and environment overrides stay off the line:
+/// what the user needs to read is the command itself.
 impl fmt::Display for Command {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for (key, value) in &self.env {
-            write!(f, "{key}={value} ")?;
-        }
-        f.write_str(&self.program)?;
+        let program = std::path::Path::new(&self.program)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(&self.program);
+        f.write_str(program)?;
         for arg in &self.args {
             if arg.is_empty() || arg.contains(char::is_whitespace) {
                 write!(f, " \"{arg}\"")?;
@@ -198,7 +199,7 @@ mod tests {
     }
 
     #[test]
-    fn env_overrides_are_set_and_displayed_first() {
+    fn env_overrides_are_set_and_kept_off_the_log_line() {
         let command = Command::new("west")
             .arg("build")
             .env("ZEPHYR_BASE", "/ws/zephyr")
@@ -210,10 +211,7 @@ mod tests {
                 ("PATH".to_string(), "/ws/.venv/bin:/usr/bin".to_string()),
             ]
         );
-        assert_eq!(
-            command.to_string(),
-            "ZEPHYR_BASE=/ws/zephyr PATH=/ws/.venv/bin:/usr/bin west build"
-        );
+        assert_eq!(command.to_string(), "west build");
     }
 
     #[test]

@@ -402,9 +402,13 @@ mod tests {
 
         let update = panel.update_command(&ZephyrBackend).unwrap();
         assert_eq!(update.cwd(), Some(&PathBuf::from("/opt/myzephyr")));
+        assert_eq!(update.to_string(), "west update");
         assert_eq!(
-            update.to_string(),
-            "ZEPHYR_BASE=/opt/myzephyr/zephyr west update"
+            update.envs_slice(),
+            [(
+                "ZEPHYR_BASE".to_string(),
+                "/opt/myzephyr/zephyr".to_string()
+            )]
         );
         let sdk = panel.sdk_list_command(&ZephyrBackend).unwrap();
         assert!(sdk.to_string().ends_with("west sdk list"));

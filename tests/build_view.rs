@@ -848,9 +848,7 @@ fn the_workspace_pane_resolves_from_project_config_and_runs_update() {
     app.handle(key(KeyCode::Char('y')));
     assert!(app.build.as_ref().unwrap().is_busy());
     let command = app.build.as_ref().unwrap().output.front().unwrap().clone();
-    assert!(command.contains(&format!("ZEPHYR_BASE={}", ws.join("zephyr").display())));
-    assert!(command.contains(&format!("ZEPHYR_SDK_INSTALL_DIR={}", sdk.display())));
-    assert!(command.ends_with("west update"));
+    assert_eq!(command, "$ west update");
     let finished = pump_until(
         &mut app,
         |app| app.build.as_ref().unwrap().last.is_some(),
