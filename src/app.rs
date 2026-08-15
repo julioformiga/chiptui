@@ -839,15 +839,18 @@ impl App {
         }
     }
 
-    /// Warns about required tools that are missing from `PATH`.
+    /// Warns about required tools that cannot be run.
+    ///
+    /// The workspace is resolved first when the backend has one: a Zephyr
+    /// `west` usually lives in the workspace venv, and judging it against
+    /// the inherited `PATH` before that venv is known is a false alarm.
     fn report_tools(&mut self) {
         let Some(kind) = self.manager.selected_kind() else {
             return;
         };
+        self.ensure_workspace_panel();
         let missing: Vec<&str> = self
-            .manager
-            .registry()
-            .tool_status(kind)
+            .tool_status()
             .into_iter()
             .filter(|(_, available)| !*available)
             .map(|(tool, _)| tool)
@@ -855,10 +858,43 @@ impl App {
 
         if !missing.is_empty() {
             self.logs.warn(format!(
-                "{kind}: {} not found on PATH --- install it to enable the related operations",
+                "{kind}: {} not found --- install it to enable the related operations",
                 missing.join(", ")
             ));
         }
+    }
+
+    /// The selected backend's required tools with whether each is actually
+    /// runnable --- the one definition, shared by [`Self::report_tools`]'s
+    /// warning and the Project pane's tools row. `west` is the one tool
+    /// whose location a resolved Zephyr workspace owns (the venv's console
+    /// script, or a configured path), so that executable is what gets
+    /// checked: a west installed only in the workspace venv is not
+    /// "missing" for never being on `PATH`. The bare program name means
+    /// resolution found no venv and no override, so `PATH` is still where
+    /// west has to come from.
+    pub fn tool_status(&self) -> Vec<(&'static str, bool)> {
+        let Some(kind) = self.manager.selected_kind() else {
+            return Vec::new();
+        };
+        self.manager
+            .registry()
+            .tool_status(kind)
+            .into_iter()
+            .map(|(tool, on_path)| {
+                let west = crate::backend::zephyr::commands::PROGRAM;
+                match self
+                    .workspace
+                    .as_ref()
+                    .and_then(|panel| panel.resolved.as_ref())
+                {
+                    Some(workspace) if tool == west && workspace.west != west => {
+                        (tool, std::path::Path::new(&workspace.west).is_file())
+                    }
+                    _ => (tool, on_path),
+                }
+            })
+            .collect()
     }
 
     pub fn handle(&mut self, event: AppEvent) {
@@ -2259,5 +2295,58 @@ mod tests {
             !keys.contains(&"↑/↓"),
             "the scroll hint belongs to the Log tab only"
         );
+    }
+
+    #[test]
+    fn west_availability_follows_the_resolved_workspace() {
+        let mut app = App::new(std::env::temp_dir());
+        app.detect();
+        app.manager.set_override(Some(BackendKind::Zephyr));
+
+        // A workspace naming west's real executable: that file, not `PATH`,
+        // is what gets checked.
+        let dir = std::env::temp_dir().join(format!("chiptui-west-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("west"), "#!/bin/sh\n").unwrap();
+        let panel = |west: String| {
+            crate::workspace::WorkspacePanel::new(
+                crate::backend::zephyr::workspace::Resolution::Single(
+                    crate::backend::zephyr::workspace::Workspace {
+                        dir: dir.clone(),
+                        origin: crate::backend::zephyr::workspace::WorkspaceOrigin::UserConfig,
+                        zephyr_base: dir.clone(),
+                        venv: None,
+                        west,
+                        sdk: None,
+                    },
+                ),
+                "",
+            )
+        };
+        let west_available = |app: &App| {
+            app.tool_status()
+                .into_iter()
+                .find(|(tool, _)| *tool == "west")
+                .map(|(_, available)| available)
+                .unwrap()
+        };
+
+        app.workspace = Some(panel(dir.join("west").display().to_string()));
+        assert!(
+            west_available(&app),
+            "the venv's west is runnable wherever the file is, PATH aside"
+        );
+
+        app.workspace = Some(panel(dir.join("missing").display().to_string()));
+        assert!(
+            !west_available(&app),
+            "a workspace naming a west that is not there is genuinely broken"
+        );
+
+        // The bare program name (no venv, no override) keeps the `PATH`
+        // check --- resolution found nothing to override it with.
+        app.workspace = Some(panel("west".to_string()));
+        assert_eq!(west_available(&app), crate::backend::tool_available("west"));
     }
 }

@@ -33,13 +33,14 @@ fn zephyr_app(tag: &str) -> (App, std::path::PathBuf) {
     .unwrap();
 
     let mut app = App::new(&root);
-    app.bootstrap();
-    app.manager.set_override(Some(BackendKind::Zephyr));
     app.set_serial_dir(root.join("dev"));
     // Workspace discovery must not look at the machine's real $HOME (a
-    // ~/zephyrproject there would resolve the pane differently).
+    // ~/zephyrproject there would resolve the pane differently) --- set
+    // before `bootstrap`, whose tool report already resolves the workspace.
     std::fs::create_dir_all(root.join("home")).unwrap();
     app.set_home_dir(root.join("home"));
+    app.bootstrap();
+    app.manager.set_override(Some(BackendKind::Zephyr));
     // Pre-seeded so the background chip identity query a selection defers
     // runs against the fake, not whatever `esptool` happens to be on the
     // machine running the tests.

@@ -41,17 +41,18 @@ fn zephyr_app(tag: &str, board: Option<&str>) -> (App, std::path::PathBuf) {
         .unwrap();
     }
 
-    let mut app = App::new(&root);
-    app.bootstrap();
-    app.manager.set_override(Some(BackendKind::Zephyr));
     // The serial scan must not look at the machine's real /dev, and workspace
     // discovery must not look at the machine's real $HOME (a ~/zephyrproject
     // on the host would resolve the pane differently): both point at fixture
-    // directories so startup is deterministic.
+    // directories so startup is deterministic. Set before `bootstrap`, whose
+    // tool report already resolves the workspace.
     std::fs::create_dir_all(root.join("dev")).unwrap();
-    app.set_serial_dir(root.join("dev"));
     std::fs::create_dir_all(root.join("home")).unwrap();
+    let mut app = App::new(&root);
+    app.set_serial_dir(root.join("dev"));
     app.set_home_dir(root.join("home"));
+    app.bootstrap();
+    app.manager.set_override(Some(BackendKind::Zephyr));
     app.maybe_scan_devices();
     // The binary's startup sequence, mirrored: focus lands on the first
     // pane row 2 actually shows.
@@ -856,6 +857,54 @@ fn the_workspace_pane_resolves_from_project_config_and_runs_update() {
     );
     assert!(finished);
     assert!(app.build.as_ref().unwrap().last.as_ref().unwrap().ok);
+}
+
+#[test]
+fn the_startup_tool_report_counts_the_venvs_west_as_present() {
+    // The regression this pins: the tool report checked `west` against
+    // `PATH` and ran before the workspace was resolved, so a west living
+    // in the workspace venv (the getting-started layout) drew a false
+    // "not found" warning on every startup.
+    let root =
+        std::env::temp_dir().join(format!("chiptui-buildview-venvwest-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(
+        root.join("CMakeLists.txt"),
+        "find_package(Zephyr REQUIRED)\n",
+    )
+    .unwrap();
+    let home = root.join("home");
+    let ws = workspace_under(&home, "zephyrproject");
+    std::fs::write(
+        root.join("chiptui.toml"),
+        format!("[zephyr]\nworkspace = \"{}\"\n", ws.display()),
+    )
+    .unwrap();
+
+    // main.rs order: the home seam is in place before bootstrap, so the
+    // detection and tool report inside it resolve this workspace, not the
+    // machine's real one.
+    let mut app = App::new(&root);
+    app.set_home_dir(&home);
+    app.bootstrap();
+
+    // The report resolved the workspace first and judged the venv's west
+    // (a real file) instead of `PATH` --- no warning may name west as
+    // missing (cmake/ninja may legitimately warn on the host).
+    assert!(app.workspace.as_ref().unwrap().resolved.is_some());
+    let messages: Vec<&str> = app
+        .logs
+        .visible(usize::MAX)
+        .map(|entry| entry.message.as_str())
+        .collect();
+    assert!(
+        !messages
+            .iter()
+            .any(|message| message.contains("west") && message.contains("not found")),
+        "the venv's west must not be reported missing:\n{}",
+        messages.join("\n")
+    );
 }
 
 #[test]

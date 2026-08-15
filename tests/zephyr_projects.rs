@@ -49,11 +49,14 @@ fn bare_app(tag: &str, projects: Option<&std::path::Path>) -> (App, std::path::P
         .unwrap();
     }
 
+    // Seams in place before `bootstrap`: the tool report inside it already
+    // resolves the workspace, which must read this fixture home (pre-seeded
+    // above), not the machine's real one.
     let mut app = App::new(&root);
-    app.bootstrap();
-    app.manager.set_override(Some(BackendKind::Zephyr));
     app.set_serial_dir(root.join("dev"));
     app.set_home_dir(&home);
+    app.bootstrap();
+    app.manager.set_override(Some(BackendKind::Zephyr));
     app.maybe_scan_devices();
     (app, root)
 }
@@ -323,11 +326,14 @@ fn a_cwd_that_is_already_a_project_never_asks() {
     )
     .unwrap();
 
+    // Both seams in place before `bootstrap`: its tool report already
+    // resolves the workspace, which must not read the machine's real
+    // $HOME.
     let mut app = App::new(&root);
-    app.bootstrap();
-    app.manager.set_override(Some(BackendKind::Zephyr));
     app.set_serial_dir(root.join("dev"));
     app.set_home_dir(root.join("home"));
+    app.bootstrap();
+    app.manager.set_override(Some(BackendKind::Zephyr));
     app.maybe_scan_devices();
     app.build.as_mut().unwrap().set_tool_path(fake("west"));
 

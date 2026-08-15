@@ -162,7 +162,12 @@ impl App {
     /// picker (`maybe_open_workspace_picker`); a configured location that is
     /// not an installation → `Invalid`, with the install guide in the
     /// message. No directory conventions, no environment variables.
-    fn ensure_workspace_panel(&mut self) {
+    ///
+    /// Called ahead of `ensure_build_panel` (the panel's commands carry the
+    /// answer) and of `App::report_tools` (the tool report judges `west`
+    /// against the workspace's venv, so the workspace must exist first ---
+    /// this is why the report runs *after* resolution, not before).
+    pub(super) fn ensure_workspace_panel(&mut self) {
         if !self
             .manager
             .capabilities()

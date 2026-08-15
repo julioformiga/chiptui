@@ -73,7 +73,13 @@ turns the pane red with the same message (wrapped under the row --- the pane's i
 are not navigable). A validated pick is persisted
 (`settings::save_workspace`, a line-level merge that preserves every other key/section) to
 the user config, or to `chiptui.toml` when the project pins its own location --- so the
-config stays the single source of truth and later starts never re-ask. Below the separator
+config stays the single source of truth and later starts never re-ask. Tool reporting
+honors the same answer: `App::report_tools` resolves the workspace first (creating the
+panel early is what keeps startup from warning about a `west` that was never on `PATH`
+because it lives in the workspace venv) and `App::tool_status` is the one availability
+definition shared by that warning and the Project pane's `tools:` row --- a resolved
+workspace's west executable is file-checked, the bare `west` name falls back to `PATH`.
+Below the separator
 it offers
 `west update` (confirm-gated --- it rewrites the shared workspace,
 through `Overlay::ConfirmWorkspace`) and `west sdk list` as buttons enabled once the
