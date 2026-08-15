@@ -131,8 +131,9 @@ the session-only answer reaches only first-configuration builds as `--shield` (n
 incremental build of an already-configured directory). `Flash` (`west flash`, the board's own
 runner from `runner.yml` — never a hard-coded programmer) sits last under
 `Capability::Flash`, always behind `Overlay::ConfirmBuild` (destructive); the dashboard's `x`
-routes a build-panel backend there instead of esptool's dialog, and the esptool-specific
-"Device info" pane now gates on `DeviceInfo`/`EraseFlash` so Zephyr gets an honest placeholder.
+routes a build-panel backend there instead of esptool's dialog, and the "Device info" pane shows
+esptool's report for any backend whose board answers the background `chip-id` query (Zephyr
+included; without an answer it falls back to its honest placeholder).
 The Zephyr monitor is wired too: `m` runs `west monitor [--port P]` (`Backend::monitor_command`)
 in the same PTY session MicroPython uses, and port discovery for a backend without `mpremote
 devs` is `device::usb_serial_ports` — a synchronous `/dev` walk (no subprocess) feeding the
@@ -298,9 +299,14 @@ These are the decisions that shape most code, and getting them wrong causes wide
   being contended. The query is also gated on the script belief
   (`maybe_run_deferred_flash_query`, tick-polled): esptool resets the board to read the chip,
   so it waits for an idle device, a closed overlay and a free port instead of racing a restore
-  decision or silently resetting a script the user just declined to interrupt. A backend
-  without this flow (Zephyr: no filesystem, no esptool) never creates a browser or flash panel
-  and so never lists or queries.
+  decision or silently resetting a script the user just declined to interrupt. The identity
+  question is backend-agnostic where the board can answer it: a non-filesystem backend's
+  selection (`scan_serial_devices`' auto-pick, `apply_device_picker`) defers the same query ---
+  Zephyr runs on ESP32 boards whose esptool runner answers `chip-id`; on anything else it fails
+  harmlessly and the pane keeps its honest placeholder. Such a backend's `FlashPanel` exists
+  purely as the query engine (`ensure_flash_panel` skips the `firmware/` dir for a backend
+  without `DeviceInfo`/`EraseFlash`), never lists (no browser is created), and 'x' still routes
+  to the build panel's flash.
 
 ## Testing
 

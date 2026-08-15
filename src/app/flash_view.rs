@@ -391,18 +391,27 @@ impl App {
                 .manager
                 .root()
                 .map_or_else(|| self.manager.start_dir().to_path_buf(), Path::to_path_buf);
-            let firmware_dir = root.join("firmware");
-            // Lazily created here rather than only via `ensure_micropython_layout`
-            // so opening Flash still works for a project that never went
-            // through the empty-project prompt (e.g. an existing MicroPython
-            // project detected automatically, `SPEC.md` §7).
-            if let Err(err) = std::fs::create_dir_all(&firmware_dir) {
-                self.logs.warn(format!(
-                    "could not create {}: {err}",
-                    firmware_dir.display()
-                ));
+            // The `firmware/` directory belongs to the esptool flow
+            // (MicroPython). A backend whose flash capability is another
+            // tool's (`west flash`, e.g. Zephyr) gets this panel purely as
+            // the identity-query engine --- its project tree must not grow
+            // an unused `firmware/` directory for it.
+            if caps.contains(Capability::DeviceInfo) || caps.contains(Capability::EraseFlash) {
+                let firmware_dir = root.join("firmware");
+                // Lazily created here rather than only via `ensure_micropython_layout`
+                // so opening Flash still works for a project that never went
+                // through the empty-project prompt (e.g. an existing MicroPython
+                // project detected automatically, `SPEC.md` §7).
+                if let Err(err) = std::fs::create_dir_all(&firmware_dir) {
+                    self.logs.warn(format!(
+                        "could not create {}: {err}",
+                        firmware_dir.display()
+                    ));
+                }
+                self.flash = Some(FlashPanel::new(firmware_dir));
+            } else {
+                self.flash = Some(FlashPanel::new(root));
             }
-            self.flash = Some(FlashPanel::new(firmware_dir));
         }
         true
     }

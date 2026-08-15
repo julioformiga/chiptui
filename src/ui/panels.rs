@@ -175,21 +175,35 @@ pub(super) fn device_content(app: &App) -> Vec<Line<'static>> {
     let caps = app.manager.capabilities();
     let dim = Style::new().add_modifier(Modifier::DIM);
 
-    // This pane is esptool's report (chip/flash geometry). A backend that
-    // flashes another way (Zephyr: `west flash` through the build panel)
-    // declares no `DeviceInfo`/`EraseFlash` and gets the honest placeholder
-    // instead of a hint pointing at a dialog that cannot talk to its board.
-    if !caps.contains(Capability::DeviceInfo) && !caps.contains(Capability::EraseFlash) {
-        return vec![Line::from("no device information for this project").style(dim)];
-    }
+    // This pane is esptool's report (chip identity). A backend that flashes
+    // another way (Zephyr: `west flash` through the build panel) has no
+    // esptool Flash menu of its own, but its board may still be an esptool
+    // one --- Zephyr runs on ESP32s --- so the background identity query
+    // fills this pane for any backend; only the empty-state wording depends
+    // on whether the user could also run the query by hand ('x').
+    let esptool_flash_view =
+        caps.contains(Capability::DeviceInfo) || caps.contains(Capability::EraseFlash);
     let Some(flash) = app.flash.as_ref() else {
-        return vec![Line::from("press 'x' to open Flash and query the device").style(dim)];
+        return vec![
+            if esptool_flash_view {
+                Line::from("press 'x' to open Flash and query the device")
+            } else {
+                Line::from("no device information for this project")
+            }
+            .style(dim),
+        ];
     };
     let details = &flash.details;
     if details.is_empty() {
         return vec![
-            Line::from("no device data yet --- run chip or flash information from the Flash menu")
-                .style(dim),
+            if esptool_flash_view {
+                Line::from(
+                    "no device data yet --- run chip or flash information from the Flash menu",
+                )
+            } else {
+                Line::from("no device information for this project")
+            }
+            .style(dim),
         ];
     }
 

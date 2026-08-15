@@ -99,6 +99,12 @@ impl App {
         self.devices.set_devices(devices);
         if self.devices.needs_selection() {
             self.open_device_picker();
+        } else {
+            // One port is not a guess: it selects itself, and the selection
+            // carries the same follow-through as the picker --- here, the
+            // chip identity query (this scan is the no-mpremote path, so
+            // there is no listing to hold behind it).
+            self.defer_device_info_query();
         }
     }
 
@@ -405,11 +411,15 @@ impl App {
         self.logs.info(format!("device set to {}", device.label()));
 
         // Everything below is the MicroPython follow-through: an mpremote
-        // probe and listing, then the esptool courtesy query. A backend
-        // without a filesystem has neither tool, and must not have its port
-        // touched by them --- for a Zephyr board the pick is the whole job
-        // (the monitor uses the port on demand).
+        // probe and listing. A backend without a filesystem has neither
+        // tool, and must not have its port touched by them --- for a Zephyr
+        // board no listing happens (the monitor uses the port on demand).
+        // The board's *identity* is still worth asking, though: Zephyr runs
+        // on ESP32 boards whose esptool runner answers `chip-id`, and on
+        // anything else the query fails harmlessly into the pane's honest
+        // placeholder.
         if !self.manager.capabilities().contains(Capability::Filesystem) {
+            self.defer_device_info_query();
             return;
         }
 

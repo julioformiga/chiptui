@@ -10,6 +10,7 @@ use chiptui::app::{App, Focus, LogTab, MonitorSource, Overlay};
 use chiptui::backend::BackendKind;
 use chiptui::device::DiscoveryState;
 use chiptui::event::AppEvent;
+use chiptui::flash::FlashPanel;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 fn fake(tool: &str) -> String {
@@ -39,6 +40,12 @@ fn zephyr_app(tag: &str) -> (App, std::path::PathBuf) {
     // ~/zephyrproject there would resolve the pane differently).
     std::fs::create_dir_all(root.join("home")).unwrap();
     app.set_home_dir(root.join("home"));
+    // Pre-seeded so the background chip identity query a selection defers
+    // runs against the fake, not whatever `esptool` happens to be on the
+    // machine running the tests.
+    let mut flash = FlashPanel::new(&root);
+    flash.set_tool_path(fake("esptool"));
+    app.flash = Some(flash);
     app.maybe_scan_devices();
     // After the scan: `maybe_scan_devices` is what creates the build panel
     // the override belongs to.
@@ -100,8 +107,9 @@ fn several_ports_ask_before_any_is_used() {
     assert!(matches!(app.overlay, Some(Overlay::DevicePicker { .. })));
 
     // Choosing applies the port without any mpremote follow-through ---
-    // there is no filesystem to list and no esptool to query on this
-    // backend; the pick is the whole job.
+    // there is no filesystem to list and no probe on this backend; the pick
+    // itself defers only the chip identity query (started by the next tick,
+    // so nothing is in flight in this instant).
     app.handle(key(KeyCode::Down));
     app.handle(key(KeyCode::Enter));
     let expected = root.join("dev/ttyACM1").display().to_string();
@@ -111,18 +119,55 @@ fn several_ports_ask_before_any_is_used() {
     );
     assert!(
         app.processes.drain().is_empty(),
-        "no probe, no listing, no query"
+        "no probe, no listing at pick time"
     );
-    // Nothing was created to list or query with either: this backend has no
-    // device filesystem to load, so no browser and no esptool panel exist.
     assert!(
         app.browser.is_none(),
         "a Zephyr board must not get a file browser"
     );
+}
+
+/// Renders the current screen and returns it as plain text.
+fn render(app: &mut App, width: u16, height: u16) -> String {
+    let mut terminal =
+        ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+    terminal
+        .draw(|frame| chiptui::ui::draw(frame, app))
+        .unwrap();
+    terminal.backend().to_string()
+}
+
+#[test]
+fn the_chip_identity_is_queried_even_on_the_zephyr_backend() {
+    // Zephyr runs on ESP32 boards, whose flash runner is esptool --- so a
+    // selected port gets the same `esptool chip-id` identity question,
+    // answer or not. Here the fake answers, and the Dashboard's Device
+    // info pane shows it under a Zephyr project.
+    let (mut app, root) = zephyr_app("chip-id");
+    std::fs::write(root.join("dev/ttyACM0"), b"").unwrap();
+    app.handle(key(KeyCode::Char('d')));
+    assert!(app.devices.selected_port().is_some());
+
+    // The deferred query runs on the next tick and lands in the panel.
+    assert!(pump_until(
+        &mut app,
+        |app| app
+            .flash
+            .as_ref()
+            .is_some_and(|flash| flash.details.family.is_some()),
+        20
+    ));
     assert!(
-        app.flash.is_none(),
-        "a Zephyr board must not get an esptool identity query"
+        app.browser.is_none(),
+        "identity aside, this backend still never lists files"
     );
+
+    let frame = render(&mut app, 110, 24);
+    assert!(
+        frame.contains("Device info"),
+        "the pane must exist for a build backend too:\n{frame}"
+    );
+    assert!(frame.contains("ESP32"), "missing chip identity:\n{frame}");
 }
 
 #[test]
