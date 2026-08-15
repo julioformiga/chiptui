@@ -152,6 +152,87 @@ fn m_starts_west_monitor_in_a_pty_on_the_selected_port() {
 }
 
 #[test]
+fn backend_picker_does_not_clobber_the_device_picker_it_opens() {
+    let root = std::env::temp_dir().join(format!("chiptui-zmon-picker-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("dev")).unwrap();
+    std::fs::write(root.join("dev/ttyACM0"), b"").unwrap();
+    std::fs::write(root.join("dev/ttyACM1"), b"").unwrap();
+
+    let mut app = App::new(&root);
+    app.bootstrap();
+    app.set_serial_dir(root.join("dev"));
+
+    app.handle(key(KeyCode::Char('o')));
+    assert!(matches!(app.overlay, Some(Overlay::BackendPicker { .. })));
+    // Automatic, MicroPython, Zephyr --- two Down presses reach Zephyr.
+    app.handle(key(KeyCode::Down));
+    app.handle(key(KeyCode::Down));
+    app.handle(key(KeyCode::Enter));
+
+    assert!(
+        matches!(app.overlay, Some(Overlay::DevicePicker { .. })),
+        "the device picker opened by picking Zephyr must survive the \
+         backend picker's own Enter handler, got {:?}",
+        app.overlay
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn project_setup_does_not_clobber_the_device_picker_it_opens() {
+    let root = std::env::temp_dir().join(format!("chiptui-zmon-setup-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("dev")).unwrap();
+    std::fs::write(root.join("dev/ttyACM0"), b"").unwrap();
+    std::fs::write(root.join("dev/ttyACM1"), b"").unwrap();
+
+    let mut app = App::new(&root);
+    app.bootstrap();
+    app.set_serial_dir(root.join("dev"));
+    app.maybe_open_project_setup();
+    assert!(matches!(app.overlay, Some(Overlay::ProjectSetup { .. })));
+
+    // MicroPython, Zephyr --- one Down press reaches Zephyr.
+    app.handle(key(KeyCode::Down));
+    app.handle(key(KeyCode::Enter));
+
+    assert!(
+        matches!(app.overlay, Some(Overlay::DevicePicker { .. })),
+        "the device picker opened by picking Zephyr must survive the \
+         project-setup overlay's own Enter handler, got {:?}",
+        app.overlay
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn rescanning_the_same_backend_does_not_reset_the_selected_port() {
+    let (mut app, root) = zephyr_app("rescan");
+    std::fs::write(root.join("dev/ttyACM0"), b"").unwrap();
+    app.handle(key(KeyCode::Char('d')));
+
+    assert_eq!(app.devices.discovery, DiscoveryState::Ready);
+    let selected_before = app.devices.selected_port().map(str::to_string);
+    assert!(selected_before.is_some());
+
+    app.maybe_scan_devices();
+
+    assert_eq!(
+        app.devices.discovery,
+        DiscoveryState::Ready,
+        "a second scan must not cycle back through Scanning"
+    );
+    assert_eq!(
+        app.devices.selected_port().map(str::to_string),
+        selected_before,
+        "a second scan must not drop the already-selected port"
+    );
+}
+
+#[test]
 fn m_without_a_selected_port_still_lets_west_auto_detect() {
     // Symmetric with the mpremote monitor: `m` is an explicit user action,
     // and west's own auto-detection is its documented default --- ChipTUI

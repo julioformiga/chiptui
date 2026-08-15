@@ -83,8 +83,8 @@ impl App {
                     });
                 }
                 KeyCode::Enter => {
-                    self.apply_picker(selected);
                     self.overlay = None;
+                    self.apply_picker(selected);
                 }
                 _ => {}
             },
@@ -167,8 +167,8 @@ impl App {
                         });
                     }
                     KeyCode::Enter => {
-                        self.apply_project_setup(selected);
                         self.overlay = None;
+                        self.apply_project_setup(selected);
                     }
                     _ => {}
                 }

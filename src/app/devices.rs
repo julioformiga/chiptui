@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use crate::backend::{BackendKind, Capability};
 use crate::browser::Browser;
-use crate::device::ScriptState;
+use crate::device::{DiscoveryState, ScriptState};
 
 use super::{App, LogTab, MonitorSource, Overlay, PickerOption};
 
@@ -46,6 +46,9 @@ impl App {
     fn maybe_scan_serial_ports(&mut self) {
         let caps = self.manager.capabilities();
         if caps.contains(Capability::Filesystem) || !caps.contains(Capability::Monitor) {
+            return;
+        }
+        if self.devices.discovery != DiscoveryState::Unknown {
             return;
         }
         self.scan_serial_devices();
