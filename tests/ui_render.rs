@@ -61,6 +61,11 @@ fn zephyr_keeps_the_local_pane_and_shows_the_build_panel() {
     // Capability::Filesystem, but it can build, so the right half lists the
     // build lifecycle instead of a placeholder.
     let mut app = app_with_backend(BackendKind::Zephyr);
+    // Empty fixture /dev keeps the render deterministic (a machine with
+    // several USB ports would open the device picker over the dashboard).
+    let empty_dev = std::env::temp_dir().join(format!("chiptui-render-dev-{}", std::process::id()));
+    std::fs::create_dir_all(&empty_dev).unwrap();
+    app.set_serial_dir(&empty_dev);
     app.maybe_scan_devices();
     let frame = render(&mut app, 100, 30);
 

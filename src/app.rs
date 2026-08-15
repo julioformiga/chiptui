@@ -578,6 +578,11 @@ pub struct App {
     /// interrupted operations drain, [`Overlay::RestoreDeviceScript`] asks
     /// how to bring the script back.
     restore_pending: bool,
+    /// Where [`Self::scan_serial_devices`] looks for USB serial ports.
+    /// `/dev` in real use; tests point it at a fixture directory so the
+    /// scan is deterministic regardless of what is plugged into the
+    /// machine running them.
+    serial_dir: std::path::PathBuf,
     should_quit: bool,
     last_port_count: Option<usize>,
 }
@@ -615,6 +620,7 @@ impl App {
             probe: None,
             probed_port: None,
             restore_pending: false,
+            serial_dir: std::path::PathBuf::from("/dev"),
             should_quit: false,
             last_port_count: None,
         }
@@ -1176,8 +1182,16 @@ impl App {
                 self.overlay = Some(Overlay::Help);
                 return;
             }
-            KeyCode::Char('d') if self.manager.capabilities().contains(Capability::Filesystem) => {
-                self.scan_devices();
+            KeyCode::Char('d') => {
+                // `d` re-runs whichever discovery this backend has: the
+                // mpremote listing under `Filesystem`, else (a monitor
+                // backend with no filesystem, e.g. Zephyr) the plain USB
+                // serial walk.
+                if self.manager.capabilities().contains(Capability::Filesystem) {
+                    self.scan_devices();
+                } else if self.manager.capabilities().contains(Capability::Monitor) {
+                    self.scan_serial_devices();
+                }
                 return;
             }
             KeyCode::Char('m') if self.manager.capabilities().contains(Capability::Monitor) => {
@@ -1638,6 +1652,12 @@ mod tests {
         let mut app = App::new(std::env::temp_dir());
         app.detect();
         app.manager.set_override(Some(BackendKind::Zephyr));
+        // Empty fixture /dev: the serial scan finds nothing, so no picker
+        // overlay can steal the Tab keys this test drives.
+        let empty_dev =
+            std::env::temp_dir().join(format!("chiptui-tab-dev-{}", std::process::id()));
+        std::fs::create_dir_all(&empty_dev).unwrap();
+        app.set_serial_dir(&empty_dev);
         app.maybe_scan_devices();
         assert!(app.browser.is_some(), "the browser exists without a scan");
 

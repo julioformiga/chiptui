@@ -745,28 +745,59 @@ fn startup_scans_for_a_device_without_opening_the_browser() {
 }
 
 #[test]
-fn startup_ensures_a_browser_without_scanning_when_there_is_no_filesystem() {
+fn startup_ensures_a_browser_and_a_serial_scan_without_a_filesystem() {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let key = |code: KeyCode| AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE));
+
     let mut app = App::new(std::env::temp_dir());
     app.bootstrap();
     app.manager.set_override(Some(BackendKind::Zephyr));
+    // No mpremote here: an empty fixture /dev must not open the device
+    // picker or guess anything.
+    let empty_dev = std::env::temp_dir().join(format!("chiptui-nofs-dev-{}", std::process::id()));
+    std::fs::create_dir_all(&empty_dev).unwrap();
+    app.set_serial_dir(&empty_dev);
 
     app.maybe_scan_devices();
 
-    // The browser exists (the local pane works without a device), but no
-    // scan was issued: the device column is unreachable and the device
-    // state stays untouched.
+    // The browser exists (the local pane works without a device), and the
+    // serial scan ran: no port in the fixture means a reported miss, not an
+    // untouched "not scanned" state.
     assert!(
         app.browser.is_some(),
         "the local pane needs a browser even without a device filesystem"
     );
     assert_eq!(
         app.devices.discovery,
-        chiptui::device::DiscoveryState::Unknown
+        chiptui::device::DiscoveryState::Failed
+    );
+    assert!(
+        app.devices
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("no USB serial port")),
+        "the miss must be explained: {:?}",
+        app.devices.error
     );
     assert!(
         app.focus != Focus::FilesDevice,
         "Zephyr exposes no device column"
     );
+
+    // One port in the fixture: it selects itself --- same rule as the
+    // mpremote scan (SPEC.md §8: several boards ask, one board is not a
+    // guess).
+    std::fs::write(empty_dev.join("ttyACM0"), b"").unwrap();
+    app.handle(key(KeyCode::Char('d')));
+    assert_eq!(
+        app.devices.discovery,
+        chiptui::device::DiscoveryState::Ready
+    );
+    assert_eq!(
+        app.devices.selected().map(|d| d.port.clone()),
+        Some(empty_dev.join("ttyACM0").display().to_string())
+    );
+    let _ = std::fs::remove_dir_all(&empty_dev);
 }
 
 #[test]

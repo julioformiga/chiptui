@@ -544,6 +544,13 @@ Provide a serial monitor where appropriate.
 The monitor should be independent from the build process so that a
 build/flash failure does not corrupt the terminal state.
 
+> **Status**: implemented for both backends, as one PTY session in the
+> Monitor tab (`m`). MicroPython connects through `mpremote`; Zephyr runs
+> `west monitor`, with the port named when discovery found one. Port
+> discovery for a backend without `mpremote devs` is a plain USB serial
+> walk (`device::usb_serial_ports`: `/dev/ttyACM*`, `ttyUSB*`, …) feeding
+> the same selection/picker flow.
+
 ## 11. UI / UX
 
 The application should use a contextual dashboard.
@@ -590,9 +597,8 @@ screen inside the dialog.
 > `Capability::Filesystem` (today: Zephyr) fills the right half with a build panel
 > (`src/build.rs`) listing Build/Clean/Rebuild with the literal `west` commands, streaming output
 > into the Monitor tab. The Zephyr dual-pane layout is spec'd in anticipation of a future
-> filesystem integration. The Monitor tab's live device serial session is not implemented yet
-> either --- today it shows flash/erase and build output; connecting to the device itself is a
-> follow-up.
+> filesystem integration. The Monitor tab shows the device serial session (`m`), flash/erase
+> output, and build output.
 
 The exact proportions (row heights, column widths) are not fixed.
 

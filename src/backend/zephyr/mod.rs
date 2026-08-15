@@ -106,6 +106,10 @@ impl Backend for ZephyrBackend {
     fn flash_command(&self) -> Option<crate::process::Command> {
         Some(commands::flash())
     }
+
+    fn monitor_command(&self, port: Option<&str>) -> Option<crate::process::Command> {
+        Some(commands::monitor(port))
+    }
 }
 
 #[cfg(test)]

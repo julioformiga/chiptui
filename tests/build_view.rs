@@ -44,6 +44,11 @@ fn zephyr_app(tag: &str, board: Option<&str>) -> (App, std::path::PathBuf) {
     let mut app = App::new(&root);
     app.bootstrap();
     app.manager.set_override(Some(BackendKind::Zephyr));
+    // The serial scan must not look at the machine's real /dev: point it at
+    // an empty directory so startup is deterministic (per-test fixture
+    // dirs add ports when a test wants them).
+    std::fs::create_dir_all(root.join("dev")).unwrap();
+    app.set_serial_dir(root.join("dev"));
     app.maybe_scan_devices();
     (app, root)
 }

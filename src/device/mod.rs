@@ -14,24 +14,44 @@ pub use path::DevicePath;
 pub fn count_serial_ports() -> Option<usize> {
     #[cfg(unix)]
     {
-        let mut count = 0;
-        if let Ok(entries) = std::fs::read_dir("/dev") {
-            for entry in entries.flatten() {
-                if let Some(name) = entry.file_name().to_str()
-                    && (name.starts_with("ttyUSB")
-                        || name.starts_with("ttyACM")
-                        || name.starts_with("cu.usb")
-                        || name.starts_with("tty.usb"))
-                {
-                    count += 1;
-                }
-            }
-        }
-        Some(count)
+        Some(usb_serial_ports(std::path::Path::new("/dev")).len())
     }
     #[cfg(not(unix))]
     {
         None
+    }
+}
+
+/// USB serial port paths under `dir`, sorted --- the port-discovery half of
+/// device scanning for a backend that has no listing tool of its own
+/// (`mpremote devs` does this job for MicroPython; Zephyr's `west monitor`
+/// just wants a `/dev/ttyACM*` handed to it). The prefix set matches
+/// [`count_serial_ports`]: CDC-ACM and USB-serial on Linux, `cu.usb`/`tty.usb`
+/// on macOS. Legacy `ttyS*` UARTs are deliberately excluded --- a typical
+/// machine has dozens, none of them a development board.
+pub fn usb_serial_ports(dir: &std::path::Path) -> Vec<String> {
+    #[cfg(unix)]
+    {
+        let mut ports: Vec<String> = std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|entry| {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let is_usb = name.starts_with("ttyUSB")
+                    || name.starts_with("ttyACM")
+                    || name.starts_with("cu.usb")
+                    || name.starts_with("tty.usb");
+                is_usb.then(|| dir.join(&name).display().to_string())
+            })
+            .collect();
+        ports.sort();
+        ports
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = dir;
+        Vec::new()
     }
 }
 
@@ -300,6 +320,37 @@ mod tests {
             vid_pid: vid_pid.to_string(),
             description: "MicroPython Board".to_string(),
         }
+    }
+
+    #[test]
+    fn usb_serial_ports_keep_boards_and_drop_legacy_uarts() {
+        let dir = std::env::temp_dir().join(format!("chiptui-ports-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in [
+            "ttyS0", "ttyS31", "ttyACM1", "ttyACM0", "ttyUSB3", "ttyUSB0", "null", "console",
+        ] {
+            std::fs::write(dir.join(name), b"").unwrap();
+        }
+
+        let ports = usb_serial_ports(&dir);
+        assert_eq!(
+            ports,
+            vec![
+                dir.join("ttyACM0").display().to_string(),
+                dir.join("ttyACM1").display().to_string(),
+                dir.join("ttyUSB0").display().to_string(),
+                dir.join("ttyUSB3").display().to_string(),
+            ],
+            "only USB serial ports, sorted --- the dozens of legacy ttyS* \
+             UARTs on a typical machine are never boards"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_missing_dev_directory_is_no_ports_not_an_error() {
+        assert!(usb_serial_ports(std::path::Path::new("/nonexistent-dev")).is_empty());
     }
 
     #[test]

@@ -64,6 +64,17 @@ pub fn flash() -> Command {
     Command::new(PROGRAM).arg("flash")
 }
 
+/// `west monitor [--port PORT]` --- interactive serial monitor for the
+/// flashed board. Runs in a PTY (the app's monitor session), so Ctrl+C
+/// reaches west as a real key and exits the session.
+pub fn monitor(port: Option<&str>) -> Command {
+    let mut command = Command::new(PROGRAM).arg("monitor");
+    if let Some(port) = port {
+        command = command.arg("--port").arg(port);
+    }
+    command
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -103,6 +114,15 @@ mod tests {
     #[test]
     fn flash_delegates_to_the_boards_runner() {
         assert_eq!(flash().to_string(), "west flash");
+    }
+
+    #[test]
+    fn monitor_names_the_port_when_one_is_known() {
+        assert_eq!(monitor(None).to_string(), "west monitor");
+        assert_eq!(
+            monitor(Some("/dev/ttyACM0")).to_string(),
+            "west monitor --port /dev/ttyACM0"
+        );
     }
 
     #[test]

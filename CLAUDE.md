@@ -48,8 +48,12 @@ says which), never written to the project. `Flash` (`west flash`, the board's ow
 `Capability::Flash`, always behind `Overlay::ConfirmBuild` (destructive); the dashboard's `x`
 routes a build-panel backend there instead of esptool's dialog, and the esptool-specific
 "Device info" pane now gates on `DeviceInfo`/`EraseFlash` so Zephyr gets an honest placeholder.
-Not done yet: the Zephyr serial monitor (`m` needs a port-discovery path that does not require
-mpremote).
+The Zephyr monitor is wired too: `m` runs `west monitor [--port P]` (`Backend::monitor_command`)
+in the same PTY session MicroPython uses, and port discovery for a backend without `mpremote
+devs` is `device::usb_serial_ports` — a synchronous `/dev` walk (no subprocess) feeding the
+same `DeviceState`/picker flow (`App::scan_serial_devices`, `serial_dir` overridable for
+deterministic tests). With that, Zephyr's Phase 3 surface (detect, board, build, clean, flash,
+monitor) is complete; `west update`/debug/signing remain Roadmap items.
 
 `lib.rs` + `main.rs`: everything except `terminal` and `ui` is testable without a tty, and `ui` is
 testable through ratatui's `TestBackend` (see `tests/ui_render.rs`, `tests/files_view.rs`).

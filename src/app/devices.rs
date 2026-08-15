@@ -34,6 +34,53 @@ impl App {
     pub fn maybe_scan_devices(&mut self) {
         self.ensure_browser_scanning();
         self.ensure_build_panel();
+        self.maybe_scan_serial_ports();
+    }
+
+    /// The serial-port half of device discovery, for a backend with a
+    /// monitor but no listing tool of its own (no `mpremote devs` to lean
+    /// on): a plain `/dev` walk, synchronous because it is one cheap
+    /// `read_dir` --- no subprocess to schedule. Fills the same `devices`
+    /// state the mpremote scan does, so selection, the picker and the
+    /// monitor all work identically afterwards.
+    fn maybe_scan_serial_ports(&mut self) {
+        let caps = self.manager.capabilities();
+        if caps.contains(Capability::Filesystem) || !caps.contains(Capability::Monitor) {
+            return;
+        }
+        self.scan_serial_devices();
+    }
+
+    /// Points the USB-serial scan at a directory other than `/dev` --- how
+    /// tests make discovery deterministic without touching whatever happens
+    /// to be plugged into the machine running them.
+    pub fn set_serial_dir(&mut self, dir: impl Into<std::path::PathBuf>) {
+        self.serial_dir = dir.into();
+    }
+
+    /// Scans `serial_dir` for USB serial ports and applies the result:
+    /// one port selects itself, several ask, none reports why.
+    pub fn scan_serial_devices(&mut self) {
+        self.devices.set_scanning();
+        let ports = crate::device::usb_serial_ports(&self.serial_dir);
+        if ports.is_empty() {
+            self.devices
+                .set_failed("no USB serial port found — connect the board and press 'd'");
+            return;
+        }
+        let devices = ports
+            .into_iter()
+            .map(|port| crate::device::DeviceInfo {
+                port,
+                serial: None,
+                vid_pid: String::new(),
+                description: "USB serial port".to_string(),
+            })
+            .collect();
+        self.devices.set_devices(devices);
+        if self.devices.needs_selection() {
+            self.open_device_picker();
+        }
     }
 
     /// Creates the browser (once), and starts a device scan with it when the
@@ -233,6 +280,15 @@ impl App {
         };
         self.logs.info(format!("device set to {}", device.label()));
 
+        // Everything below is the MicroPython follow-through: an mpremote
+        // probe and listing, then the esptool courtesy query. A backend
+        // without a filesystem has neither tool, and must not have its port
+        // touched by them --- for a Zephyr board the pick is the whole job
+        // (the monitor uses the port on demand).
+        if !self.manager.capabilities().contains(Capability::Filesystem) {
+            return;
+        }
+
         // A different board may be in a different state: probe it before the
         // first listing interrupts anything, same as the startup path.
         let port = self.devices.selected_port().map(str::to_string);
@@ -342,8 +398,14 @@ impl App {
             .map(|mut command| {
                 // Same `[tools]` override seam the browser and run session
                 // use, so tests (and user overrides) point every mpremote
-                // invocation at the same binary.
-                if let Some(tool) = self.browser.as_ref().and_then(Browser::tool_path) {
+                // invocation at the same binary. The browser owns the
+                // mpremote override; the build panel owns west's.
+                let tool = self
+                    .browser
+                    .as_ref()
+                    .and_then(Browser::tool_path)
+                    .or_else(|| self.build.as_ref().and_then(|panel| panel.tool_path()));
+                if let Some(tool) = tool {
                     command = command.with_program(tool.to_string());
                 }
                 command

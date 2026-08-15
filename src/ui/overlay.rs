@@ -782,7 +782,10 @@ fn draw_help(frame: &mut Frame, area: Rect, app: &App) {
                 "enter (build pane)",
                 "run the selected build action; stop heads the list while one runs",
             ),
-            ("d", "scan for devices (when the backend has a filesystem)"),
+            (
+                "d",
+                "scan for devices (mpremote, or USB serial ports for a monitor-only backend)",
+            ),
             (
                 "i",
                 "on the device pane: install a package via mip (when the backend supports it)",
