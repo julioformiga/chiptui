@@ -97,9 +97,8 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
 /// (`SPEC.md` §11).
 ///
 /// Row 1's height adapts to its content: the taller of the two info panes
-/// plus borders. Both are informational (never focused), and `memory:` shares
-/// the `flash id:` line, so the row starts compact and only grows when device
-/// details accumulate.
+/// plus borders. Both are informational (never focused), so the row starts
+/// compact and only grows when device details accumulate.
 fn draw_dashboard(frame: &mut Frame, body: Rect, app: &mut App) {
     let half_width = (body.width / 2).max(1) as usize;
     let project_n = panels::project_content(app, half_width).len();

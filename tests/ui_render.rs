@@ -203,14 +203,13 @@ fn device_pane_has_nothing_to_show_without_a_flash_capable_backend() {
 }
 
 #[test]
-fn device_pane_shows_chip_and_flash_details_once_esptool_has_reported_them() {
+fn device_pane_shows_chip_details_once_esptool_has_reported_them() {
     let mut app = app_with_backend(BackendKind::MicroPython);
     let mut flash = FlashPanel::new(std::env::temp_dir());
     flash.details = DeviceDetails {
         family: Some(ChipFamily::Esp32S3),
         revision: Some("3".to_string()),
         mac: Some("24:6f:28:12:34:56".to_string()),
-        flash_size: Some("4MB".to_string()),
         ..DeviceDetails::default()
     };
     app.flash = Some(flash);
@@ -226,7 +225,6 @@ fn device_pane_shows_chip_and_flash_details_once_esptool_has_reported_them() {
         frame.contains("24:6f:28:12:34:56"),
         "missing MAC address:\n{frame}"
     );
-    assert!(frame.contains("4MB"), "missing flash size:\n{frame}");
 }
 
 #[test]

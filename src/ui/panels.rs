@@ -152,12 +152,12 @@ pub(super) fn project_content(app: &App, width: usize) -> Vec<Line<'static>> {
 }
 
 /// What esptool has reported about the connected board so far: identity
-/// (chip/revision/features/crystal/MAC) and flash geometry, accumulated
-/// across whatever `chip-id`/`flash-id`/flash/erase/verify runs have
-/// happened in the Flash view (`crate::flash::FlashPanel::details`). The
-/// backend's own name already lives in the Project pane above, so this space
-/// is spent on the board itself instead of repeating it. Like the Project
-/// pane it is informational only and never holds focus.
+/// (chip/revision/features/crystal/MAC), accumulated across whatever
+/// `chip-id`/`flash-id`/flash/erase/verify runs have happened in the Flash
+/// view (`crate::flash::FlashPanel::details`). The backend's own name already
+/// lives in the Project pane above, so this space is spent on the board itself
+/// instead of repeating it. Like the Project pane it is informational only and
+/// never holds focus.
 pub fn draw_detection(frame: &mut Frame, area: Rect, app: &App) {
     let block = pane_block("Device info", false);
     let lines = device_content(app);
@@ -215,28 +215,6 @@ pub(super) fn device_content(app: &App) -> Vec<Line<'static>> {
     }
     if let Some(mac) = &details.mac {
         lines.push(field("MAC", mac.clone()));
-    }
-
-    // `memory:` shares the `flash id:` line (5 spaces after the flash id
-    // value) so the info row stays compact.
-    let has_flash_id = details.flash_manufacturer.is_some() || details.flash_device.is_some();
-    let has_memory = details.flash_size.is_some();
-    if has_flash_id || has_memory {
-        let mut spans = vec![label_span("flash id")];
-        if has_flash_id {
-            spans.push(Span::raw(format!(
-                "{} / {}",
-                details.flash_manufacturer.as_deref().unwrap_or("?"),
-                details.flash_device.as_deref().unwrap_or("?"),
-            )));
-        }
-        if let Some(size) = &details.flash_size {
-            spans.push(Span::raw("          "));
-            spans.push(Span::styled("memory:", Style::new().dim()));
-            spans.push(Span::raw(" "));
-            spans.push(Span::styled(size.clone(), Style::new().fg(Color::Cyan)));
-        }
-        lines.push(Line::from(spans));
     }
 
     lines
