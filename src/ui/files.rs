@@ -15,7 +15,7 @@ use ratatui::widgets::{Gauge, List, ListItem, ListState, Paragraph, Wrap};
 
 use crate::app::{App, Focus};
 use crate::backend::Capability;
-use crate::browser::{Browser, LocalTotal, PaneState};
+use crate::browser::{Browser, PaneState};
 use crate::device::{DiscoveryState, ScriptState};
 use crate::files::SyncStatus;
 use crate::ui::{SPINNER, content_style, dashboard_focused, pane_block};
@@ -100,8 +100,6 @@ fn draw_local(
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let [list_area, footer_area] =
-        Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(inner);
 
     let items: Vec<ListItem> = browser
         .visible_local()
@@ -112,28 +110,12 @@ fn draw_local(
                 entry.is_dir,
                 entry.size,
                 statuses.get(&entry.name).copied(),
-                list_area.width,
+                inner.width,
             )
         })
         .collect();
 
-    render_list(frame, list_area, items, browser.local_cursor, focused);
-    draw_local_footer(frame, footer_area, browser);
-}
-
-/// Total size of the current folder, including subfolders --- deliberately
-/// just the total, not an item count or anything else. While the background
-/// walk is still running the footer says so instead of showing a stale or
-/// missing number.
-fn draw_local_footer(frame: &mut Frame, area: Rect, browser: &Browser) {
-    let label = match browser.local_total {
-        LocalTotal::Ready(total) => format!("total: {}", human_size(total)),
-        LocalTotal::Calculating => "total: …".to_string(),
-    };
-    frame.render_widget(
-        Paragraph::new(label.dim()).alignment(Alignment::Right),
-        area,
-    );
+    render_list(frame, inner, items, browser.local_cursor, focused);
 }
 
 fn draw_device(

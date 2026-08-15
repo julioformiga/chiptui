@@ -231,29 +231,11 @@ struct Output {
     stderr: String,
 }
 
-/// The local pane's folder-total footer state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LocalTotal {
-    /// A [`files::SizeWalk`] is measuring the current directory in the
-    /// background; the footer shows a calculating indicator.
-    Calculating,
-    /// The walk finished: recursive byte total of the current directory.
-    Ready(u64),
-}
-
 pub struct Browser {
     pub local_path: PathBuf,
     pub local_entries: Vec<LocalEntry>,
     pub local_error: Option<String>,
     pub local_cursor: usize,
-    /// Recursive size of `local_path`'s whole subtree, for the local pane's
-    /// footer --- measured off-thread (see [`files::SizeWalk`]) so a large
-    /// tree cannot freeze the event loop, and re-measured from scratch on
-    /// every [`Self::reload_local`].
-    pub local_total: LocalTotal,
-    /// The in-flight background measurement behind [`Self::local_total`],
-    /// replaced (and its predecessor cancelled) whenever the pane moves.
-    size_walk: Option<files::SizeWalk>,
 
     pub device_path: DevicePath,
     pub device_state: PaneState,
@@ -304,8 +286,6 @@ impl Browser {
             local_entries: Vec::new(),
             local_error: None,
             local_cursor: 0,
-            local_total: LocalTotal::Calculating,
-            size_walk: None,
             device_path: DevicePath::root(),
             device_state: PaneState::Idle,
             device_cursor: 0,
@@ -356,31 +336,7 @@ impl Browser {
                 ));
             }
         }
-        // Navigation is the one user action this footer state answers to:
-        // leaving a directory stops its measurement immediately (the walk's
-        // cancel flag, not a join --- the thread exits on its own) and the
-        // new directory starts a fresh walk.
-        if let Some(mut walk) = self.size_walk.take() {
-            walk.cancel();
-        }
-        self.local_total = LocalTotal::Calculating;
-        self.size_walk = Some(files::SizeWalk::start(&self.local_path));
         self.clamp_cursors();
-    }
-
-    /// Applies a finished background measurement to [`Self::local_total`].
-    ///
-    /// Called once per tick by the app: the result lands in the footer on the
-    /// first frame after the walk completes, without the event loop ever
-    /// having waited for it.
-    pub fn poll_local_size(&mut self) {
-        let Some(walk) = &mut self.size_walk else {
-            return;
-        };
-        if let Some(total) = walk.try_result() {
-            self.local_total = LocalTotal::Ready(total);
-            self.size_walk = None;
-        }
     }
 
     /// Entries shown in the local pane, honouring the hidden-files toggle.
@@ -1991,75 +1947,6 @@ mod tests {
         assert!(browser.selected_is_dir(Side::Local));
         browser.cursor_to(1); // main.py
         assert!(!browser.selected_is_dir(Side::Local));
-    }
-
-    #[test]
-    fn the_local_total_is_measured_outside_the_start_directory_too() {
-        let fixture = Fixture::new("total");
-        let mut browser = Browser::new(&fixture.root);
-        assert_eq!(browser.local_total, LocalTotal::Calculating);
-
-        // Landing on a directory the browser did not start in (here: a
-        // sibling of the fixture, standing in for "above the project") is
-        // measured like any other --- the walk is cancellable, so no
-        // directory needs to be fenced off.
-        let outside =
-            std::env::temp_dir().join(format!("chiptui-browser-outside-{}", std::process::id()));
-        std::fs::create_dir_all(&outside).unwrap();
-        std::fs::write(outside.join("data.bin"), [0u8; 64]).unwrap();
-
-        browser.local_path = outside.clone();
-        browser.reload_local();
-        assert_eq!(wait_for_total(&mut browser), LocalTotal::Ready(64));
-
-        let _ = std::fs::remove_dir_all(&outside);
-    }
-
-    #[test]
-    fn navigation_cancels_and_replaces_the_running_walk() {
-        let fixture = Fixture::new("walk");
-        let mut browser = Browser::new(&fixture.root);
-        let mut processes = ProcessManager::new();
-
-        browser.cursor_to(0); // lib/
-        browser.enter(&mut processes, None);
-        assert_eq!(
-            browser.local_total,
-            LocalTotal::Calculating,
-            "the new directory is measured from scratch, not left showing the old total"
-        );
-
-        // Waiting for the result, then leaving, must drop back to Calculating
-        // rather than carry the finished number into the next directory.
-        wait_for_total(&mut browser);
-        browser.ascend(&mut processes, None);
-        assert_eq!(browser.local_total, LocalTotal::Calculating);
-    }
-
-    #[test]
-    fn the_background_walk_lands_through_polling() {
-        let fixture = Fixture::new("poll");
-        let mut browser = Browser::new(&fixture.root);
-
-        // main.py (12 bytes) + .hidden (1 byte): the walk is independent of
-        // the hidden-files toggle, like the footer total always was.
-        assert_eq!(browser.local_total, LocalTotal::Calculating);
-        assert_eq!(wait_for_total(&mut browser), LocalTotal::Ready(13));
-    }
-
-    /// Pumps [`Browser::poll_local_size`] until the walk reports back.
-    ///
-    /// The walk is a real thread over a real (temporary) directory, so the
-    /// test cannot assume the result is immediate --- only that it arrives.
-    fn wait_for_total(browser: &mut Browser) -> LocalTotal {
-        for _ in 0..2000 {
-            browser.poll_local_size();
-            if browser.local_total != LocalTotal::Calculating {
-                return browser.local_total;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        panic!("the size walk never reported a result");
     }
 
     #[test]

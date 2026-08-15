@@ -878,7 +878,6 @@ impl App {
                     // start now; listing beats waiting forever.
                     self.resume_held_root_listing();
                 }
-                self.poll_local_size();
             }
             AppEvent::Process(event) => self.on_process(&event),
         }

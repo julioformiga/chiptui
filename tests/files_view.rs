@@ -933,10 +933,6 @@ fn the_browser_renders_both_panes_with_comparison_markers() {
         "missing device pane:\n{frame}"
     );
     assert!(
-        frame.contains("total:"),
-        "missing the local pane's total-size footer:\n{frame}"
-    );
-    assert!(
         // 1,040,384 used of 1,441,792 total, per the fake mpremote's `df` fixture.
         frame.contains("total: 1016.0k/1.4M"),
         "missing the device pane's usage gauge:\n{frame}"

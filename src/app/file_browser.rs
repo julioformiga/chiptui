@@ -721,16 +721,4 @@ impl App {
             browser.reload_local();
         }
     }
-
-    /// Lands finished background folder-total measurements, one per tick.
-    ///
-    /// The walk itself never touches this thread ([`Browser::reload_local`]
-    /// spawns and cancels it), so this only promotes a waiting result into
-    /// the local pane's footer --- the tick cadence, not the disk, decides
-    /// when it shows up.
-    pub fn poll_local_size(&mut self) {
-        if let Some(browser) = &mut self.browser {
-            browser.poll_local_size();
-        }
-    }
 }
