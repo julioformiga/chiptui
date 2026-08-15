@@ -20,16 +20,27 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
         Overlay::BackendPicker { selected } => draw_picker(frame, area, app, selected),
         Overlay::DevicePicker { selected } => draw_device_picker(frame, area, app, selected),
         Overlay::Confirm { message, confirm } => draw_confirm(frame, area, &message, confirm),
-        Overlay::ConfirmBuild { kind, confirm } => {
+        Overlay::ConfirmBuild { action, confirm } => {
             // The message is derived, not stored: whatever the panel would
             // run right now is exactly what the confirm should quote.
             let message = app
                 .build
                 .as_ref()
-                .and_then(|panel| app.manager.backend().and_then(|b| panel.command(kind, b)))
-                .map(|command| format!("Run {command}?"))
-                .unwrap_or_else(|| format!("Run {}?", kind.label()));
-            draw_confirm(frame, area, &message, confirm);
+                .and_then(|panel| {
+                    let backend = app.manager.backend()?;
+                    match action {
+                        crate::build::BuildAction::Build(kind) => panel
+                            .command(kind, backend)
+                            .map(|command| command.to_string()),
+                        crate::build::BuildAction::Flash => panel
+                            .flash_command(backend)
+                            .map(|command| command.to_string()),
+                        // Only destructive actions reach this overlay.
+                        _ => None,
+                    }
+                })
+                .unwrap_or_else(|| "this action".to_string());
+            draw_confirm(frame, area, &format!("Run {message}?"), confirm);
         }
         Overlay::BoardPicker { input, selected } => {
             draw_board_picker(frame, area, app, &input, selected)

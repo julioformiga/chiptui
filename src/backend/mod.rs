@@ -265,6 +265,14 @@ pub trait Backend {
     fn board_list_command(&self) -> Option<crate::process::Command> {
         None
     }
+
+    /// Returns the command that writes the built image to the device.
+    /// Returns `None` if the backend has no [`Capability::Flash`] single
+    /// command --- MicroPython's flashing is a multi-step esptool flow the
+    /// Flash dialog owns, so it stays `None` there.
+    fn flash_command(&self) -> Option<crate::process::Command> {
+        None
+    }
 }
 
 /// Whether `name` resolves to an executable on `PATH`.

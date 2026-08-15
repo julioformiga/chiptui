@@ -158,7 +158,7 @@ fn enter_builds_and_streams_into_the_monitor_tab() {
     assert!(finished, "the fake west never finished");
     let last = app.build.as_ref().unwrap().last.as_ref().unwrap();
     assert!(last.ok, "a zero-exit west must report success");
-    assert_eq!(last.kind, BuildKind::Build);
+    assert_eq!(last.what, "Build");
     assert!(
         app.build.as_ref().unwrap().output.len() >= 2,
         "output streamed"
@@ -185,7 +185,7 @@ fn clean_asks_before_running() {
     assert_eq!(
         app.overlay,
         Some(Overlay::ConfirmBuild {
-            kind: BuildKind::Clean,
+            action: chiptui::build::BuildAction::Build(BuildKind::Clean),
             confirm: false
         })
     );
@@ -325,8 +325,8 @@ fn the_board_picker_fetches_filters_and_picks_for_the_session() {
     app.build.as_mut().unwrap().set_tool_path(fake("west"));
     app.focus = Focus::Build;
 
-    // The Board action sits after the three lifecycle entries.
-    for _ in 0..3 {
+    // The Board action sits after the three lifecycle entries and Flash.
+    for _ in 0..4 {
         app.handle(key(KeyCode::Down));
     }
     app.handle(key(KeyCode::Enter));
@@ -415,7 +415,7 @@ fn a_boardless_filter_match_enter_picks_nothing_and_esc_changes_nothing() {
     app.build.as_mut().unwrap().set_tool_path(fake("west"));
     app.focus = Focus::Build;
 
-    for _ in 0..3 {
+    for _ in 0..4 {
         app.handle(key(KeyCode::Down));
     }
     app.handle(key(KeyCode::Enter));
@@ -445,7 +445,7 @@ fn a_boardless_filter_match_enter_picks_nothing_and_esc_changes_nothing() {
     );
 
     // …and Esc leaves the cache answer untouched either way.
-    for _ in 0..3 {
+    for _ in 0..4 {
         app.handle(key(KeyCode::Down));
     }
     app.handle(key(KeyCode::Enter));
@@ -467,7 +467,7 @@ fn a_missing_west_explains_itself_in_the_picker() {
         .set_tool_path("/nonexistent/west");
     app.focus = Focus::Build;
 
-    for _ in 0..3 {
+    for _ in 0..4 {
         app.handle(key(KeyCode::Down));
     }
     app.handle(key(KeyCode::Enter));
@@ -488,4 +488,85 @@ fn a_missing_west_explains_itself_in_the_picker() {
         frame.contains("is west on PATH?"),
         "the picker must explain the failure:\n{frame}"
     );
+}
+
+#[test]
+fn flash_is_listed_confirms_and_runs_through_west() {
+    let mut app = app_with_west("flash", "west");
+    app.focus = Focus::Build;
+
+    // Flash sits between Rebuild and Board.
+    for _ in 0..3 {
+        app.handle(key(KeyCode::Down));
+    }
+    app.handle(key(KeyCode::Enter));
+
+    // Destructive (Capability::Flash): the confirm quotes the literal
+    // command, defaulting to No.
+    assert_eq!(
+        app.overlay,
+        Some(Overlay::ConfirmBuild {
+            action: chiptui::build::BuildAction::Flash,
+            confirm: false
+        })
+    );
+    let frame = render(&mut app, 100, 30);
+    assert!(
+        frame.contains("west flash"),
+        "the confirm must quote the literal command:\n{frame}"
+    );
+
+    // Declining runs nothing.
+    app.handle(key(KeyCode::Esc));
+    assert!(!app.build.as_ref().unwrap().is_busy());
+
+    // Accepting runs it, streaming into the Monitor tab, and the report
+    // line names Flash --- not a recycled Build label.
+    app.handle(key(KeyCode::Enter));
+    app.handle(key(KeyCode::Char('y')));
+    assert!(app.build.as_ref().unwrap().is_busy());
+    assert_eq!(app.monitor_source, MonitorSource::Build);
+    assert!(
+        app.build
+            .as_ref()
+            .unwrap()
+            .output
+            .front()
+            .unwrap()
+            .ends_with("west flash")
+    );
+
+    let finished = pump_until(
+        &mut app,
+        |app| app.build.as_ref().unwrap().last.is_some(),
+        10,
+    );
+    assert!(finished);
+    let last = app.build.as_ref().unwrap().last.as_ref().unwrap();
+    assert!(last.ok);
+    assert_eq!(last.what, "Flash");
+}
+
+#[test]
+fn x_routes_a_build_backend_to_west_flash_and_micropython_to_esptool() {
+    // Zephyr: `x` opens the flash confirm of the build panel, not esptool's
+    // dialog --- that dialog cannot talk to this board.
+    let mut app = app_with_west("x-zephyr", "west");
+    app.handle(key(KeyCode::Char('x')));
+    assert_eq!(
+        app.overlay,
+        Some(Overlay::ConfirmBuild {
+            action: chiptui::build::BuildAction::Flash,
+            confirm: false
+        })
+    );
+    assert_ne!(app.view, View::Flash);
+
+    // MicroPython: `x` still opens the esptool flash dialog.
+    let mut app = App::new(std::env::temp_dir());
+    app.bootstrap();
+    app.manager.set_override(Some(BackendKind::MicroPython));
+    app.maybe_scan_devices();
+    app.handle(key(KeyCode::Char('x')));
+    assert_eq!(app.view, View::Flash);
 }

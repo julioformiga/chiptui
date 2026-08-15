@@ -83,7 +83,7 @@ fn draw_header(frame: &mut Frame, area: Rect, panel: &BuildPanel) {
 }
 
 fn report_line(report: &BuildReport) -> Line<'static> {
-    let what = report.kind.label();
+    let what = report.what;
     let (mark, style) = if report.ok {
         ("✓", Style::new().fg(Color::Green))
     } else {
@@ -108,17 +108,14 @@ fn label(text: &str) -> Span<'static> {
 
 /// The action list: `Stop` while a command runs, then the lifecycle entries
 /// each with the command it would run today (board, build directory and
-/// tool-override all reflected --- what you see is what runs), then `Board`
-/// under [`crate::backend::Capability::BoardSelect`].
+/// tool-override all reflected --- what you see is what runs), then `Flash`
+/// and `Board` under their capabilities.
 fn draw_actions(frame: &mut Frame, area: Rect, app: &App, panel: &BuildPanel, focused: bool) {
     let backend = app.manager.backend();
-    let board_select = app
-        .manager
-        .capabilities()
-        .contains(crate::backend::Capability::BoardSelect);
+    let caps = app.manager.capabilities();
     let mut items = Vec::new();
 
-    for action in panel.actions(board_select) {
+    for action in panel.actions(&caps) {
         let item = match action {
             crate::build::BuildAction::Stop => Line::from(vec![
                 Span::styled("■ ", Style::new().fg(Color::Red)),
@@ -133,6 +130,21 @@ fn draw_actions(frame: &mut Frame, area: Rect, app: &App, panel: &BuildPanel, fo
                 Line::from(vec![
                     Span::raw("  "),
                     kind.label().bold(),
+                    Span::raw("  "),
+                    Span::styled(
+                        shorten_start(&command, width_for(area.width)),
+                        Style::new().dim(),
+                    ),
+                ])
+            }
+            crate::build::BuildAction::Flash => {
+                let command = backend
+                    .and_then(|backend| panel.flash_command(backend))
+                    .map(|command| command.to_string())
+                    .unwrap_or_else(|| "not available".to_string());
+                Line::from(vec![
+                    Span::raw("  "),
+                    "Flash".bold(),
                     Span::raw("  "),
                     Span::styled(
                         shorten_start(&command, width_for(area.width)),

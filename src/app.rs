@@ -145,14 +145,14 @@ pub enum Overlay {
         is_dir: bool,
         confirm: bool,
     },
-    /// A destructive build action (`Capability::Clean`) awaiting explicit
+    /// A destructive build-panel action (`Clean`, `Flash`) awaiting explicit
     /// confirmation, showing the literal command (the same rule as the
     /// esptool confirms, `SPEC.md` §15). The message is rebuilt from the
     /// panel state at draw time rather than stored: board and build
     /// directory cannot change while the overlay is open, and this way the
     /// shown command is always the one that would run.
     ConfirmBuild {
-        kind: crate::backend::BuildKind,
+        action: crate::build::BuildAction,
         confirm: bool,
     },
     /// The board picker: a filterable `west boards` list, fetched in the

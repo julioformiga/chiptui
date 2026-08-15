@@ -530,6 +530,13 @@ rather than assuming a single programmer.
 The TUI should expose a simple `Flash` action while preserving
 backend-specific configuration.
 
+> **Status**: implemented as the build panel's `Flash` row --- a plain
+> `west flash`, which delegates to the board's own runner from the build
+> directory's `runner.yml` (no port or programmer is ever assumed). The
+> dashboard's `x` routes a build-panel backend here and a filesystem backend
+> to the esptool dialog. Destructive (`SPEC.md` §15): it always runs through
+> a confirm quoting the literal command.
+
 ### Monitor
 
 Provide a serial monitor where appropriate.

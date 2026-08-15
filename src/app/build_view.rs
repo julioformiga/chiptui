@@ -20,13 +20,10 @@ impl App {
         // the whole app (starting a command flips focus and the monitor
         // source), so the decision is computed first and acted on after the
         // panel borrow ends.
-        let board_select = self
-            .manager
-            .capabilities()
-            .contains(crate::backend::Capability::BoardSelect);
+        let caps = self.manager.capabilities();
         let mut action = None;
         if let Some(panel) = self.build.as_mut() {
-            let len = panel.actions(board_select).len();
+            let len = panel.actions(&caps).len();
             match key.code {
                 KeyCode::Up | KeyCode::Char('k') => {
                     panel.cursor = panel.cursor.saturating_sub(1);
@@ -38,15 +35,12 @@ impl App {
                 KeyCode::PageDown => panel.cursor = (panel.cursor + 5).min(len - 1),
                 KeyCode::Home => panel.cursor = 0,
                 KeyCode::End => panel.cursor = len - 1,
-                KeyCode::Enter => action = panel.action_at(board_select, panel.cursor),
+                KeyCode::Enter => action = panel.action_at(&caps, panel.cursor),
                 _ => {}
             }
         }
-        match action {
-            Some(BuildAction::Stop) => self.stop_build(),
-            Some(BuildAction::Build(kind)) => self.queue_build_action(kind),
-            Some(BuildAction::Board) => self.open_board_picker(),
-            None => {}
+        if let Some(action) = action {
+            self.run_build_action(action);
         }
     }
 
@@ -88,24 +82,64 @@ impl App {
         ));
     }
 
-    /// Entry point for a chosen build action: destructive kinds route
-    /// through a confirm overlay showing the literal command; the rest start
-    /// immediately.
-    pub(super) fn queue_build_action(&mut self, kind: BuildKind) {
-        if kind == BuildKind::Clean {
-            self.overlay = Some(Overlay::ConfirmBuild {
-                kind,
-                confirm: false,
-            });
-            return;
+    /// Runs a panel action: destructive ones (`Clean`, `Flash` --- both
+    /// destructive capabilities, `SPEC.md` §15) route through a confirm
+    /// overlay quoting the literal command; the rest act immediately. This
+    /// is also the confirm overlay's accept path, which is why it must not
+    /// itself confirm again.
+    pub(super) fn run_build_action(&mut self, action: BuildAction) {
+        match action {
+            BuildAction::Stop => self.stop_build(),
+            BuildAction::Build(kind) => {
+                if kind == BuildKind::Clean {
+                    self.overlay = Some(Overlay::ConfirmBuild {
+                        action,
+                        confirm: false,
+                    });
+                } else {
+                    self.start_build(kind);
+                }
+            }
+            BuildAction::Flash => {
+                self.overlay = Some(Overlay::ConfirmBuild {
+                    action,
+                    confirm: false,
+                });
+            }
+            BuildAction::Board => self.open_board_picker(),
         }
-        self.start_build(kind);
     }
 
     /// Starts `kind`'s command and moves the user to where its output
     /// streams. A failure to even compose or start the command is a log
     /// notice instead: the panel stays usable.
     pub(super) fn start_build(&mut self, kind: BuildKind) {
+        let updates_board = matches!(kind, BuildKind::Build | BuildKind::Rebuild);
+        self.start_build_command(kind.label(), updates_board, |panel, backend| {
+            panel.command(kind, backend)
+        });
+    }
+
+    /// Starts the flash command, same hand-off as the build kinds. Reached
+    /// only through the confirm overlay (flash is destructive).
+    pub(super) fn start_flash(&mut self) {
+        self.start_build_command("Flash", false, |panel, backend| {
+            panel.flash_command(backend)
+        });
+    }
+
+    /// The shared body of [`Self::start_build`]/[`Self::start_flash`]:
+    /// compose through the panel, run, and move the user to the Monitor
+    /// tab where the output streams.
+    fn start_build_command(
+        &mut self,
+        label: &'static str,
+        updates_board: bool,
+        command: impl FnOnce(
+            &mut crate::build::BuildPanel,
+            &dyn crate::backend::Backend,
+        ) -> Option<crate::process::Command>,
+    ) {
         let Some(backend) = self.manager.backend() else {
             return;
         };
@@ -116,18 +150,16 @@ impl App {
             self.logs.warn("a build command is already running");
             return;
         }
-        let Some(command) = panel.command(kind, backend) else {
-            self.logs.warn(format!(
-                "{}: this backend offers no such action",
-                kind.label()
-            ));
+        let Some(command) = command(panel, backend) else {
+            self.logs
+                .warn(format!("{label}: this backend offers no such action"));
             return;
         };
-        let label = command.to_string();
-        if !panel.start(kind, command, &mut self.processes) {
+        let full_label = command.to_string();
+        if !panel.start(label, updates_board, command, &mut self.processes) {
             return;
         }
-        self.logs.info(format!("running {label}"));
+        self.logs.info(format!("running {full_label}"));
         // Same hand-off as the flash dialog: the command's home while it
         // runs is the Monitor tab (`SPEC.md` §11).
         self.view = super::View::Dashboard;

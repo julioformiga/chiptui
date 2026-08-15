@@ -102,6 +102,10 @@ impl Backend for ZephyrBackend {
     fn board_list_command(&self) -> Option<crate::process::Command> {
         Some(commands::boards())
     }
+
+    fn flash_command(&self) -> Option<crate::process::Command> {
+        Some(commands::flash())
+    }
 }
 
 #[cfg(test)]

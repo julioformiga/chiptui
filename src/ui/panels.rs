@@ -137,7 +137,11 @@ pub(super) fn device_content(app: &App) -> Vec<Line<'static>> {
     let caps = app.manager.capabilities();
     let dim = Style::new().add_modifier(Modifier::DIM);
 
-    if !caps.contains(Capability::Flash) && !caps.contains(Capability::EraseFlash) {
+    // This pane is esptool's report (chip/flash geometry). A backend that
+    // flashes another way (Zephyr: `west flash` through the build panel)
+    // declares no `DeviceInfo`/`EraseFlash` and gets the honest placeholder
+    // instead of a hint pointing at a dialog that cannot talk to its board.
+    if !caps.contains(Capability::DeviceInfo) && !caps.contains(Capability::EraseFlash) {
         return vec![Line::from("no device information for this project").style(dim)];
     }
     let Some(flash) = app.flash.as_ref() else {

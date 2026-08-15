@@ -40,7 +40,8 @@ const CACHED_BOARD_KEY: &str = "CACHED_BOARD:STRING=";
 /// Result of the last finished command, for the panel's header line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuildReport {
-    pub kind: BuildKind,
+    /// What ran, as a label ("Build", "Clean", "Flash", …).
+    pub what: &'static str,
     pub ok: bool,
     pub duration: Duration,
     /// Wall-clock finish time, in the app's configured local offset.
@@ -49,7 +50,10 @@ pub struct BuildReport {
 
 struct Running {
     id: ProcessId,
-    kind: BuildKind,
+    what: &'static str,
+    /// A successful run leaves a fresh CMakeCache behind (build/rebuild;
+    /// `west flash` does not reconfigure). See [`BuildPanel::finish`].
+    updates_board: bool,
     started: Instant,
 }
 
@@ -90,14 +94,39 @@ pub enum BoardsState {
 }
 
 /// One row of the build panel's action list. `Stop`/`Board` bookend the
-/// [`BuildKind`] entries exactly when they apply (see [`BuildPanel::actions`]).
+/// [`BuildKind`] entries exactly when they apply (see
+/// [`BuildPanel::actions`]); `Flash` sits between them under
+/// [`crate::backend::Capability::Flash`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuildAction {
     Stop,
     Build(BuildKind),
+    /// Writes the built image to the device --- destructive (`SPEC.md` §15),
+    /// so it always routes through the confirm overlay.
+    Flash,
     /// Opens the board picker (only under [`crate::backend::Capability::
     /// BoardSelect`]).
     Board,
+}
+
+impl BuildAction {
+    /// Rows for an idle panel under `caps`: the build lifecycle, then flash
+    /// and board when the capabilities allow. With `running`, `Stop` is
+    /// prepended (cancelling as discoverable as starting, `SPEC.md` §12).
+    pub fn list(caps: &crate::backend::Capabilities, running: bool) -> Vec<Self> {
+        let mut actions = Vec::with_capacity(BuildKind::ALL.len() + 3);
+        if running {
+            actions.push(Self::Stop);
+        }
+        actions.extend(BuildKind::ALL.iter().map(|kind| Self::Build(*kind)));
+        if caps.contains(crate::backend::Capability::Flash) {
+            actions.push(Self::Flash);
+        }
+        if caps.contains(crate::backend::Capability::BoardSelect) {
+            actions.push(Self::Board);
+        }
+        actions
+    }
 }
 
 pub struct BuildPanel {
@@ -155,26 +184,19 @@ impl BuildPanel {
         self.running.is_some()
     }
 
-    /// Rows the action list shows, top to bottom: `Stop` while a command
-    /// runs (cancelling as discoverable as starting, `SPEC.md` §12), the
-    /// build lifecycle, then `Board` when the backend lets the user pick a
-    /// target (`Capability::BoardSelect`).
-    pub fn actions(&self, board_select: bool) -> Vec<BuildAction> {
-        let mut actions = Vec::with_capacity(BuildKind::ALL.len() + 2);
-        if self.is_busy() {
-            actions.push(BuildAction::Stop);
-        }
-        actions.extend(BuildKind::ALL.iter().map(|kind| BuildAction::Build(*kind)));
-        if board_select {
-            actions.push(BuildAction::Board);
-        }
-        actions
+    /// Rows the action list shows --- see [`BuildAction::list`].
+    pub fn actions(&self, caps: &crate::backend::Capabilities) -> Vec<BuildAction> {
+        BuildAction::list(caps, self.is_busy())
     }
 
     /// The action at `index` in the drawn list, mirroring the layout
     /// [`Self::actions`] describes.
-    pub fn action_at(&self, board_select: bool, index: usize) -> Option<BuildAction> {
-        self.actions(board_select).into_iter().nth(index)
+    pub fn action_at(
+        &self,
+        caps: &crate::backend::Capabilities,
+        index: usize,
+    ) -> Option<BuildAction> {
+        self.actions(caps).into_iter().nth(index)
     }
 
     /// The board name commands should target, whatever its origin.
@@ -262,16 +284,33 @@ impl BuildPanel {
         })
     }
 
+    /// The flash command, rooted and tool-overridden like the build ones.
+    /// `None` when the backend has no single flash command.
+    pub fn flash_command(
+        &self,
+        backend: &dyn crate::backend::Backend,
+    ) -> Option<crate::process::Command> {
+        let command = backend.flash_command()?;
+        let command = command.current_dir(&self.root);
+        Some(match &self.tool_path {
+            Some(program) => command.with_program(program),
+            None => command,
+        })
+    }
+
     fn has_build_dir(&self) -> bool {
         self.root.join("build").is_dir()
     }
 
-    /// Starts `command` as this panel's running process. `false` (without
-    /// side effects) when something is already running --- one build at a
-    /// time, same rule as the flash panel.
+    /// Starts `command` as this panel's running process. `what` labels it in
+    /// the report line; `updates_board` marks commands whose success leaves
+    /// a fresh CMakeCache behind. `false` (without side effects) when
+    /// something is already running --- one build at a time, same rule as
+    /// the flash panel.
     pub fn start(
         &mut self,
-        kind: BuildKind,
+        what: &'static str,
+        updates_board: bool,
         command: crate::process::Command,
         processes: &mut ProcessManager,
     ) -> bool {
@@ -286,7 +325,8 @@ impl BuildPanel {
         let id = processes.spawn(command, BUILD_TIMEOUT);
         self.running = Some(Running {
             id,
-            kind,
+            what,
+            updates_board,
             started: Instant::now(),
         });
         true
@@ -362,7 +402,7 @@ impl BuildPanel {
         duration: Duration,
     ) -> Vec<(Level, String)> {
         let ok = outcome.is_success();
-        let what = running.kind.label();
+        let what = running.what;
         let message = match outcome {
             Outcome::Success => format!("{what}: done in {}", Self::secs(duration)),
             Outcome::Failed { code } => match code {
@@ -387,7 +427,7 @@ impl BuildPanel {
         };
 
         self.last = Some(BuildReport {
-            kind: running.kind,
+            what: running.what,
             ok,
             duration,
             at: OffsetDateTime::now_utc().to_offset(self.offset),
@@ -398,7 +438,7 @@ impl BuildPanel {
         // agrees with it (rebuilding on the picked board reconfigures the
         // cache to that name); only a cache the pick does not explain
         // demotes the answer back to "from build/".
-        if ok && matches!(running.kind, BuildKind::Build | BuildKind::Rebuild) {
+        if ok && running.updates_board {
             let cached = cached_board(&self.root).map(|name| BoardChoice {
                 name,
                 origin: BoardOrigin::Cache,
@@ -573,30 +613,43 @@ mod tests {
     }
 
     #[test]
-    fn the_action_list_bookends_with_stop_and_board() {
+    fn the_action_list_bookends_with_stop_flash_and_board() {
         let mut panel = BuildPanel::new("/nonexistent", UtcOffset::UTC);
+        // Zephyr's real set: build lifecycle, flash, board.
+        let zephyr = crate::backend::Capabilities::from_slice(&[
+            crate::backend::Capability::Build,
+            crate::backend::Capability::Clean,
+            crate::backend::Capability::Flash,
+            crate::backend::Capability::BoardSelect,
+        ]);
         assert_eq!(
-            panel.actions(true),
+            panel.actions(&zephyr),
             vec![
                 BuildAction::Build(BuildKind::Build),
                 BuildAction::Build(BuildKind::Clean),
                 BuildAction::Build(BuildKind::Rebuild),
+                BuildAction::Flash,
                 BuildAction::Board,
             ]
         );
-        assert_eq!(panel.action_at(true, 3), Some(BuildAction::Board));
-        assert_eq!(panel.action_at(false, 3), None, "no board row, no row 3");
+        assert_eq!(panel.action_at(&zephyr, 3), Some(BuildAction::Flash));
+        assert_eq!(panel.action_at(&zephyr, 4), Some(BuildAction::Board));
+
+        // A backend without flash/board capability: just the lifecycle.
+        let plain = crate::backend::Capabilities::from_slice(&[crate::backend::Capability::Build]);
+        assert_eq!(panel.action_at(&plain, 3), None, "no more rows");
 
         // With a command running, Stop shifts everything down by one ---
         // the cursor arithmetic the key handler depends on.
         let mut processes = ProcessManager::new();
         panel.start(
-            BuildKind::Build,
+            BuildKind::Build.label(),
+            true,
             crate::process::Command::new(fake("west")),
             &mut processes,
         );
-        assert_eq!(panel.action_at(true, 0), Some(BuildAction::Stop));
-        assert_eq!(panel.action_at(true, 4), Some(BuildAction::Board));
+        assert_eq!(panel.action_at(&zephyr, 0), Some(BuildAction::Stop));
+        assert_eq!(panel.action_at(&zephyr, 5), Some(BuildAction::Board));
     }
 
     #[test]

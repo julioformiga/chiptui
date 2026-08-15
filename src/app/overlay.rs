@@ -6,6 +6,7 @@
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
 use crate::backend::BackendKind;
+use crate::build::BuildAction;
 use crate::device::ScriptState;
 
 use super::{App, FileAction, Overlay, PendingEdit, PickerOption, ViewerSource};
@@ -213,14 +214,20 @@ impl App {
                     |_| {},
                 );
             }
-            Overlay::ConfirmBuild { kind, confirm } => {
+            Overlay::ConfirmBuild { action, confirm } => {
                 self.dispatch_confirm(
                     key.code,
                     confirm,
                     move |app, confirm| {
-                        app.overlay = Some(Overlay::ConfirmBuild { kind, confirm });
+                        app.overlay = Some(Overlay::ConfirmBuild { action, confirm });
                     },
-                    move |app| app.start_build(kind),
+                    // Accept runs the command directly --- routing back
+                    // through `run_build_action` would re-open this confirm.
+                    move |app| match action {
+                        BuildAction::Build(kind) => app.start_build(kind),
+                        BuildAction::Flash => app.start_flash(),
+                        _ => {}
+                    },
                     |_| {},
                 );
             }

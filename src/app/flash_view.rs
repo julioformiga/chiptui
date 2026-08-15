@@ -340,7 +340,14 @@ impl App {
     /// Opens the flash view, if the selected backend can flash or erase.
     ///
     /// The gate is the capability, never the backend kind (`AGENTS.md` §3).
+    /// A backend whose flashing lives in the build panel (`west flash`
+    /// behind a confirm, e.g. Zephyr) is routed there instead of esptool's
+    /// dialog --- this view is esptool-specific.
     pub fn open_flash(&mut self) {
+        if self.build_pane_visible() {
+            self.run_build_action(crate::build::BuildAction::Flash);
+            return;
+        }
         if !self.ensure_flash_panel() {
             let backend = self
                 .manager

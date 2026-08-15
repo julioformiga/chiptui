@@ -55,6 +55,15 @@ pub fn boards() -> Command {
     Command::new(PROGRAM).arg("boards")
 }
 
+/// `west flash` --- builds (incrementally, if anything changed) and writes
+/// the image to the board through the *board's own* runner, which `west`
+/// reads from the build directory's `runner.yml` (pyocd, openocd, nrfjprog,
+/// jlink, ...). No port or programmer is ever passed here: assuming one
+/// would be exactly the mechanism-specific guess `SPEC.md` §10 forbids.
+pub fn flash() -> Command {
+    Command::new(PROGRAM).arg("flash")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -89,6 +98,11 @@ mod tests {
     #[test]
     fn boards_lists_targets() {
         assert_eq!(boards().to_string(), "west boards");
+    }
+
+    #[test]
+    fn flash_delegates_to_the_boards_runner() {
+        assert_eq!(flash().to_string(), "west flash");
     }
 
     #[test]

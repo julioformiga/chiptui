@@ -43,9 +43,13 @@ output streaming into the Monitor tab (`MonitorSource::Build`). Commands come fr
 The panel's `Board` action (under `Capability::BoardSelect`) opens `Overlay::BoardPicker`: a
 filterable list over a background `west boards` fetch (`Backend::board_list_command`, parsed by
 `build::parse_boards`); a pick is session-only (`BoardOrigin::Picked` vs `Cache` — the header
-says which), never written to the project.
-Not done yet: Zephyr flash (the `x` dialog still shows esptool's for any `Flash` backend), and
-the Zephyr serial monitor.
+says which), never written to the project. `Flash` (`west flash`, the board's own runner from
+`runner.yml` — never a hard-coded programmer) sits between Rebuild and Board under
+`Capability::Flash`, always behind `Overlay::ConfirmBuild` (destructive); the dashboard's `x`
+routes a build-panel backend there instead of esptool's dialog, and the esptool-specific
+"Device info" pane now gates on `DeviceInfo`/`EraseFlash` so Zephyr gets an honest placeholder.
+Not done yet: the Zephyr serial monitor (`m` needs a port-discovery path that does not require
+mpremote).
 
 `lib.rs` + `main.rs`: everything except `terminal` and `ui` is testable without a tty, and `ui` is
 testable through ratatui's `TestBackend` (see `tests/ui_render.rs`, `tests/files_view.rs`).
