@@ -44,7 +44,8 @@ group sharing a rounded border, a centered icon label per row, a `├─┤` div
 pair --- N buttons cost 2N+1 lines, and `draw_dashboard`'s `row2_content_height` sizes row 2
 to that content (the log pane, which scrolls, takes the remainder; the browser row keeps
 60/40); bold/dim/reversed only, no colors, the REVERSED
-selection confined to the button's row, never the shared rules or dividers), which stay
+selection filling the button's whole inner row edge to edge, never the side rules, dividers or
+outer rules), which stay
 visible but dimmed until their answers exist (`WorkspacePanel::action_enabled`,
 `App::build_action_enabled`) --- Enter on a dimmed row is a no-op; rows carry no trailing
 text (the confirm overlays quote the literal commands, `SPEC.md` §15, not the rows). The

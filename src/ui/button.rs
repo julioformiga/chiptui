@@ -7,14 +7,15 @@
 //! N+2 lines, so a pane full of them still fits vertically. Each
 //! button's icon label is bold while the action can run, dim while it
 //! waits for the checklist's answers --- and the selection highlight is
-//! *internal*: reversed applies to the button's own row alone, never to
-//! the rules around it.
+//! *internal*: reversed fills the button's whole inner row from side
+//! rule to side rule, a solid bar that never paints over the group's
+//! frame.
 
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
-use ratatui::text::Line;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::Widget;
 
 #[derive(Debug, Clone)]
@@ -46,8 +47,8 @@ impl Button {
         self
     }
 
-    /// The button's own row style: bold/dim by readiness, reversed only
-    /// when selected --- the group's rules stay unstyled either way.
+    /// The button's content style: bold/dim by readiness, reversed only
+    /// when selected --- the group's frame stays unstyled either way.
     fn row_style(&self) -> Style {
         let style = if self.enabled {
             Style::new().bold()
@@ -94,15 +95,14 @@ impl Widget for ButtonStack {
                     buf,
                     area,
                     area.y + offset as u16,
-                    &truncate(&button.label, width),
-                    button.row_style(),
+                    Line::styled(truncate(&button.label, width), button.row_style()),
                 );
             }
             return;
         }
         let rule = "─".repeat(width - 2);
         let inner = width - 2;
-        put(buf, area, area.y, &format!("╭{rule}╮"), Style::new());
+        put(buf, area, area.y, Line::raw(format!("╭{rule}╮")));
         let mut y = area.y + 1;
         let last = self.buttons.len() - 1;
         for (index, button) in self.buttons.iter().enumerate() {
@@ -110,32 +110,42 @@ impl Widget for ButtonStack {
             let label_width = label.chars().count();
             let left = (inner - label_width) / 2;
             let right = inner - label_width - left;
+            // The button's style reaches only its inner cells: the side
+            // rules stay plain whatever the state, so a selected button
+            // fills its row completely --- edge to edge between the rules
+            // --- without ever painting over them.
             put(
                 buf,
                 area,
                 y,
-                &format!("│{}{}{}│", " ".repeat(left), label, " ".repeat(right)),
-                button.row_style(),
+                Line::from(vec![
+                    Span::raw("│"),
+                    Span::styled(
+                        format!("{}{}{}", " ".repeat(left), label, " ".repeat(right)),
+                        button.row_style(),
+                    ),
+                    Span::raw("│"),
+                ]),
             );
             y += 1;
             // The divider between stacked buttons: never after the last
             // one, and unstyled like the outer rules --- the selection
-            // highlight stays confined to a button's own row.
+            // highlight stays confined to a button's inner row.
             if index < last {
-                put(buf, area, y, &format!("├{rule}┤"), Style::new());
+                put(buf, area, y, Line::raw(format!("├{rule}┤")));
                 y += 1;
             }
         }
-        put(buf, area, y, &format!("╰{rule}╯"), Style::new());
+        put(buf, area, y, Line::raw(format!("╰{rule}╯")));
     }
 }
 
-/// Writes one styled row at `y` unless it falls past the area's bottom.
-fn put(buf: &mut Buffer, area: Rect, y: u16, text: &str, style: Style) {
+/// Writes one row at `y` unless it falls past the area's bottom.
+fn put(buf: &mut Buffer, area: Rect, y: u16, line: Line<'_>) {
     if y >= area.bottom() {
         return;
     }
-    Line::from(text.to_string()).style(style).render(
+    line.render(
         Rect {
             x: area.x,
             y,
@@ -217,5 +227,37 @@ mod tests {
             render(10, &[Button::new("⟳ Rebuilding")]),
             "╭────────╮\n│⟳ Rebuil│\n╰────────╯"
         );
+    }
+
+    #[test]
+    fn a_selected_button_fills_its_inner_row_without_touching_the_rules() {
+        let stack = ButtonStack {
+            buttons: vec![
+                Button::new("▶ Build").selected(true),
+                Button::new("× Clean").selected(true),
+            ],
+        };
+        let height = stack.height();
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(14, height)).unwrap();
+        terminal
+            .draw(|frame| frame.render_widget(stack, frame.area()))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let reversed = |x: u16, y: u16| buf[(x, y)].modifier.contains(Modifier::REVERSED);
+        // The outer rules and the divider between the buttons stay plain.
+        for y in [0, 2, 4] {
+            for x in 0..14 {
+                assert!(!reversed(x, y), "rule cell ({x},{y}) must stay plain");
+            }
+        }
+        // A selected button is a solid bar between the side rules: every
+        // inner cell reversed, the `│` themselves untouched.
+        for y in [1, 3] {
+            assert!(!reversed(0, y) && !reversed(13, y), "side rule on row {y}");
+            for x in 1..13 {
+                assert!(reversed(x, y), "inner cell ({x},{y}) should be filled");
+            }
+        }
     }
 }
