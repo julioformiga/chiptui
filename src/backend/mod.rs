@@ -108,6 +108,11 @@ pub enum Capability {
     DeviceInfo,
     PackageInstall,
     BoardSelect,
+    /// Maintaining the backend's shared environment (`west update`,
+    /// `west sdk list`): operations that act on the workspace rather than
+    /// the project. Not destructive as a capability --- the pane confirms
+    /// the state-changing action itself.
+    WorkspaceSync,
 }
 
 impl Capability {
@@ -126,6 +131,7 @@ impl Capability {
         Capability::DeviceInfo,
         Capability::PackageInstall,
         Capability::BoardSelect,
+        Capability::WorkspaceSync,
     ];
 
     const fn bit(self) -> u32 {
@@ -148,6 +154,7 @@ impl Capability {
             Self::DeviceInfo => "device info",
             Self::PackageInstall => "install package",
             Self::BoardSelect => "select board",
+            Self::WorkspaceSync => "sync workspace",
         }
     }
 
@@ -246,15 +253,18 @@ pub trait Backend {
     /// (`AGENTS.md` §2: delegate to the ecosystem's own tools). `board` is
     /// the target the backend should configure for, when one is known;
     /// `build_dir_exists` lets an incremental build skip the flag only a
-    /// first configuration needs. Returns `None` if the backend offers no
-    /// build capability or has not implemented it yet.
+    /// first configuration needs; `build_dir` names the directory the
+    /// lifecycle targets (a backend with a single fixed directory may
+    /// ignore it). Returns `None` if the backend offers no build capability
+    /// or has not implemented it yet.
     fn build_command(
         &self,
         kind: BuildKind,
         board: Option<&str>,
         build_dir_exists: bool,
+        build_dir: &str,
     ) -> Option<crate::process::Command> {
-        let _ = (kind, board, build_dir_exists);
+        let _ = (kind, board, build_dir_exists, build_dir);
         None
     }
 
@@ -270,7 +280,32 @@ pub trait Backend {
     /// Returns `None` if the backend has no [`Capability::Flash`] single
     /// command --- MicroPython's flashing is a multi-step esptool flow the
     /// Flash dialog owns, so it stays `None` there.
-    fn flash_command(&self) -> Option<crate::process::Command> {
+    fn flash_command(&self, build_dir: &str) -> Option<crate::process::Command> {
+        let _ = build_dir;
+        None
+    }
+
+    /// Returns the interactive configuration command over the configured
+    /// build directory (`west build -t menuconfig`). The caller runs it with
+    /// the terminal suspended, not through the piped process manager.
+    /// Returns `None` when the backend has no such tool.
+    fn menuconfig_command(&self, build_dir: &str) -> Option<crate::process::Command> {
+        let _ = build_dir;
+        None
+    }
+
+    /// Returns the command syncing the backend's shared environment with
+    /// its manifest (`west update`) --- a workspace-wide, slow, state-
+    /// changing operation the caller confirms before running. Returns
+    /// `None` when the backend has no [`Capability::WorkspaceSync`].
+    fn workspace_update_command(&self) -> Option<crate::process::Command> {
+        None
+    }
+
+    /// Returns the read-only command listing the toolchain inventory
+    /// (`west sdk list`). Returns `None` when the backend has no
+    /// [`Capability::WorkspaceSync`].
+    fn sdk_list_command(&self) -> Option<crate::process::Command> {
         None
     }
 }

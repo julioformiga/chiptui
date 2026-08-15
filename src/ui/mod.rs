@@ -11,6 +11,7 @@ mod flash;
 mod monitor;
 mod overlay;
 mod panels;
+mod workspace;
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Flex, Layout, Rect};
@@ -106,13 +107,14 @@ fn draw_dashboard(frame: &mut Frame, body: Rect, app: &mut App) {
     panels::draw_project(frame, project, app);
     panels::draw_detection(frame, device, app);
 
-    // Row 2 shows the file browser whenever there is a browser to draw ---
-    // for every backend once `maybe_scan_devices` has run, since the local
-    // pane stands on its own. `files::draw` decides what the right half
-    // shows (device files under `Capability::Filesystem`, a placeholder
-    // otherwise); the full-width placeholder remains for the window before
-    // the browser exists at all.
-    if app.browser.is_some() {
+    // Row 2 belongs to whichever panes the backend's capabilities give it:
+    // the dual-pane file browser under `Capability::Filesystem`, the
+    // workspace+build pair for a backend that builds without a device
+    // filesystem (`SPEC.md` §11), and a placeholder only in the window
+    // before the panes exist at all.
+    if app.workspace_pane_visible() {
+        workspace::draw_row(frame, row2, app);
+    } else if app.browser.is_some() {
         files::draw(frame, row2, app);
     } else {
         panels::draw_no_filesystem(frame, row2, app);

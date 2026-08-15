@@ -21,7 +21,9 @@ pub mod highlight;
 pub mod logs;
 pub mod process;
 pub mod project;
+pub mod settings;
 pub mod terminal;
 pub mod ui;
+pub mod workspace;
 
 pub use error::{Error, Result};

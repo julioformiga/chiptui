@@ -55,23 +55,30 @@ fn dashboard_shows_project_device_and_log_panes() {
 }
 
 #[test]
-fn zephyr_keeps_the_local_pane_and_shows_the_build_panel() {
-    // Once the browser exists (the state main.rs produces at startup), row 2
-    // is the local pane plus the build panel: Zephyr declares no
-    // Capability::Filesystem, but it can build, so the right half lists the
-    // build lifecycle instead of a placeholder.
+fn zephyr_shows_the_workspace_and_build_panes_in_row_two() {
+    // Once startup has run, row 2 belongs entirely to the build backend: the
+    // workspace pane (no filesystem to browse, no file listing --- that is
+    // the editor's job) beside the build panel quoting the literal `west`
+    // commands.
     let mut app = app_with_backend(BackendKind::Zephyr);
-    // Empty fixture /dev keeps the render deterministic (a machine with
-    // several USB ports would open the device picker over the dashboard).
-    let empty_dev = std::env::temp_dir().join(format!("chiptui-render-dev-{}", std::process::id()));
-    std::fs::create_dir_all(&empty_dev).unwrap();
-    app.set_serial_dir(&empty_dev);
+    // Empty fixture /dev and an isolated home keep the render deterministic
+    // (a machine with several USB ports would open the device picker; one
+    // with ~/zephyrproject would resolve the workspace).
+    let root = std::env::temp_dir().join(format!("chiptui-render-zs-{}", std::process::id()));
+    std::fs::create_dir_all(root.join("dev")).unwrap();
+    std::fs::create_dir_all(root.join("home")).unwrap();
+    app.set_serial_dir(root.join("dev"));
+    app.set_home_dir(root.join("home"));
     app.maybe_scan_devices();
     let frame = render(&mut app, 100, 30);
 
     assert!(
-        frame.contains("Local files:"),
-        "missing the local file pane:\n{frame}"
+        frame.contains("Workspace"),
+        "missing the workspace pane:\n{frame}"
+    );
+    assert!(
+        frame.contains("no west workspace found"),
+        "an unresolved pane must explain itself:\n{frame}"
     );
     assert!(frame.contains("Build"), "missing the build panel:\n{frame}");
     assert!(
@@ -79,12 +86,12 @@ fn zephyr_keeps_the_local_pane_and_shows_the_build_panel() {
         "the panel must quote the literal commands:\n{frame}"
     );
     assert!(
-        !frame.contains("Device files:"),
-        "no device pane may render without a filesystem:\n{frame}"
+        !frame.contains("Local files:"),
+        "no file pane may render for a build backend:\n{frame}"
     );
     assert!(
-        !frame.contains("local only"),
-        "the comparison legend is noise without a device pane:\n{frame}"
+        !frame.contains("Device files:"),
+        "no device pane may render without a filesystem:\n{frame}"
     );
 }
 

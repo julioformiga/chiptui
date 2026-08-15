@@ -760,13 +760,16 @@ fn startup_ensures_a_browser_and_a_serial_scan_without_a_filesystem() {
 
     app.maybe_scan_devices();
 
-    // The browser exists (the local pane works without a device), and the
-    // serial scan ran: no port in the fixture means a reported miss, not an
-    // untouched "not scanned" state.
+    // A build backend without a device filesystem claims row 2 entirely: no
+    // browser (listing/editing the project's own files is the editor's
+    // job), workspace+build panes instead. The serial scan still ran: no
+    // port in the fixture means a reported miss, not an untouched "not
+    // scanned" state.
     assert!(
-        app.browser.is_some(),
-        "the local pane needs a browser even without a device filesystem"
+        app.browser.is_none(),
+        "a build backend gets workspace+build panes, not a file browser"
     );
+    assert!(app.workspace.is_some() && app.build.is_some());
     assert_eq!(
         app.devices.discovery,
         chiptui::device::DiscoveryState::Failed

@@ -470,21 +470,66 @@ Primary tools:
 
 `west` is the primary Zephyr orchestration interface.
 
+### Environment (workspace, venv, SDK)
+
+A Zephyr machine has three pieces, and the backend locates all of them
+before running anything:
+
+1.  the **west workspace** (`west init`'s directory: `.west/`, the Zephyr
+    checkout, and by convention `.venv/`);
+2.  the **venv** where `west` is installed;
+3.  the **Zephyr SDK** (toolchain), which CMake finds on its own unless a
+    location is configured.
+
+Resolution, most explicit first:
+
+-   `[zephyr] workspace` in the project's `chiptui.toml`;
+-   `[zephyr] workspace` in the user config (`~/.config/chiptui/config.toml`);
+-   discovery: a `.west/` above the project, `$ZEPHYR_BASE` inherited from
+    the shell, then `~/zephyrproject`. One candidate resolves silently;
+    several open a picker showing each candidate's evidence; none leaves
+    the pane unresolved with the config path to set.
+
+The `west` executable is the configured `west` key when present, else the
+workspace's `.venv/bin/west` when it exists, else `west` from `PATH`. No
+venv activation is performed or needed: executing the venv's console
+script directly is the activated environment, and the pieces `activate`
+adds are injected per command (`ZEPHYR_BASE` always, so an application
+outside the workspace still finds it; `ZEPHYR_SDK_INSTALL_DIR`, `PATH`
+and `VIRTUAL_ENV` when a venv/SDK is known).
+
+Every command still runs with the project root as its working directory;
+only workspace-scoped operations (`west update`, `west sdk list`) run in
+the workspace itself. Status reads are files, not subprocesses: the
+Zephyr version comes from `zephyr/VERSION`, the SDK version from
+`sdk_version`.
+
+The optional keys, shared by both config levels:
+
+``` toml
+[zephyr]
+workspace = "~/zephyrproject"
+# sdk = "~/zephyr-sdk-0.17.1"
+# west = "/custom/venv/bin/west"
+```
+
 ### Operations
 
 The initial backend should support:
 
+-   environment resolution (workspace/venv/SDK, above);
 -   board selection;
 -   project information;
--   build;
+-   build (with named build directories, `west build -d`);
 -   clean;
+-   `menuconfig` (interactive: the TUI suspends, like `$EDITOR`);
 -   flash;
 -   serial monitor;
--   build output/logs.
+-   build output/logs;
+-   `west update` and `west sdk list` (workspace-scoped).
 
 Potential future operations:
 
--   `west update`;
 -   debug;
 -   signing;
 -   device-tree inspection;
@@ -513,7 +558,13 @@ The UI should provide:
 Build
 Clean
 Rebuild
+Menuconfig
 ```
+
+The lifecycle targets a build directory: the conventional `build` by
+default, any configured sibling (`build*` holding a `zephyr/CMakeCache.txt`)
+or a typed new name through the picker --- so configurations for different
+boards stop erasing each other (`west build -d`).
 
 Build output should stream into a log pane and show:
 
@@ -578,8 +629,11 @@ one-line contextual shortcut footer:
 
 - **Row 1** --- Project and Device, side by side.
 - **Row 2** --- the dual-pane local/device file browser, shown whenever the selected backend
-  declares `Capability::Filesystem`; otherwise a single full-width pane stating that file
-  browsing is not implemented for that backend.
+  declares `Capability::Filesystem`; for a backend that builds without a device filesystem
+  (today: Zephyr) the whole row is the pair **Workspace | Build**: the environment pane
+  (workspace/venv/SDK status, `west update`, `west sdk list`, §10) beside the build panel.
+  No file listing for such a backend --- editing the project's own sources is the user's
+  editor's job; otherwise a single full-width placeholder while no pane exists yet.
 - **Row 3** --- a one-line `Log`/`Monitor` tab strip over the selected tab's body, full width.
   `Left`/`Right` switch tabs while row 3 has focus. `Log` is the rolling status/notice feed
   (unchanged). `Monitor` shows whichever live process output the user last asked for: a
@@ -592,13 +646,12 @@ configuring an action, not a full-screen replacement. Running an action closes t
 moves focus to row 3's Monitor tab, where its output streams --- there is no separate output
 screen inside the dialog.
 
-> **Status**: row 2's dual-pane file browser is implemented for MicroPython. Every backend keeps
-> the local pane (view/edit/delete need no device); a backend that can build but exposes no
-> `Capability::Filesystem` (today: Zephyr) fills the right half with a build panel
-> (`src/build.rs`) listing Build/Clean/Rebuild with the literal `west` commands, streaming output
-> into the Monitor tab. The Zephyr dual-pane layout is spec'd in anticipation of a future
-> filesystem integration. The Monitor tab shows the device serial session (`m`), flash/erase
-> output, and build output.
+> **Status**: implemented. Row 2 is capability-driven: the dual-pane file browser for
+> MicroPython; for Zephyr the full row is Workspace (§10's environment resolution, with the
+> `ZEPHYR_BASE`/venv/SDK status and `west update`/`west sdk list` behind
+> `Capability::WorkspaceSync`) | Build (`src/build.rs`: Build/Clean/Rebuild/Menuconfig/Flash/
+> Board/build-directory picker, streaming into the Monitor tab). The Monitor tab shows the
+> device serial session (`m`), flash/erase output, and build output.
 
 The exact proportions (row heights, column widths) are not fixed.
 
@@ -657,10 +710,18 @@ esptool = "esptool"
 west = "west"
 cmake = "cmake"
 
+[zephyr]
+workspace = "~/zephyrproject"
+# sdk = "~/zephyr-sdk-0.17.1"
+# west = "~/zephyrproject/.venv/bin/west"
+
 [ui]
 log_panel = true
 mouse = false
 ```
+
+The `[zephyr]` keys are implemented (§10); the same section in a project's
+`chiptui.toml` overrides the user-level values for that project.
 
 ### Project configuration
 
@@ -707,7 +768,8 @@ Potentially destructive operations:
 -   flash firmware;
 -   remote file deletion;
 -   recursive remote deletion;
--   clean operations that remove build artifacts.
+-   clean operations that remove build artifacts;
+-   workspace updates that rewrite shared checkouts (`west update`).
 
 These should have appropriate confirmation.
 

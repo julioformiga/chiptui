@@ -68,6 +68,9 @@ fn event_loop(
         if let Some(pending) = app.take_pending_edit() {
             run_editor(app, guard, pending)?;
         }
+        if let Some(command) = app.take_pending_command() {
+            run_interactive(app, guard, command)?;
+        }
     }
     Ok(())
 }
@@ -115,6 +118,53 @@ fn run_editor(
 
     if clean_exit && let Some(target) = pending.device_target {
         app.request_device_reupload(pending.path, target);
+    }
+    Ok(())
+}
+
+/// Runs an interactive external command (`west build -t menuconfig`) with
+/// the real terminal, the same suspension `$EDITOR` gets: the child *is* a
+/// full-screen program, and anything less than handing over the terminal
+/// breaks both interfaces at once. Unlike the editor, this runs a command
+/// ChipTUI itself composed ([`crate::process::Command`]: program, args,
+/// environment, working directory), so its environment and cwd match the
+/// piped west commands exactly. The outcome is logged, never fatal to the
+/// TUI.
+fn run_interactive(
+    app: &mut App,
+    guard: &mut terminal::TerminalGuard,
+    command: chiptui::process::Command,
+) -> Result<()> {
+    let label = command.to_string();
+    let program = command.program().to_string();
+    let args: Vec<String> = command.args_slice().to_vec();
+    let cwd = command.cwd().cloned();
+    let envs: Vec<(String, String)> = command.envs_slice().to_vec();
+
+    let outcome = guard.suspend(|| {
+        let mut child = std::process::Command::new(&program);
+        child.args(&args);
+        if let Some(cwd) = &cwd {
+            child.current_dir(cwd);
+        }
+        for (key, value) in &envs {
+            child.env(key, value);
+        }
+        child.status()
+    })?;
+
+    match outcome {
+        Ok(status) if status.success() => {
+            app.logs.info(format!("{label} closed"));
+        }
+        Ok(status) => {
+            app.logs.warn(format!(
+                "{label} exited with {status} (changes may be partial)"
+            ));
+        }
+        Err(source) => {
+            app.logs.error(format!("could not run {label}: {source}"));
+        }
     }
     Ok(())
 }

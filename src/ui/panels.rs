@@ -94,9 +94,21 @@ pub(super) fn project_content(app: &App, width: usize) -> Vec<Line<'static>> {
     }
 
     // Tool availability, since a capability whose tool is missing is not usable.
+    // A backend whose west comes from a workspace venv is checked against that
+    // absolute path instead of `PATH` --- a venv-only west is not "missing".
     if let Some(kind) = app.manager.selected_kind() {
         let mut spans = vec![label_span("tools")];
         for (tool, available) in app.manager.registry().tool_status(kind) {
+            let available = if tool == "west" {
+                app.workspace
+                    .as_ref()
+                    .and_then(|panel| panel.resolved.as_ref())
+                    .map_or(available, |workspace| {
+                        std::path::Path::new(&workspace.west).is_file()
+                    })
+            } else {
+                available
+            };
             let style = if available {
                 Style::new().fg(Color::Green)
             } else {

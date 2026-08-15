@@ -42,6 +42,7 @@ pub mod file_browser;
 pub mod flash_view;
 pub mod overlay;
 pub mod probe;
+pub mod workspace_view;
 
 /// Which screen is showing.
 ///
@@ -63,11 +64,13 @@ pub enum View {
 /// the dashboard's two file-browser columns; each is its own stop so `Tab`
 /// walks all columns in one consistent tour instead of a separate sub-focus
 /// inside the files row. `Build` is the build panel a backend without a
-/// device filesystem shows in the row's right half (`SPEC.md` §10).
+/// device filesystem shows (`SPEC.md` §10), and `Workspace` the environment
+/// pane beside it (the backend's shared workspace, not the project).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     FilesLocal,
     FilesDevice,
+    Workspace,
     Build,
     Logs,
 }
@@ -162,6 +165,26 @@ pub enum Overlay {
     /// what a keypress changes, so rebuilding it per key never re-clones
     /// the list. `input` is the filter text.
     BoardPicker {
+        input: String,
+        selected: usize,
+    },
+    /// The workspace picker: the west workspaces discovery found, each row
+    /// labelled with its evidence (config file, `.west/` above the project,
+    /// `$ZEPHYR_BASE`, `~/zephyrproject`). The candidates live in
+    /// [`App::workspace`]; a pick is session-only.
+    WorkspacePicker {
+        selected: usize,
+    },
+    /// A state-changing workspace operation (`west update`) awaiting
+    /// confirmation with the literal command --- the same rule as
+    /// [`Overlay::ConfirmBuild`], applied to the shared workspace.
+    ConfirmWorkspace {
+        action: crate::workspace::WorkspaceAction,
+        confirm: bool,
+    },
+    /// The build-directory picker: the project's configured `build*`
+    /// directories plus a typed new name (`west build -d`).
+    BuildDirPicker {
         input: String,
         selected: usize,
     },
@@ -528,6 +551,16 @@ pub struct App {
     /// The build panel, created once for a backend that can build and has no
     /// device filesystem to browse instead (right half of row 2).
     pub build: Option<crate::build::BuildPanel>,
+    /// The workspace pane, created beside the build panel for a backend
+    /// that maintains a shared environment ([`crate::backend::Capability::
+    /// WorkspaceSync`]): which west workspace/venv/SDK the commands run
+    /// against, plus `west update` and `west sdk list`.
+    pub workspace: Option<crate::workspace::WorkspacePanel>,
+    /// Set by the build panel's `menuconfig` action; consumed by the binary's
+    /// event loop, which owns the terminal handle needed to suspend the
+    /// alternate screen for the interactive child --- the same hand-off as
+    /// [`Self::pending_edit`].
+    pending_command: Option<crate::process::Command>,
     /// Backs [`Overlay::FileViewer`] while it is open.
     pub viewer: Option<FileViewer>,
     /// Height of the file viewer, published by the renderer each frame so
@@ -583,6 +616,10 @@ pub struct App {
     /// scan is deterministic regardless of what is plugged into the
     /// machine running them.
     serial_dir: std::path::PathBuf,
+    /// Where `~` in configuration resolves (`$HOME` in real use; tests
+    /// point it at a fixture directory so workspace discovery stays
+    /// deterministic regardless of the machine).
+    home_dir: std::path::PathBuf,
     should_quit: bool,
     last_port_count: Option<usize>,
 }
@@ -604,6 +641,8 @@ impl App {
             browser: None,
             flash: None,
             build: None,
+            workspace: None,
+            pending_command: None,
             viewer: None,
             viewer_viewport: 1,
             pending_edit: None,
@@ -621,6 +660,8 @@ impl App {
             probed_port: None,
             restore_pending: false,
             serial_dir: std::path::PathBuf::from("/dev"),
+            home_dir: std::env::var_os("HOME")
+                .map_or_else(std::path::PathBuf::new, std::path::PathBuf::from),
             should_quit: false,
             last_port_count: None,
         }
@@ -628,6 +669,12 @@ impl App {
 
     pub fn should_quit(&self) -> bool {
         self.should_quit
+    }
+
+    /// Where `~` in configuration resolves; also what the workspace pane
+    /// names when it tells the user where the config file lives.
+    pub fn home_dir(&self) -> &std::path::Path {
+        &self.home_dir
     }
 
     pub fn quit(&mut self) {
@@ -1093,20 +1140,36 @@ impl App {
         self.build.is_some() && self.build_pane_visible_precondition()
     }
 
-    /// Focus order for `Tab`/`BackTab`. The local files column is a stop
-    /// whenever the browser exists --- its pane is useful for every backend
-    /// (Zephyr has no device filesystem but still views/edits/deletes local
-    /// files). The device column is a stop only under
-    /// [`Capability::Filesystem`], the build panel only when it is visible
-    /// ([`Self::build_pane_visible`]). The Project/Device info row is never
-    /// a stop --- it is informational only.
+    /// Whether row 2's left half shows the workspace pane: the backend
+    /// maintains a shared environment ([`Capability::WorkspaceSync`]) and
+    /// has no device filesystem --- the same pair of conditions that give it
+    /// the build panel. Capability-gated, never backend-kind-gated
+    /// (`AGENTS.md` §3).
+    pub fn workspace_pane_visible(&self) -> bool {
+        let caps = self.manager.capabilities();
+        self.workspace.is_some()
+            && caps.contains(Capability::WorkspaceSync)
+            && !caps.contains(Capability::Filesystem)
+    }
+
+    /// Focus order for `Tab`/`BackTab`. The file columns are stops whenever
+    /// row 2 shows the browser --- which is exactly when the backend has no
+    /// build panel claiming the row instead (a build backend without a
+    /// device filesystem gets the workspace+build pair, `SPEC.md` §11). The
+    /// workspace pane is a stop when it exists, the build panel when it is
+    /// visible ([`Self::build_pane_visible`]). The Project/Device info row
+    /// is never a stop --- it is informational only.
     fn focus_order(&self) -> Vec<Focus> {
         let mut order = Vec::new();
-        if self.browser.is_some() {
+        let browser_row = !self.build_pane_visible_precondition();
+        if browser_row && self.browser.is_some() {
             order.push(Focus::FilesLocal);
             if self.manager.capabilities().contains(Capability::Filesystem) {
                 order.push(Focus::FilesDevice);
             }
+        }
+        if self.workspace_pane_visible() {
+            order.push(Focus::Workspace);
         }
         if self.build_pane_visible() {
             order.push(Focus::Build);
@@ -1127,32 +1190,39 @@ impl App {
         self.focus = order[next];
     }
 
+    /// The first pane that still exists after the focused one disappeared:
+    /// local files (when the row shows the browser), then workspace, then
+    /// build, ending at `Logs` --- the tour's order, so a clamp never jumps
+    /// backwards.
+    fn fallback_pane(&self) -> Focus {
+        if !self.build_pane_visible_precondition() && self.browser.is_some() {
+            Focus::FilesLocal
+        } else if self.workspace_pane_visible() {
+            Focus::Workspace
+        } else if self.build_pane_visible() {
+            Focus::Build
+        } else {
+            Focus::Logs
+        }
+    }
+
     /// Pulls focus back onto a pane that still exists when a backend switch
-    /// removed the one it was sitting on: the device column requires
-    /// [`Capability::Filesystem`] (a switch away from MicroPython drops it),
-    /// the build panel requires visibility ([`Self::build_pane_visible`]),
-    /// and the local column requires a browser. Each falls back to the next
-    /// best stop, ending at `Logs`.
+    /// removed the one it was sitting on: the file columns need both the
+    /// browser and the row that shows it, the workspace/build panes need
+    /// theirs. Each falls back through [`Self::fallback_pane`].
     fn clamp_focus(&mut self) {
-        match self.focus {
-            Focus::FilesDevice if !self.manager.capabilities().contains(Capability::Filesystem) => {
-                self.focus = if self.browser.is_some() {
-                    Focus::FilesLocal
-                } else {
-                    Focus::Logs
-                };
+        let browser_row = !self.build_pane_visible_precondition();
+        let needs_clamp = match self.focus {
+            Focus::FilesDevice => {
+                !browser_row || !self.manager.capabilities().contains(Capability::Filesystem)
             }
-            Focus::Build if !self.build_pane_visible() => {
-                self.focus = if self.browser.is_some() {
-                    Focus::FilesLocal
-                } else {
-                    Focus::Logs
-                };
-            }
-            Focus::FilesLocal if self.browser.is_none() => {
-                self.focus = Focus::Logs;
-            }
-            Focus::FilesLocal | Focus::FilesDevice | Focus::Build | Focus::Logs => {}
+            Focus::FilesLocal => !browser_row || self.browser.is_none(),
+            Focus::Workspace => !self.workspace_pane_visible(),
+            Focus::Build => !self.build_pane_visible(),
+            Focus::Logs => false,
+        };
+        if needs_clamp {
+            self.focus = self.fallback_pane();
         }
     }
 
@@ -1209,8 +1279,15 @@ impl App {
             _ => {}
         }
 
-        if matches!(self.focus, Focus::FilesLocal | Focus::FilesDevice) {
+        if matches!(self.focus, Focus::FilesLocal | Focus::FilesDevice)
+            && !self.build_pane_visible_precondition()
+        {
             self.on_files_key(key);
+            return;
+        }
+
+        if self.focus == Focus::Workspace {
+            self.on_workspace_key(key);
             return;
         }
 
@@ -1263,9 +1340,13 @@ impl App {
                     self.logs.scroll_down(delta as usize);
                 }
             }
-            // FilesLocal/FilesDevice/Build never reach here: on_dashboard_key
-            // routes them to their own key handlers first.
-            Focus::FilesLocal | Focus::FilesDevice | Focus::Build | Focus::Logs => {}
+            // FilesLocal/FilesDevice/Workspace/Build never reach here:
+            // on_dashboard_key routes them to their own key handlers first.
+            Focus::FilesLocal
+            | Focus::FilesDevice
+            | Focus::Workspace
+            | Focus::Build
+            | Focus::Logs => {}
         }
     }
 
@@ -1274,14 +1355,22 @@ impl App {
             Focus::Logs if self.log_tab == LogTab::Log => {
                 self.logs.scroll_up(usize::MAX, self.log_viewport);
             }
-            Focus::FilesLocal | Focus::FilesDevice | Focus::Build | Focus::Logs => {}
+            Focus::FilesLocal
+            | Focus::FilesDevice
+            | Focus::Workspace
+            | Focus::Build
+            | Focus::Logs => {}
         }
     }
 
     fn jump_to_end(&mut self) {
         match self.focus {
             Focus::Logs if self.log_tab == LogTab::Log => self.logs.scroll_to_bottom(),
-            Focus::FilesLocal | Focus::FilesDevice | Focus::Build | Focus::Logs => {}
+            Focus::FilesLocal
+            | Focus::FilesDevice
+            | Focus::Workspace
+            | Focus::Build
+            | Focus::Logs => {}
         }
     }
 
@@ -1314,6 +1403,12 @@ impl App {
                 ("enter", "pick (this session)"),
                 ("esc", "cancel"),
             ],
+            Some(Overlay::BuildDirPicker { .. }) => vec![
+                ("type", "name"),
+                ("↑/↓", "select"),
+                ("enter", "choose/create"),
+                ("esc", "cancel"),
+            ],
             Some(Overlay::PackageInstall { .. }) => {
                 vec![("type", "package"), ("enter", "install"), ("esc", "cancel")]
             }
@@ -1323,13 +1418,15 @@ impl App {
                 | Overlay::FirmwarePicker { .. }
                 | Overlay::ProjectSetup { .. }
                 | Overlay::FileActions { .. }
-                | Overlay::RestoreDeviceScript { .. },
+                | Overlay::RestoreDeviceScript { .. }
+                | Overlay::WorkspacePicker { .. },
             ) => {
                 vec![("↑/↓", "select"), ("enter", "apply"), ("esc", "cancel")]
             }
             Some(
                 Overlay::Confirm { .. }
                 | Overlay::ConfirmBuild { .. }
+                | Overlay::ConfirmWorkspace { .. }
                 | Overlay::ConfirmDownloadOverwrite { .. }
                 | Overlay::ConfirmDelete { .. }
                 | Overlay::ConfirmUpload { .. }
@@ -1644,11 +1741,11 @@ mod tests {
     }
 
     #[test]
-    fn tab_stops_on_the_local_column_without_a_device_filesystem() {
-        // Zephyr keeps the local pane (view/edit/delete need no device) but
-        // has no device column: the tour is Local -> Build -> Logs, and
-        // clamping a backend switch away from MicroPython lands on Local,
-        // not Logs.
+    fn tab_stops_on_workspace_and_build_without_a_device_filesystem() {
+        // A build backend without a device filesystem claims the whole row:
+        // no file browser at all --- the tour is Workspace -> Build -> Logs,
+        // and clamping a backend switch away from MicroPython lands on
+        // Workspace, not a pane that no longer exists.
         let mut app = App::new(std::env::temp_dir());
         app.detect();
         app.manager.set_override(Some(BackendKind::Zephyr));
@@ -1659,11 +1756,12 @@ mod tests {
         std::fs::create_dir_all(&empty_dev).unwrap();
         app.set_serial_dir(&empty_dev);
         app.maybe_scan_devices();
-        assert!(app.browser.is_some(), "the browser exists without a scan");
+        assert!(app.browser.is_none(), "no file browser for a build backend");
+        assert!(app.workspace.is_some() && app.build.is_some());
 
         app.focus = Focus::Logs;
         app.handle(key(KeyCode::Tab));
-        assert_eq!(app.focus, Focus::FilesLocal);
+        assert_eq!(app.focus, Focus::Workspace);
         app.handle(key(KeyCode::Tab));
         assert_eq!(app.focus, Focus::Build);
         app.handle(key(KeyCode::Tab));
@@ -1679,8 +1777,8 @@ mod tests {
         assert_eq!(app.manager.selected_kind(), Some(BackendKind::Zephyr));
         assert_eq!(
             app.focus,
-            Focus::FilesLocal,
-            "clamping must land on the local column, which still exists"
+            Focus::Workspace,
+            "clamping must land on the workspace pane, the row's first stop"
         );
     }
 

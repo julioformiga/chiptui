@@ -281,6 +281,95 @@ impl App {
                     _ => {}
                 }
             }
+            Overlay::ConfirmWorkspace { action, confirm } => {
+                self.dispatch_confirm(
+                    key.code,
+                    confirm,
+                    move |app, confirm| {
+                        app.overlay = Some(Overlay::ConfirmWorkspace { action, confirm });
+                    },
+                    // Accept runs the command directly --- routing back
+                    // through `run_workspace_action` would re-confirm.
+                    move |app| {
+                        if action == crate::workspace::WorkspaceAction::Update {
+                            app.start_workspace_update();
+                        }
+                    },
+                    |_| {},
+                );
+            }
+            Overlay::WorkspacePicker { selected } => {
+                let count = self
+                    .workspace
+                    .as_ref()
+                    .map(|panel| panel.candidates.len())
+                    .unwrap_or(0);
+                if count == 0 {
+                    self.overlay = None;
+                    return;
+                }
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('q') => self.overlay = None,
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        self.overlay = Some(Overlay::WorkspacePicker {
+                            selected: (selected + count - 1) % count,
+                        });
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        self.overlay = Some(Overlay::WorkspacePicker {
+                            selected: (selected + 1) % count,
+                        });
+                    }
+                    KeyCode::Enter => {
+                        self.overlay = None;
+                        self.apply_workspace_picker(selected);
+                    }
+                    _ => {}
+                }
+            }
+            Overlay::BuildDirPicker { input, selected } => {
+                // Same grammar as the board picker: printable characters are
+                // filter/name text, arrows walk, Enter applies.
+                let rebuild = |app: &mut Self, input: String, mut selected: usize| {
+                    if let Some(panel) = app.build.as_ref() {
+                        let count = panel.filtered_build_dirs(&input).len();
+                        selected = selected.min(count.saturating_sub(1));
+                    }
+                    app.overlay = Some(Overlay::BuildDirPicker { input, selected });
+                };
+                let count = self
+                    .build
+                    .as_ref()
+                    .map(|panel| panel.filtered_build_dirs(&input).len())
+                    .unwrap_or(0)
+                    .max(1);
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('q') => self.overlay = None,
+                    KeyCode::Backspace => {
+                        let mut input = input;
+                        input.pop();
+                        rebuild(self, input, selected);
+                    }
+                    KeyCode::Char(c) => {
+                        let mut input = input;
+                        input.push(c);
+                        rebuild(self, input, selected);
+                    }
+                    KeyCode::Up => {
+                        let selected = (selected + count - 1) % count;
+                        rebuild(self, input, selected);
+                    }
+                    KeyCode::Down => {
+                        let selected = (selected + 1) % count;
+                        rebuild(self, input, selected);
+                    }
+                    KeyCode::Enter => {
+                        self.overlay = None;
+                        self.apply_build_dir_picker(&input, selected);
+                    }
+                    _ => {}
+                }
+            }
             Overlay::FileActions {
                 side,
                 name,

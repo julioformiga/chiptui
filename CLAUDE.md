@@ -29,22 +29,43 @@ first listing (`src/app/probe.rs`), device operations are held behind a confirma
 script runs (`Overlay::ConfirmInterruptDevice`), and an accepted interruption ends with a
 restore prompt (`Overlay::RestoreDeviceScript`: hard reset, `import main`, or leave stopped).
 
-The local pane is backend-agnostic now: every backend gets a browser (`maybe_scan_devices` creates
-one; only the device *scan* waits for `Capability::Filesystem`), and the local menu is
-capability-gated (`FileAction::for_entry`: no `SendToDevice` without `Upload`, no `Diff` without
-`Filesystem`), so Zephyr's local pane offers exactly open/view/edit/delete. A backend that can
-build but has no device filesystem (Zephyr) fills row 2's right half with a **build panel**
-(`src/build.rs`, `src/ui/build.rs`, `src/app/build_view.rs`): Build/Clean/Rebuild as a navigable
-list quoting the literal commands, board from `build/zephyr/CMakeCache.txt` (`cached_board`),
-`Stop` while a command runs, `Clean` behind `Overlay::ConfirmBuild` (destructive capability),
-output streaming into the Monitor tab (`MonitorSource::Build`). Commands come from the backend
-(`Backend::build_command`, `src/backend/zephyr/commands.rs`: `west build`[-`b`]/
-`-t clean`/`--pristine=always`), run with the project root as cwd — the UI never names `west`.
-The panel's `Board` action (under `Capability::BoardSelect`) opens `Overlay::BoardPicker`: a
+Row 2 is capability-driven now: a backend that can build without a device filesystem (Zephyr)
+claims the *whole* row with a **Workspace | Build** pair (`maybe_scan_devices`/
+`ensure_browser_scanning` skip the browser entirely for such a backend — listing/editing the
+project's own sources is the user's editor's job; MicroPython's dual-pane browser and its
+capability-gated `FileAction::for_entry` menu are unchanged). The **workspace pane**
+(`src/workspace.rs`, `src/ui/workspace.rs`, `src/app/workspace_view.rs`) is the environment
+half: it resolves the west workspace (`src/backend/zephyr/workspace.rs`: `chiptui.toml`'s
+`[zephyr]` → the user config `~/.config/chiptui/config.toml`, parsed by `src/settings.rs` →
+discovery, which walks up for `.west/`, honors an inherited `ZEPHYR_BASE`, then tries
+`~/zephyrproject`, and asks through `Overlay::WorkspacePicker` when several candidates exist),
+shows status read from files rather than subprocesses (`zephyr/VERSION`, `sdk_version`), and
+offers `west update` (confirm-gated — it rewrites the shared workspace) and `west sdk list`
+under `Capability::WorkspaceSync`; both run through the build panel's one process slot into
+the Monitor tab. The resolution feeds the build panel's commands via
+`BuildPanel::set_tool_path`/`set_tool_env`: the venv's `west` (`<workspace>/.venv/bin/west`,
+executed directly — a venv console script embeds its interpreter path, so no activation is
+needed) plus per-command env (`ZEPHYR_BASE` always, so an app outside the workspace still
+finds it; `ZEPHYR_SDK_INSTALL_DIR`/`PATH`/`VIRTUAL_ENV` when applicable —
+`process::Command::env`). The **build panel** (`src/build.rs`, `src/ui/build.rs`,
+`src/app/build_view.rs`): Build/Clean/Rebuild/Menuconfig as a navigable list quoting the
+literal commands, board from `<build-dir>/zephyr/CMakeCache.txt` (`cached_board`), `Stop`
+while a command runs, `Clean` behind `Overlay::ConfirmBuild` (destructive capability), output
+streaming into the Monitor tab (`MonitorSource::Build`). **Menuconfig** (`west build -t
+menuconfig`) is interactive ncurses, so it parks a `pending_command` that `main.rs` runs under
+`TerminalGuard::suspend` — the same hand-off as `$EDITOR`. **Build directories** are named
+(`west build -d`): `Overlay::BuildDirPicker` lists configured `build*` directories (those
+holding a `zephyr/CMakeCache.txt`) plus a typed new name; the board answer follows each
+directory's cache, a session pick outlives directory switches, and the default `build` stays
+implicit in commands. Commands come from the backend (`Backend::build_command`,
+`src/backend/zephyr/commands.rs`: `west build`[-`d`][-`b`]/`-t clean`/`--pristine=always`,
+`west update`, `west sdk list`), run with the project root as cwd — the UI never names `west`
+(workspace-scoped commands run in the workspace). The panel's `Board` action (under
+`Capability::BoardSelect`) opens `Overlay::BoardPicker`: a
 filterable list over a background `west boards` fetch (`Backend::board_list_command`, parsed by
 `build::parse_boards`); a pick is session-only (`BoardOrigin::Picked` vs `Cache` — the header
 says which), never written to the project. `Flash` (`west flash`, the board's own runner from
-`runner.yml` — never a hard-coded programmer) sits between Rebuild and Board under
+`runner.yml` — never a hard-coded programmer) sits after Menuconfig under
 `Capability::Flash`, always behind `Overlay::ConfirmBuild` (destructive); the dashboard's `x`
 routes a build-panel backend there instead of esptool's dialog, and the esptool-specific
 "Device info" pane now gates on `DeviceInfo`/`EraseFlash` so Zephyr gets an honest placeholder.
@@ -52,8 +73,10 @@ The Zephyr monitor is wired too: `m` runs `west monitor [--port P]` (`Backend::m
 in the same PTY session MicroPython uses, and port discovery for a backend without `mpremote
 devs` is `device::usb_serial_ports` — a synchronous `/dev` walk (no subprocess) feeding the
 same `DeviceState`/picker flow (`App::scan_serial_devices`, `serial_dir` overridable for
-deterministic tests). With that, Zephyr's Phase 3 surface (detect, board, build, clean, flash,
-monitor) is complete; `west update`/debug/signing remain Roadmap items.
+deterministic tests; `home_dir` is the equivalent seam for workspace discovery). With that,
+Zephyr's Phase 3 surface (detect, board, build, clean, flash, monitor) plus its environment
+layer (workspace/venv/SDK resolution, menuconfig, build dirs, `west update`, `west sdk list`)
+is complete; debug/signing remain Roadmap items.
 
 `lib.rs` + `main.rs`: everything except `terminal` and `ui` is testable without a tty, and `ui` is
 testable through ratatui's `TestBackend` (see `tests/ui_render.rs`, `tests/files_view.rs`).
@@ -140,9 +163,11 @@ These are the decisions that shape most code, and getting them wrong causes wide
   `src/project/detect.rs`: `MIN_CONFIDENCE` (below = unknown), `AUTO_CONFIDENCE` (above = selected
   silently), `AMBIGUITY_MARGIN` (candidates this close = ask the user). Changing a weight will move
   fixtures across those thresholds — the detection tests assert against them by name.
-- **Override is a UI action, not a config file.** `ProjectManager::set_override` survives
-  re-detection and keeps the automatic evidence for display. The project-local config file from
-  `SPEC.md` §7 is not implemented; there is no TOML dependency yet.
+- **Override is a UI action; config files stay hand-rolled.** `ProjectManager::set_override`
+  survives re-detection and keeps the automatic evidence for display. The config files that do
+  exist (`chiptui.toml`'s `project_type` + `[zephyr]`, the user config's `[zephyr]`) are parsed
+  by tolerant hand-rolled parsers (`src/project/config.rs`, `src/settings.rs`) — still no TOML
+  dependency, per the same bias as the other one-shape parsers.
 - **The renderer publishes `App::log_viewport`** each frame so page-scrolling matches the drawn
   height. Rendering is otherwise a pure function of `App`.
 - **Processes** (`src/process/`): `spawn` returns immediately; a supervisor thread plus two reader

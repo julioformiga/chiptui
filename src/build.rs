@@ -25,6 +25,10 @@ use crate::process::{Outcome, ProcessEvent, ProcessId, ProcessManager};
 /// cold `west` workspace without letting a wedged compiler live forever.
 pub const BUILD_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
+/// The build directory every command targets when nothing else is chosen:
+/// the ecosystem's own convention.
+pub const DEFAULT_BUILD_DIR: &str = "build";
+
 /// `west boards` walks every board root; two minutes covers a full Zephyr
 /// SDK checkout without letting a wedged west live forever.
 pub const BOARDS_TIMEOUT: Duration = Duration::from_secs(120);
@@ -107,24 +111,35 @@ pub enum BuildAction {
     /// Opens the board picker (only under [`crate::backend::Capability::
     /// BoardSelect`]).
     Board,
+    /// The interactive Kconfig editor (`west build -t menuconfig`): run with
+    /// the terminal suspended like `$EDITOR`, never through the piped
+    /// process manager --- its whole value is the interactive screen.
+    Menuconfig,
+    /// Chooses which build directory the lifecycle targets: several boards
+    /// can hold parallel configurations (`west build -d`).
+    BuildDir,
 }
 
 impl BuildAction {
-    /// Rows for an idle panel under `caps`: the build lifecycle, then flash
-    /// and board when the capabilities allow. With `running`, `Stop` is
-    /// prepended (cancelling as discoverable as starting, `SPEC.md` §12).
+    /// Rows for an idle panel under `caps`: the build lifecycle (menuconfig
+    /// beside it, a build-system target like the others), then flash and
+    /// board when the capabilities allow, and the build-directory row last.
+    /// With `running`, `Stop` is prepended (cancelling as discoverable as
+    /// starting, `SPEC.md` §12).
     pub fn list(caps: &crate::backend::Capabilities, running: bool) -> Vec<Self> {
-        let mut actions = Vec::with_capacity(BuildKind::ALL.len() + 3);
+        let mut actions = Vec::with_capacity(BuildKind::ALL.len() + 5);
         if running {
             actions.push(Self::Stop);
         }
         actions.extend(BuildKind::ALL.iter().map(|kind| Self::Build(*kind)));
+        actions.push(Self::Menuconfig);
         if caps.contains(crate::backend::Capability::Flash) {
             actions.push(Self::Flash);
         }
         if caps.contains(crate::backend::Capability::BoardSelect) {
             actions.push(Self::Board);
         }
+        actions.push(Self::BuildDir);
         actions
     }
 }
@@ -133,6 +148,10 @@ pub struct BuildPanel {
     /// Project root: the working directory every command runs in (`west`
     /// finds its workspace from the cwd).
     pub root: PathBuf,
+    /// The build directory the lifecycle targets (`-d`): the conventional
+    /// `build` until the user picks another, so parallel board
+    /// configurations do not keep erasing each other.
+    pub build_dir: String,
     /// The board commands target: from the CMake cache until the user picks
     /// one for the session (a pick survives, and overrides, cache reads).
     pub board: Option<BoardChoice>,
@@ -148,17 +167,22 @@ pub struct BuildPanel {
     /// Overrides the executable the backend's commands name (`west`), the
     /// seam tests (and later `[tools]` config) plug a substitute into.
     tool_path: Option<String>,
+    /// Environment overrides every command carries (the resolved workspace's
+    /// `ZEPHYR_BASE` and friends) --- the environment half of the same seam
+    /// `tool_path` covers for the executable.
+    tool_env: Vec<(String, String)>,
 }
 
 impl BuildPanel {
     pub fn new(root: impl Into<PathBuf>, offset: UtcOffset) -> Self {
         let root = root.into();
-        let board = cached_board(&root).map(|name| BoardChoice {
+        let board = cached_board(&root, DEFAULT_BUILD_DIR).map(|name| BoardChoice {
             name,
             origin: BoardOrigin::Cache,
         });
         Self {
             root,
+            build_dir: DEFAULT_BUILD_DIR.to_string(),
             board,
             cursor: 0,
             last: None,
@@ -169,6 +193,7 @@ impl BuildPanel {
             offset,
             running: None,
             tool_path: None,
+            tool_env: Vec::new(),
         }
     }
 
@@ -178,6 +203,64 @@ impl BuildPanel {
 
     pub fn tool_path(&self) -> Option<&str> {
         self.tool_path.as_deref()
+    }
+
+    /// Sets the environment overrides every command carries. The app passes
+    /// the resolved west workspace's environment here (`ZEPHYR_BASE`, ...);
+    /// the panel itself stays backend-agnostic, knowing only "program and
+    /// environment overrides".
+    pub fn set_tool_env(&mut self, env: Vec<(String, String)>) {
+        self.tool_env = env;
+    }
+
+    /// Applies the resolved executable and environment to a backend-built
+    /// command, next to the cwd the panel also owns.
+    fn decorated(&self, command: crate::process::Command) -> crate::process::Command {
+        let command = match &self.tool_path {
+            Some(program) => command.with_program(program),
+            None => command,
+        };
+        command.envs(self.tool_env.clone())
+    }
+
+    /// Points the lifecycle at another build directory. The board answer is
+    /// re-read from that directory's CMake cache unless the user picked one
+    /// for the session (a pick outlives directory switches, same as it
+    /// outlives cache refreshes).
+    pub fn set_build_dir(&mut self, dir: impl Into<String>) {
+        let dir = dir.into();
+        if self.build_dir == dir {
+            return;
+        }
+        self.build_dir = dir;
+        if self
+            .board
+            .as_ref()
+            .is_none_or(|choice| choice.origin == BoardOrigin::Cache)
+        {
+            self.board = cached_board(&self.root, &self.build_dir).map(|name| BoardChoice {
+                name,
+                origin: BoardOrigin::Cache,
+            });
+        }
+        self.cursor = 0;
+    }
+
+    /// The project's configured build directories: immediate subdirectories
+    /// holding a `zephyr/CMakeCache.txt` (west's own footprint), `build`
+    /// first when present. What the build-directory picker lists; an empty
+    /// answer simply means nothing is configured yet.
+    pub fn discover_build_dirs(root: &Path) -> Vec<String> {
+        let mut dirs: Vec<String> = std::fs::read_dir(root)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|entry| entry.path().join("zephyr/CMakeCache.txt").is_file())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        dirs.sort();
+        dirs.dedup();
+        dirs
     }
 
     pub fn is_busy(&self) -> bool {
@@ -247,18 +330,14 @@ impl BuildPanel {
         self.boards_process = Some(processes.spawn(command, BOARDS_TIMEOUT));
     }
 
-    /// The board-list command, rooted and tool-overridden like the build
-    /// commands. `None` when the backend offers no board selection.
+    /// The board-list command, rooted, tool- and environment-decorated like
+    /// the build commands. `None` when the backend offers no board selection.
     pub fn boards_command(
         &self,
         backend: &dyn crate::backend::Backend,
     ) -> Option<crate::process::Command> {
         let command = backend.board_list_command()?;
-        let command = command.current_dir(&self.root);
-        Some(match &self.tool_path {
-            Some(program) => command.with_program(program),
-            None => command,
-        })
+        Some(self.decorated(command.current_dir(&self.root)))
     }
 
     /// Elapsed time of the running command, for the header's live counter.
@@ -266,6 +345,44 @@ impl BuildPanel {
         self.running
             .as_ref()
             .map(|running| running.started.elapsed())
+    }
+
+    /// The build-directory picker's rows for a filter: the typed name first
+    /// when it would create something new, then the conventional `build`,
+    /// then every other configured directory --- so even a fresh project
+    /// (nothing configured yet) has the default to fall back on. A name is
+    /// only ever a *name*: path separators and `..` never qualify (the
+    /// directory lives inside the project root, like `west`'s own `-d`
+    /// argument).
+    pub fn filtered_build_dirs(&self, filter: &str) -> Vec<String> {
+        let filter = filter.trim();
+        if !filter.is_empty() && !Self::is_build_dir_name(filter) {
+            return Vec::new();
+        }
+        let mut dirs: Vec<String> = Self::discover_build_dirs(&self.root)
+            .into_iter()
+            .filter(|dir| filter.is_empty() || dir.contains(filter))
+            .collect();
+        // A filter that matches nothing is a name being typed for a new
+        // directory: it leads the list (first Enter lands on it).
+        if !filter.is_empty() && dirs.is_empty() {
+            dirs.push(filter.to_string());
+        }
+        if (filter.is_empty() || DEFAULT_BUILD_DIR.contains(filter))
+            && !dirs.contains(&DEFAULT_BUILD_DIR.to_string())
+        {
+            dirs.insert(0, DEFAULT_BUILD_DIR.to_string());
+        }
+        dirs
+    }
+
+    /// A legal build-directory name: a single path component.
+    fn is_build_dir_name(name: &str) -> bool {
+        !name.is_empty()
+            && name != "."
+            && name != ".."
+            && !name.contains('/')
+            && !name.contains(std::path::MAIN_SEPARATOR_STR)
     }
 
     /// The command for `kind`, as the app should run it: the backend's
@@ -276,30 +393,38 @@ impl BuildPanel {
         kind: BuildKind,
         backend: &dyn crate::backend::Backend,
     ) -> Option<crate::process::Command> {
-        let command = backend.build_command(kind, self.board_name(), self.has_build_dir())?;
-        let command = command.current_dir(&self.root);
-        Some(match &self.tool_path {
-            Some(program) => command.with_program(program),
-            None => command,
-        })
+        let command = backend.build_command(
+            kind,
+            self.board_name(),
+            self.has_build_dir(),
+            &self.build_dir,
+        )?;
+        Some(self.decorated(command.current_dir(&self.root)))
     }
 
-    /// The flash command, rooted and tool-overridden like the build ones.
+    /// The flash command, rooted and decorated like the build ones.
     /// `None` when the backend has no single flash command.
     pub fn flash_command(
         &self,
         backend: &dyn crate::backend::Backend,
     ) -> Option<crate::process::Command> {
-        let command = backend.flash_command()?;
-        let command = command.current_dir(&self.root);
-        Some(match &self.tool_path {
-            Some(program) => command.with_program(program),
-            None => command,
-        })
+        let command = backend.flash_command(&self.build_dir)?;
+        Some(self.decorated(command.current_dir(&self.root)))
+    }
+
+    /// The interactive configuration command (`menuconfig`), rooted and
+    /// decorated like the others. The caller runs it with the terminal
+    /// suspended --- it is not a piped process.
+    pub fn menuconfig_command(
+        &self,
+        backend: &dyn crate::backend::Backend,
+    ) -> Option<crate::process::Command> {
+        let command = backend.menuconfig_command(&self.build_dir)?;
+        Some(self.decorated(command.current_dir(&self.root)))
     }
 
     fn has_build_dir(&self) -> bool {
-        self.root.join("build").is_dir()
+        self.root.join(&self.build_dir).is_dir()
     }
 
     /// Starts `command` as this panel's running process. `what` labels it in
@@ -439,7 +564,7 @@ impl BuildPanel {
         // cache to that name); only a cache the pick does not explain
         // demotes the answer back to "from build/".
         if ok && running.updates_board {
-            let cached = cached_board(&self.root).map(|name| BoardChoice {
+            let cached = cached_board(&self.root, &self.build_dir).map(|name| BoardChoice {
                 name,
                 origin: BoardOrigin::Cache,
             });
@@ -476,11 +601,11 @@ impl BuildPanel {
 }
 
 /// Reads the board a configured build directory targets, from
-/// `build/zephyr/CMakeCache.txt`'s `CACHED_BOARD:STRING=` entry. `None` when
-/// there is no build directory yet, or a cache without the entry (a cache
-/// written by something other than a Zephyr app build).
-pub fn cached_board(root: &Path) -> Option<String> {
-    let cache = std::fs::read_to_string(root.join("build/zephyr/CMakeCache.txt")).ok()?;
+/// `<dir>/zephyr/CMakeCache.txt`'s `CACHED_BOARD:STRING=` entry. `None` when
+/// that build directory does not exist yet, or holds a cache without the
+/// entry (a cache written by something other than a Zephyr app build).
+pub fn cached_board(root: &Path, build_dir: &str) -> Option<String> {
+    let cache = std::fs::read_to_string(root.join(build_dir).join("zephyr/CMakeCache.txt")).ok()?;
     cache
         .lines()
         .find_map(|line| line.strip_prefix(CACHED_BOARD_KEY))
@@ -531,20 +656,27 @@ mod tests {
             "// cache\nCACHED_BOARD:STRING=nrf52840dk/nrf52840\nCACHED_APP:STRING=app\n",
         )
         .unwrap();
-        assert_eq!(cached_board(&dir).as_deref(), Some("nrf52840dk/nrf52840"));
+        assert_eq!(
+            cached_board(&dir, DEFAULT_BUILD_DIR).as_deref(),
+            Some("nrf52840dk/nrf52840")
+        );
     }
 
     #[test]
     fn missing_or_boardless_cache_means_no_board() {
         let dir = fixture_dir("nocache");
-        assert_eq!(cached_board(&dir), None);
+        assert_eq!(cached_board(&dir, DEFAULT_BUILD_DIR), None);
 
         std::fs::write(
             dir.join("build/zephyr/CMakeCache.txt"),
             "CACHED_BOARD:STRING=\n",
         )
         .unwrap();
-        assert_eq!(cached_board(&dir), None, "an empty board is no board");
+        assert_eq!(
+            cached_board(&dir, DEFAULT_BUILD_DIR),
+            None,
+            "an empty board is no board"
+        );
     }
 
     #[test]
@@ -570,6 +702,116 @@ mod tests {
         assert!(!build.to_string().contains("-b"));
         let rebuild = panel.command(BuildKind::Rebuild, &ZephyrBackend).unwrap();
         assert!(rebuild.to_string().ends_with("-b nrf52840dk/nrf52840"));
+    }
+
+    #[test]
+    fn the_tool_env_reaches_every_decorated_command() {
+        let dir = fixture_dir("env");
+        let mut panel = BuildPanel::new(&dir, UtcOffset::UTC);
+        panel.set_tool_env(vec![(
+            "ZEPHYR_BASE".to_string(),
+            dir.join("zephyr").display().to_string(),
+        )]);
+
+        let menuconfig = panel.menuconfig_command(&ZephyrBackend).unwrap();
+        assert_eq!(
+            menuconfig.to_string(),
+            format!(
+                "ZEPHYR_BASE={}/zephyr west build -t menuconfig",
+                dir.display()
+            )
+        );
+        let boards = panel.boards_command(&ZephyrBackend).unwrap();
+        assert!(boards.to_string().starts_with("ZEPHYR_BASE="));
+    }
+
+    #[test]
+    fn another_build_dir_moves_the_lifecycle_and_the_board_answer() {
+        let dir = fixture_dir("dirs");
+        std::fs::write(
+            dir.join("build/zephyr/CMakeCache.txt"),
+            "CACHED_BOARD:STRING=nrf52840dk/nrf52840\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.join("build-thingy/zephyr")).unwrap();
+        std::fs::write(
+            dir.join("build-thingy/zephyr/CMakeCache.txt"),
+            "CACHED_BOARD:STRING=thingy91/nrf9160\n",
+        )
+        .unwrap();
+        // A sibling without a cache is not a build directory.
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+
+        let mut panel = BuildPanel::new(&dir, UtcOffset::UTC);
+        assert_eq!(panel.board_name(), Some("nrf52840dk/nrf52840"));
+
+        panel.set_build_dir("build-thingy");
+        assert_eq!(
+            panel.board_name(),
+            Some("thingy91/nrf9160"),
+            "cache re-read per dir"
+        );
+        let build = panel.command(BuildKind::Build, &ZephyrBackend).unwrap();
+        assert_eq!(build.to_string(), "west build -d build-thingy");
+
+        assert_eq!(
+            BuildPanel::discover_build_dirs(&dir),
+            vec!["build", "build-thingy"],
+            "only configured directories count, sorted"
+        );
+    }
+
+    #[test]
+    fn a_picked_board_survives_a_directory_switch() {
+        let dir = fixture_dir("pickdir");
+        std::fs::create_dir_all(dir.join("build/zephyr")).unwrap();
+        std::fs::write(
+            dir.join("build/zephyr/CMakeCache.txt"),
+            "CACHED_BOARD:STRING=old\n",
+        )
+        .unwrap();
+        let mut panel = BuildPanel::new(&dir, UtcOffset::UTC);
+        panel.set_picked("nrf52840dk/nrf52840");
+
+        panel.set_build_dir("build2");
+        assert_eq!(
+            panel.board_name(),
+            Some("nrf52840dk/nrf52840"),
+            "a session pick outlives directory switches"
+        );
+    }
+
+    #[test]
+    fn the_dir_picker_offers_the_default_and_a_new_typed_name() {
+        let dir = fixture_dir("picker");
+        std::fs::create_dir_all(dir.join("build-nrf/zephyr")).unwrap();
+        std::fs::write(
+            dir.join("build-nrf/zephyr/CMakeCache.txt"),
+            "CACHED_BOARD:STRING=nrf\n",
+        )
+        .unwrap();
+        let panel = BuildPanel::new(&dir, UtcOffset::UTC);
+
+        // Empty filter: the conventional default plus what is configured.
+        assert_eq!(
+            panel.filtered_build_dirs(""),
+            vec![DEFAULT_BUILD_DIR.to_string(), "build-nrf".to_string()]
+        );
+
+        // A new name leads the list (first Enter press lands on it); an
+        // existing name filters to itself.
+        assert_eq!(
+            panel.filtered_build_dirs("build-91"),
+            vec!["build-91".to_string()]
+        );
+        assert_eq!(
+            panel.filtered_build_dirs("nrf"),
+            vec!["build-nrf".to_string()]
+        );
+
+        // Not a name: no rows, so Enter cannot apply it.
+        assert!(panel.filtered_build_dirs("../escape").is_empty());
+        assert!(panel.filtered_build_dirs("a/b").is_empty());
     }
 
     #[test]
@@ -628,16 +870,29 @@ mod tests {
                 BuildAction::Build(BuildKind::Build),
                 BuildAction::Build(BuildKind::Clean),
                 BuildAction::Build(BuildKind::Rebuild),
+                BuildAction::Menuconfig,
                 BuildAction::Flash,
                 BuildAction::Board,
+                BuildAction::BuildDir,
             ]
         );
-        assert_eq!(panel.action_at(&zephyr, 3), Some(BuildAction::Flash));
-        assert_eq!(panel.action_at(&zephyr, 4), Some(BuildAction::Board));
+        assert_eq!(panel.action_at(&zephyr, 4), Some(BuildAction::Flash));
+        assert_eq!(panel.action_at(&zephyr, 5), Some(BuildAction::Board));
+        assert_eq!(panel.action_at(&zephyr, 6), Some(BuildAction::BuildDir));
 
-        // A backend without flash/board capability: just the lifecycle.
+        // A backend without flash/board capability: the lifecycle plus the
+        // two always-present rows.
         let plain = crate::backend::Capabilities::from_slice(&[crate::backend::Capability::Build]);
-        assert_eq!(panel.action_at(&plain, 3), None, "no more rows");
+        assert_eq!(
+            panel.actions(&plain),
+            vec![
+                BuildAction::Build(BuildKind::Build),
+                BuildAction::Build(BuildKind::Clean),
+                BuildAction::Build(BuildKind::Rebuild),
+                BuildAction::Menuconfig,
+                BuildAction::BuildDir,
+            ]
+        );
 
         // With a command running, Stop shifts everything down by one ---
         // the cursor arithmetic the key handler depends on.
@@ -649,7 +904,7 @@ mod tests {
             &mut processes,
         );
         assert_eq!(panel.action_at(&zephyr, 0), Some(BuildAction::Stop));
-        assert_eq!(panel.action_at(&zephyr, 5), Some(BuildAction::Board));
+        assert_eq!(panel.action_at(&zephyr, 6), Some(BuildAction::Board));
     }
 
     #[test]

@@ -45,6 +45,44 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
         Overlay::BoardPicker { input, selected } => {
             draw_board_picker(frame, area, app, &input, selected)
         }
+        Overlay::WorkspacePicker { selected } => draw_workspace_picker(frame, area, app, selected),
+        Overlay::ConfirmWorkspace { action, confirm } => {
+            // Derived like ConfirmBuild's message: whatever the pane would
+            // run right now is what the confirm quotes. The literal command
+            // (env vars and the venv's west path included) is longer than
+            // one dialog line, so it is shortened from the left --- its
+            // tail, not its /tmp prefix, is its identity.
+            let command = app
+                .workspace
+                .as_ref()
+                .and_then(|panel| {
+                    let backend = app.manager.backend()?;
+                    match action {
+                        crate::workspace::WorkspaceAction::Update => panel
+                            .update_command(backend)
+                            .map(|command| command.to_string()),
+                        _ => None,
+                    }
+                })
+                .unwrap_or_else(|| "this action".to_string());
+            let quoted = {
+                let length = command.chars().count();
+                if length <= 64 {
+                    command
+                } else {
+                    format!("…{}", command.chars().skip(length - 63).collect::<String>())
+                }
+            };
+            let lines = vec![
+                Line::from("Run this in the shared workspace?".fg(Color::Yellow)),
+                Line::from(quoted),
+                Line::from("It rewrites the checkouts every project in it shares.".dim()),
+            ];
+            draw_confirm_dialog(frame, area, "Confirm", lines, confirm, 72, 8);
+        }
+        Overlay::BuildDirPicker { input, selected } => {
+            draw_build_dir_picker(frame, area, app, &input, selected)
+        }
         Overlay::FirmwarePicker { selected } => draw_firmware_picker(frame, area, app, selected),
         Overlay::ProjectSetup { selected } => draw_project_setup(frame, area, selected),
         Overlay::ConfirmDownloadOverwrite { url, dest, confirm } => {
@@ -556,6 +594,113 @@ fn draw_project_setup(frame: &mut Frame, area: Rect, selected: usize) {
 fn draw_confirm(frame: &mut Frame, area: Rect, message: &str, confirm: bool) {
     let lines = vec![Line::from(message.to_string().fg(Color::Yellow))];
     draw_confirm_dialog(frame, area, "Confirm", lines, confirm, 70, 7);
+}
+
+/// Workspace selection: every candidate discovery found, each with its
+/// evidence --- the explanation is the point (`AGENTS.md` §4). A pick is
+/// session-only; the header says how to make it permanent instead.
+fn draw_workspace_picker(frame: &mut Frame, area: Rect, app: &App, selected: usize) {
+    let Some(panel) = app.workspace.as_ref() else {
+        return;
+    };
+    if panel.candidates.is_empty() {
+        return;
+    }
+
+    let items: Vec<ListItem> = panel
+        .candidates
+        .iter()
+        .map(|workspace| {
+            ListItem::new(Line::from(vec![
+                Span::raw(format!(" {} ", workspace.dir.display())),
+                Span::styled(
+                    format!("({})", workspace.origin.label()),
+                    Style::new().dim(),
+                ),
+            ]))
+        })
+        .collect();
+
+    let height = (panel.candidates.len() as u16 + 4).min(16);
+    let popup = centered(area, 72, height);
+    frame.render_widget(Clear, popup);
+    let mut state = ListState::default().with_selected(Some(selected));
+    frame.render_stateful_widget(
+        List::new(items)
+            .block(modal(
+                "Workspace (pick for this session — set it in the config to persist)",
+            ))
+            .highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
+        popup,
+        &mut state,
+    );
+}
+
+/// Build-directory selection: the project's configured directories plus a
+/// typed new name (`west build -d`).
+fn draw_build_dir_picker(frame: &mut Frame, area: Rect, app: &App, input: &str, selected: usize) {
+    let height = 16u16;
+    let width = 60u16;
+    let popup = centered(area, width, height);
+    frame.render_widget(Clear, popup);
+
+    let Some(panel) = app.build.as_ref() else {
+        return;
+    };
+    let title = format!("Build directory (currently {})", panel.build_dir);
+    frame.render_widget(modal(&title), popup);
+
+    let [filter_area, hint_area, list_area] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(2),
+        Constraint::Min(1),
+    ])
+    .areas(modal(&title).inner(popup));
+
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("name  ", Style::new().dim()),
+            Span::raw(input.to_string()),
+            Span::styled("▏", Style::new().fg(Color::Cyan)),
+        ])),
+        filter_area,
+    );
+
+    let dirs = panel.filtered_build_dirs(input);
+    let hint = if input.trim().is_empty() {
+        "Enter picks; type a new name to create another".to_string()
+    } else if dirs.is_empty() {
+        "not a name: no path separators".to_string()
+    } else {
+        format!("{} of {} directories", dirs.len(), dirs.len())
+    };
+    frame.render_widget(
+        Paragraph::new(vec![Line::from(hint.dim()), Line::from("")]),
+        hint_area,
+    );
+
+    let items: Vec<ListItem> = dirs
+        .iter()
+        .map(|dir| {
+            ListItem::new(Line::from(vec![
+                Span::raw(format!(" {dir} ")),
+                Span::styled(
+                    if *dir == crate::build::DEFAULT_BUILD_DIR {
+                        "default"
+                    } else {
+                        ""
+                    },
+                    Style::new().dim(),
+                ),
+            ]))
+        })
+        .collect();
+    let mut state = ListState::default().with_selected(Some(selected));
+    frame.render_stateful_widget(
+        List::new(items).highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
+        list_area,
+        &mut state,
+    );
 }
 
 /// Chooses among several `.bin`/`.elf` candidates found in the project root.

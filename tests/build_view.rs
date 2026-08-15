@@ -44,11 +44,14 @@ fn zephyr_app(tag: &str, board: Option<&str>) -> (App, std::path::PathBuf) {
     let mut app = App::new(&root);
     app.bootstrap();
     app.manager.set_override(Some(BackendKind::Zephyr));
-    // The serial scan must not look at the machine's real /dev: point it at
-    // an empty directory so startup is deterministic (per-test fixture
-    // dirs add ports when a test wants them).
+    // The serial scan must not look at the machine's real /dev, and workspace
+    // discovery must not look at the machine's real $HOME (a ~/zephyrproject
+    // on the host would resolve the pane differently): both point at fixture
+    // directories so startup is deterministic.
     std::fs::create_dir_all(root.join("dev")).unwrap();
     app.set_serial_dir(root.join("dev"));
+    std::fs::create_dir_all(root.join("home")).unwrap();
+    app.set_home_dir(root.join("home"));
     app.maybe_scan_devices();
     (app, root)
 }
@@ -92,10 +95,10 @@ fn the_panel_appears_and_is_a_focus_stop_for_a_build_backend() {
     assert!(app.build.is_some(), "Zephyr gets a build panel");
     assert!(app.build_pane_visible());
 
-    // Tab tour: Local -> Build -> Logs -> Local.
+    // Tab tour: Workspace -> Build -> Logs -> Workspace.
     app.focus = Focus::Logs;
     app.handle(key(KeyCode::Tab));
-    assert_eq!(app.focus, Focus::FilesLocal);
+    assert_eq!(app.focus, Focus::Workspace);
     app.handle(key(KeyCode::Tab));
     assert_eq!(app.focus, Focus::Build);
     app.handle(key(KeyCode::Tab));
@@ -262,8 +265,8 @@ fn stop_cancels_the_running_command() {
     assert!(app.build.as_ref().unwrap().is_busy());
 
     // While running, Stop heads the list. Starting the build moved focus to
-    // the Monitor tab; walk back to the panel (Logs -> Local -> Build) and
-    // press Enter on Stop.
+    // the Monitor tab; walk back to the panel (Logs -> Workspace -> Build)
+    // and press Enter on Stop.
     let frame = render(&mut app, 100, 30);
     assert!(frame.contains("Stop"), "no stop row:\n{frame}");
     app.handle(key(KeyCode::Tab));
@@ -330,8 +333,9 @@ fn the_board_picker_fetches_filters_and_picks_for_the_session() {
     app.build.as_mut().unwrap().set_tool_path(fake("west"));
     app.focus = Focus::Build;
 
-    // The Board action sits after the three lifecycle entries and Flash.
-    for _ in 0..4 {
+    // The Board action sits after the three lifecycle entries, Menuconfig
+    // and Flash.
+    for _ in 0..5 {
         app.handle(key(KeyCode::Down));
     }
     app.handle(key(KeyCode::Enter));
@@ -420,7 +424,7 @@ fn a_boardless_filter_match_enter_picks_nothing_and_esc_changes_nothing() {
     app.build.as_mut().unwrap().set_tool_path(fake("west"));
     app.focus = Focus::Build;
 
-    for _ in 0..4 {
+    for _ in 0..5 {
         app.handle(key(KeyCode::Down));
     }
     app.handle(key(KeyCode::Enter));
@@ -450,7 +454,7 @@ fn a_boardless_filter_match_enter_picks_nothing_and_esc_changes_nothing() {
     );
 
     // …and Esc leaves the cache answer untouched either way.
-    for _ in 0..4 {
+    for _ in 0..5 {
         app.handle(key(KeyCode::Down));
     }
     app.handle(key(KeyCode::Enter));
@@ -472,7 +476,7 @@ fn a_missing_west_explains_itself_in_the_picker() {
         .set_tool_path("/nonexistent/west");
     app.focus = Focus::Build;
 
-    for _ in 0..4 {
+    for _ in 0..5 {
         app.handle(key(KeyCode::Down));
     }
     app.handle(key(KeyCode::Enter));
@@ -500,8 +504,8 @@ fn flash_is_listed_confirms_and_runs_through_west() {
     let mut app = app_with_west("flash", "west");
     app.focus = Focus::Build;
 
-    // Flash sits between Rebuild and Board.
-    for _ in 0..3 {
+    // Flash sits after Menuconfig.
+    for _ in 0..4 {
         app.handle(key(KeyCode::Down));
     }
     app.handle(key(KeyCode::Enter));
@@ -574,4 +578,173 @@ fn x_routes_a_build_backend_to_west_flash_and_micropython_to_esptool() {
     app.maybe_scan_devices();
     app.handle(key(KeyCode::Char('x')));
     assert_eq!(app.view, View::Flash);
+}
+
+/// A west workspace under the fixture home: `.west/`, `zephyr/VERSION`, and
+/// a venv `west` that is a plain copy of the fake (so the pane's status and
+/// commands can assert on a real absolute path).
+fn workspace_under(home: &std::path::Path, name: &str) -> std::path::PathBuf {
+    let dir = home.join(name);
+    std::fs::create_dir_all(dir.join(".west")).unwrap();
+    std::fs::create_dir_all(dir.join("zephyr")).unwrap();
+    std::fs::write(dir.join(".west/config"), "[manifest]\npath = zephyr\n").unwrap();
+    std::fs::write(
+        dir.join("zephyr/VERSION"),
+        "VERSION_MAJOR = 4\nVERSION_MINOR = 1\nPATCHLEVEL = 0\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.join(".venv/bin")).unwrap();
+    std::fs::copy(fake("west"), dir.join(".venv/bin/west")).unwrap();
+    dir
+}
+
+#[test]
+fn the_workspace_pane_resolves_from_project_config_and_runs_update() {
+    let (mut app, root) = zephyr_app("ws", None);
+    let home = root.join("home");
+    let ws = workspace_under(&home, "zephyrproject");
+    std::fs::write(
+        root.join("chiptui.toml"),
+        format!("[zephyr]\nworkspace = \"{}\"\n", ws.display()),
+    )
+    .unwrap();
+    // Re-run resolution now that the config exists.
+    app.workspace = None;
+    app.build = None;
+    app.maybe_scan_devices();
+
+    let panel = app.workspace.as_ref().unwrap();
+    assert_eq!(panel.dir(), Some(&ws), "the explicit config resolves");
+    // The venv's west is what every command runs, and the environment says
+    // which workspace it belongs to.
+    assert!(
+        app.build
+            .as_ref()
+            .unwrap()
+            .tool_path()
+            .unwrap()
+            .starts_with(ws.join(".venv/bin/west").to_str().unwrap())
+    );
+
+    let frame = render(&mut app, 100, 30);
+    assert!(frame.contains("Workspace"), "the pane renders:\n{frame}");
+    assert!(frame.contains("zephyrproject"), "the path shows:\n{frame}");
+    assert!(frame.contains("chiptui.toml"), "the origin shows:\n{frame}");
+    assert!(frame.contains("4.1"), "the Zephyr version shows:\n{frame}");
+
+    // Enter on Update confirms first (it rewrites the shared workspace)…
+    app.focus = Focus::Workspace;
+    app.handle(key(KeyCode::Enter));
+    assert!(matches!(
+        app.overlay,
+        Some(Overlay::ConfirmWorkspace { .. })
+    ));
+    let frame = render(&mut app, 100, 30);
+    assert!(
+        frame.contains("west update"),
+        "the confirm quotes the command:\n{frame}"
+    );
+
+    // …and accepting runs it in the workspace with the derived environment.
+    app.handle(key(KeyCode::Char('y')));
+    assert!(app.build.as_ref().unwrap().is_busy());
+    let command = app.build.as_ref().unwrap().output.front().unwrap().clone();
+    assert!(command.contains(&format!("ZEPHYR_BASE={}", ws.join("zephyr").display())));
+    assert!(command.ends_with("west update"));
+    let finished = pump_until(
+        &mut app,
+        |app| app.build.as_ref().unwrap().last.is_some(),
+        10,
+    );
+    assert!(finished);
+    assert!(app.build.as_ref().unwrap().last.as_ref().unwrap().ok);
+}
+
+#[test]
+fn an_unresolved_pane_explains_the_config_instead_of_offering_actions() {
+    let (mut app, _root) = zephyr_app("ws-missing", None);
+
+    let panel = app.workspace.as_ref().unwrap();
+    assert!(panel.dir().is_none());
+    assert!(panel.invalid.is_none(), "nothing was configured: no error");
+    assert!(panel.actions(&app.manager.capabilities()).is_empty());
+
+    let frame = render(&mut app, 100, 30);
+    assert!(
+        frame.contains("no west workspace found"),
+        "the guidance must show:\n{frame}"
+    );
+    assert!(
+        frame.contains("config.toml"),
+        "the config path must be named:\n{frame}"
+    );
+}
+
+#[test]
+fn menuconfig_hands_the_terminal_over_instead_of_piping() {
+    let mut app = app_with_west("menuconfig", "west");
+    app.focus = Focus::Build;
+
+    // Menuconfig sits after the lifecycle entries.
+    for _ in 0..3 {
+        app.handle(key(KeyCode::Down));
+    }
+    app.handle(key(KeyCode::Enter));
+
+    let command = app.take_pending_command().expect("a parked command");
+    assert!(command.to_string().ends_with("west build -t menuconfig"));
+    assert!(
+        !app.build.as_ref().unwrap().is_busy(),
+        "nothing runs through the process manager"
+    );
+    assert!(app.take_pending_command().is_none(), "consumed once");
+}
+
+#[test]
+fn the_build_dir_picker_switches_the_lifecycle_target() {
+    let (mut app, root) = zephyr_app("builddir", Some("nrf52840dk/nrf52840"));
+    app.build.as_mut().unwrap().set_tool_path(fake("west"));
+    std::fs::create_dir_all(root.join("build-thingy/zephyr")).unwrap();
+    std::fs::write(
+        root.join("build-thingy/zephyr/CMakeCache.txt"),
+        "CACHED_BOARD:STRING=thingy91/nrf9160\n",
+    )
+    .unwrap();
+    app.focus = Focus::Build;
+
+    // The Dir action closes the list.
+    for _ in 0..6 {
+        app.handle(key(KeyCode::Down));
+    }
+    app.handle(key(KeyCode::Enter));
+    assert!(matches!(app.overlay, Some(Overlay::BuildDirPicker { .. })));
+
+    // Filter to the configured directory and pick it.
+    app.handle(key(KeyCode::Char('t')));
+    app.handle(key(KeyCode::Char('h')));
+    app.handle(key(KeyCode::Enter));
+    assert_eq!(
+        app.build.as_ref().unwrap().build_dir,
+        "build-thingy",
+        "the pick lands"
+    );
+    assert_eq!(
+        app.build.as_ref().unwrap().board_name(),
+        Some("thingy91/nrf9160"),
+        "the board answer follows the directory's cache"
+    );
+
+    // And the lifecycle commands now target it.
+    let backend = app.manager.backend().unwrap();
+    let clean = app
+        .build
+        .as_ref()
+        .unwrap()
+        .command(BuildKind::Clean, backend)
+        .unwrap();
+    assert!(
+        clean
+            .to_string()
+            .ends_with("west build -d build-thingy -t clean")
+    );
 }

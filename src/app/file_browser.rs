@@ -702,6 +702,14 @@ impl App {
         self.pending_edit.take()
     }
 
+    /// Takes the interactive command queued by the build panel's
+    /// `menuconfig` action, if any: the event loop suspends the terminal and
+    /// runs it attached to the real screen (the same contract as
+    /// [`Self::take_pending_edit`], for a child that is itself a TUI).
+    pub fn take_pending_command(&mut self) -> Option<crate::process::Command> {
+        self.pending_command.take()
+    }
+
     pub fn take_pending_monitor(&mut self) -> Option<PendingMonitor> {
         self.pending_monitor.take()
     }

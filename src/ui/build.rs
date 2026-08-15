@@ -48,15 +48,18 @@ fn draw_header(frame: &mut Frame, area: Rect, panel: &BuildPanel) {
             label("board"),
             choice.name.clone().fg(Color::Green).bold(),
             Span::raw(" "),
-            "picked (this session)".dim(),
+            format!("picked · dir {}", panel.build_dir).dim(),
         ]),
         (Some(choice), _) => Line::from(vec![
             label("board"),
             choice.name.clone().fg(Color::Green).bold(),
             Span::raw(" "),
-            "from build/".dim(),
+            format!("from {}/", panel.build_dir).dim(),
         ]),
-        (None, true) => Line::from(vec![label("board"), "— (this build configures one)".dim()]),
+        (None, true) => Line::from(vec![
+            label("board"),
+            format!("— (this build configures one · dir {})", panel.build_dir).dim(),
+        ]),
         (None, false) => Line::from(vec![
             label("board"),
             "none".fg(Color::Yellow),
@@ -152,6 +155,33 @@ fn draw_actions(frame: &mut Frame, area: Rect, app: &App, panel: &BuildPanel, fo
                     ),
                 ])
             }
+            crate::build::BuildAction::Menuconfig => {
+                let command = backend
+                    .and_then(|backend| panel.menuconfig_command(backend))
+                    .map(|command| command.to_string())
+                    .unwrap_or_else(|| "not available".to_string());
+                Line::from(vec![
+                    Span::raw("  "),
+                    "Menuconfig".bold(),
+                    Span::raw("  "),
+                    Span::styled(
+                        shorten_start(&command, width_for(area.width)),
+                        Style::new().dim(),
+                    ),
+                ])
+            }
+            crate::build::BuildAction::BuildDir => Line::from(vec![
+                Span::raw("  "),
+                "Dir".bold(),
+                Span::raw("  "),
+                Span::styled(
+                    format!(
+                        "{}  (choose or type another: west build -d)",
+                        panel.build_dir
+                    ),
+                    Style::new().dim(),
+                ),
+            ]),
             crate::build::BuildAction::Board => Line::from(vec![
                 Span::raw("  "),
                 "Board".bold(),

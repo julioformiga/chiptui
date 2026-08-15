@@ -35,6 +35,10 @@ fn zephyr_app(tag: &str) -> (App, std::path::PathBuf) {
     app.bootstrap();
     app.manager.set_override(Some(BackendKind::Zephyr));
     app.set_serial_dir(root.join("dev"));
+    // Workspace discovery must not look at the machine's real $HOME (a
+    // ~/zephyrproject there would resolve the pane differently).
+    std::fs::create_dir_all(root.join("home")).unwrap();
+    app.set_home_dir(root.join("home"));
     app.maybe_scan_devices();
     // After the scan: `maybe_scan_devices` is what creates the build panel
     // the override belongs to.

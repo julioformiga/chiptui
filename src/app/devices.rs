@@ -14,15 +14,13 @@ use crate::device::{DiscoveryState, ScriptState};
 use super::{App, LogTab, MonitorSource, Overlay, PickerOption};
 
 impl App {
-    /// Ensures the file browser exists and, when the backend declares
-    /// [`Capability::Filesystem`], starts a device scan --- without waiting
-    /// for the user to move focus onto a file browser pane. The browser is
-    /// created for every backend: its local pane is useful on its own
-    /// (view/edit/delete work with no device filesystem); only the *scan*
-    /// is capability-gated, and the device pane stays `Idle` without it.
-    /// A no-op once a browser already exists (`AGENTS.md` §5's "one
-    /// `mpremote` at a time" applies just as much to not re-issuing a scan
-    /// that already ran).
+    /// Ensures row 2's panes exist and the right scans start, without
+    /// waiting for the user to move focus onto them: the browser for a
+    /// backend that browses files (its device scan under
+    /// [`Capability::Filesystem`]), the workspace+build pair for one that
+    /// builds without a device filesystem. A no-op once the panes exist
+    /// (`AGENTS.md` §5's "one `mpremote` at a time" applies just as much to
+    /// not re-issuing a scan that already ran).
     ///
     /// Called from three places: `main.rs` right after startup, and
     /// [`App::apply_project_setup`]/[`App::apply_picker`] --- any moment the
@@ -61,6 +59,13 @@ impl App {
         self.serial_dir = dir.into();
     }
 
+    /// Points workspace discovery's `~` at a directory other than `$HOME`
+    /// --- how tests make the user-config and `~/zephyrproject` conventions
+    /// deterministic.
+    pub fn set_home_dir(&mut self, dir: impl Into<std::path::PathBuf>) {
+        self.home_dir = dir.into();
+    }
+
     /// Scans `serial_dir` for USB serial ports and applies the result:
     /// one port selects itself, several ask, none reports why.
     pub fn scan_serial_devices(&mut self) {
@@ -87,12 +92,15 @@ impl App {
     }
 
     /// Creates the browser (once), and starts a device scan with it when the
-    /// backend has a filesystem to list. Only the listing itself waits for
-    /// the scan to name a port: issuing the scan now would let mpremote
-    /// auto-connect to whichever board answers first, which is the guess
-    /// `SPEC.md` §8 forbids.
+    /// backend has a filesystem to list. A backend that claims row 2 for
+    /// workspace+build gets no browser at all: listing and editing the
+    /// project's own files is the user's editor's job, not this tool's
+    /// (`SPEC.md` §1 --- orchestration, not IDE). Only the listing itself
+    /// waits for the scan to name a port: issuing the scan now would let
+    /// mpremote auto-connect to whichever board answers first, which is the
+    /// guess `SPEC.md` §8 forbids.
     fn ensure_browser_scanning(&mut self) {
-        if self.browser.is_some() {
+        if self.browser.is_some() || self.build_pane_visible_precondition() {
             return;
         }
         let root = self
@@ -106,18 +114,69 @@ impl App {
     }
 
     /// Creates the build panel, once, for the backend that shows it in row
-    /// 2's right half (can build, no device filesystem). Like the browser's
-    /// creation this reads no subprocess --- only the project's own
-    /// `CMakeCache.txt`, if one exists --- so it is safe to call eagerly.
+    /// 2 (can build, no device filesystem), and --- for a backend that also
+    /// maintains a workspace --- resolves the west environment first so the
+    /// panel's commands carry it. Like the browser's creation this reads no
+    /// subprocess: workspace discovery is directory walking plus two config
+    /// files, and the build panel reads only the project's own
+    /// `CMakeCache.txt`, if one exists.
     fn ensure_build_panel(&mut self) {
         if !self.build_pane_visible_precondition() || self.build.is_some() {
+            return;
+        }
+        self.ensure_workspace_panel();
+        let root = self
+            .manager
+            .root()
+            .map_or_else(|| self.manager.start_dir().to_path_buf(), Path::to_path_buf);
+        let mut panel = crate::build::BuildPanel::new(root, self.logs.offset());
+        if let Some(workspace) = &self.workspace {
+            let west_env = workspace.west_env();
+            panel.set_tool_path(west_env.program.clone());
+            panel.set_tool_env(west_env.env);
+        }
+        self.build = Some(panel);
+    }
+
+    /// Resolves the west workspace for a [`Capability::WorkspaceSync`]
+    /// backend, once per session: both config levels (`chiptui.toml`'s
+    /// `[zephyr]`, then the user config), then discovery (`.west/` above the
+    /// project, `$ZEPHYR_BASE`, `~/zephyrproject`). An ambiguous discovery
+    /// is stored unresolved --- the pane prompts and the picker decides
+    /// (`SPEC.md` §7's ask-don't-guess, applied to the environment).
+    fn ensure_workspace_panel(&mut self) {
+        if !self
+            .manager
+            .capabilities()
+            .contains(Capability::WorkspaceSync)
+            || self.workspace.is_some()
+        {
             return;
         }
         let root = self
             .manager
             .root()
             .map_or_else(|| self.manager.start_dir().to_path_buf(), Path::to_path_buf);
-        self.build = Some(crate::build::BuildPanel::new(root, self.logs.offset()));
+        let project_settings =
+            std::fs::read_to_string(root.join(crate::project::config::FILE_NAME))
+                .ok()
+                .map(|text| crate::settings::ZephyrSettings::parse(&text))
+                .filter(|settings| !settings.is_empty());
+        let user_settings = crate::settings::load_user(&self.home_dir);
+        let zephyr_base_env = std::env::var_os("ZEPHYR_BASE").map(PathBuf::from);
+        let input = crate::backend::zephyr::workspace::ResolveInput {
+            project_root: &root,
+            project_settings: project_settings.as_ref(),
+            user_settings: user_settings.as_ref(),
+            zephyr_base_env: zephyr_base_env.as_deref(),
+            home: &self.home_dir,
+        };
+        let resolution = crate::backend::zephyr::workspace::resolve(&input);
+        if let crate::backend::zephyr::workspace::Resolution::Invalid(message) = &resolution {
+            self.logs.error(message.clone());
+        }
+        let path_env = std::env::var("PATH").unwrap_or_default();
+        self.workspace = Some(crate::workspace::WorkspacePanel::new(resolution, path_env));
     }
 
     /// The capability half of [`Self::build_pane_visible`]: whether a build

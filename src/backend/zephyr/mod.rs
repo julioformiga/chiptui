@@ -5,6 +5,7 @@
 //! split (`SPEC.md` §12 --- one seam per tool).
 
 pub mod commands;
+pub mod workspace;
 
 use crate::backend::{Backend, BackendKind, BuildKind, Capabilities, Capability};
 use crate::project::{DirScan, Signal};
@@ -79,6 +80,7 @@ impl Backend for ZephyrBackend {
             Capability::Flash,
             Capability::Monitor,
             Capability::BoardSelect,
+            Capability::WorkspaceSync,
         ])
     }
 
@@ -91,11 +93,12 @@ impl Backend for ZephyrBackend {
         kind: BuildKind,
         board: Option<&str>,
         build_dir_exists: bool,
+        build_dir: &str,
     ) -> Option<crate::process::Command> {
         Some(match kind {
-            BuildKind::Build => commands::build(board, build_dir_exists),
-            BuildKind::Clean => commands::clean(),
-            BuildKind::Rebuild => commands::rebuild(board),
+            BuildKind::Build => commands::build(board, build_dir_exists, build_dir),
+            BuildKind::Clean => commands::clean(build_dir),
+            BuildKind::Rebuild => commands::rebuild(board, build_dir),
         })
     }
 
@@ -103,8 +106,20 @@ impl Backend for ZephyrBackend {
         Some(commands::boards())
     }
 
-    fn flash_command(&self) -> Option<crate::process::Command> {
-        Some(commands::flash())
+    fn flash_command(&self, build_dir: &str) -> Option<crate::process::Command> {
+        Some(commands::flash(build_dir))
+    }
+
+    fn menuconfig_command(&self, build_dir: &str) -> Option<crate::process::Command> {
+        Some(commands::menuconfig(build_dir))
+    }
+
+    fn workspace_update_command(&self) -> Option<crate::process::Command> {
+        Some(commands::update())
+    }
+
+    fn sdk_list_command(&self) -> Option<crate::process::Command> {
+        Some(commands::sdk_list())
     }
 
     fn monitor_command(&self, port: Option<&str>) -> Option<crate::process::Command> {

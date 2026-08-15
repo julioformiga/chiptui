@@ -84,9 +84,10 @@ impl App {
 
     /// Runs a panel action: destructive ones (`Clean`, `Flash` --- both
     /// destructive capabilities, `SPEC.md` §15) route through a confirm
-    /// overlay quoting the literal command; the rest act immediately. This
-    /// is also the confirm overlay's accept path, which is why it must not
-    /// itself confirm again.
+    /// overlay quoting the literal command; `menuconfig` hands the terminal
+    /// to the child; the rest act immediately. This is also the confirm
+    /// overlay's accept path, which is why it must not itself confirm
+    /// again.
     pub(super) fn run_build_action(&mut self, action: BuildAction) {
         match action {
             BuildAction::Stop => self.stop_build(),
@@ -107,6 +108,8 @@ impl App {
                 });
             }
             BuildAction::Board => self.open_board_picker(),
+            BuildAction::Menuconfig => self.start_menuconfig(),
+            BuildAction::BuildDir => self.open_build_dir_picker(),
         }
     }
 
@@ -126,6 +129,53 @@ impl App {
         self.start_build_command("Flash", false, |panel, backend| {
             panel.flash_command(backend)
         });
+    }
+
+    /// Hands the terminal to `west build -t menuconfig` (`SPEC.md` §11's
+    /// terminal-native rule: the Kconfig editor *is* a full-screen TUI, and
+    /// nesting it in a pane would break both). The command is parked for
+    /// the event loop, which owns the terminal guard needed to suspend the
+    /// alternate screen --- the same hand-off as `$EDITOR`.
+    pub(super) fn start_menuconfig(&mut self) {
+        let Some(backend) = self.manager.backend() else {
+            return;
+        };
+        let Some(panel) = &self.build else {
+            return;
+        };
+        let Some(command) = panel.menuconfig_command(backend) else {
+            self.logs
+                .warn("menuconfig: this backend offers no such action");
+            return;
+        };
+        self.logs
+            .info(format!("running {command} (the TUI is suspended)"));
+        self.pending_command = Some(command);
+    }
+
+    /// Opens the build-directory picker over the project's configured
+    /// directories; a typed name that matches nothing starts a new one.
+    pub(super) fn open_build_dir_picker(&mut self) {
+        self.overlay = Some(Overlay::BuildDirPicker {
+            input: String::new(),
+            selected: 0,
+        });
+    }
+
+    /// Applies the build-directory choice (picked row or typed name):
+    /// session-only --- the directory is an argument on the next command,
+    /// never a persisted setting (`SPEC.md` §10's no-silent-writes rule).
+    pub(super) fn apply_build_dir_picker(&mut self, filter: &str, selected: usize) {
+        let Some(panel) = &mut self.build else {
+            return;
+        };
+        let dirs = panel.filtered_build_dirs(filter);
+        let Some(dir) = dirs.get(selected).cloned() else {
+            return;
+        };
+        panel.set_build_dir(dir.clone());
+        self.logs
+            .info(format!("build directory set to {dir} for this session"));
     }
 
     /// The shared body of [`Self::start_build`]/[`Self::start_flash`]:
