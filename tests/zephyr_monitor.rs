@@ -249,6 +249,9 @@ fn project_setup_does_not_clobber_the_device_picker_it_opens() {
     std::fs::write(root.join("dev/ttyACM1"), b"").unwrap();
 
     let mut app = App::new(&root);
+    // Answering the prompt records the project in the user config, so the
+    // home must be redirected before it is answered.
+    app.set_home_dir(root.join("home"));
     app.bootstrap();
     app.set_serial_dir(root.join("dev"));
     app.maybe_open_project_setup();

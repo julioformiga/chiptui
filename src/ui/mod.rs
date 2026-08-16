@@ -9,6 +9,7 @@ mod build;
 mod button;
 mod files;
 mod flash;
+pub mod home;
 mod monitor;
 mod overlay;
 mod panels;
@@ -225,9 +226,29 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(header), area);
 }
 
+/// The contextual shortcut line.
+///
+/// More hints than columns is normal on a narrow terminal, and the two that
+/// must survive are the last ones (`?` help, `q` quit --- the way out and
+/// the way to the rest). So hints are dropped whole, from the *middle*,
+/// rather than letting the line truncate mid-word: a cut-off " q  qui" is
+/// worse than one fewer hint.
 fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
+    const KEEP_LAST: usize = 2;
+
+    let mut hints = app.shortcuts();
+    let width = |hints: &[(&str, &str)]| -> usize {
+        hints
+            .iter()
+            .map(|(key, label)| key.chars().count() + label.chars().count() + 5)
+            .sum()
+    };
+    while width(&hints) > area.width as usize && hints.len() > KEEP_LAST {
+        hints.remove(hints.len() - KEEP_LAST - 1);
+    }
+
     let mut spans = Vec::new();
-    for (key, label) in app.shortcuts() {
+    for (key, label) in hints {
         spans.push(Span::styled(
             format!(" {key} "),
             Style::new().bg(Color::DarkGray),

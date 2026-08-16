@@ -125,6 +125,9 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
         Overlay::ConfirmEraseForMicroPython { confirm } => {
             draw_confirm_erase_for_micropython(frame, area, confirm)
         }
+        Overlay::ConfirmSwitchProject { confirm } => {
+            draw_confirm_switch_project(frame, area, app, confirm)
+        }
         Overlay::ConfirmDelete {
             side,
             name,
@@ -195,6 +198,26 @@ fn draw_confirm_restart_device(frame: &mut Frame, area: Rect, app: &App, confirm
         Line::from(command.to_string().dim()),
     ];
     draw_confirm_dialog(frame, area, "Restart device?", message, confirm, 54, 8);
+}
+
+/// Leaving the project while work is in flight. The count is the whole
+/// point: "2 commands" is what tells the user whether the build they started
+/// is the thing about to die.
+fn draw_confirm_switch_project(frame: &mut Frame, area: Rect, app: &App, confirm: bool) {
+    let running = app.running_commands();
+    let message = vec![
+        Line::from(
+            format!(
+                "{running} command{} still running in this project.",
+                if running == 1 { " is" } else { "s are" }
+            )
+            .fg(Color::Yellow),
+        ),
+        Line::from("Going back to the project list cancels them.".dim()),
+        Line::from(""),
+        Line::from("Leave this project?".fg(Color::White)),
+    ];
+    draw_confirm_dialog(frame, area, "Switch project?", message, confirm, 62, 9);
 }
 
 fn draw_confirm_erase_for_micropython(frame: &mut Frame, area: Rect, confirm: bool) {
@@ -1179,6 +1202,10 @@ fn draw_help(frame: &mut Frame, area: Rect, app: &App) {
                 "restart the device with a soft-reset (when the backend supports it)",
             ),
             ("e", "in the file viewer: edit with $EDITOR"),
+            (
+                "shift+p",
+                "back to the project list, to open or create another project",
+            ),
             ("?", "toggle this help"),
             ("q / esc / ctrl+c", "quit"),
         ],

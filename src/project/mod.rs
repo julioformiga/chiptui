@@ -2,6 +2,7 @@
 
 pub mod config;
 mod detect;
+pub mod scaffold;
 mod scan;
 
 use std::io;
@@ -12,8 +13,10 @@ use crate::error::Result;
 
 pub use detect::{
     AMBIGUITY_MARGIN, AUTO_CONFIDENCE, BackendScore, Detection, DetectionOutcome, DetectionSource,
-    MAX_SEARCH_DEPTH, MIN_CONFIDENCE, Signal, classify, detect_from, score_directory,
+    MAX_SEARCH_DEPTH, MIN_CONFIDENCE, Signal, classify, detect_from, detect_from_known,
+    score_directory,
 };
+pub use scaffold::{Scaffold, ScaffoldFile};
 pub use scan::{DirScan, TEXT_FILES};
 
 /// Owns the current project and the backends it could belong to.
@@ -22,6 +25,9 @@ pub use scan::{DirScan, TEXT_FILES};
 /// displayed evidence always matches the displayed conclusion.
 pub struct ProjectManager {
     registry: BackendRegistry,
+    /// Projects the user config already names, consulted by detection the
+    /// same way a project's own `chiptui.toml` is (`SPEC.md` §7).
+    known: crate::settings::ProjectRegistry,
     /// Directory the search starts from --- usually the process's cwd.
     start_dir: PathBuf,
     /// User's choice, which survives re-detection until cleared.
@@ -33,6 +39,7 @@ impl ProjectManager {
     pub fn new(start_dir: impl Into<PathBuf>) -> Self {
         Self {
             registry: BackendRegistry::with_builtin_backends(),
+            known: crate::settings::ProjectRegistry::default(),
             start_dir: start_dir.into(),
             override_kind: None,
             detection: None,
@@ -41,6 +48,16 @@ impl ProjectManager {
 
     pub fn registry(&self) -> &BackendRegistry {
         &self.registry
+    }
+
+    /// Replaces the recorded projects detection consults --- reloaded
+    /// whenever the config the app reads changes ([`crate::App::set_home_dir`]).
+    pub fn set_known_projects(&mut self, known: crate::settings::ProjectRegistry) {
+        self.known = known;
+    }
+
+    pub fn known_projects(&self) -> &crate::settings::ProjectRegistry {
+        &self.known
     }
 
     pub fn start_dir(&self) -> &Path {
@@ -58,7 +75,7 @@ impl ProjectManager {
     /// Runs detection from [`ProjectManager::start_dir`], re-applying any
     /// active override.
     pub fn detect(&mut self) -> Result<&Detection> {
-        let mut detection = detect_from(&self.registry, &self.start_dir)?;
+        let mut detection = detect_from_known(&self.registry, &self.start_dir, &self.known)?;
         if let Some(kind) = self.override_kind {
             detection = detection.overridden_with(kind);
         }
@@ -126,26 +143,29 @@ impl ProjectManager {
     /// or [`ProjectManager::start_dir`] before detection has produced one
     /// --- the empty-project prompt this backs can fire before a root is
     /// known.
-    fn scaffold_dir(&self) -> &Path {
+    pub fn scaffold_dir(&self) -> &Path {
         self.root().unwrap_or(self.start_dir.as_path())
     }
 
-    /// Persists `kind` to the project-local scaffold file (`SPEC.md` §7),
-    /// so the directory is recognized automatically on later runs.
-    pub fn write_scaffold(&self, kind: BackendKind) -> io::Result<()> {
-        config::write(self.scaffold_dir(), kind)
-    }
-
-    /// Creates the `src/` (kept in sync with the device, `SPEC.md` §9) and
-    /// `firmware/` (download destination for online firmware, `SPEC.md` §9)
-    /// directories a fresh MicroPython project is expected to have, so a
-    /// brand-new empty directory does not need them created by hand.
-    /// Idempotent: does nothing to a directory that already has them.
-    pub fn ensure_micropython_layout(&self) -> io::Result<()> {
+    /// Lays down `kind`'s starting layout in [`Self::scaffold_dir`]
+    /// (`SPEC.md` §7): the backend declares it
+    /// ([`crate::backend::Backend::scaffold`]), this writes it, and nothing
+    /// already in the directory is overwritten.
+    ///
+    /// Which backend the directory *is* is recorded in the user config by
+    /// the caller ([`crate::App::record_open_project`]), not in a file
+    /// inside the project --- ChipTUI reads a project's `chiptui.toml` when
+    /// one exists, but no longer creates one.
+    pub fn create_scaffold(&self, kind: BackendKind) -> io::Result<scaffold::Created> {
         let dir = self.scaffold_dir();
-        std::fs::create_dir_all(dir.join("src"))?;
-        std::fs::create_dir_all(dir.join("firmware"))?;
-        Ok(())
+        let name = dir
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "app".to_string());
+        let Some(backend) = self.registry.get(kind) else {
+            return Ok(scaffold::Created::default());
+        };
+        scaffold::create(dir, &backend.scaffold(&name))
     }
 }
 
@@ -243,51 +263,42 @@ mod tests {
     }
 
     #[test]
-    fn write_scaffold_falls_back_to_start_dir_before_detection_ran() {
+    fn create_scaffold_falls_back_to_start_dir_before_detection_ran() {
         let dir =
             std::env::temp_dir().join(format!("chiptui-manager-scaffold-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
         let manager = ProjectManager::new(&dir);
         assert!(manager.root().is_none(), "nothing detected yet");
-        manager.write_scaffold(BackendKind::MicroPython).unwrap();
+        manager.create_scaffold(BackendKind::MicroPython).unwrap();
 
-        let text = std::fs::read_to_string(dir.join(config::FILE_NAME)).unwrap();
+        let src = dir.join("src/main.py").is_file();
+        let firmware = dir.join("firmware").is_dir();
+        let marker = dir.join(config::FILE_NAME).exists();
         let _ = std::fs::remove_dir_all(&dir);
-        assert_eq!(config::parse(&text), Some(BackendKind::MicroPython));
+
+        assert!(src, "the entry point was not written");
+        assert!(firmware, "firmware/ was not created");
+        assert!(!marker, "the project directory gets no config file of ours");
     }
 
     #[test]
-    fn ensure_micropython_layout_creates_src_and_firmware() {
-        let dir =
-            std::env::temp_dir().join(format!("chiptui-manager-layout-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-
-        let manager = ProjectManager::new(&dir);
-        manager.ensure_micropython_layout().unwrap();
-
-        let src_exists = dir.join("src").is_dir();
-        let firmware_exists = dir.join("firmware").is_dir();
-        let _ = std::fs::remove_dir_all(&dir);
-        assert!(src_exists, "src/ was not created");
-        assert!(firmware_exists, "firmware/ was not created");
-    }
-
-    #[test]
-    fn ensure_micropython_layout_is_idempotent() {
+    fn create_scaffold_leaves_existing_sources_alone() {
         let dir = std::env::temp_dir().join(format!(
-            "chiptui-manager-layout-idempotent-{}",
+            "chiptui-manager-scaffold-idempotent-{}",
             std::process::id()
         ));
+        let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("src")).unwrap();
-        std::fs::write(dir.join("src").join("boot.py"), "").unwrap();
+        std::fs::write(dir.join("src").join("boot.py"), "mine\n").unwrap();
 
         let manager = ProjectManager::new(&dir);
-        let result = manager.ensure_micropython_layout();
+        let created = manager.create_scaffold(BackendKind::MicroPython).unwrap();
 
-        let boot_still_there = dir.join("src").join("boot.py").exists();
+        let boot = std::fs::read_to_string(dir.join("src/boot.py")).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
-        result.unwrap();
-        assert!(boot_still_there, "an existing src/ must not be touched");
+        assert_eq!(boot, "mine\n", "an existing file must not be touched");
+        assert_eq!(created.skipped, vec![PathBuf::from("src/boot.py")]);
     }
 }

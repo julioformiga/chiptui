@@ -112,6 +112,42 @@ impl Backend for MicroPythonBackend {
         &["mpremote", "esptool"]
     }
 
+    /// `src/` holds what is kept in sync with the device and `firmware/`
+    /// receives downloaded images --- the two directories the file browser
+    /// and the firmware view open (`SPEC.md` §9). The two entry points go in
+    /// with them, because the device runs `boot.py` then `main.py` by name:
+    /// an empty `src/` would leave the user guessing at a convention the
+    /// board already has.
+    fn scaffold(&self, name: &str) -> crate::project::Scaffold {
+        crate::project::Scaffold {
+            dirs: vec!["src".into(), "firmware".into()],
+            files: vec![
+                crate::project::ScaffoldFile::new(
+                    "src/boot.py",
+                    "# Runs once on power-on and on every reset, before main.py.\n\
+                     # Network, filesystem and peripheral setup belongs here.\n",
+                ),
+                crate::project::ScaffoldFile::new(
+                    "src/main.py",
+                    format!(
+                        "# {name}: runs after boot.py, and again after every soft reset.\n\
+                         import time\n\
+                         \n\
+                         \n\
+                         def main():\n\
+                         \x20   while True:\n\
+                         \x20       print(\"hello from {name}\")\n\
+                         \x20       time.sleep(1)\n\
+                         \n\
+                         \n\
+                         if __name__ == \"__main__\":\n\
+                         \x20   main()\n"
+                    ),
+                ),
+            ],
+        }
+    }
+
     fn monitor_command(&self, port: Option<&str>) -> Option<crate::process::Command> {
         Some(commands::repl(port))
     }

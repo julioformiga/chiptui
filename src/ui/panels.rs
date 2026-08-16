@@ -526,7 +526,7 @@ fn label_span(label: &str) -> Span<'static> {
 ///
 /// Paths are truncated at the front because the last components --- the project
 /// directory --- are what identify it.
-fn truncate_start(text: &str, max: usize) -> String {
+pub(super) fn truncate_start(text: &str, max: usize) -> String {
     let length = text.chars().count();
     if length <= max {
         return text.to_string();

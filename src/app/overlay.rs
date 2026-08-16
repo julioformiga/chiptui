@@ -552,6 +552,17 @@ impl App {
                     |_| {},
                 );
             }
+            Overlay::ConfirmSwitchProject { confirm } => {
+                self.dispatch_confirm(
+                    key.code,
+                    confirm,
+                    |app, confirm| {
+                        app.overlay = Some(Overlay::ConfirmSwitchProject { confirm });
+                    },
+                    Self::request_project_switch,
+                    |_| {},
+                );
+            }
             Overlay::ConfirmEraseForMicroPython { confirm } => {
                 self.dispatch_confirm(
                     key.code,

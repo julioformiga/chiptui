@@ -1,0 +1,355 @@
+//! The home screen's rendering (`SPEC.md` §11).
+//!
+//! One centered panel: the way to a new project, a live search field, and
+//! the recorded projects under it. Each project row is tinted with its
+//! backend's color ([`crate::backend::BackendKind::palette`]) so the two
+//! kinds are separable before a single word is read; the cursor deepens the
+//! tint instead of reversing the row, which is what keeps a colored row
+//! legible.
+//!
+//! Like the dashboard, this is a pure function of state --- everything it
+//! needs comes from [`HomeScreen`], and the modal steps draw over it the way
+//! `ui::overlay` draws over the panes.
+
+use ratatui::Frame;
+use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::{Color, Modifier, Style, Stylize};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, BorderType, Clear, List, ListItem, ListState, Paragraph};
+
+use crate::home::{Flow, HomeScreen, Row};
+use crate::workspace::{DirRowKind, dir_rows};
+
+use super::centered;
+
+/// Widest the panel gets; beyond this the path column stops being scannable.
+const MAX_WIDTH: u16 = 100;
+
+pub fn draw(frame: &mut Frame, screen: &HomeScreen) {
+    let area = frame.area();
+    let panel = centered(
+        area,
+        MAX_WIDTH.min(area.width.saturating_sub(4)),
+        area.height,
+    );
+
+    let [body, footer] = Layout::vertical([Constraint::Min(3), Constraint::Length(1)]).areas(panel);
+
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(Color::Cyan))
+        .title(Span::styled(
+            " ChipTUI ",
+            Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(body);
+    frame.render_widget(block, body);
+
+    let [create_area, search_area, gap, list_area, status_area] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Min(1),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
+
+    let rows = screen.rows();
+    let selected = screen.selected();
+
+    let create_style = if selected == 0 {
+        Style::new().add_modifier(Modifier::REVERSED | Modifier::BOLD)
+    } else {
+        Style::new().add_modifier(Modifier::BOLD)
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(" ＋ New project ", create_style))),
+        create_area,
+    );
+
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::raw(" 🔍 "),
+            Span::raw(screen.query().to_string()),
+            Span::styled("▏", Style::new().fg(Color::Cyan)),
+        ])),
+        search_area,
+    );
+    frame.render_widget(Paragraph::new(""), gap);
+
+    if rows.len() == 1 {
+        let message = if screen.is_empty() {
+            "No projects yet. Create one, or start ChipTUI inside a project directory."
+        } else {
+            "No project matches the search."
+        };
+        frame.render_widget(Paragraph::new(Line::from(message.dim())), list_area);
+    } else {
+        let width = list_area.width as usize;
+        let items: Vec<ListItem> = rows
+            .iter()
+            .skip(1)
+            .enumerate()
+            .map(|(index, row)| {
+                let Row::Project(entry) = row else {
+                    return ListItem::new("");
+                };
+                // The list widget's own highlight would repaint the whole
+                // row in one style; the tint has to survive selection, so
+                // the row carries its background itself.
+                let palette = entry.backend.palette();
+                let background = if index + 1 == selected {
+                    palette.tint_selected
+                } else {
+                    palette.tint
+                };
+                let base = Style::new().bg(background);
+                ListItem::new(Line::from(project_spans(
+                    screen,
+                    entry,
+                    base,
+                    palette.accent,
+                    width,
+                )))
+            })
+            .collect();
+        let mut state = ListState::default().with_selected(Some(selected.saturating_sub(1)));
+        frame.render_stateful_widget(List::new(items), list_area, &mut state);
+    }
+
+    let status = match screen.status() {
+        Some(status) => Line::from(status.to_string().fg(Color::Yellow)),
+        None => Line::from(""),
+    };
+    frame.render_widget(Paragraph::new(status), status_area);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(
+            " ↑/↓ move · enter open · del forget · esc clear / quit ".dim(),
+        )),
+        footer,
+    );
+
+    if let Some(flow) = screen.flow() {
+        draw_flow(frame, area, screen, flow);
+    }
+}
+
+/// `<icon> <backend>  <name>  <path>` --- fixed columns for the first two so
+/// the names line up, the path taking whatever is left and losing its head
+/// (never its tail: the project's own folder is the identifying part).
+fn project_spans<'a>(
+    screen: &HomeScreen,
+    entry: &'a crate::settings::ProjectEntry,
+    base: Style,
+    accent: Color,
+    width: usize,
+) -> Vec<Span<'a>> {
+    const BACKEND_WIDTH: usize = 12;
+    const NAME_WIDTH: usize = 22;
+
+    let name = fit(&entry.name, NAME_WIDTH);
+    let used = 1 + 3 + BACKEND_WIDTH + 2 + NAME_WIDTH + 2;
+    let path_width = width.saturating_sub(used + 1);
+    let path = super::panels::truncate_start(&screen.display_path(&entry.path), path_width);
+
+    vec![
+        Span::styled(" ", base),
+        Span::styled(format!("{} ", entry.backend.icon()), base),
+        Span::styled(
+            format!("{:<BACKEND_WIDTH$}", entry.backend.display_name()),
+            base.fg(accent).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("  ", base),
+        Span::styled(format!("{name:<NAME_WIDTH$}"), base),
+        Span::styled("  ", base),
+        // Padded to the pane's width so the tint reaches the right edge:
+        // a row that stops at its text would look like a ragged block.
+        Span::styled(format!("{path:<path_width$}"), base.dim()),
+    ]
+}
+
+/// Shortens `text` from the right, keeping the head --- a project's name
+/// identifies it from the front, unlike its path.
+fn fit(text: &str, max: usize) -> String {
+    let length = text.chars().count();
+    if length <= max {
+        return text.to_string();
+    }
+    if max <= 1 {
+        return "…".to_string();
+    }
+    let kept: String = text.chars().take(max - 1).collect();
+    format!("{kept}…")
+}
+
+fn draw_flow(frame: &mut Frame, area: Rect, screen: &HomeScreen, flow: &Flow) {
+    match flow {
+        Flow::CreateDir {
+            path,
+            selected,
+            error,
+        } => draw_create_dir(frame, area, path, *selected, error.as_deref()),
+        Flow::CreateName {
+            parent,
+            input,
+            error,
+        } => draw_create_name(frame, area, screen, parent, input, error.as_deref()),
+        Flow::Forget { path, name } => draw_forget(frame, area, screen, path, name),
+    }
+}
+
+fn modal(title: &str) -> Block<'static> {
+    Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(Color::Cyan))
+        .title(Span::styled(
+            format!(" {title} "),
+            Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        ))
+}
+
+fn draw_create_dir(
+    frame: &mut Frame,
+    area: Rect,
+    path: &std::path::Path,
+    selected: usize,
+    error: Option<&str>,
+) {
+    let popup = centered(area, 72, 18);
+    frame.render_widget(Clear, popup);
+    let block = modal("Where should the project folder go?");
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let [path_area, list_area, footer_area] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(1),
+        Constraint::Length(2),
+    ])
+    .areas(inner);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("in   ", Style::new().dim()),
+            Span::raw(path.display().to_string()),
+        ])),
+        path_area,
+    );
+
+    let (rows, read_error) = dir_rows(path);
+    let items: Vec<ListItem> = rows
+        .iter()
+        .map(|row| match row.kind {
+            DirRowKind::Use => ListItem::new(Line::from(vec![
+                Span::styled("→ ", Style::new().fg(Color::Cyan)),
+                "put it in this directory".bold(),
+            ])),
+            DirRowKind::Parent | DirRowKind::Dir => {
+                ListItem::new(Line::from(Span::raw(format!("  {}", row.name))))
+            }
+        })
+        .collect();
+    let mut state = ListState::default().with_selected(Some(selected));
+    frame.render_stateful_widget(
+        List::new(items).highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
+        list_area,
+        &mut state,
+    );
+
+    let footer = match (error, read_error.as_deref()) {
+        (Some(error), _) => Line::from(error.to_string().fg(Color::Red)),
+        (None, Some(read)) => Line::from(read.fg(Color::Yellow)),
+        (None, None) => Line::from("enter: open / accept · ←: up · esc: cancel".dim()),
+    };
+    frame.render_widget(
+        Paragraph::new(footer).wrap(ratatui::widgets::Wrap { trim: false }),
+        footer_area,
+    );
+}
+
+fn draw_create_name(
+    frame: &mut Frame,
+    area: Rect,
+    screen: &HomeScreen,
+    parent: &std::path::Path,
+    input: &str,
+    error: Option<&str>,
+) {
+    let popup = centered(area, 72, 9);
+    frame.render_widget(Clear, popup);
+    let block = modal("Name the project");
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let [in_area, input_area, preview_area, _, footer_area] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Min(0),
+        Constraint::Length(2),
+    ])
+    .areas(inner);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("in   ", Style::new().dim()),
+            Span::raw(screen.display_path(parent)),
+        ])),
+        in_area,
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("name ", Style::new().dim()),
+            Span::raw(input.to_string()),
+            Span::styled("▏", Style::new().fg(Color::Cyan)),
+        ])),
+        input_area,
+    );
+    let preview = if input.trim().is_empty() {
+        String::new()
+    } else {
+        screen.display_path(&parent.join(input.trim()))
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("→    ", Style::new().dim()),
+            Span::styled(preview, Style::new().dim()),
+        ])),
+        preview_area,
+    );
+
+    let footer = match error {
+        Some(error) => Line::from(error.to_string().fg(Color::Red)),
+        None => {
+            Line::from("enter: create the folder · esc: back — the backend is asked next".dim())
+        }
+    };
+    frame.render_widget(
+        Paragraph::new(footer).wrap(ratatui::widgets::Wrap { trim: false }),
+        footer_area,
+    );
+}
+
+fn draw_forget(
+    frame: &mut Frame,
+    area: Rect,
+    screen: &HomeScreen,
+    path: &std::path::Path,
+    name: &str,
+) {
+    let popup = centered(area, 66, 7);
+    frame.render_widget(Clear, popup);
+    let block = modal("Remove from the list?");
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let lines = vec![
+        Line::from(vec![Span::raw(name.to_string()).bold()]),
+        Line::from(Span::styled(screen.display_path(path), Style::new().dim())),
+        Line::from(""),
+        Line::from("The folder and its files stay exactly where they are.".dim()),
+        Line::from("enter / y: remove · esc / n: keep".dim()),
+    ];
+    frame.render_widget(Paragraph::new(lines), inner);
+}

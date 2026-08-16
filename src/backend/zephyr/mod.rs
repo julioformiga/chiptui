@@ -91,6 +91,57 @@ impl Backend for ZephyrBackend {
         &["west", "cmake", "ninja"]
     }
 
+    /// The three files `west build -b <board>` needs and nothing more: the
+    /// `find_package(Zephyr)` call that turns a CMake project into a Zephyr
+    /// application, an empty Kconfig fragment, and a `main`. `ZEPHYR_BASE`
+    /// is the same variable the build panel exports for every command, so a
+    /// project created outside the workspace still finds its Zephyr.
+    ///
+    /// Deliberately also the shape detection scores highest on
+    /// ([`Self::detect`]): a scaffolded project is recognizable on its own
+    /// evidence, without depending on the registry that recorded it.
+    fn scaffold(&self, name: &str) -> crate::project::Scaffold {
+        let name = crate::project::scaffold::safe_name(name);
+        crate::project::Scaffold {
+            dirs: vec!["src".into()],
+            files: vec![
+                crate::project::ScaffoldFile::new(
+                    "CMakeLists.txt",
+                    format!(
+                        "cmake_minimum_required(VERSION 3.20.0)\n\
+                         \n\
+                         find_package(Zephyr REQUIRED HINTS $ENV{{ZEPHYR_BASE}})\n\
+                         project({name})\n\
+                         \n\
+                         target_sources(app PRIVATE src/main.c)\n"
+                    ),
+                ),
+                crate::project::ScaffoldFile::new(
+                    "prj.conf",
+                    "# Application Kconfig options. Empty means the board's defaults;\n\
+                     # `menuconfig` shows what is available for the configured board.\n",
+                ),
+                crate::project::ScaffoldFile::new(
+                    "src/main.c",
+                    format!(
+                        "#include <zephyr/kernel.h>\n\
+                         \n\
+                         int main(void)\n\
+                         {{\n\
+                         \tprintk(\"hello from {name} on %s\\n\", CONFIG_BOARD);\n\
+                         \n\
+                         \twhile (1) {{\n\
+                         \t\tk_sleep(K_SECONDS(1));\n\
+                         \t}}\n\
+                         \n\
+                         \treturn 0;\n\
+                         }}\n"
+                    ),
+                ),
+            ],
+        }
+    }
+
     fn build_command(
         &self,
         kind: BuildKind,

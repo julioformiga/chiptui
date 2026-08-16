@@ -1,9 +1,14 @@
 //! ChipTUI entry point.
 
+use std::path::PathBuf;
 use std::process::ExitCode;
 
-use chiptui::app::{App, PendingEdit, TICK_RATE, app_from_cwd};
+use chiptui::app::{App, PendingEdit, TICK_RATE};
+use chiptui::backend::BackendRegistry;
 use chiptui::event::{AppEvent, EventSource};
+use chiptui::home::{HomeOutcome, HomeScreen};
+use chiptui::settings::ProjectRegistry;
+use chiptui::startup::{self, Route};
 use chiptui::{Result, editor, terminal, ui};
 
 fn main() -> ExitCode {
@@ -29,11 +34,88 @@ fn run() -> Result<()> {
     // module docs) is unsound once the process is multi-threaded.
     let offset = time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC);
 
-    let mut app = app_from_cwd()?;
+    let home = std::env::var_os("HOME").map_or_else(PathBuf::new, PathBuf::from);
+    let config_dir = chiptui::settings::default_config_dir(&home);
+    let cwd = std::env::current_dir()?;
+    // Where the session starts is decided before the terminal is taken
+    // over: it is a filesystem question, and a failure here should reach
+    // the user's shell rather than the alternate screen.
+    let mut route = startup::route(
+        &cwd,
+        &BackendRegistry::with_builtin_backends(),
+        &ProjectRegistry::load(&config_dir, &home),
+    );
+
+    let mut guard = terminal::init()?;
+    let mut events = EventSource::new(TICK_RATE);
+
+    // The two screens alternate for as long as the user keeps switching
+    // projects: the home screen names one, the dashboard runs it, and
+    // dropping the dashboard is what cancels its commands and frees the
+    // serial port before the next project claims them.
+    let outcome = loop {
+        match route {
+            Route::Home => match home_loop(&mut guard, &mut events, &config_dir, &home) {
+                Ok(Some(dir)) => route = Route::Open(dir),
+                Ok(None) => break Ok(()),
+                Err(err) => break Err(err),
+            },
+            Route::Open(dir) => match project_loop(&mut guard, &mut events, dir, offset) {
+                Ok(true) => route = Route::Home,
+                Ok(false) => break Ok(()),
+                Err(err) => break Err(err),
+            },
+        }
+    };
+
+    // Restore explicitly so teardown failures are reported; `Drop` still covers
+    // the paths where `?` returned early above.
+    let restored = guard.restore();
+    outcome.and(restored)
+}
+
+/// Lists the recorded projects until one is chosen. `None` means the user
+/// quit from the list, which ends the session.
+fn home_loop(
+    guard: &mut terminal::TerminalGuard,
+    events: &mut EventSource,
+    config_dir: &std::path::Path,
+    home: &std::path::Path,
+) -> Result<Option<PathBuf>> {
+    let mut screen = HomeScreen::new(config_dir, home);
+    loop {
+        guard
+            .terminal()
+            .draw(|frame| ui::home::draw(frame, &screen))?;
+        let AppEvent::Key(key) = events.next_event()? else {
+            // Ticks and resizes only need the redraw above; the home screen
+            // has no processes to poll.
+            continue;
+        };
+        match screen.handle_key(key) {
+            Some(HomeOutcome::Open(dir)) => return Ok(Some(dir)),
+            Some(HomeOutcome::Quit) => return Ok(None),
+            None => {}
+        }
+    }
+}
+
+/// Runs the dashboard on `dir`. Returns whether the user asked for the home
+/// screen (`true`) rather than to quit --- the `App`, and with it every
+/// running command, is dropped either way.
+fn project_loop(
+    guard: &mut terminal::TerminalGuard,
+    events: &mut EventSource,
+    dir: PathBuf,
+    offset: time::UtcOffset,
+) -> Result<bool> {
+    let mut app = App::new(dir);
     app.logs.set_offset(offset);
-    // Detection runs before the terminal is taken over: if it fails, the error
-    // is logged into the pane rather than lost behind the alternate screen.
     app.bootstrap();
+    // Whatever named the backend --- the registry, a `chiptui.toml`, or the
+    // evidence --- this is the one place the project is recorded as opened,
+    // so the home screen's list and its ordering stay complete.
+    app.record_open_project();
     app.maybe_open_project_setup();
     app.maybe_scan_devices();
     app.place_startup_focus();
@@ -43,15 +125,8 @@ fn run() -> Result<()> {
     // the user's face.
     app.maybe_open_workspace_picker();
 
-    let mut guard = terminal::init()?;
-    let mut events = EventSource::new(TICK_RATE);
-
-    let outcome = event_loop(&mut app, &mut guard, &mut events);
-
-    // Restore explicitly so teardown failures are reported; `Drop` still covers
-    // the paths where `?` returned early above.
-    let restored = guard.restore();
-    outcome.and(restored)
+    event_loop(&mut app, guard, events)?;
+    Ok(app.take_switch_request())
 }
 
 fn event_loop(
@@ -59,7 +134,7 @@ fn event_loop(
     guard: &mut terminal::TerminalGuard,
     events: &mut EventSource,
 ) -> Result<()> {
-    while !app.should_quit() {
+    while !app.should_quit() && !app.switch_requested() {
         guard.terminal().draw(|frame| ui::draw(frame, app))?;
 
         // Output from external commands is collected before blocking, so the

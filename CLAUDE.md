@@ -4,6 +4,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository state
 
+A session now has **two screens** (`src/main.rs` alternates them, one `TerminalGuard` for both).
+`startup::route` decides which, before the terminal is taken over: a directory whose backend is
+known (registry → `chiptui.toml` → evidence, nearest ancestor first) or ambiguous opens the
+dashboard; an *empty* one opens it too, so `Overlay::ProjectSetup` can scaffold it; anything else
+(a directory with contents and no project — `$HOME`, `~/Downloads`) opens the **home screen**
+(`src/home.rs`, `src/ui/home.rs`): create row, live search field, then the recorded projects,
+each row tinted with `BackendKind::palette()` (deepened under the cursor, never reversed — a
+painted row cannot also be inverted). Creating a project is folder picker (the workspace pane's
+`dir_rows`, starting at `[projects] last_parent`) → name → an empty directory that routes straight
+back into the backend prompt. `del` forgets a registry entry, never the directory. `shift+P` on
+the dashboard returns to the list (`App::request_home_screen` → `Overlay::ConfirmSwitchProject`
+when commands are running → `switch_requested`, read by `main.rs`, which drops the `App` and with
+it every child process). Answering the backend prompt writes the backend's own starting layout
+(`Backend::scaffold` → `project::scaffold::create`, never overwriting) and records the project;
+it no longer creates a `chiptui.toml`.
+
 Phase 1 of `SPEC.md` §17 is done (core, TUI, detection, backend registry, capabilities), plus the
 process manager and the first real device operation: a dual-pane local/device **file browser** for
 MicroPython, with list/compare, a per-entry action menu (send to device, download, view, edit,
@@ -243,9 +259,19 @@ These are the decisions that shape most code, and getting them wrong causes wide
   fixtures across those thresholds — the detection tests assert against them by name.
 - **Override is a UI action; config files stay hand-rolled.** `ProjectManager::set_override`
   survives re-detection and keeps the automatic evidence for display. The config files that do
-  exist (`chiptui.toml`'s `project_type` + `[zephyr]`, the user config's `[zephyr]`) are parsed
-  by tolerant hand-rolled parsers (`src/project/config.rs`, `src/settings.rs`) — still no TOML
-  dependency, per the same bias as the other one-shape parsers.
+  exist (`chiptui.toml`'s `project_type` + `[zephyr]`, the user config's `[zephyr]`,
+  `[projects]` and `[[project]]` blocks) are parsed by tolerant hand-rolled parsers
+  (`src/project/config.rs`, `src/settings.rs`) — still no TOML dependency, per the same bias as
+  the other one-shape parsers.
+- **Nothing is written into a project directory except its own sources.** ChipTUI *reads* a
+  project's `chiptui.toml` (and lets it outrank everything) but never creates one; the persisted
+  "this directory is a Zephyr project" lives in the user config's `[[project]]` registry
+  (`settings::ProjectRegistry`, fed into `ProjectManager::set_known_projects` and consulted by
+  `detect_from_known` as `DetectionSource::Registered`, just under `Config`).
+  `App::record_open_project` is the one place a project is recorded, and `main.rs` calls it for
+  every route. The registry file is rewritten on every project open, so `settings::write_config`
+  is atomic (tmp + rename) — it carries `[zephyr]` too. Tests that answer the empty-project
+  prompt **must** `set_home_dir` first, or they write into the developer's real config.
 - **The renderer publishes `App::log_viewport`** each frame so page-scrolling matches the drawn
   height (and the wrap width, into `LogStore::set_view_width`, so clamping matches too). Long log
   entries wrap with a hanging indent past the stamp (`logs::PREFIX_WIDTH`); scrolling, the clamp and

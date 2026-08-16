@@ -20,6 +20,8 @@ pub mod zephyr;
 
 use std::fmt;
 
+use ratatui::style::Color;
+
 use crate::project::{DirScan, Signal};
 
 pub use registry::BackendRegistry;
@@ -53,6 +55,47 @@ impl BackendKind {
     pub fn from_id(id: &str) -> Option<Self> {
         Self::ALL.iter().copied().find(|kind| kind.id() == id)
     }
+
+    /// The backend's mark in a list, next to its name.
+    pub const fn icon(self) -> &'static str {
+        match self {
+            Self::MicroPython => "🐍",
+            Self::Zephyr => "🔷",
+        }
+    }
+
+    /// How the backend colors a row it owns (`SPEC.md` §11's home screen).
+    ///
+    /// Presentation identity, alongside [`Self::display_name`] and
+    /// [`Self::icon`] --- not behavior. The rule that keeps the UI free of
+    /// backend conditionals is about *capabilities*; a list that shows two
+    /// backends at once still has to tell them apart at a glance, and the
+    /// backend is the only place that can say how.
+    pub const fn palette(self) -> Palette {
+        match self {
+            Self::MicroPython => Palette {
+                accent: Color::Green,
+                tint: Color::Indexed(22),
+                tint_selected: Color::Indexed(28),
+            },
+            Self::Zephyr => Palette {
+                accent: Color::Blue,
+                tint: Color::Indexed(17),
+                tint_selected: Color::Indexed(25),
+            },
+        }
+    }
+}
+
+/// A backend's colors: the accent its name and icon are drawn in, and the
+/// two background tints a row of its own uses --- resting and selected.
+/// Both tints come from the 256-color cube's darker end, so the row is
+/// tinted rather than painted and the text on it stays legible.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Palette {
+    pub accent: Color,
+    pub tint: Color,
+    pub tint_selected: Color,
 }
 
 impl fmt::Display for BackendKind {
@@ -256,6 +299,18 @@ pub trait Backend {
 
     /// External executables this backend delegates to (`AGENTS.md` §2).
     fn required_tools(&self) -> &'static [&'static str];
+
+    /// The layout a new project of this kind starts with (`SPEC.md` §7),
+    /// for a project directory named `name`. Empty by default: a backend
+    /// that has nothing to lay down leaves the directory as it found it.
+    ///
+    /// This is the backend's own answer, exactly like [`Self::detect`] ---
+    /// the code that writes it ([`crate::project::scaffold::create`]) never
+    /// asks which backend it is dealing with.
+    fn scaffold(&self, name: &str) -> crate::project::Scaffold {
+        let _ = name;
+        crate::project::Scaffold::default()
+    }
 
     /// Returns the command to launch an interactive serial monitor/REPL.
     /// Returns `None` if the backend doesn't support a monitor, or if it isn't implemented.

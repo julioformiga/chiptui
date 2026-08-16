@@ -41,6 +41,22 @@ fn app_with_backend(kind: BackendKind) -> App {
 }
 
 #[test]
+fn a_narrow_footer_drops_whole_hints_and_keeps_the_way_out() {
+    let mut app = app_with_backend(BackendKind::Zephyr);
+    let frame = render(&mut app, 60, 24);
+    // `TestBackend::to_string` quotes each row, so the padding *and* the
+    // closing quote come off before looking at how the line ends.
+    let footer = frame.lines().last().unwrap().trim_matches('"').to_string();
+
+    assert!(footer.contains("quit"), "the way out survives:\n{footer}");
+    assert!(footer.contains("help"), "and so does help:\n{footer}");
+    assert!(
+        footer.trim_end().ends_with("quit"),
+        "the line ends on a whole hint, never mid-word:\n{footer}"
+    );
+}
+
+#[test]
 fn dashboard_shows_project_device_and_log_panes() {
     let mut app = app_with_backend(BackendKind::Zephyr);
     let frame = render(&mut app, 140, 30);

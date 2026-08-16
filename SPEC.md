@@ -223,32 +223,67 @@ Zephyr       confidence: 0.03
 If confidence is ambiguous, the UI should ask the user to select the
 backend.
 
+### Where a session starts
+
+ChipTUI is project-aware, so the working directory decides the opening
+screen. In order:
+
+1.  a directory (or an ancestor) whose backend is known --- named by the
+    project registry (§13), by a project-local `chiptui.toml`, or by the
+    evidence itself --- opens the dashboard directly;
+2.  an *ambiguous* directory opens the dashboard too, so the prompt that
+    resolves it appears where the user already is;
+3.  an empty directory opens the dashboard so it can be scaffolded (below);
+4.  anything else --- a directory with contents and no project in it or
+    above it, `$HOME` being the usual case --- opens the **home screen**.
+
+The home screen is the project list: create a new project, or search and
+open a recorded one. It is backed entirely by the registry, shows each
+project's backend, name and path, filters live as the user types, and can
+forget an entry (the directory itself is never touched). It is also reachable
+from the dashboard, so projects can be switched without restarting; anything
+still running is named in a confirmation first, since leaving cancels it.
+
+Creating a project asks for the folder it goes into, then the project's
+name; the new directory is empty, so the flow continues into the
+empty-project prompt below.
+
 ### Empty or unrecognized projects
 
-When detection concludes `Unknown` or `Ambiguous` and no project-local
-configuration file (below) is present, the UI should ask the user which
-project type this directory is, offering the currently supported backends
-(today: MicroPython, Zephyr). This is not the same prompt as the manual
-override below: it fires automatically once, right after detection, instead
-of waiting for the user to invoke an override action.
+When detection concludes `Unknown` or `Ambiguous`, no project-local
+configuration file (below) is present and the registry does not name the
+directory, the UI should ask which project type this directory is, offering
+the currently supported backends (today: MicroPython, Zephyr). This is not
+the same prompt as the manual override below: it fires automatically once,
+right after detection, instead of waiting for the user to invoke an override
+action.
 
-Once the user answers, the choice is written to the project-local
-configuration file so the directory is recognized automatically on every
-later run, without asking again. Writing this file is the one case where the
-application modifies a project file without a separate, dedicated user
-action beyond answering the prompt itself --- it is still explicit, never
-inferred (§3).
+Once the user answers, two things happen, neither needing its own
+confirmation --- both are part of answering the prompt (§3: explicit, never
+inferred):
+
+-   the answer is recorded in the **user** configuration's project registry
+    (§13), so the directory is recognized automatically on every later run
+    and the home screen lists it;
+-   the backend's starting layout is written into the directory, so the
+    project is usable immediately. Nothing already there is overwritten.
+
+MicroPython starts with `src/` for the sources kept in sync with the device
+(§9's filesystem browser opens on this directory), `firmware/` for firmware
+files (§9's discovery and download saves into it), and the two entry points
+the board runs by name (`boot.py`, `main.py`). Zephyr starts with the three
+files `west build` requires: a `CMakeLists.txt` calling `find_package(Zephyr)`,
+an empty `prj.conf`, and `src/main.c`.
 
 This is how a brand-new, otherwise-empty project directory gets a working
 backend: the user is not required to create marker files like `boot.py` or
 `west.yml` by hand before the TUI becomes useful.
 
-When the answer is MicroPython, the TUI also creates two directories, if they
-do not already exist: `src/` for the sources kept in sync with the device
-(§9's Filesystem browser opens on this directory), and `firmware/` for
-firmware files (§9's Firmware discovery and download saves into it). Neither
-creation requires its own confirmation --- it is part of answering the same
-prompt, same reasoning as the scaffold file above.
+The application does **not** write a configuration file into the project
+directory. What ChipTUI knows about a project lives in the user
+configuration; a project's own `chiptui.toml` is read when it exists (see
+below) but is never created --- a directory the user did not ask ChipTUI to
+modify stays as they left it.
 
 ### Manual override
 
@@ -266,12 +301,13 @@ or:
 project_type = "zephyr"
 ```
 
-The file is named `chiptui.toml` and lives at the project root. It is the
-persisted counterpart of two things: the automatic prompt above, and a
-manual, always-available override action. The override action itself stays
-session-only unless the user is going through the empty-project prompt ---
-switching backends for a single session should not silently rewrite a file
-the automatic prompt did not ask permission to create.
+The file is named `chiptui.toml` and lives at the project root. ChipTUI
+reads it and lets it win over everything else --- it is the most specific
+answer there is, it travels with the project, and it can be committed so a
+team shares it. ChipTUI does not create it: the persisted counterpart of the
+automatic prompt is the registry entry (§13), and the manual override action
+stays session-only. Writing this file is the user's decision, made by
+putting it there.
 
 ## 8. Device Management
 
@@ -662,6 +698,19 @@ build/flash failure does not corrupt the terminal state.
 
 The application should use a contextual dashboard.
 
+### Home screen
+
+Shown when the working directory names no project (§7), and reachable from
+the dashboard to switch projects. One centered panel: a create row, a search
+field that filters as it is typed, and the recorded projects under it, each
+row `<icon> <backend>  <name>  <path>`. A row is tinted with its backend's
+color --- deepened, not reversed, under the cursor --- so the kinds separate
+at a glance without a legend.
+
+`↑/↓` moves, `enter` opens, `del` forgets an entry (never the directory),
+`esc` clears the search and then leaves. Every printable key goes to the
+search field, which is why the commands are the non-printing ones.
+
 ### Dashboard layout
 
 The Dashboard view is three rows, stacked top to bottom, below a one-line header and above a
@@ -799,9 +848,37 @@ mouse = false
 The `[zephyr]` keys are implemented (§10); the same section in a project's
 `chiptui.toml` overrides the user-level values for that project.
 
+### Project registry
+
+The same file records which directories are ChipTUI projects --- the answer
+that used to be a marker file inside each of them (§7):
+
+``` toml
+[projects]
+last_parent = "~/zephyrapps"
+
+[[project]]
+path = "~/zephyrapps/blinky"
+backend = "zephyr"
+name = "blinky"
+last_opened = "2026-08-16T14:03:11Z"
+```
+
+One block per project, written when a project is opened or created. It is
+what the home screen lists (most recently opened first) and what detection
+consults before falling back to evidence. `last_parent` is where the project
+creator's folder picker starts.
+
+The blocks are machine-managed: they are rewritten as a whole, while
+everything else in the file --- other sections, comments, unknown keys ---
+is preserved. An entry whose directory no longer exists is not listed, and
+is dropped on the next write.
+
 ### Project configuration
 
-Used primarily for:
+A project may carry its own `chiptui.toml`. ChipTUI reads it but never
+writes it (§7), so it is only there because the user put it there ---
+typically to commit it. Used primarily for:
 
 -   backend override;
 -   default device;

@@ -78,6 +78,13 @@ impl App {
     pub fn set_home_dir(&mut self, dir: impl Into<std::path::PathBuf>) {
         self.home_dir = dir.into();
         self.config_dir = crate::settings::config_dir_in(&self.home_dir);
+        // The project registry lives in that config, so redirecting the home
+        // redirects which projects detection already knows about too.
+        self.manager
+            .set_known_projects(crate::settings::ProjectRegistry::load(
+                &self.config_dir,
+                &self.home_dir,
+            ));
     }
 
     /// Scans `serial_dir` for USB serial ports and applies the result:
@@ -510,28 +517,34 @@ impl App {
         self.clamp_focus();
     }
 
-    /// Applies the empty-project prompt's answer: an in-session override
-    /// exactly like [`App::apply_picker`], plus persisting the choice to
-    /// `chiptui.toml` so the directory needs no prompt on later runs.
+    /// Applies the empty-project prompt's answer (`SPEC.md` §7): an
+    /// in-session override exactly like [`App::apply_picker`], the backend's
+    /// own starting layout written into the directory, and the answer itself
+    /// recorded in the user config so the directory needs no prompt on later
+    /// runs --- and so the home screen lists it.
     pub(super) fn apply_project_setup(&mut self, selected: usize) {
         let Some(kind) = BackendKind::ALL.get(selected).copied() else {
             return;
         };
         self.manager.set_override(Some(kind));
-        match self.manager.write_scaffold(kind) {
-            Ok(()) => self.logs.success(format!(
-                "{kind} selected and saved to chiptui.toml in this project"
-            )),
+        match self.manager.create_scaffold(kind) {
+            Ok(created) if created.written.is_empty() => {
+                self.logs.success(format!("{kind} selected"));
+            }
+            Ok(created) => {
+                let names: Vec<String> = created
+                    .written
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect();
+                self.logs
+                    .success(format!("{kind} selected --- created {}", names.join(", ")));
+            }
             Err(err) => self.logs.warn(format!(
-                "{kind} selected for this session, but chiptui.toml could not be saved: {err}"
+                "{kind} selected, but the project layout could not be created: {err}"
             )),
         }
-        if kind == BackendKind::MicroPython
-            && let Err(err) = self.manager.ensure_micropython_layout()
-        {
-            self.logs
-                .warn(format!("could not create src/firmware layout: {err}"));
-        }
+        self.record_open_project();
         self.ensure_workspace_panel();
         self.report_tools();
         self.maybe_scan_devices();

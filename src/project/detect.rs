@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use crate::backend::{BackendKind, BackendRegistry};
 use crate::error::{Error, Result};
 use crate::project::{DirScan, config};
+use crate::settings::ProjectRegistry;
 
 /// Minimum confidence for a directory to be considered a project at all.
 pub const MIN_CONFIDENCE: f32 = 0.35;
@@ -95,7 +96,13 @@ pub enum DetectionSource {
     Manual,
     /// Read from the project-local scaffold file (`chiptui.toml`,
     /// `SPEC.md` §7) --- a persisted counterpart of [`Self::Manual`].
+    /// ChipTUI no longer writes this file, but it still honors one that a
+    /// project carries (checked into the repository, shared by a team).
     Config,
+    /// Read from the user config's project registry (`SPEC.md` §7): this
+    /// directory was opened or created through ChipTUI before, and the
+    /// answer was recorded machine-wide instead of inside the project.
+    Registered,
 }
 
 /// The full result of a detection run, including the evidence behind it.
@@ -186,13 +193,31 @@ pub fn classify(scores: &[BackendScore]) -> DetectionOutcome {
     }
 }
 
+/// [`detect_from_known`] with nothing recorded --- evidence only.
+pub fn detect_from(registry: &BackendRegistry, start: &Path) -> Result<Detection> {
+    detect_from_known(registry, start, &ProjectRegistry::default())
+}
+
 /// Searches from `start` upward for the nearest directory that looks like a
 /// project root (`SPEC.md` §7).
 ///
 /// The nearest directory that reaches [`AUTO_CONFIDENCE`] wins. If none does,
 /// the best-scoring ancestor is reported so the user sees *why* it failed
 /// instead of a bare "unknown project".
-pub fn detect_from(registry: &BackendRegistry, start: &Path) -> Result<Detection> {
+///
+/// Two answers outrank the evidence, in this order: the project's own
+/// `chiptui.toml`, then `known` --- the user config's project registry. Both
+/// are recorded user choices rather than signals to weigh (`AGENTS.md` §4's
+/// "explainable and overridable"), and the file wins because it is the more
+/// specific of the two: it travels with the project, while the registry is
+/// this machine's memory of it. Directory order still comes first --- the
+/// nearest ancestor with *any* answer stops the search --- so a registered
+/// project inside a registered workspace resolves to the inner one.
+pub fn detect_from_known(
+    registry: &BackendRegistry,
+    start: &Path,
+    known: &ProjectRegistry,
+) -> Result<Detection> {
     let mut searched = Vec::new();
     let mut best: Option<(Vec<BackendScore>, PathBuf)> = None;
 
@@ -222,6 +247,19 @@ pub fn detect_from(registry: &BackendRegistry, start: &Path) -> Result<Detection
                 outcome: DetectionOutcome::Detected(kind),
                 scores,
                 source: DetectionSource::Config,
+                searched,
+            });
+        }
+
+        // Same standing, one level less specific: the registry is where the
+        // empty-project prompt and the project creator record their answer
+        // now that neither writes into the project directory.
+        if let Some(kind) = known.backend_for(dir) {
+            return Ok(Detection {
+                root: dir.to_path_buf(),
+                outcome: DetectionOutcome::Detected(kind),
+                scores,
+                source: DetectionSource::Registered,
                 searched,
             });
         }

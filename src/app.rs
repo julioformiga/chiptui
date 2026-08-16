@@ -29,7 +29,6 @@ use crate::backend::{BackendKind, Capabilities, Capability};
 use crate::browser::{Browser, Side};
 use crate::console::{ConsoleLine, LineConsole};
 use crate::device::{DevicePath, DeviceState};
-use crate::error::Result;
 use crate::event::AppEvent;
 use crate::files::SyncStatus;
 use crate::flash::{FlashPanel, FlashScreen};
@@ -316,6 +315,12 @@ pub enum Overlay {
     /// resumes the held queue and arms the restore question for when it
     /// drains; declining drops the queue.
     ConfirmInterruptDevice {
+        confirm: bool,
+    },
+    /// Leaving this project for the home screen while commands are still
+    /// running: they are cancelled with the session, so the count is named
+    /// and the default is No, like every other confirm that loses work.
+    ConfirmSwitchProject {
         confirm: bool,
     },
     /// An interruption the user accepted has finished: how (or whether) to
@@ -698,6 +703,9 @@ pub struct App {
     /// inputs rather than invalidated by hand, so a backend override applied
     /// straight to `manager` --- as tests do --- still recomputes.
     tool_status_cache: std::cell::RefCell<Option<ToolStatusMemo>>,
+    /// The user asked for the home screen (`P`); the binary's loop reads it
+    /// and swaps screens.
+    switch_requested: bool,
     should_quit: bool,
     last_port_count: Option<usize>,
 }
@@ -714,8 +722,11 @@ impl App {
     pub fn new(start_dir: impl Into<PathBuf>) -> Self {
         let home =
             std::env::var_os("HOME").map_or_else(std::path::PathBuf::new, std::path::PathBuf::from);
+        let config_dir = crate::settings::default_config_dir(&home);
+        let mut manager = ProjectManager::new(start_dir);
+        manager.set_known_projects(crate::settings::ProjectRegistry::load(&config_dir, &home));
         Self {
-            manager: ProjectManager::new(start_dir),
+            manager,
             logs: LogStore::default(),
             view: View::Dashboard,
             focus: Focus::FilesLocal,
@@ -751,9 +762,10 @@ impl App {
             probed_port: None,
             restore_pending: false,
             serial_dir: std::path::PathBuf::from("/dev"),
-            config_dir: crate::settings::default_config_dir(&home),
+            config_dir,
             home_dir: home,
             tool_status_cache: std::cell::RefCell::new(None),
+            switch_requested: false,
             should_quit: false,
             last_port_count: None,
         }
@@ -858,7 +870,12 @@ impl App {
         let Some(detection) = self.manager.detection() else {
             return;
         };
-        if self.manager.override_kind().is_some() || detection.source == DetectionSource::Config {
+        if self.manager.override_kind().is_some()
+            || matches!(
+                detection.source,
+                DetectionSource::Config | DetectionSource::Registered
+            )
+        {
             return;
         }
         if matches!(
@@ -867,6 +884,82 @@ impl App {
         ) {
             self.overlay = Some(Overlay::ProjectSetup { selected: 0 });
         }
+    }
+
+    /// Records the open project in the user config's registry (`SPEC.md`
+    /// §7), stamping it as the most recently opened.
+    ///
+    /// This is the single place a project becomes "known": every way of
+    /// arriving at a dashboard --- a `chiptui.toml` in the tree, evidence
+    /// alone, the empty-project prompt, a project just created on the home
+    /// screen --- passes through here, which is what keeps the home screen's
+    /// list complete without any of them writing into the project directory.
+    /// A directory whose backend is still unknown is not recorded; there
+    /// would be nothing to record about it.
+    pub fn record_open_project(&mut self) {
+        let (Some(kind), Some(root)) = (self.manager.selected_kind(), self.manager.root()) else {
+            return;
+        };
+        let root = root.to_path_buf();
+        let mut entry = crate::settings::ProjectEntry::new(&root, kind).opened_now();
+        // A name the user edited into the config is theirs, not ours to
+        // reset on every open.
+        if let Some(known) = self.manager.known_projects().entry_for(&root) {
+            entry.name = known.name.clone();
+        }
+
+        let config = self.user_config_path();
+        if let Err(err) = crate::settings::record_project(&config, entry) {
+            self.logs.warn(format!(
+                "could not record this project in {}: {err}",
+                config.display()
+            ));
+            return;
+        }
+        self.manager
+            .set_known_projects(crate::settings::ProjectRegistry::load(
+                &self.config_dir,
+                &self.home_dir,
+            ));
+    }
+
+    /// `P`: back to the home screen to open another project. Leaving means
+    /// dropping this project's session, so anything still running is named
+    /// in a confirmation first (`SPEC.md` §15's rule applied to losing work
+    /// rather than to the device) --- with nothing running there is nothing
+    /// to warn about, and the screen simply changes.
+    pub fn request_home_screen(&mut self) {
+        if self.running_commands() == 0 {
+            self.request_project_switch();
+            return;
+        }
+        self.overlay = Some(Overlay::ConfirmSwitchProject { confirm: false });
+    }
+
+    /// External commands this session would lose by leaving it --- builds,
+    /// device operations and the PTY sessions alike, since they all run
+    /// through the one [`crate::process::ProcessManager`].
+    pub fn running_commands(&self) -> usize {
+        self.processes.running_count()
+    }
+
+    /// Asks the binary to close this project and go back to the home screen.
+    /// The App is dropped by the caller, which is what cancels every running
+    /// command and releases the serial port --- see
+    /// [`crate::process::ProcessManager`]'s `Drop`.
+    pub fn request_project_switch(&mut self) {
+        self.switch_requested = true;
+    }
+
+    /// Whether the event loop should give the terminal back so the home
+    /// screen can take over --- the same standing as [`Self::should_quit`].
+    pub fn switch_requested(&self) -> bool {
+        self.switch_requested
+    }
+
+    /// Consumed by the binary's loop, like [`Self::take_pending_command`].
+    pub fn take_switch_request(&mut self) -> bool {
+        std::mem::take(&mut self.switch_requested)
     }
 
     /// Warns about required tools that cannot be run.
@@ -1498,6 +1591,10 @@ impl App {
                 self.open_flash();
                 return;
             }
+            KeyCode::Char('P') => {
+                self.request_home_screen();
+                return;
+            }
             KeyCode::Char('?') | KeyCode::F(1) => {
                 self.overlay = Some(Overlay::Help);
                 return;
@@ -1716,6 +1813,7 @@ impl App {
                 | Overlay::ConfirmRestartDevice { .. }
                 | Overlay::ConfirmEraseForMicroPython { .. }
                 | Overlay::ConfirmInterruptDevice { .. }
+                | Overlay::ConfirmSwitchProject { .. }
                 | Overlay::SyncPreview { .. },
             ) => {
                 vec![
@@ -1798,6 +1896,7 @@ impl App {
                             keys.push(("↑/↓", "scroll"));
                         }
                     }
+                    keys.push(("shift+p", "projects"));
                     keys.push(("?", "help"));
                     keys.push(("q", "quit"));
                     keys
@@ -1805,11 +1904,6 @@ impl App {
             },
         }
     }
-}
-
-/// Convenience for the binary: build an app rooted at the current directory.
-pub fn app_from_cwd() -> Result<App> {
-    Ok(App::new(std::env::current_dir()?))
 }
 
 /// Tick rate used by the binary. Re-exported here so the loop reads in one place.
