@@ -273,6 +273,9 @@ pub(super) fn render_list(
 }
 
 /// One entry: `<status> <icon> <name> <size>`, with the size flush right.
+/// The status marker exists only when there is another side to compare
+/// against; `None` (the workspace pane's lone directory list) draws just
+/// `<icon> <name> <size>` --- a list with no comparison states no verdict.
 pub(super) fn row(
     name: &str,
     is_dir: bool,
@@ -280,15 +283,19 @@ pub(super) fn row(
     status: Option<SyncStatus>,
     width: u16,
 ) -> ListItem<'static> {
-    let status = status.unwrap_or(SyncStatus::Directory);
     let size_text = if is_dir {
         "DIR".to_string()
     } else {
         human_size(size)
     };
 
-    // 2 for the marker, 2 for the icon, then the size column and a gap.
-    let name_width = (width as usize).saturating_sub(4 + size_text.len() + 1);
+    // The icon column is its *display* width (folder emoji are two cells)
+    // plus the trailing space; guessing one column too few pushed the size
+    // past the pane edge, truncating it ("DI"). A marker costs 2 more.
+    let icon_width = Span::raw(icon(name, is_dir)).width() + 1;
+    let marker_width = usize::from(status.is_some()) * 2;
+    let name_width =
+        (width as usize).saturating_sub(icon_width + marker_width + size_text.len() + 1);
     let display = truncate(name, name_width.max(1));
     let padding = name_width.saturating_sub(display.chars().count());
 
@@ -298,13 +305,18 @@ pub(super) fn row(
         Style::new()
     };
 
-    ListItem::new(Line::from(vec![
-        Span::styled(format!("{} ", status.marker()), status_style(status)),
-        Span::raw(format!("{} ", icon(name, is_dir))),
-        Span::styled(display, name_style),
-        Span::raw(" ".repeat(padding + 1)),
-        Span::styled(size_text, Style::new().dim()),
-    ]))
+    let mut spans = Vec::with_capacity(5);
+    if let Some(status) = status {
+        spans.push(Span::styled(
+            format!("{} ", status.marker()),
+            status_style(status),
+        ));
+    }
+    spans.push(Span::raw(format!("{} ", icon(name, is_dir))));
+    spans.push(Span::styled(display, name_style));
+    spans.push(Span::raw(" ".repeat(padding + 1)));
+    spans.push(Span::styled(size_text, Style::new().dim()));
+    ListItem::new(Line::from(spans))
 }
 
 /// A glyph hinting at the entry's kind: a folder, or a common extension's

@@ -186,9 +186,9 @@ fn draw_rows(frame: &mut Frame, area: Rect, app: &App) {
 /// directory (relative to the project root), then entries filling the rest
 /// of the pane --- the same `row`/`render_list` grammar `crate::ui::files`
 /// draws for MicroPython's local pane, reused with no comparison status
-/// (`row`'s existing `None` fallback is already exactly that pane's look
-/// whenever there is nothing to compare against), so an empty listing, an
-/// overlong name and a directory marker read identically here.
+/// (`row`'s `None` arm draws no marker column at all --- this pane has no
+/// other side to compare against), so an empty listing, an overlong name
+/// and a directory marker read identically here.
 fn draw_files_section(frame: &mut Frame, area: Rect, y: u16, app: &App, panel: &WorkspacePanel) {
     if y >= area.bottom() {
         return;
