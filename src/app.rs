@@ -896,9 +896,12 @@ impl App {
         let root = root.to_path_buf();
         let mut entry = crate::settings::ProjectEntry::new(&root, kind).opened_now();
         // A name the user edited into the config is theirs, not ours to
-        // reset on every open.
+        // reset on every open --- and so are the saved board/shield answers:
+        // recording the open must not be what forgets them.
         if let Some(known) = self.manager.known_projects().entry_for(&root) {
             entry.name = known.name.clone();
+            entry.board = known.board.clone();
+            entry.shield = known.shield.clone();
         }
 
         let config = self.user_config_path();
@@ -1764,13 +1767,13 @@ impl App {
             Some(Overlay::BoardPicker { .. }) => vec![
                 ("type", "filter"),
                 ("↑/↓", "select"),
-                ("enter", "pick (this session)"),
+                ("enter", "pick (saved for this project)"),
                 ("esc", "cancel"),
             ],
             Some(Overlay::ShieldPicker { .. }) => vec![
                 ("type", "filter"),
                 ("↑/↓", "select"),
-                ("enter", "pick / (none) clears (this session)"),
+                ("enter", "pick / (none) clears"),
                 ("esc", "cancel"),
             ],
             Some(Overlay::DirPicker { .. }) => vec![

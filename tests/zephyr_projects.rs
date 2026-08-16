@@ -345,3 +345,59 @@ fn a_cwd_that_is_already_a_project_never_asks() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn a_project_switch_applies_the_new_projects_saved_board_and_shield() {
+    let root = root_for("switch-board");
+    let apps = root.join("apps");
+    let (mut app, _root) = bare_app("switch-board", Some(&apps));
+    let alpha = app_dir(&apps, "alpha", true);
+    let beta = app_dir(&apps, "beta", true);
+
+    // The registry already knows beta's target answers --- saved by a
+    // earlier session's pickers. Written after `bare_app` seeded the
+    // `[zephyr]` section, so the file carries both halves; the reload
+    // makes the running app see it (detection would on the next start).
+    let config = root.join("home/.config/chiptui/config.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "[zephyr]\nprojects = \"{}\"\n\n[[project]]\npath = \"{}\"\nbackend = \"zephyr\"\nboard = \"thingy91/nrf9160\"\nshield = \"nrf7002ek\"\n",
+            apps.display(),
+            beta.display()
+        ),
+    )
+    .unwrap();
+    app.set_home_dir(root.join("home"));
+
+    // Pick alpha first: no registry entry, no cache --- no board.
+    press_project_row(&mut app);
+    app.handle(key(KeyCode::Enter)); // rows sorted: alpha first
+    assert_eq!(app.build.as_ref().unwrap().root, alpha);
+    assert_eq!(app.build.as_ref().unwrap().board_name(), None);
+
+    // Switch to beta: its saved answers apply, cache-independent. (The
+    // checklist cursor still sits on the Project row from the first pick,
+    // so it walks home first.)
+    app.workspace.as_mut().unwrap().cursor = 0;
+    press_project_row(&mut app);
+    app.handle(key(KeyCode::Down)); // alpha -> beta
+    app.handle(key(KeyCode::Enter));
+    let panel = app.build.as_ref().unwrap();
+    assert_eq!(panel.root, beta);
+    assert_eq!(
+        panel.board_name(),
+        Some("thingy91/nrf9160"),
+        "the new project's saved board applies on the switch"
+    );
+    assert_eq!(
+        panel.board.as_ref().unwrap().origin,
+        chiptui::build::BoardOrigin::Config
+    );
+    assert_eq!(panel.shield_name(), Some("nrf7002ek"));
+    assert!(
+        !beta.join("build/zephyr/CMakeCache.txt").exists(),
+        "the answers come from the registry, never from a write into the project"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}

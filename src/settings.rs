@@ -9,8 +9,10 @@
 //! keys, and the same bias against pulling in a crate for one shape applies.
 //!
 //! The same file carries the `[[project]]` blocks ([`ProjectRegistry`]):
-//! which directories are ChipTUI projects, and which backend each one is.
-//! That is what replaced writing a marker file into every project directory
+//! which directories are ChipTUI projects, which backend each one is, and
+//! the per-project target answers (Zephyr board and shield) that must
+//! reload when the project opens. That is what replaced writing a marker
+//! file into every project directory
 //! --- ChipTUI still *reads* a project's `chiptui.toml` when one exists, but
 //! it no longer creates one (`SPEC.md` §7).
 //!
@@ -110,7 +112,8 @@ fn quote(value: &str) -> String {
 ///
 /// This is the persisted answer to "which backend is this directory?" that
 /// used to live in a per-project `chiptui.toml`, plus what the home screen
-/// needs to list it.
+/// needs to list it, plus the Zephyr target answers (board, shield) that
+/// must reload every time the project opens.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectEntry {
     /// Absolute path of the project root.
@@ -125,6 +128,13 @@ pub struct ProjectEntry {
     /// fixed width and one timezone that is a string compare. `None` for an
     /// entry that was hand-written or never opened since.
     pub last_opened: Option<String>,
+    /// The board picker's answer, persisted: re-applied when the project
+    /// opens, outranking the build directory's cache until the user picks
+    /// again. Still never written into the project directory --- the
+    /// registry is the persisted half of a session answer (`SPEC.md` §10).
+    pub board: Option<String>,
+    /// The shield picker's answer, same lifetime as [`Self::board`].
+    pub shield: Option<String>,
 }
 
 impl ProjectEntry {
@@ -140,6 +150,8 @@ impl ProjectEntry {
             backend,
             name,
             last_opened: None,
+            board: None,
+            shield: None,
         }
     }
 
@@ -215,6 +227,8 @@ impl ProjectRegistry {
                 "backend" => pending.backend = BackendKind::from_id(&value),
                 "name" => pending.name = Some(value),
                 "last_opened" => pending.last_opened = Some(value),
+                "board" => pending.board = Some(value),
+                "shield" => pending.shield = Some(value),
                 _ => {}
             }
         }
@@ -287,6 +301,8 @@ struct PendingEntry {
     backend: Option<BackendKind>,
     name: Option<String>,
     last_opened: Option<String>,
+    board: Option<String>,
+    shield: Option<String>,
 }
 
 impl PendingEntry {
@@ -298,6 +314,8 @@ impl PendingEntry {
             entry.name = name;
         }
         entry.last_opened = self.last_opened.filter(|stamp| !stamp.is_empty());
+        entry.board = self.board.filter(|board| !board.is_empty());
+        entry.shield = self.shield.filter(|shield| !shield.is_empty());
         Some(entry)
     }
 }
@@ -513,6 +531,12 @@ fn render_projects(other: &str, entries: &[ProjectEntry]) -> String {
         ));
         out.push_str(&format!("backend = {}\n", quote(entry.backend.id())));
         out.push_str(&format!("name = {}\n", quote(&entry.name)));
+        if let Some(board) = &entry.board {
+            out.push_str(&format!("board = {}\n", quote(board)));
+        }
+        if let Some(shield) = &entry.shield {
+            out.push_str(&format!("shield = {}\n", quote(shield)));
+        }
         if let Some(stamp) = &entry.last_opened {
             out.push_str(&format!("last_opened = {}\n", quote(stamp)));
         }
@@ -864,6 +888,41 @@ mod tests {
         let entry = ProjectEntry::new("/p/with \"quotes\" and \\slash", BackendKind::Zephyr);
         let text = render_projects("", std::slice::from_ref(&entry));
         assert_eq!(ProjectRegistry::parse(&text).entries(), &[entry]);
+    }
+
+    #[test]
+    fn board_and_shield_answers_round_trip_through_the_registry() {
+        let mut entry = ProjectEntry::new("/apps/blinky", BackendKind::Zephyr);
+        entry.board = Some("nrf52840dk/nrf52840".to_string());
+        entry.shield = Some("nrf7002ek".to_string());
+        let text = render_projects("", std::slice::from_ref(&entry));
+        assert!(
+            text.contains("board = \"nrf52840dk/nrf52840\""),
+            "the board is written as its own key:\n{text}"
+        );
+        assert_eq!(ProjectRegistry::parse(&text).entries()[0], entry);
+
+        // Clearing the shield (and changing the board) rewrites the same
+        // entry in place: the old answers do not linger.
+        entry.board = Some("thingy91/nrf9160".to_string());
+        entry.shield = None;
+        let rewritten = render_projects("", std::slice::from_ref(&entry));
+        assert!(
+            !rewritten.contains("nrf7002ek"),
+            "a cleared shield leaves no line behind:\n{rewritten}"
+        );
+        assert_eq!(ProjectRegistry::parse(&rewritten).entries()[0], entry);
+    }
+
+    #[test]
+    fn hand_written_board_and_shield_keys_are_read() {
+        let registry = ProjectRegistry::parse(
+            "[[project]]\npath = \"/apps/blinky\"\nbackend = \"zephyr\"\n\
+             board = 'nrf52840dk/nrf52840'\nshield = \"nrf7002ek\"\n",
+        );
+        let entry = &registry.entries()[0];
+        assert_eq!(entry.board.as_deref(), Some("nrf52840dk/nrf52840"));
+        assert_eq!(entry.shield.as_deref(), Some("nrf7002ek"));
     }
 
     #[test]

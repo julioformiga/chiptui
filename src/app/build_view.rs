@@ -67,9 +67,11 @@ impl App {
         }
     }
 
-    /// Applies the board chosen in the picker: session-only, and the panel
-    /// header says so (`SPEC.md` §10 --- a pick must not touch project
-    /// configuration).
+    /// Applies the board chosen in the picker and persists it in the
+    /// project's registry entry (`SPEC.md` §13): the answer reloads on
+    /// every later open, outranking the build cache. Nothing lands in the
+    /// project directory --- the registry is the one place a session
+    /// answer outlives the session.
     pub(super) fn apply_board_picker(&mut self, filter: &str, selected: usize) {
         let Some(panel) = &mut self.build else {
             return;
@@ -79,9 +81,44 @@ impl App {
             return;
         };
         panel.set_picked(name.clone());
-        self.logs.info(format!(
-            "board set to {name} for this session (nothing written)"
-        ));
+        self.logs.info(format!("board set to {name}"));
+        self.persist_board_shield();
+    }
+
+    /// Writes the panel's current board and shield answers into the
+    /// registry entry for the project the panel is rooted at (creating the
+    /// entry when the project is not recorded yet --- opening it would do
+    /// the same). Everything else already recorded --- backend, name,
+    /// last-opened stamp --- survives untouched.
+    fn persist_board_shield(&mut self) {
+        let Some(panel) = &self.build else {
+            return;
+        };
+        let Some(kind) = self.manager.selected_kind() else {
+            return;
+        };
+        let root = panel.root.clone();
+        let mut entry = match self.manager.known_projects().entry_for(&root) {
+            Some(known) => known.clone(),
+            None => crate::settings::ProjectEntry::new(&root, kind),
+        };
+        entry.board = panel.board_name().map(str::to_string);
+        entry.shield = panel.shield_name().map(str::to_string);
+        let config = self.user_config_path();
+        match crate::settings::record_project(&config, entry) {
+            Ok(()) => self
+                .logs
+                .info(format!("board/shield answer saved to {}", config.display())),
+            Err(err) => self.logs.warn(format!(
+                "could not save the board/shield answer in {}: {err}",
+                config.display()
+            )),
+        }
+        self.manager
+            .set_known_projects(crate::settings::ProjectRegistry::load(
+                &self.config_dir,
+                &self.home_dir,
+            ));
     }
 
     /// Opens the shield picker, kicking off the background `west shields`
@@ -105,27 +142,26 @@ impl App {
         }
     }
 
-    /// Applies the shield picker's answer: session-only, and row 0 --- the
-    /// `(none)` row --- clears it (the shield is optional, so no pick is a
-    /// valid answer, unlike the board).
+    /// Applies the shield picker's answer and persists it beside the board:
+    /// row 0 --- the `(none)` row --- clears it (the shield is optional, so
+    /// no pick is a valid answer, unlike the board).
     pub(super) fn apply_shield_picker(&mut self, filter: &str, selected: usize) {
         let Some(panel) = &mut self.build else {
             return;
         };
         if selected == 0 {
-            panel.set_picked_shield(None);
-            self.logs
-                .info("shield cleared for this session (nothing written)");
+            panel.set_shield(None);
+            self.logs.info("shield cleared");
+            self.persist_board_shield();
             return;
         }
         let filtered = panel.filtered_shields(filter);
         let Some(name) = filtered.get(selected - 1).map(|shield| shield.name.clone()) else {
             return;
         };
-        panel.set_picked_shield(Some(name.clone()));
-        self.logs.info(format!(
-            "shield set to {name} for this session (nothing written)"
-        ));
+        panel.set_shield(Some(name.clone()));
+        self.logs.info(format!("shield set to {name}"));
+        self.persist_board_shield();
     }
 
     /// Runs a panel action: destructive ones (`Clean`, `Flash`, and
@@ -293,11 +329,24 @@ impl App {
     /// list to `dir` together: picking a project answers both "what does
     /// `west` build" and "what files does the Workspace pane show" at once,
     /// and letting them diverge would leave the file list showing a
-    /// directory the build panel no longer targets. Session-only, like
-    /// [`crate::build::BuildPanel::set_project`] itself.
+    /// directory the build panel no longer targets. The picked project's
+    /// own registry answers (board, shield) are re-applied after the
+    /// re-root: a saved answer belongs to the project, not the session.
     pub(super) fn set_project_root(&mut self, dir: PathBuf) {
         if let Some(panel) = &mut self.build {
             panel.set_project(dir.clone());
+        }
+        if let Some(entry) = self.manager.known_projects().entry_for(&dir) {
+            let board = entry.board.clone();
+            let shield = entry.shield.clone();
+            if let Some(panel) = &mut self.build {
+                if let Some(board) = board {
+                    panel.set_config_board(board);
+                }
+                if let Some(shield) = shield {
+                    panel.set_shield(Some(shield));
+                }
+            }
         }
         if let Some(workspace) = &mut self.workspace {
             workspace.set_files_root(dir);

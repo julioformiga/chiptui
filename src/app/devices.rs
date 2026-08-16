@@ -146,7 +146,8 @@ impl App {
     /// panel's commands carry it. Like the browser's creation this reads no
     /// subprocess: resolution reads two config files and walks the
     /// configured directory, and the build panel reads only the project's
-    /// own `CMakeCache.txt`, if one exists.
+    /// own `CMakeCache.txt` plus its registry entry's saved board/shield,
+    /// if either exists.
     fn ensure_build_panel(&mut self) {
         if !self.build_pane_visible_precondition() || self.build.is_some() {
             return;
@@ -157,6 +158,19 @@ impl App {
             .root()
             .map_or_else(|| self.manager.start_dir().to_path_buf(), Path::to_path_buf);
         let mut panel = crate::build::BuildPanel::new(root.clone(), self.logs.offset());
+        // The registry entry's board/shield answers --- the pickers'
+        // persisted half --- outrank the build cache on every open, so a
+        // project comes back with the target it was last built for. Still
+        // nothing inside the project directory: the registry is the only
+        // place a session answer is written to (`SPEC.md` §13).
+        if let Some(entry) = self.manager.known_projects().entry_for(&root) {
+            if let Some(board) = &entry.board {
+                panel.set_config_board(board.clone());
+            }
+            if let Some(shield) = &entry.shield {
+                panel.set_shield(Some(shield.clone()));
+            }
+        }
         if let Some(workspace) = &self.workspace {
             let west_env = workspace.west_env();
             panel.set_tool_path(west_env.program.clone());

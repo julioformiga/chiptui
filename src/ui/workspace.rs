@@ -129,6 +129,7 @@ fn draw_rows(frame: &mut Frame, area: Rect, app: &App) {
                     panel.board.as_ref().map(|choice| {
                         let origin = match choice.origin {
                             crate::build::BoardOrigin::Picked => "picked",
+                            crate::build::BoardOrigin::Config => "saved",
                             crate::build::BoardOrigin::Cache => "from build/",
                         };
                         let name = choice.name.clone();

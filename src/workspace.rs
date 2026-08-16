@@ -50,13 +50,14 @@ pub enum WorkspaceAction {
     /// [`crate::backend::Capability::ProjectSelect`].
     Project,
     /// Opens the board picker (the build panel's board answer, asked
-    /// beside the other prerequisites). Under
+    /// beside the other prerequisites). The pick is saved in the project's
+    /// registry entry and reloads on every later open. Under
     /// [`crate::backend::Capability::BoardSelect`].
     Board,
     /// Opens the shield picker (the build panel's optional shield answer,
-    /// asked right under the board it rides on). A pick is session-only
-    /// like a board one, and the picker's `(none)` row is how it clears.
-    /// Under [`crate::backend::Capability::ShieldSelect`].
+    /// asked right under the board it rides on). Saved with the board
+    /// answer, and the picker's `(none)` row is how it clears. Under
+    /// [`crate::backend::Capability::ShieldSelect`].
     Shield,
 }
 

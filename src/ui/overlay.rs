@@ -929,8 +929,9 @@ fn draw_firmware_picker(frame: &mut Frame, area: Rect, app: &App, selected: usiz
 
 /// Board target selection: a filter box over the `west boards` list
 /// (`SPEC.md` §10 --- hundreds of targets make raw navigation useless, and
-/// the choice is session-only, so the header of the modal says so instead of
-/// letting the user discover it from a changed file).
+/// the choice is saved with the project, so the header of the modal says
+/// where the current answer comes from instead of letting the user
+/// discover it from a changed file).
 fn draw_board_picker(frame: &mut Frame, area: Rect, app: &App, input: &str, selected: usize) {
     use crate::build::ListState as FetchState;
     use crate::ui::SPINNER;
@@ -950,13 +951,16 @@ fn draw_board_picker(frame: &mut Frame, area: Rect, app: &App, input: &str, sele
     let title = match &panel.board {
         Some(choice) => match choice.origin {
             crate::build::BoardOrigin::Cache => {
-                format!(
-                    "Board (build/ says {} — pick to change for this session)",
-                    choice.name
-                )
+                format!("Board (build/ says {} — pick to change)", choice.name)
             }
             crate::build::BoardOrigin::Picked => {
-                format!("Board ({} picked this session)", choice.name)
+                format!("Board ({}) — pick to change", choice.name)
+            }
+            crate::build::BoardOrigin::Config => {
+                format!(
+                    "Board ({}, saved for this project) — pick to change",
+                    choice.name
+                )
             }
         },
         None => "Board (none set — the first build needs one)".to_string(),
@@ -1022,7 +1026,7 @@ fn draw_board_picker(frame: &mut Frame, area: Rect, app: &App, input: &str, sele
 
 /// Shield selection: the same filter box over the `west shields` list, with
 /// a leading `(none)` row --- the shield is optional, and that row is how an
-/// existing pick is cleared (session-only, like a board pick).
+/// existing answer is cleared (saved with the board, like a board pick).
 fn draw_shield_picker(frame: &mut Frame, area: Rect, app: &App, input: &str, selected: usize) {
     use crate::build::ListState as FetchState;
     use crate::ui::SPINNER;
@@ -1037,7 +1041,7 @@ fn draw_shield_picker(frame: &mut Frame, area: Rect, app: &App, input: &str, sel
     };
 
     let title = match &panel.shield {
-        Some(name) => format!("Shield ({name} this session — pick to change, (none) to clear)"),
+        Some(name) => format!("Shield ({name}) — pick to change, (none) to clear"),
         None => "Shield (none — optional)".to_string(),
     };
 

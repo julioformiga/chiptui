@@ -155,7 +155,7 @@ pub enum Capability {
     BoardSelect,
     /// The backend's targets can carry an optional add-on board (a Zephyr
     /// shield): the UI offers a shield picker beside the board one, and the
-    /// answer is session-only like a board pick.
+    /// answer is saved with the board pick.
     ShieldSelect,
     /// The backend's projects live in a user-chosen folder rather than
     /// necessarily the working directory: the UI offers a projects-folder

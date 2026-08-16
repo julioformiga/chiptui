@@ -575,10 +575,12 @@ one is being built is never guessed:
     otherwise the command is refused with the reason and the pickers
     above open --- folder first, then project. The accepted project
     re-roots every command and resets the per-project facts (build
-    directory, cached board, last report); a hand-picked board survives
-    the re-root. The lifecycle buttons stay dimmed in the project panel
-    until both answers exist --- the questions themselves are asked in the
-    workspace pane's checklist, below `Projects Base`.
+    directory, cached board, saved board/shield, last report); a
+    hand-picked board survives the re-root, and the new project's own
+    saved answers (below) are re-applied. The lifecycle buttons stay
+    dimmed in the project panel until both answers exist --- the questions
+    themselves are asked in the workspace pane's checklist, below
+    `Projects Base`.
 
 The optional keys, shared by both config levels:
 
@@ -626,8 +628,10 @@ The board selection should not silently modify project configuration.
 > **Status**: implemented. The configured board is read from
 > `build/zephyr/CMakeCache.txt` (`build::cached_board`); the build panel's
 > `Board` action opens a filterable picker over a background `west boards`
-> fetch, and a pick is session-only --- nothing is written, and the panel
-> header says which origin the answer has.
+> fetch. A pick is saved in the project's registry entry (§13) and
+> reloaded on every later open, outranking the cache; the panel header
+> says which origin the answer has. Nothing is written into the project
+> directory.
 
 ### Shield selection
 
@@ -639,8 +643,9 @@ When chosen, the shield enters the build's first configuration as
 > **Status**: implemented. The workspace pane's `Shield` row (right under
 > the board) opens the same filterable picker over a background `west
 > shields` fetch, with a leading `(none)` row --- that is how a pick
-> clears. The answer is session-only, and `west build` / `west build
-> --pristine=always` carry it only while one is set.
+> clears. The answer is saved beside the board in the registry entry and
+> reloads with it (clearing persists too), and `west build` /
+> `west build --pristine=always` carry it only while one is set.
 
 ### Build
 
@@ -861,13 +866,18 @@ last_parent = "~/zephyrapps"
 path = "~/zephyrapps/blinky"
 backend = "zephyr"
 name = "blinky"
+board = "nrf52840dk/nrf52840"
+# shield = "nrf7002ek"
 last_opened = "2026-08-16T14:03:11Z"
 ```
 
 One block per project, written when a project is opened or created. It is
 what the home screen lists (most recently opened first) and what detection
 consults before falling back to evidence. `last_parent` is where the project
-creator's folder picker starts.
+creator's folder picker starts. `board`/`shield` are the Zephyr pickers'
+persisted answers: written when the user picks, re-applied every time the
+project opens (outranking the build directory's cache), and a cleared
+shield removes its line.
 
 The blocks are machine-managed: they are rewritten as a whole, while
 everything else in the file --- other sections, comments, unknown keys ---

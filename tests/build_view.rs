@@ -442,8 +442,9 @@ fn the_board_picker_fetches_filters_and_picks_for_the_session() {
         "a non-matching target must be filtered out:\n{frame}"
     );
 
-    // …and Enter picks for this session: commands carry -b, nothing is
-    // written to the project.
+    // …and Enter picks: commands carry -b, the answer is saved in the
+    // project's registry entry, and nothing is written into the project
+    // itself.
     app.handle(key(KeyCode::Enter));
     assert_eq!(
         app.build.as_ref().unwrap().board_name(),
@@ -528,7 +529,7 @@ fn the_shield_picker_lists_picks_and_clears_for_the_session() {
     );
 
     // Typing filters; the first Down steps past the (none) row onto the
-    // first match, and Enter picks for this session.
+    // first match, and Enter picks.
     for c in ['n', 'r', 'f', '7'] {
         app.handle(key(KeyCode::Char(c)));
     }
@@ -584,6 +585,112 @@ fn the_shield_picker_lists_picks_and_clears_for_the_session() {
     assert!(
         build.to_string().ends_with("west build"),
         "no shield is no flag at all: {build}"
+    );
+}
+
+#[test]
+fn board_and_shield_picks_are_saved_and_reloaded_with_the_project() {
+    let (mut app, root) = zephyr_app("persist", None);
+    app.build.as_mut().unwrap().set_tool_path(fake("west"));
+    let config = root.join("home/.config/chiptui/config.toml");
+
+    // Pick a board through the picker (three downs to the Board row).
+    app.focus = Focus::Workspace;
+    for _ in 0..3 {
+        app.handle(key(KeyCode::Down));
+    }
+    app.handle(key(KeyCode::Enter));
+    assert!(pump_until(
+        &mut app,
+        |app| {
+            matches!(
+                app.build.as_ref().unwrap().boards.state,
+                chiptui::build::ListState::Loaded(_)
+            )
+        },
+        10
+    ));
+    for c in ['N', 'R', 'F'] {
+        app.handle(key(KeyCode::Char(c)));
+    }
+    app.handle(key(KeyCode::Enter));
+    let written = std::fs::read_to_string(&config).unwrap();
+    assert!(
+        written.contains("board = \"nrf52840dk/nrf52840\""),
+        "the pick must be saved in the registry entry:\n{written}"
+    );
+
+    // Pick a shield on the row right under it.
+    app.handle(key(KeyCode::Down));
+    app.handle(key(KeyCode::Enter));
+    assert!(pump_until(
+        &mut app,
+        |app| {
+            matches!(
+                app.build.as_ref().unwrap().shields.state,
+                chiptui::build::ListState::Loaded(_)
+            )
+        },
+        10
+    ));
+    for c in ['n', 'r', 'f', '7'] {
+        app.handle(key(KeyCode::Char(c)));
+    }
+    app.handle(key(KeyCode::Down));
+    app.handle(key(KeyCode::Enter));
+    let written = std::fs::read_to_string(&config).unwrap();
+    assert!(
+        written.contains("shield = \"nrf7002ek\""),
+        "the shield answer is saved beside the board:\n{written}"
+    );
+
+    // Clearing the shield persists the clearing: the saved answer is the
+    // source of truth, not just the session state. (The cursor still sits
+    // on the Shield row, and the picker starts on the (none) row.)
+    app.handle(key(KeyCode::Enter));
+    app.handle(key(KeyCode::Enter));
+    let written = std::fs::read_to_string(&config).unwrap();
+    assert!(
+        !written.contains("shield ="),
+        "a cleared shield must not survive in the file:\n{written}"
+    );
+    assert!(
+        written.contains("board = \"nrf52840dk/nrf52840\""),
+        "clearing the shield must not disturb the board:\n{written}"
+    );
+
+    // A later session over the same project and home reloads the answers:
+    // the board outranks the (here absent) build cache, with its origin
+    // saying where it came from.
+    let mut reopened = App::new(&root);
+    reopened.set_serial_dir(root.join("dev"));
+    reopened.set_home_dir(root.join("home"));
+    reopened.bootstrap();
+    reopened.manager.set_override(Some(BackendKind::Zephyr));
+    reopened.maybe_scan_devices();
+    let panel = reopened.build.as_ref().unwrap();
+    assert_eq!(
+        panel.board_name(),
+        Some("nrf52840dk/nrf52840"),
+        "the saved board must reload on open"
+    );
+    assert_eq!(
+        panel.board.as_ref().unwrap().origin,
+        chiptui::build::BoardOrigin::Config
+    );
+    assert_eq!(
+        panel.shield_name(),
+        None,
+        "the cleared shield stays cleared"
+    );
+
+    // Recording the open --- what every project start does --- must keep
+    // the answers rather than rewriting the entry without them.
+    reopened.record_open_project();
+    let rewritten = std::fs::read_to_string(&config).unwrap();
+    assert!(
+        rewritten.contains("board = \"nrf52840dk/nrf52840\""),
+        "recording the open must not forget the board:\n{rewritten}"
     );
 }
 

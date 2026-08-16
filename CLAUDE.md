@@ -152,12 +152,16 @@ backend (`Backend::build_command`,
 (workspace-scoped commands run in the workspace). The panel's `Board` checklist row (under
 `Capability::BoardSelect`) opens `Overlay::BoardPicker`: a
 filterable list over a background `west boards` fetch (`Backend::board_list_command`, parsed by
-`build::parse_boards`); a pick is session-only (`BoardOrigin::Picked` vs `Cache` — the row
-says which), never written to the project. The optional `Shield` row right below (under
-`Capability::ShieldSelect`) opens `Overlay::ShieldPicker` over a background `west shields`
-fetch — same `ListFetch` machinery as boards — with a leading `(none)` row to clear the pick;
-the session-only answer reaches only first-configuration builds as `--shield` (never an
-incremental build of an already-configured directory). `Flash` (`west flash`, the board's own
+`build::parse_boards`); a pick is persisted in the project's `[[project]]` registry entry
+(`settings::ProjectEntry`'s `board`/`shield`, written by `App::persist_board_shield`) and reloaded
+on every open, outranking the build cache (`BoardOrigin::Config` vs `Picked` vs `Cache` — the row
+says which); nothing is ever written into the project directory. The optional `Shield` row right
+below (under `Capability::ShieldSelect`) opens `Overlay::ShieldPicker` over a background `west
+shields` fetch — same `ListFetch` machinery as boards — with a leading `(none)` row to clear the
+pick (the clearing persists too); the saved answer reaches only first-configuration builds as
+`--shield` (never an incremental build of an already-configured directory). A project switch
+re-derives both answers for the project switched to (`App::set_project_root`). `Flash`
+(`west flash`, the board's own
 runner from `runner.yml` — never a hard-coded programmer) sits last under
 `Capability::Flash`, always behind `Overlay::ConfirmBuild` (destructive); the dashboard's `x`
 routes a build-panel backend there instead of esptool's dialog, and the "Device info" pane shows

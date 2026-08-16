@@ -98,9 +98,15 @@ pub struct Shield {
 pub enum BoardOrigin {
     /// Read from `build/zephyr/CMakeCache.txt`.
     Cache,
-    /// Chosen in the board picker, for this session only: nothing is
-    /// written to the project (`SPEC.md` §10).
+    /// Chosen in the board picker. Persisted by the app in the project's
+    /// registry entry (`SPEC.md` §10, §13 --- never inside the project
+    /// directory), which is exactly why it outranks the cache.
     Picked,
+    /// Read from the project's registry entry --- the persisted half of a
+    /// [`Self::Picked`] answer, re-applied on open. Ranks like a pick, but
+    /// belongs to the *project*: a project switch re-derives it instead of
+    /// carrying it across.
+    Config,
 }
 
 /// Where the panel's working directory came from: inherited from the
@@ -291,11 +297,11 @@ pub struct BuildPanel {
     /// configurations do not keep erasing each other.
     pub build_dir: String,
     /// The board commands target: from the CMake cache until the user picks
-    /// one for the session (a pick survives, and overrides, cache reads).
+    /// one or a saved answer loads (both outrank, and outlive, cache reads).
     pub board: Option<BoardChoice>,
-    /// The optional shield riding on the board answer: session-only, like a
-    /// picked board, and with no cache fallback --- a shield is optional, so
-    /// `None` (build without one) is itself an answer.
+    /// The optional shield riding on the board answer: picked, or loaded
+    /// with the saved board answer, and with no cache fallback --- a shield
+    /// is optional, so `None` (build without one) is itself an answer.
     pub shield: Option<String>,
     /// Where `root` came from (the header's hint, and the reason a pick
     /// survives a re-detect).
@@ -393,11 +399,10 @@ impl BuildPanel {
     }
 
     /// Points the lifecycle at another project directory (the picker's
-    /// answer). The pick is session-only; everything derived from the old
-    /// root resets with it: the build directory and cached board belong to
-    /// the *project*, while a board picked by hand survives (the same
-    /// board may well be the target of several projects --- the same rule
-    /// a build-directory switch already follows). The last report is
+    /// answer). Only a hand-picked board survives the re-root: the build
+    /// directory, the cached board and a *saved* board belong to the
+    /// project being left, so they reset (the caller re-applies the new
+    /// project's saved answer, if it has one). The last report is
     /// dropped too: it described the previous project's command.
     pub fn set_project(&mut self, dir: impl Into<PathBuf>) {
         self.root = dir.into();
@@ -406,13 +411,16 @@ impl BuildPanel {
         if self
             .board
             .as_ref()
-            .is_none_or(|choice| choice.origin == BoardOrigin::Cache)
+            .is_none_or(|choice| choice.origin != BoardOrigin::Picked)
         {
             self.board = cached_board(&self.root, &self.build_dir).map(|name| BoardChoice {
                 name,
                 origin: BoardOrigin::Cache,
             });
         }
+        // The shield rides on the board answer and is project-scoped the
+        // same way; with no cache to re-read, it resets to "none".
+        self.shield = None;
         self.last = None;
         self.cursor = 0;
     }
@@ -477,9 +485,9 @@ impl BuildPanel {
         project_ok && self.board.is_some()
     }
 
-    /// Applies a board chosen in the picker: session-only, never written to
-    /// the project (`SPEC.md` §10) --- which is exactly why it outranks the
-    /// cache until the session ends.
+    /// Applies a board chosen in the picker: it outranks the cache, and the
+    /// app persists it in the project's registry entry so the next session
+    /// starts from the same answer.
     pub fn set_picked(&mut self, name: impl Into<String>) {
         self.board = Some(BoardChoice {
             name: name.into(),
@@ -487,9 +495,19 @@ impl BuildPanel {
         });
     }
 
-    /// Applies a shield chosen in the picker: session-only, like a board
-    /// pick. `None` (the picker's `(none)` row) builds without one.
-    pub fn set_picked_shield(&mut self, name: Option<String>) {
+    /// Applies the board saved in the project's registry entry: ranks like a
+    /// pick for as long as the project stays the same (a cache read must not
+    /// erase it), but is re-derived on a project switch.
+    pub fn set_config_board(&mut self, name: impl Into<String>) {
+        self.board = Some(BoardChoice {
+            name: name.into(),
+            origin: BoardOrigin::Config,
+        });
+    }
+
+    /// Applies a shield answer --- picked, or loaded with the saved board.
+    /// `None` (the picker's `(none)` row) builds without one.
+    pub fn set_shield(&mut self, name: Option<String>) {
         self.shield = name;
     }
 
@@ -1240,7 +1258,7 @@ mod tests {
         // ("no shield") is as valid an answer as a name.
         assert!(!panel.lifecycle_ready(false));
 
-        panel.set_picked_shield(Some("nrf7002ek".to_string()));
+        panel.set_shield(Some("nrf7002ek".to_string()));
         let build = panel.command(BuildKind::Build, &ZephyrBackend).unwrap();
         assert_eq!(build.to_string(), "west build --shield nrf7002ek");
         let rebuild = panel.command(BuildKind::Rebuild, &ZephyrBackend).unwrap();
@@ -1249,7 +1267,7 @@ mod tests {
             "west build --pristine=always --shield nrf7002ek"
         );
 
-        panel.set_picked_shield(None);
+        panel.set_shield(None);
         let build = panel.command(BuildKind::Build, &ZephyrBackend).unwrap();
         assert_eq!(
             build.to_string(),
@@ -1395,6 +1413,60 @@ mod tests {
             panel.board_name(),
             Some("nrf52840dk/nrf52840"),
             "a board pick outlives project switches, like directory switches"
+        );
+    }
+
+    #[test]
+    fn a_saved_board_outranks_the_cache_and_survives_a_build_dir_switch() {
+        let dir = fixture_dir("configboard");
+        std::fs::write(
+            dir.join("build/zephyr/CMakeCache.txt"),
+            "CACHED_BOARD:STRING=old_board\n",
+        )
+        .unwrap();
+        let mut panel = BuildPanel::new(&dir, UtcOffset::UTC);
+        assert_eq!(panel.board_name(), Some("old_board"));
+
+        // The registry answer is applied on open: same rank as a pick.
+        panel.set_config_board("nrf52840dk/nrf52840");
+        assert_eq!(panel.board_name(), Some("nrf52840dk/nrf52840"));
+        assert_eq!(panel.board.as_ref().unwrap().origin, BoardOrigin::Config);
+
+        // Cache re-reads (a build-directory switch) must not erase it.
+        panel.set_build_dir("build-custom");
+        assert_eq!(
+            panel.board_name(),
+            Some("nrf52840dk/nrf52840"),
+            "a saved board outlives cache refreshes, like a pick"
+        );
+    }
+
+    #[test]
+    fn a_saved_board_and_shield_reset_on_a_project_switch() {
+        let dir = fixture_dir("projconfig");
+        let mut panel = BuildPanel::new(&dir, UtcOffset::UTC);
+        panel.set_config_board("nrf52840dk/nrf52840");
+        panel.set_shield(Some("nrf7002ek".to_string()));
+
+        // The picked project: its own cached board answers instead.
+        let other = dir.join("other-app");
+        std::fs::create_dir_all(other.join("build/zephyr")).unwrap();
+        std::fs::write(
+            other.join("build/zephyr/CMakeCache.txt"),
+            "CACHED_BOARD:STRING=thingy91/nrf9160\n",
+        )
+        .unwrap();
+        panel.set_project(&other);
+
+        assert_eq!(
+            panel.board_name(),
+            Some("thingy91/nrf9160"),
+            "a saved board belongs to the project being left, not the session"
+        );
+        assert_eq!(
+            panel.shield_name(),
+            None,
+            "the saved shield is project-scoped the same way"
         );
     }
 }
