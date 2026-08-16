@@ -226,6 +226,7 @@ impl App {
                     move |app| match action {
                         BuildAction::Build(kind) => app.start_build(kind),
                         BuildAction::Flash => app.start_flash(),
+                        BuildAction::UpdateZephyr => app.start_workspace_update(),
                         _ => {}
                     },
                     |_| {},
@@ -325,23 +326,6 @@ impl App {
                     }
                     _ => {}
                 }
-            }
-            Overlay::ConfirmWorkspace { action, confirm } => {
-                self.dispatch_confirm(
-                    key.code,
-                    confirm,
-                    move |app, confirm| {
-                        app.overlay = Some(Overlay::ConfirmWorkspace { action, confirm });
-                    },
-                    // Accept runs the command directly --- routing back
-                    // through `run_workspace_action` would re-confirm.
-                    move |app| {
-                        if action == crate::workspace::WorkspaceAction::Update {
-                            app.start_workspace_update();
-                        }
-                    },
-                    |_| {},
-                );
             }
             Overlay::DirPicker {
                 purpose,

@@ -588,6 +588,40 @@ fn the_shield_picker_lists_picks_and_clears_for_the_session() {
 }
 
 #[test]
+fn opening_a_directory_from_the_workspace_file_section_descends_into_it() {
+    let (mut app, root) = zephyr_app("open-dir", None);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    app.workspace.as_mut().unwrap().reload_files();
+    app.focus = Focus::Workspace;
+
+    // Five downs from the checklist's first row (Zephyr Base) walk off its
+    // last row (Shield) into the file section, landing on `src` ---
+    // directories sort ahead of files, so it is the first entry.
+    for _ in 0..5 {
+        app.handle(key(KeyCode::Down));
+    }
+    assert!(app.workspace.as_ref().unwrap().in_files);
+    assert_eq!(
+        app.workspace
+            .as_ref()
+            .unwrap()
+            .files_selected()
+            .unwrap()
+            .name,
+        "src"
+    );
+
+    // Enter opens the per-entry menu, defaulted to `Open`; Enter again must
+    // actually descend --- `run_file_action` used to reach only into
+    // `self.browser`, which is always `None` for Zephyr, so this was a no-op.
+    app.handle(key(KeyCode::Enter));
+    assert!(matches!(app.overlay, Some(Overlay::FileActions { .. })));
+    app.handle(key(KeyCode::Enter));
+    assert_eq!(app.overlay, None);
+    assert_eq!(app.workspace.as_ref().unwrap().files_path, root.join("src"));
+}
+
+#[test]
 fn a_boardless_filter_match_enter_picks_nothing_and_esc_changes_nothing() {
     let (mut app, _root) = zephyr_app("picker-esc", Some("nrf52840dk/nrf52840"));
     app.build.as_mut().unwrap().set_tool_path(fake("west"));
@@ -827,15 +861,19 @@ fn the_workspace_pane_resolves_from_project_config_and_runs_update() {
     );
 
     // Enter on the Update Zephyr button confirms first (it rewrites the
-    // shared workspace)… five rows past the checklist.
-    app.focus = Focus::Workspace;
+    // shared workspace) --- it lives in the Project actions pane now, five
+    // rows past Menuconfig (Clean, Build, Rebuild, Flash, Update Zephyr).
+    app.focus = Focus::Build;
     for _ in 0..5 {
         app.handle(key(KeyCode::Down));
     }
     app.handle(key(KeyCode::Enter));
     assert!(matches!(
         app.overlay,
-        Some(Overlay::ConfirmWorkspace { .. })
+        Some(Overlay::ConfirmBuild {
+            action: chiptui::build::BuildAction::UpdateZephyr,
+            ..
+        })
     ));
     let frame = render(&mut app, 100, 30);
     assert!(
@@ -922,13 +960,11 @@ fn an_unconfigured_pane_shows_the_open_checklist_and_dim_buttons() {
             chiptui::workspace::WorkspaceAction::Project,
             chiptui::workspace::WorkspaceAction::Board,
             chiptui::workspace::WorkspaceAction::Shield,
-            chiptui::workspace::WorkspaceAction::Update,
-            chiptui::workspace::WorkspaceAction::SdkList
         ],
-        "the checklist questions first, then the (disabled) buttons"
+        "the checklist is the pane's whole action list now"
     );
     assert!(
-        !panel.action_enabled(chiptui::workspace::WorkspaceAction::Update),
+        !app.build_action_enabled(chiptui::build::BuildAction::UpdateZephyr),
         "west update has nothing to run against yet"
     );
 

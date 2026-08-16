@@ -144,6 +144,38 @@ impl App {
         }
     }
 
+    /// The directory whichever local source currently has focus is showing:
+    /// MicroPython's file browser (`browser.local_path`) or the Zephyr
+    /// workspace pane's embedded file list (`workspace.files_path`). The two
+    /// are mutually exclusive by capability --- `ensure_browser_scanning`
+    /// never creates a browser for a backend with a build panel
+    /// (`build_pane_visible_precondition`), and the workspace pane's file
+    /// section only exists for exactly that kind of backend --- so checking
+    /// the browser first is never ambiguous.
+    fn local_dir(&self) -> Option<PathBuf> {
+        self.browser
+            .as_ref()
+            .map(|browser| browser.local_path.clone())
+            .or_else(|| {
+                self.workspace
+                    .as_ref()
+                    .map(|panel| panel.files_path.clone())
+            })
+    }
+
+    fn local_entry_path(&self, name: &str) -> Option<PathBuf> {
+        self.local_dir().map(|dir| dir.join(name))
+    }
+
+    /// Reloads whichever local source is active, mirroring [`Self::local_dir`].
+    fn reload_local_pane(&mut self) {
+        if let Some(browser) = &mut self.browser {
+            browser.reload_local();
+        } else if let Some(panel) = &mut self.workspace {
+            panel.reload_files();
+        }
+    }
+
     /// Runs the action chosen from [`Overlay::FileActions`]. `name` is the
     /// entry's name in whichever directory `side` currently shows --- stable
     /// for the duration of the menu, since an open overlay routes every key
@@ -162,19 +194,30 @@ impl App {
         match (side, action) {
             // A directory's menu always starts on `Open` (`for_entry`'s
             // default selection): re-run the same descend `Enter` used to
-            // do directly, now one keypress later.
-            (_, FileAction::Open) => {
+            // do directly, now one keypress later. `self.browser` and the
+            // workspace pane's file section are mutually exclusive (see
+            // `Self::local_dir`), so exactly one of these branches applies.
+            (_, FileAction::Open) if self.browser.is_some() => {
                 self.dispatch_browser(|browser, processes, port| browser.enter(processes, port));
+            }
+            (_, FileAction::Open) => {
+                if let Some(panel) = &mut self.workspace {
+                    panel.enter_files();
+                }
             }
             (_, FileAction::Diff) => self.open_diff(name),
             (Side::Local, FileAction::View) => {
-                let Some(browser) = &self.browser else { return };
-                self.open_local_file_viewer(browser.local_path.join(name));
+                let Some(path) = self.local_entry_path(name) else {
+                    return;
+                };
+                self.open_local_file_viewer(path);
             }
             (Side::Local, FileAction::Edit) => {
-                let Some(browser) = &self.browser else { return };
+                let Some(path) = self.local_entry_path(name) else {
+                    return;
+                };
                 self.pending_edit = Some(PendingEdit {
-                    path: browser.local_path.join(name),
+                    path,
                     device_target: None,
                 });
             }
@@ -229,32 +272,32 @@ impl App {
     pub(super) fn delete_file(&mut self, side: Side, name: &str, is_dir: bool) {
         match (side, is_dir) {
             (Side::Local, false) => {
-                if let Some(browser) = &mut self.browser {
-                    let path = browser.local_path.join(name);
-                    match std::fs::remove_file(&path) {
-                        Ok(_) => {
-                            self.logs.success(format!("{} removed", path.display()));
-                            browser.reload_local();
-                        }
-                        Err(e) => {
-                            self.logs
-                                .error(format!("{}: remove failed: {e}", path.display()));
-                        }
+                let Some(path) = self.local_entry_path(name) else {
+                    return;
+                };
+                match std::fs::remove_file(&path) {
+                    Ok(_) => {
+                        self.logs.success(format!("{} removed", path.display()));
+                        self.reload_local_pane();
+                    }
+                    Err(e) => {
+                        self.logs
+                            .error(format!("{}: remove failed: {e}", path.display()));
                     }
                 }
             }
             (Side::Local, true) => {
-                if let Some(browser) = &mut self.browser {
-                    let path = browser.local_path.join(name);
-                    match std::fs::remove_dir_all(&path) {
-                        Ok(_) => {
-                            self.logs.success(format!("{} removed", path.display()));
-                            browser.reload_local();
-                        }
-                        Err(e) => {
-                            self.logs
-                                .error(format!("{}: remove failed: {e}", path.display()));
-                        }
+                let Some(path) = self.local_entry_path(name) else {
+                    return;
+                };
+                match std::fs::remove_dir_all(&path) {
+                    Ok(_) => {
+                        self.logs.success(format!("{} removed", path.display()));
+                        self.reload_local_pane();
+                    }
+                    Err(e) => {
+                        self.logs
+                            .error(format!("{}: remove failed: {e}", path.display()));
                     }
                 }
             }
@@ -287,10 +330,10 @@ impl App {
 
         match side {
             Side::Local => {
-                let Some(browser) = &mut self.browser else {
+                let Some(dir) = self.local_dir() else {
                     return;
                 };
-                let path = browser.local_path.join(name);
+                let path = dir.join(name);
                 let result = if is_dir {
                     std::fs::create_dir(&path)
                 } else {
@@ -299,7 +342,7 @@ impl App {
                 match result {
                     Ok(()) => {
                         self.logs.success(format!("{} created", path.display()));
-                        browser.reload_local();
+                        self.reload_local_pane();
                     }
                     Err(e) => self
                         .logs
@@ -717,8 +760,6 @@ impl App {
     /// Re-reads the local pane after `$EDITOR` closes: size and contents may
     /// have changed under it while the terminal was suspended.
     pub fn reload_local_files(&mut self) {
-        if let Some(browser) = &mut self.browser {
-            browser.reload_local();
-        }
+        self.reload_local_pane();
     }
 }

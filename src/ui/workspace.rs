@@ -1,20 +1,19 @@
 //! Workspace-pane rendering: the environment checklist (`Zephyr Base`,
 //! then `Projects Base`) with a broken location's reason right under its
 //! row --- informational, never navigable --- a horizontal separator,
-//! then the workspace-operation buttons (`crate::ui::button`) in a
-//! horizontal band, dimmed until the installation resolves. Selected
-//! rows highlight full-width.
+//! then the embedded project file list filling the rest of the pane
+//! (`crate::ui::files`' row/list grammar, reused so it looks like
+//! MicroPython's own local pane). Selected rows highlight full-width.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Paragraph, Wrap};
+use ratatui::widgets::{ListItem, Paragraph, Wrap};
 
-use super::button::{self, Button};
 use crate::app::{App, Focus};
 use crate::ui::{dashboard_focused, pane_block};
-use crate::workspace::WorkspaceAction;
+use crate::workspace::{WorkspaceAction, WorkspacePanel};
 
 /// Draws the full second row for a workspace+build backend: the workspace
 /// pane on the left, the project panel (already its own module) on the right.
@@ -37,33 +36,17 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
     draw_rows(frame, inner, app);
 }
 
-/// Whether a workspace action is a checklist question (the pane's
-/// navigable prerequisites) rather than an operation button.
-fn is_checklist(action: &&WorkspaceAction) -> bool {
-    matches!(
-        action,
-        WorkspaceAction::Choose
-            | WorkspaceAction::Projects
-            | WorkspaceAction::Project
-            | WorkspaceAction::Board
-            | WorkspaceAction::Shield
-    )
-}
-
 fn draw_rows(frame: &mut Frame, area: Rect, app: &App) {
     let Some(panel) = &app.workspace else {
         return;
     };
     let caps = app.manager.capabilities();
     let actions = panel.actions(&caps);
-    let checklist_len = actions.iter().take_while(is_checklist).count();
     let mut y = area.y;
-    let mut buttons: Vec<Button> = Vec::new();
     for (position, action) in actions.iter().enumerate() {
-        if position == checklist_len {
-            y = separator(frame, area, y);
-        }
-        let selected = panel.cursor == position;
+        // Frozen at wherever the checklist cursor was left while the user is
+        // down in the file list --- it must not also draw as selected then.
+        let selected = !panel.in_files && panel.cursor == position;
         match action {
             WorkspaceAction::Choose => {
                 y = render_row(
@@ -193,19 +176,70 @@ fn draw_rows(frame: &mut Frame, area: Rect, app: &App) {
                     selected,
                 );
             }
-            WorkspaceAction::Update => buttons.push(
-                Button::new("↻ Update Zephyr")
-                    .enabled(panel.action_enabled(*action))
-                    .selected(selected),
-            ),
-            WorkspaceAction::SdkList => buttons.push(
-                Button::new("≡ SDK List")
-                    .enabled(panel.action_enabled(*action))
-                    .selected(selected),
-            ),
         }
     }
-    button::render_stack(frame, area, y, &buttons);
+    y = separator(frame, area, y);
+    draw_files_section(frame, area, y, app, panel);
+}
+
+/// The embedded file list under the checklist: a header naming the browsed
+/// directory (relative to the project root), then entries filling the rest
+/// of the pane --- the same `row`/`render_list` grammar `crate::ui::files`
+/// draws for MicroPython's local pane, reused with no comparison status
+/// (`row`'s existing `None` fallback is already exactly that pane's look
+/// whenever there is nothing to compare against), so an empty listing, an
+/// overlong name and a directory marker read identically here.
+fn draw_files_section(frame: &mut Frame, area: Rect, y: u16, app: &App, panel: &WorkspacePanel) {
+    if y >= area.bottom() {
+        return;
+    }
+    let relative = panel
+        .files_path
+        .strip_prefix(&panel.files_root)
+        .map(|relative| {
+            if relative.as_os_str().is_empty() {
+                ".".to_string()
+            } else {
+                relative.display().to_string()
+            }
+        })
+        .unwrap_or_else(|_| panel.files_path.display().to_string());
+    let header = Line::from(
+        format!(
+            "Files  {}",
+            shorten_start(&relative, value_budget(area.width))
+        )
+        .dim(),
+    );
+    let y = render_row(frame, area, y, header, false);
+    if y >= area.bottom() {
+        return;
+    }
+
+    let list_area = Rect {
+        x: area.x,
+        y,
+        width: area.width,
+        height: area.bottom() - y,
+    };
+    if let Some(error) = &panel.files_error {
+        frame.render_widget(
+            Paragraph::new(error.clone().fg(Color::Red)).wrap(Wrap { trim: true }),
+            list_area,
+        );
+        return;
+    }
+
+    let focused = dashboard_focused(app, Focus::Workspace);
+    let items: Vec<ListItem> = panel
+        .visible_files()
+        .iter()
+        .map(|entry| {
+            super::files::row(&entry.name, entry.is_dir, entry.size, None, list_area.width)
+        })
+        .collect();
+    let cursor = panel.in_files.then_some(panel.files_cursor);
+    super::files::render_list(frame, list_area, items, cursor, focused);
 }
 
 /// One checklist row: `✓` when the answer exists, a dim `□` while the

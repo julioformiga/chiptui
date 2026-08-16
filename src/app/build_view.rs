@@ -3,6 +3,8 @@
 //! (`SPEC.md` §15 --- destructive actions ask first, showing the literal
 //! command). Split out of `app.rs` alongside the other one-subsystem files.
 
+use std::path::PathBuf;
+
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
 use crate::backend::BuildKind;
@@ -126,16 +128,20 @@ impl App {
         ));
     }
 
-    /// Runs a panel action: destructive ones (`Clean`, `Flash` --- both
-    /// destructive capabilities, `SPEC.md` §15) route through a confirm
-    /// overlay quoting the literal command; `menuconfig` hands the terminal
-    /// to the child; the rest act immediately. Disabled rows (the lifecycle
-    /// before the checklist is complete --- [`Self::build_action_enabled`])
-    /// do nothing: the dimmed row is the explanation. This is also the
-    /// confirm overlay's accept path, which is why it must not itself
-    /// confirm again. Every action that runs a *project* command passes
-    /// through [`Self::require_buildable_project`] first --- no command runs
-    /// in a directory that is not a buildable application.
+    /// Runs a panel action: destructive ones (`Clean`, `Flash`, and
+    /// `UpdateZephyr` --- it rewrites the shared workspace, `SPEC.md` §15)
+    /// route through a confirm overlay quoting the literal command;
+    /// `menuconfig` hands the terminal to the child; `SdkList` (read-only)
+    /// and the rest act immediately. Disabled rows (the lifecycle before the
+    /// checklist is complete, or `UpdateZephyr`/`SdkList` before a workspace
+    /// is resolved --- [`Self::build_action_enabled`]) do nothing: the
+    /// dimmed row is the explanation. This is also the confirm overlay's
+    /// accept path, which is why it must not itself confirm again. Every
+    /// action that runs a *project* command passes through
+    /// [`Self::require_buildable_project`] first --- no command runs in a
+    /// directory that is not a buildable application; `UpdateZephyr`/
+    /// `SdkList` skip that gate, since they run in the workspace, not the
+    /// project.
     pub(super) fn run_build_action(&mut self, action: BuildAction) {
         if !self.build_action_enabled(action) {
             return;
@@ -166,6 +172,17 @@ impl App {
                 });
             }
             BuildAction::Menuconfig => self.start_menuconfig(),
+            BuildAction::UpdateZephyr => {
+                self.overlay = Some(Overlay::ConfirmBuild {
+                    action,
+                    confirm: false,
+                });
+            }
+            BuildAction::SdkList => {
+                self.start_workspace_command("SDK list", |panel, backend| {
+                    panel.sdk_list_command(backend)
+                });
+            }
         }
     }
 
@@ -261,15 +278,30 @@ impl App {
             });
             return;
         }
-        let Some(panel) = &mut self.build else {
+        if self.build.is_none() {
             return;
-        };
-        panel.set_project(row.path.clone());
+        }
+        self.set_project_root(row.path.clone());
         self.logs.info(format!(
             "project set to {} for this session (nothing written)",
             row.path.display()
         ));
         self.overlay = None;
+    }
+
+    /// Re-roots the build lifecycle and the workspace pane's embedded file
+    /// list to `dir` together: picking a project answers both "what does
+    /// `west` build" and "what files does the Workspace pane show" at once,
+    /// and letting them diverge would leave the file list showing a
+    /// directory the build panel no longer targets. Session-only, like
+    /// [`crate::build::BuildPanel::set_project`] itself.
+    pub(super) fn set_project_root(&mut self, dir: PathBuf) {
+        if let Some(panel) = &mut self.build {
+            panel.set_project(dir.clone());
+        }
+        if let Some(workspace) = &mut self.workspace {
+            workspace.set_files_root(dir);
+        }
     }
 
     /// Starts `kind`'s command and shows its output streaming in the

@@ -81,10 +81,10 @@ fn dashboard_shows_project_device_and_log_panes() {
 #[test]
 fn zephyr_shows_the_workspace_and_build_panes_in_row_two() {
     // Once startup has run, row 2 belongs entirely to the build backend: the
-    // workspace pane (no filesystem to browse, no file listing --- that is
-    // the editor's job) beside the project panel, both as checklists ---
-    // the open questions above a separator, the operation buttons dimmed
-    // below it until their answers exist.
+    // workspace pane (its checklist, then the project's own files below a
+    // separator --- no device filesystem to browse, but the project's
+    // sources are its to show) beside the project panel, whose operation
+    // buttons are dimmed until their answers exist.
     let mut app = app_with_backend(BackendKind::Zephyr);
     // Empty fixture /dev and an isolated home keep the render deterministic
     // (a machine with several USB ports would open the device picker; one
@@ -123,11 +123,15 @@ fn zephyr_shows_the_workspace_and_build_panes_in_row_two() {
     );
     assert!(
         !frame.contains("Local files:"),
-        "no file pane may render for a build backend:\n{frame}"
+        "the dual-pane browser's own title must not render for a build backend:\n{frame}"
     );
     assert!(
         !frame.contains("Device files:"),
         "no device pane may render without a filesystem:\n{frame}"
+    );
+    assert!(
+        frame.contains("Files"),
+        "the workspace pane's embedded project file list must show:\n{frame}"
     );
 }
 

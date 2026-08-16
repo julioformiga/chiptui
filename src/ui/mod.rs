@@ -151,29 +151,26 @@ fn draw_dashboard(frame: &mut Frame, body: Rect, app: &mut App) {
     panels::draw_log_tabs(frame, row3, app);
 }
 
-/// The taller row-2 pane's inner content height: its checklist rows (plus
-/// an invalid location's wrapped reason in the workspace pane), the
-/// separator, and the stacked button group --- one row per button, one
-/// rule at each edge and one divider between each pair.
+/// The minimum rows the workspace pane's embedded file list gets, past the
+/// checklist and its header line --- enough to show a handful of entries
+/// without scrolling. Row 2 is sized to fit exactly this much (like the
+/// checklist rows above it); a taller terminal gives the remainder to row 3
+/// (the log/monitor pane), the same trade-off row 2 already makes today.
+const MIN_FILES_ROWS: u16 = 6;
+
+/// The taller row-2 pane's inner content height: the workspace pane's
+/// checklist rows (plus an invalid location's wrapped reason), a separator,
+/// the file-list header and its minimum rows on one side; the project
+/// pane's stacked button group --- one row per button, one rule at each
+/// edge and one divider between each pair --- on the other.
 fn row2_content_height(app: &App) -> u16 {
     let caps = app.manager.capabilities();
     let workspace = app.workspace.as_ref().map_or(0, |panel| {
-        let actions = panel.actions(&caps);
-        let checklist = actions
-            .iter()
-            .take_while(|action| {
-                matches!(
-                    action,
-                    crate::workspace::WorkspaceAction::Choose
-                        | crate::workspace::WorkspaceAction::Projects
-                        | crate::workspace::WorkspaceAction::Project
-                        | crate::workspace::WorkspaceAction::Board
-                )
-            })
-            .count();
-        let buttons = actions.len() - checklist;
+        let checklist = panel.actions(&caps).len() as u16;
         let invalid = if panel.invalid.is_some() { 4 } else { 0 };
-        (checklist + invalid + 2 * buttons + 2) as u16
+        let separator = 1;
+        let files_header = 1;
+        checklist + invalid + separator + files_header + MIN_FILES_ROWS
     });
     let build = app.build.as_ref().map_or(0, |panel| {
         let buttons = panel.actions(&caps).len();

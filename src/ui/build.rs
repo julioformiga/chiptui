@@ -105,6 +105,16 @@ fn draw_rows(frame: &mut Frame, area: Rect, app: &App, panel: &BuildPanel) -> u1
                     .enabled(app.build_action_enabled(*action))
                     .selected(selected),
             ),
+            crate::build::BuildAction::UpdateZephyr => buttons.push(
+                Button::new("↻ Update Zephyr")
+                    .enabled(app.build_action_enabled(*action))
+                    .selected(selected),
+            ),
+            crate::build::BuildAction::SdkList => buttons.push(
+                Button::new("≡ SDK List")
+                    .enabled(app.build_action_enabled(*action))
+                    .selected(selected),
+            ),
         }
     }
     y = button::render_stack(frame, area, y, &buttons);

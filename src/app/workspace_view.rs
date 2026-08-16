@@ -11,65 +11,113 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
 use crate::backend::zephyr::projects::{self, ProjectsResolution};
 use crate::backend::zephyr::workspace::{Resolution, WorkspaceOrigin};
+use crate::browser::Side;
 use crate::workspace::{DirPurpose, WorkspaceAction};
 
 use super::{App, Focus, LogTab, MonitorSource, Overlay};
 
 impl App {
-    /// Handles a key while [`Focus::Workspace`] holds focus: the same list
-    /// navigation grammar as the build panel (`j`/`k`, arrows, page,
-    /// home/end), with `Enter` running the action under the cursor.
+    /// Handles a key while [`Focus::Workspace`] holds focus: one cursor over
+    /// two regions of the same pane. While [`crate::workspace::WorkspacePanel::in_files`]
+    /// is `false` it walks the checklist with the usual list-navigation
+    /// grammar (`j`/`k`, arrows, page, home/end), `Enter` running the action
+    /// under the cursor; `Down` past the last checklist row crosses into the
+    /// embedded file list instead of wrapping. Once inside the file list,
+    /// `Up` at the first entry crosses back; `→`/`←`/Backspace descend/ascend
+    /// directories (pure navigation, mirroring the file browser's own
+    /// contract); `Enter` opens the file-action menu; `a` creates an entry.
     pub(super) fn on_workspace_key(&mut self, key: KeyEvent) {
         let caps = self.manager.capabilities();
         let mut action = None;
+        let mut file_menu: Option<(String, bool)> = None;
+        let mut open_create = false;
+
         if let Some(panel) = self.workspace.as_mut() {
-            let len = panel.actions(&caps).len().max(1);
-            match key.code {
-                KeyCode::Up | KeyCode::Char('k') => {
-                    panel.cursor = panel.cursor.saturating_sub(1);
+            let checklist_len = panel.actions(&caps).len().max(1);
+            if !panel.in_files {
+                match key.code {
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        panel.cursor = panel.cursor.saturating_sub(1);
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        if panel.cursor + 1 >= checklist_len {
+                            panel.in_files = true;
+                            panel.files_cursor = 0;
+                        } else {
+                            panel.cursor += 1;
+                        }
+                    }
+                    KeyCode::PageUp => panel.cursor = panel.cursor.saturating_sub(5),
+                    KeyCode::PageDown => panel.cursor = (panel.cursor + 5).min(checklist_len - 1),
+                    KeyCode::Home => panel.cursor = 0,
+                    KeyCode::End => panel.cursor = checklist_len - 1,
+                    KeyCode::Enter => action = panel.action_at(&caps, panel.cursor),
+                    _ => {}
                 }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    panel.cursor = (panel.cursor + 1).min(len - 1);
+            } else {
+                let files_len = panel.files_entries.len();
+                match key.code {
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        if panel.files_cursor == 0 {
+                            panel.in_files = false;
+                            panel.cursor = checklist_len - 1;
+                        } else {
+                            panel.files_cursor -= 1;
+                        }
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        if files_len > 0 {
+                            panel.files_cursor = (panel.files_cursor + 1).min(files_len - 1);
+                        }
+                    }
+                    KeyCode::PageUp => panel.files_cursor = panel.files_cursor.saturating_sub(5),
+                    KeyCode::PageDown => {
+                        if files_len > 0 {
+                            panel.files_cursor = (panel.files_cursor + 5).min(files_len - 1);
+                        }
+                    }
+                    KeyCode::Home => panel.files_cursor = 0,
+                    KeyCode::End => panel.files_cursor = files_len.saturating_sub(1),
+                    KeyCode::Right => panel.enter_files(),
+                    KeyCode::Left | KeyCode::Backspace => panel.ascend_files(),
+                    KeyCode::Enter => {
+                        if let Some(entry) = panel.files_selected() {
+                            file_menu = Some((entry.name.clone(), entry.is_dir));
+                        }
+                    }
+                    KeyCode::Char('a') => open_create = true,
+                    _ => {}
                 }
-                KeyCode::PageUp => panel.cursor = panel.cursor.saturating_sub(5),
-                KeyCode::PageDown => panel.cursor = (panel.cursor + 5).min(len - 1),
-                KeyCode::Home => panel.cursor = 0,
-                KeyCode::End => panel.cursor = len - 1,
-                KeyCode::Enter => action = panel.action_at(&caps, panel.cursor),
-                _ => {}
             }
         }
+
         if let Some(action) = action {
             self.run_workspace_action(action);
         }
+        if let Some((name, is_dir)) = file_menu {
+            self.overlay = Some(Overlay::FileActions {
+                side: Side::Local,
+                name,
+                is_dir,
+                status: None,
+                selected: 0,
+            });
+        }
+        if open_create {
+            self.overlay = Some(Overlay::CreateEntry {
+                side: Side::Local,
+                input: String::new(),
+            });
+        }
     }
 
-    /// Runs a workspace action: `west update` confirms first (it rewrites
-    /// the workspace every project in it shares), `west sdk list` runs
-    /// immediately, and the choosers open the directory picker. The
-    /// operation buttons do nothing before the installation is resolved
-    /// ([`WorkspacePanel::action_enabled`]) --- the dimmed row is the
-    /// explanation.
+    /// Runs a checklist action: every row is always answerable, so unlike
+    /// the build panel's lifecycle there is no disabled case to guard
+    /// against here --- `Choose`/`Projects`/`Board`/`Shield` open their
+    /// picker, `Project` opens the project flow (warning first when the
+    /// current root is not buildable).
     pub(super) fn run_workspace_action(&mut self, action: WorkspaceAction) {
-        if !self
-            .workspace
-            .as_ref()
-            .is_some_and(|panel| panel.action_enabled(action))
-        {
-            return;
-        }
         match action {
-            WorkspaceAction::Update => {
-                self.overlay = Some(Overlay::ConfirmWorkspace {
-                    action,
-                    confirm: false,
-                });
-            }
-            WorkspaceAction::SdkList => {
-                self.start_workspace_command("SDK list", |panel, backend| {
-                    panel.sdk_list_command(backend)
-                });
-            }
             WorkspaceAction::Choose => self.open_dir_picker(),
             WorkspaceAction::Projects => self.open_projects_dir_picker(),
             WorkspaceAction::Project => {
@@ -359,8 +407,12 @@ impl App {
 
     /// Starts a workspace command through the build panel's process slot
     /// (one backend, one running command, whichever pane started it) and
-    /// moves the user to where its output streams.
-    fn start_workspace_command(
+    /// moves the user to where its output streams. `pub(super)` since
+    /// [`super::build_view`]'s `SdkList` action calls it too --- both
+    /// `Update`/`SdkList` moved to the build panel's action list, but the
+    /// commands themselves stay defined here, next to
+    /// [`crate::workspace::WorkspacePanel::update_command`]/`sdk_list_command`.
+    pub(super) fn start_workspace_command(
         &mut self,
         label: &'static str,
         command: impl FnOnce(

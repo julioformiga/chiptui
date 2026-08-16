@@ -20,13 +20,43 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
         Overlay::BackendPicker { selected } => draw_picker(frame, area, app, selected),
         Overlay::DevicePicker { selected } => draw_device_picker(frame, area, app, selected),
         Overlay::Confirm { message, confirm } => draw_confirm(frame, area, &message, confirm),
+        Overlay::ConfirmBuild {
+            action: crate::build::BuildAction::UpdateZephyr,
+            confirm,
+        } => {
+            // Derived like every other arm here: whatever the workspace pane
+            // would run right now is what the confirm quotes. The literal
+            // command (env vars and the venv's west path included) is
+            // longer than one dialog line, so it is shortened from the left
+            // --- its tail, not its /tmp prefix, is its identity. A distinct
+            // dialog (not `draw_confirm`'s single line) because `west
+            // update` rewrites a shared installation, not just this
+            // project --- the extra line says so.
+            let command = app
+                .workspace
+                .as_ref()
+                .and_then(|panel| {
+                    let backend = app.manager.backend()?;
+                    panel
+                        .update_command(backend)
+                        .map(|command| command.to_string())
+                })
+                .unwrap_or_else(|| "this action".to_string());
+            let quoted = shorten_tail(&command, 63);
+            let lines = vec![
+                Line::from("Run this in the shared workspace?".fg(Color::Yellow)),
+                Line::from(quoted),
+                Line::from("It rewrites the checkouts every project in it shares.".dim()),
+            ];
+            draw_confirm_dialog(frame, area, "Confirm", lines, confirm, 72, 8);
+        }
         Overlay::ConfirmBuild { action, confirm } => {
             // The message is derived, not stored: whatever the panel would
             // run right now is exactly what the confirm should quote. The
             // literal command (the venv's west path and `ZEPHYR_BASE` env
             // included) regularly exceeds one dialog line, so it is
             // shortened from the left --- its tail, not its /tmp prefix,
-            // is its identity (the same rule as ConfirmWorkspace).
+            // is its identity.
             let message = app
                 .build
                 .as_ref()
@@ -63,33 +93,6 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
             selected,
             error,
         } => draw_dir_picker(frame, area, purpose, &path, selected, error.as_deref()),
-        Overlay::ConfirmWorkspace { action, confirm } => {
-            // Derived like ConfirmBuild's message: whatever the pane would
-            // run right now is what the confirm quotes. The literal command
-            // (env vars and the venv's west path included) is longer than
-            // one dialog line, so it is shortened from the left --- its
-            // tail, not its /tmp prefix, is its identity.
-            let command = app
-                .workspace
-                .as_ref()
-                .and_then(|panel| {
-                    let backend = app.manager.backend()?;
-                    match action {
-                        crate::workspace::WorkspaceAction::Update => panel
-                            .update_command(backend)
-                            .map(|command| command.to_string()),
-                        _ => None,
-                    }
-                })
-                .unwrap_or_else(|| "this action".to_string());
-            let quoted = shorten_tail(&command, 63);
-            let lines = vec![
-                Line::from("Run this in the shared workspace?".fg(Color::Yellow)),
-                Line::from(quoted),
-                Line::from("It rewrites the checkouts every project in it shares.".dim()),
-            ];
-            draw_confirm_dialog(frame, area, "Confirm", lines, confirm, 72, 8);
-        }
         Overlay::BuildDirPicker { input, selected } => {
             draw_build_dir_picker(frame, area, app, &input, selected)
         }

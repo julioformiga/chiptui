@@ -230,13 +230,6 @@ pub enum Overlay {
         selected: usize,
         error: Option<String>,
     },
-    /// A state-changing workspace operation (`west update`) awaiting
-    /// confirmation with the literal command --- the same rule as
-    /// [`Overlay::ConfirmBuild`], applied to the shared workspace.
-    ConfirmWorkspace {
-        action: crate::workspace::WorkspaceAction,
-        confirm: bool,
-    },
     /// The build-directory picker: the project's configured `build*`
     /// directories plus a typed new name (`west build -d`).
     BuildDirPicker {
@@ -1492,6 +1485,13 @@ impl App {
             | crate::build::BuildAction::Menuconfig => {
                 panel.lifecycle_ready(self.project_gate_ok())
             }
+            // Workspace-scoped, not project-scoped: a project/board answer
+            // is irrelevant to `west update`/`west sdk list`, which need
+            // only a resolved installation.
+            crate::build::BuildAction::UpdateZephyr | crate::build::BuildAction::SdkList => self
+                .workspace
+                .as_ref()
+                .is_some_and(|workspace| workspace.resolved.is_some()),
         }
     }
 
@@ -1806,7 +1806,6 @@ impl App {
             Some(
                 Overlay::Confirm { .. }
                 | Overlay::ConfirmBuild { .. }
-                | Overlay::ConfirmWorkspace { .. }
                 | Overlay::ConfirmDownloadOverwrite { .. }
                 | Overlay::ConfirmDelete { .. }
                 | Overlay::ConfirmUpload { .. }

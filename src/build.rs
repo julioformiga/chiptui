@@ -222,13 +222,14 @@ impl<T> ListFetch<T> {
     }
 }
 
-/// One row of the project panel's action list: the operation buttons
-/// only --- the `Project path`/`Board` checklist questions live in the
-/// workspace pane, next to the other environment answers, so the two
-/// panes are "what is defined" and "what runs". The buttons stay
-/// visible but disabled until both answers exist (see
-/// [`BuildPanel::lifecycle_ready`]). `Stop` heads the list exactly while
-/// a command runs.
+/// One row of the project panel's action list: operation buttons only ---
+/// the `Project path`/`Board` checklist questions live in the workspace
+/// pane, next to the other environment answers, so the two panes are "what
+/// is defined" and "what runs". The lifecycle buttons stay visible but
+/// disabled until both answers exist (see [`BuildPanel::lifecycle_ready`]);
+/// `UpdateZephyr`/`SdkList` are gated on the resolved workspace instead
+/// (`App::build_action_enabled`), since they act on the shared installation,
+/// not this project. `Stop` heads the list exactly while a command runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuildAction {
     Stop,
@@ -240,18 +241,31 @@ pub enum BuildAction {
     /// the terminal suspended like `$EDITOR`, never through the piped
     /// process manager --- its whole value is the interactive screen.
     Menuconfig,
+    /// `west update` --- syncs the manifest's projects into the *workspace*,
+    /// not this project: slow, network-bound, rewrites checkouts every
+    /// project in the workspace shares, so it confirms first like `Clean`/
+    /// `Flash` (`SPEC.md` §15). Listed here, trailing the lifecycle, because
+    /// it acts on the shared installation rather than the project this panel
+    /// otherwise builds --- the installation is `Choose`'s answer, asked in
+    /// the workspace pane, not a lifecycle question.
+    UpdateZephyr,
+    /// `west sdk list` --- the toolchain inventory. Read-only, runs
+    /// immediately like the lifecycle's non-destructive rows.
+    SdkList,
 }
 
 impl BuildAction {
     /// Rows the list shows under `caps`: menuconfig first (a build-system
     /// question answered before any artifact exists), then the lifecycle in
     /// its own order (clean, build, rebuild), then flash under its
-    /// capability. With `running`, `Stop` is prepended (cancelling as
-    /// discoverable as starting, `SPEC.md` §12). The lifecycle targets the
-    /// conventional `build` directory inside the project --- no directory
-    /// picker.
+    /// capability, then the workspace-scoped pair (`west update`, `west sdk
+    /// list`) under theirs --- trailing, since they operate on the shared
+    /// installation rather than this project. With `running`, `Stop` is
+    /// prepended (cancelling as discoverable as starting, `SPEC.md` §12).
+    /// The lifecycle targets the conventional `build` directory inside the
+    /// project --- no directory picker.
     pub fn list(caps: &Capabilities, running: bool) -> Vec<Self> {
-        let mut actions = Vec::with_capacity(BuildKind::ALL.len() + 3);
+        let mut actions = Vec::with_capacity(BuildKind::ALL.len() + 5);
         if running {
             actions.push(Self::Stop);
         }
@@ -259,6 +273,10 @@ impl BuildAction {
         actions.extend(BuildKind::ALL.iter().map(|kind| Self::Build(*kind)));
         if caps.contains(crate::backend::Capability::Flash) {
             actions.push(Self::Flash);
+        }
+        if caps.contains(crate::backend::Capability::WorkspaceSync) {
+            actions.push(Self::UpdateZephyr);
+            actions.push(Self::SdkList);
         }
         actions
     }

@@ -115,7 +115,7 @@ fn draw_local(
         })
         .collect();
 
-    render_list(frame, inner, items, browser.local_cursor, focused);
+    render_list(frame, inner, items, Some(browser.local_cursor), focused);
 }
 
 fn draw_device(
@@ -191,7 +191,13 @@ fn draw_device(
         })
         .collect();
 
-    render_list(frame, list_area, items, browser.device_cursor, focused);
+    render_list(
+        frame,
+        list_area,
+        items,
+        Some(browser.device_cursor),
+        focused,
+    );
     draw_device_footer(frame, footer_area, browser);
 }
 
@@ -240,11 +246,15 @@ fn draw_device_footer(frame: &mut Frame, area: Rect, browser: &Browser) {
     }
 }
 
-fn render_list(
+/// Renders `items` as a navigable list. `cursor` is the selected row's
+/// index, or `None` when this pane's cursor is currently elsewhere (the
+/// Zephyr workspace pane's embedded file list draws with `None` while the
+/// checklist above it has the cursor, so no row highlights).
+pub(super) fn render_list(
     frame: &mut Frame,
     area: Rect,
     items: Vec<ListItem<'static>>,
-    cursor: usize,
+    cursor: Option<usize>,
     focused: bool,
 ) {
     if items.is_empty() {
@@ -252,7 +262,7 @@ fn render_list(
         return;
     }
 
-    let mut state = ListState::default().with_selected(Some(cursor));
+    let mut state = ListState::default().with_selected(cursor);
     frame.render_stateful_widget(
         List::new(items)
             .style(content_style(focused))
@@ -262,8 +272,8 @@ fn render_list(
     );
 }
 
-/// One entry: `<status> <name> <size>`, with the size flush right.
-fn row(
+/// One entry: `<status> <icon> <name> <size>`, with the size flush right.
+pub(super) fn row(
     name: &str,
     is_dir: bool,
     size: u64,
@@ -277,8 +287,8 @@ fn row(
         human_size(size)
     };
 
-    // 2 for the marker, 1 space, then the size column and a gap.
-    let name_width = (width as usize).saturating_sub(3 + size_text.len() + 1);
+    // 2 for the marker, 2 for the icon, then the size column and a gap.
+    let name_width = (width as usize).saturating_sub(4 + size_text.len() + 1);
     let display = truncate(name, name_width.max(1));
     let padding = name_width.saturating_sub(display.chars().count());
 
@@ -290,10 +300,34 @@ fn row(
 
     ListItem::new(Line::from(vec![
         Span::styled(format!("{} ", status.marker()), status_style(status)),
+        Span::raw(format!("{} ", icon(name, is_dir))),
         Span::styled(display, name_style),
         Span::raw(" ".repeat(padding + 1)),
         Span::styled(size_text, Style::new().dim()),
     ]))
+}
+
+/// A glyph hinting at the entry's kind: a folder, or a common extension's
+/// language/purpose. Purely cosmetic --- unknown extensions fall back to a
+/// generic file glyph rather than nothing, so the column stays aligned.
+fn icon(name: &str, is_dir: bool) -> &'static str {
+    if is_dir {
+        return "📁";
+    }
+    let ext = std::path::Path::new(name)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(str::to_lowercase);
+    match ext.as_deref() {
+        Some("py") => "🐍",
+        Some("rs") => "🦀",
+        Some("c" | "h" | "cc" | "cpp" | "hpp") => "🔧",
+        Some("dts" | "dtsi" | "overlay") => "🔌",
+        Some("md" | "rst") => "📝",
+        Some("conf" | "cfg" | "ini" | "toml" | "yaml" | "yml" | "json") => "⚙",
+        Some("sh") => "🐚",
+        _ => "📄",
+    }
 }
 
 fn status_style(status: SyncStatus) -> Style {
@@ -411,5 +445,25 @@ mod tests {
             status_style(SyncStatus::Differs),
             status_style(SyncStatus::Identical)
         );
+    }
+
+    #[test]
+    fn a_directory_gets_the_folder_icon_regardless_of_name() {
+        assert_eq!(icon("src", true), "📁");
+        assert_eq!(icon("main.py", true), "📁");
+    }
+
+    #[test]
+    fn known_extensions_get_a_distinct_icon() {
+        assert_eq!(icon("main.py", false), "🐍");
+        assert_eq!(icon("readme.TXT", false), "📄");
+        assert_eq!(icon("prj.conf", false), "⚙");
+        assert_eq!(icon("board.overlay", false), "🔌");
+    }
+
+    #[test]
+    fn an_unknown_or_missing_extension_falls_back_to_a_generic_file_icon() {
+        assert_eq!(icon("Kconfig", false), "📄");
+        assert_eq!(icon("firmware.bin", false), "📄");
     }
 }
