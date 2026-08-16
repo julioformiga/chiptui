@@ -444,6 +444,7 @@ impl App {
             crate::build::Follow::Keep,
             command,
             &mut self.processes,
+            &self.manager.capabilities(),
         ) {
             return;
         }

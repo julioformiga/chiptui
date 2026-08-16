@@ -116,7 +116,7 @@ fn draw_dashboard(frame: &mut Frame, body: Rect, app: &mut App) {
     // historical 60/40 split.
     let [row2, row3] = if app.workspace_pane_visible() {
         let needed = row2_content_height(app)
-            .saturating_add(3) // the state line, then the pane's borders
+            .saturating_add(2) // the pane's borders (the state line is content, already counted)
             .min(rest.height.saturating_sub(3).max(1));
         Layout::vertical([Constraint::Length(needed), Constraint::Min(0)]).areas(rest)
     } else {
@@ -173,8 +173,12 @@ fn row2_content_height(app: &App) -> u16 {
         checklist + invalid + separator + files_header + MIN_FILES_ROWS
     });
     let build = app.build.as_ref().map_or(0, |panel| {
-        let buttons = panel.actions(&caps).len();
-        (2 * buttons + 2) as u16
+        // The stacked group plus a three-row footer, reserved whether or
+        // not the `Stop` box is showing (`Stop` is appended to the list,
+        // never a stacked row, so the group itself never changes size):
+        // the pane's height must not change when a command starts.
+        let mains = panel.actions(&caps).len() - usize::from(panel.is_busy());
+        (2 * mains + 1 + 3) as u16
     });
     workspace.max(build)
 }

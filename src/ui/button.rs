@@ -63,6 +63,16 @@ impl Button {
     }
 }
 
+/// A stack's full height: the top rule, one row per button, a divider
+/// between each pair. Zero for no buttons (nothing is drawn then).
+pub(super) fn stack_height(buttons: &[Button]) -> u16 {
+    if buttons.is_empty() {
+        0
+    } else {
+        2 * buttons.len() as u16 + 1
+    }
+}
+
 /// One shared-border stack of [`Button`]s.
 #[derive(Debug, Clone, Default)]
 pub struct ButtonStack {
@@ -73,11 +83,7 @@ impl ButtonStack {
     /// The stack's full height: the top rule, one row per button, a
     /// divider between each pair.
     fn height(&self) -> u16 {
-        if self.buttons.is_empty() {
-            0
-        } else {
-            2 * self.buttons.len() as u16 + 1
-        }
+        stack_height(&self.buttons)
     }
 }
 

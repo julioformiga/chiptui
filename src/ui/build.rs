@@ -2,7 +2,12 @@
 //! actions"): the project checklist (`Project path`, then `Board`) over
 //! a horizontal separator and the lifecycle buttons (`crate::ui::button`),
 //! dimmed until both answers exist, with the command state pinned to the
-//! pane's last line. Selected rows highlight full-width.
+//! pane's last line. Selected rows highlight full-width. While a command
+//! runs, the pane's footer sits directly under the stack: the state on the
+//! left half, `Stop` as its own half-width button box on the right --- side
+//! by side, never one pushing the other, and never a row of the stack. The
+//! footer's three rows are reserved even while idle, so the pane's height
+//! never changes when a command starts.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -25,16 +30,18 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let content_end = draw_rows(frame, inner, app, panel);
-    draw_state(frame, inner, panel, content_end);
+    let footer_top = draw_rows(frame, inner, app, panel);
+    draw_state(frame, inner, panel, footer_top);
 }
 
-/// The command state, pinned to the pane's last line: the live counter
-/// while a command runs, the last result once it finishes. Skipped when
-/// the rows themselves already fill the pane (a running command's `Stop`
-/// box costs three lines) --- the Monitor tab carries the live state then.
-fn draw_state(frame: &mut Frame, area: Rect, panel: &BuildPanel, content_end: u16) {
-    if area.height < 2 || content_end >= area.bottom() {
+/// The command state: the live counter while a command runs, the last
+/// result once it finishes, never built before the first one. It rides
+/// the reserved footer's label row (see [`draw_rows`]) on the same line
+/// whether or not the `Stop` box is showing --- beside the box, on the
+/// left half, while one runs; full-width over the empty reservation
+/// otherwise. Nothing in the pane moves when a command starts or ends.
+fn draw_state(frame: &mut Frame, area: Rect, panel: &BuildPanel, footer_top: u16) {
+    if area.height < 2 || footer_top + 1 >= area.bottom() {
         return;
     }
     let line = if let Some(elapsed) = panel.elapsed() {
@@ -48,7 +55,12 @@ fn draw_state(frame: &mut Frame, area: Rect, panel: &BuildPanel, content_end: u1
         Line::from(vec![label("state"), "never built".dim()])
     };
     let rect = Rect {
-        y: area.bottom() - 1,
+        y: footer_top + 1,
+        width: if panel.is_busy() {
+            area.width / 2
+        } else {
+            area.width
+        },
         ..area
     };
     frame.render_widget(Paragraph::new(line), rect);
@@ -74,22 +86,27 @@ fn report_line(report: &BuildReport) -> Line<'static> {
     ])
 }
 
-/// The pane's rows: `Stop` while a command runs and the operation buttons,
-/// all stacked in one shared-border group --- bold when both checklist
-/// answers (asked in the workspace pane) exist, dim while they wait, the
-/// selection highlighting only the button's own row. Returns the y past
-/// the last row.
+/// The pane's rows: the operation buttons stacked in one shared-border
+/// group --- bold when both checklist answers (asked in the workspace
+/// pane) exist, dim while they wait, the selection highlighting only the
+/// button's own row --- and the three-row footer under the stack's bottom
+/// rule, reserved whether or not a command runs: `Stop` as its own
+/// half-width box on the right half while one does (invisible otherwise,
+/// its space waiting), the state line on the left half. Reserving the
+/// rows is what keeps the pane's height --- and every row's place ---
+/// constant when a command starts or ends. Returns the footer's top row.
 fn draw_rows(frame: &mut Frame, area: Rect, app: &App, panel: &BuildPanel) -> u16 {
     let caps = app.manager.capabilities();
     let actions = panel.actions(&caps);
-    let mut y = area.y;
+    // `Stop` trails the list exactly while a command runs; the stack shows
+    // the buttons above it, and `Stop` itself becomes the footer's box.
+    let stop = panel.is_busy() && matches!(actions.last(), Some(crate::build::BuildAction::Stop));
+    let y = area.y;
     let mut buttons: Vec<Button> = Vec::new();
-    for (position, action) in actions.iter().enumerate() {
+    let mains = &actions[..actions.len() - usize::from(stop)];
+    for (position, action) in mains.iter().enumerate() {
         let selected = panel.cursor == position;
         match action {
-            crate::build::BuildAction::Stop => {
-                buttons.push(Button::new("■ Stop").selected(selected));
-            }
             crate::build::BuildAction::Build(kind) => buttons.push(
                 Button::new(format!("{} {}", kind_icon(*kind), kind.label()))
                     .enabled(app.build_action_enabled(*action))
@@ -115,10 +132,40 @@ fn draw_rows(frame: &mut Frame, area: Rect, app: &App, panel: &BuildPanel) -> u1
                     .enabled(app.build_action_enabled(*action))
                     .selected(selected),
             ),
+            crate::build::BuildAction::Stop => unreachable!("Stop is drawn as the footer box"),
         }
     }
-    y = button::render_stack(frame, area, y, &buttons);
-    y
+    // The footer sits directly under the stack's bottom rule --- no blank
+    // row between Flash and Stop --- unless the pane is too short for
+    // both, when it pins to the bottom instead and the stack clips above
+    // it (the box carries the cursor while a command runs; a clipped
+    // button row comes back when the command ends).
+    let stack_end = y + button::stack_height(&buttons);
+    let footer_top = stack_end.min(area.bottom().saturating_sub(3)).max(area.y);
+    let stack_area = Rect {
+        height: footer_top.saturating_sub(area.y),
+        ..area
+    };
+    button::render_stack(frame, stack_area, y, &buttons);
+    if stop {
+        // The right half of the footer: the same stacked-button widget,
+        // one button of its own, sharing its label row with the state.
+        let half = area.width / 2;
+        let corner = Rect {
+            x: area.x + half,
+            width: area.width - half,
+            y: footer_top,
+            height: area.bottom().saturating_sub(footer_top),
+        };
+        let selected = panel.cursor == actions.len() - 1;
+        button::render_stack(
+            frame,
+            corner,
+            footer_top,
+            &[Button::new("■ Stop").selected(selected)],
+        );
+    }
+    footer_top
 }
 
 /// The button glyph for a lifecycle kind: one glance tells the actions

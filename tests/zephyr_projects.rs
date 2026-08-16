@@ -87,11 +87,12 @@ fn press_project_row(app: &mut App) {
     app.handle(key(KeyCode::Enter));
 }
 
-/// The `Build` button --- third row of the panel's list (Menuconfig,
-/// Clean, Build, ...) now that the questions moved to the workspace pane.
+/// The `Build` button --- fifth row of the panel's list (Update Zephyr,
+/// SDK List, Menuconfig, Clean, Build, ...) now that the workspace pair
+/// leads and the questions live in the workspace pane.
 fn press_build(app: &mut App) {
     app.focus = Focus::Build;
-    app.build.as_mut().unwrap().cursor = 2;
+    app.build.as_mut().unwrap().cursor = 4;
     app.handle(key(KeyCode::Enter));
 }
 

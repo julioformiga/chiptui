@@ -754,7 +754,10 @@ one-line contextual shortcut footer:
   label per row with a divider between them, no colors --- that stays visible but dimmed
   until the answers exist, with
   the selection highlighting only the button's own row. The project panel is buttons only
-  (the lifecycle, menuconfig, flash, `Stop` while a command runs). A
+  (`west update`, `west sdk list`, menuconfig, the lifecycle, flash) over a three-row footer
+  that is always reserved --- the pane's height never changes when a command starts --- and
+  splits horizontally while one runs: the build status on the left half, a `Stop` button
+  (same widget, half the pane's width) on the right. A
   broken location's reason sits directly under its row, outside the navigation. No file
   listing for such a backend --- editing the project's own sources is
   the user's editor's job; otherwise a single full-width placeholder while no pane exists

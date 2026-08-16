@@ -522,6 +522,7 @@ fn the_monitor_tab_shows_the_running_command_with_a_spinner() {
             chiptui::build::Follow::Keep,
             command,
             &mut app.processes,
+            &app.manager.capabilities(),
         );
     assert!(started, "the panel must accept the command");
     app.focus = Focus::Logs;

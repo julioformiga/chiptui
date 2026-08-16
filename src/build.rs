@@ -68,7 +68,7 @@ struct Running {
 /// lifecycle's next step is knowable --- Flash after a successful
 /// build/rebuild, Build after anything else (a retry, or the build that
 /// follows a clean) --- while other commands (flash) keep the row they
-/// started from, minus the `Stop` head that just disappeared.
+/// started from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Follow {
     Lifecycle,
@@ -235,7 +235,9 @@ impl<T> ListFetch<T> {
 /// disabled until both answers exist (see [`BuildPanel::lifecycle_ready`]);
 /// `UpdateZephyr`/`SdkList` are gated on the resolved workspace instead
 /// (`App::build_action_enabled`), since they act on the shared installation,
-/// not this project. `Stop` heads the list exactly while a command runs.
+/// not this project. `Stop` trails the list exactly
+/// while a command runs --- drawn as its own half-width box in the pane's
+/// bottom-right corner, not as a row of the stack.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuildAction {
     Stop,
@@ -250,10 +252,10 @@ pub enum BuildAction {
     /// `west update` --- syncs the manifest's projects into the *workspace*,
     /// not this project: slow, network-bound, rewrites checkouts every
     /// project in the workspace shares, so it confirms first like `Clean`/
-    /// `Flash` (`SPEC.md` §15). Listed here, trailing the lifecycle, because
-    /// it acts on the shared installation rather than the project this panel
-    /// otherwise builds --- the installation is `Choose`'s answer, asked in
-    /// the workspace pane, not a lifecycle question.
+    /// `Flash` (`SPEC.md` §15). Listed first, ahead of the lifecycle, with
+    /// its sibling: the pair acts on the shared installation --- the
+    /// environment the workspace pane's checklist resolves --- before any
+    /// project action below it has something to run against.
     UpdateZephyr,
     /// `west sdk list` --- the toolchain inventory. Read-only, runs
     /// immediately like the lifecycle's non-destructive rows.
@@ -261,28 +263,29 @@ pub enum BuildAction {
 }
 
 impl BuildAction {
-    /// Rows the list shows under `caps`: menuconfig first (a build-system
-    /// question answered before any artifact exists), then the lifecycle in
-    /// its own order (clean, build, rebuild), then flash under its
-    /// capability, then the workspace-scoped pair (`west update`, `west sdk
-    /// list`) under theirs --- trailing, since they operate on the shared
-    /// installation rather than this project. With `running`, `Stop` is
-    /// prepended (cancelling as discoverable as starting, `SPEC.md` §12).
+    /// Rows the list shows under `caps`: the workspace-scoped pair first
+    /// (`west update`, `west sdk list` --- the environment every later
+    /// action runs in), then menuconfig (a build-system question answered
+    /// before any artifact exists), then the lifecycle in its own order
+    /// (clean, build, rebuild), then flash under its capability. With
+    /// `running`, `Stop` is appended (cancelling as discoverable as
+    /// starting, `SPEC.md` §12); the pane draws it as its own half-width
+    /// box in the bottom-right corner rather than a row of the stack.
     /// The lifecycle targets the conventional `build` directory inside the
     /// project --- no directory picker.
     pub fn list(caps: &Capabilities, running: bool) -> Vec<Self> {
         let mut actions = Vec::with_capacity(BuildKind::ALL.len() + 5);
-        if running {
-            actions.push(Self::Stop);
+        if caps.contains(crate::backend::Capability::WorkspaceSync) {
+            actions.push(Self::UpdateZephyr);
+            actions.push(Self::SdkList);
         }
         actions.push(Self::Menuconfig);
         actions.extend(BuildKind::ALL.iter().map(|kind| Self::Build(*kind)));
         if caps.contains(crate::backend::Capability::Flash) {
             actions.push(Self::Flash);
         }
-        if caps.contains(crate::backend::Capability::WorkspaceSync) {
-            actions.push(Self::UpdateZephyr);
-            actions.push(Self::SdkList);
+        if running {
+            actions.push(Self::Stop);
         }
         actions
     }
@@ -667,8 +670,9 @@ impl BuildPanel {
     /// Starts `command` as this panel's running process. `what` labels it in
     /// the report line; `updates_board` marks commands whose success leaves
     /// a fresh CMakeCache behind; `follow` says where the cursor lands when
-    /// it finishes. `false` (without side effects) when something is already
-    /// running --- one build at a time, same rule as the flash panel.
+    /// it finishes; `caps` shapes the list `Stop` lands on. `false`
+    /// (without side effects) when something is already running --- one
+    /// build at a time, same rule as the flash panel.
     pub fn start(
         &mut self,
         what: &'static str,
@@ -676,6 +680,7 @@ impl BuildPanel {
         follow: Follow,
         command: crate::process::Command,
         processes: &mut ProcessManager,
+        caps: &Capabilities,
     ) -> bool {
         if self.is_busy() {
             return false;
@@ -693,10 +698,10 @@ impl BuildPanel {
             follow,
             started: Instant::now(),
         });
-        // `Stop` now heads the list: land the cursor on it, so cancelling
-        // is one Enter away (the same alignment the insertion used to get
-        // for free when the lifecycle led the list).
-        self.cursor = 0;
+        // `Stop` now trails the list, drawn as the half-width box in the
+        // pane's bottom-right corner: land the cursor on it, so cancelling
+        // is one Enter away.
+        self.cursor = BuildAction::list(caps, true).len() - 1;
         true
     }
 
@@ -822,12 +827,12 @@ impl BuildPanel {
         // commands pass as `-b`, and a cache that cannot be read (a layout
         // this reader does not know, a build that wrote elsewhere) must not
         // erase the user's explicit choice.
-        // The list just lost its `Stop` head, so the cursor would otherwise
-        // slide onto the row above whatever it sat on. Point it at the
-        // lifecycle's next step instead: Flash after a successful
-        // build/rebuild (flash what was just built), Build otherwise (a
-        // retry, or the build a clean clears the way for); other commands
-        // keep the row they started from.
+        // The list just lost its `Stop` tail, so a cursor still sitting on
+        // it would point past the end. Point the lifecycle's follow-up at
+        // its row instead: Flash after a successful build/rebuild (flash
+        // what was just built), Build otherwise (a retry, or the build a
+        // clean clears the way for); other commands keep the row they
+        // started from (clamped, since the tail row is gone).
         let settled = BuildAction::list(caps, false);
         let target = match running.follow {
             Follow::Lifecycle if ok => Some(BuildAction::Flash),
@@ -836,7 +841,7 @@ impl BuildPanel {
         };
         self.cursor = target
             .and_then(|action| settled.iter().position(|candidate| *candidate == action))
-            .unwrap_or_else(|| self.cursor.saturating_sub(1));
+            .unwrap_or_else(|| self.cursor.min(settled.len() - 1));
 
         if ok && running.updates_board {
             let cached = cached_board(&self.root, &self.build_dir).map(|name| BoardChoice {
@@ -1024,6 +1029,7 @@ mod tests {
             Follow::Lifecycle,
             crate::process::Command::new(fake("west")),
             &mut processes,
+            &crate::backend::Capabilities::from_slice(&[crate::backend::Capability::Build]),
         ));
         let deadline = Instant::now() + Duration::from_secs(10);
         while Instant::now() < deadline {
@@ -1277,20 +1283,23 @@ mod tests {
     }
 
     #[test]
-    fn the_lifecycle_buttons_stand_alone_and_stop_heads_them_when_running() {
+    fn the_workspace_pair_leads_the_buttons_and_stop_trails_them_when_running() {
         let mut panel = BuildPanel::new("/nonexistent", UtcOffset::UTC);
-        // Zephyr's real set: the lifecycle, menuconfig, flash --- the
-        // project/board questions live in the workspace pane.
+        // Zephyr's real set: the workspace pair, menuconfig, the lifecycle,
+        // flash --- the project/board questions live in the workspace pane.
         let zephyr = crate::backend::Capabilities::from_slice(&[
             crate::backend::Capability::Build,
             crate::backend::Capability::Clean,
             crate::backend::Capability::Flash,
             crate::backend::Capability::BoardSelect,
             crate::backend::Capability::ProjectSelect,
+            crate::backend::Capability::WorkspaceSync,
         ]);
         assert_eq!(
             panel.actions(&zephyr),
             vec![
+                BuildAction::UpdateZephyr,
+                BuildAction::SdkList,
                 BuildAction::Menuconfig,
                 BuildAction::Build(BuildKind::Clean),
                 BuildAction::Build(BuildKind::Build),
@@ -1298,10 +1307,11 @@ mod tests {
                 BuildAction::Flash,
             ]
         );
-        assert_eq!(panel.action_at(&zephyr, 0), Some(BuildAction::Menuconfig));
-        assert_eq!(panel.action_at(&zephyr, 4), Some(BuildAction::Flash));
+        assert_eq!(panel.action_at(&zephyr, 0), Some(BuildAction::UpdateZephyr));
+        assert_eq!(panel.action_at(&zephyr, 6), Some(BuildAction::Flash));
 
-        // A backend without flash: menuconfig and the lifecycle alone.
+        // A backend without flash or workspace sync: menuconfig and the
+        // lifecycle alone.
         let plain = crate::backend::Capabilities::from_slice(&[crate::backend::Capability::Build]);
         assert_eq!(
             panel.actions(&plain),
@@ -1320,8 +1330,9 @@ mod tests {
         panel.set_picked("nrf52840dk/nrf52840");
         assert!(panel.lifecycle_ready(true));
 
-        // With a command running, Stop shifts everything down by one ---
-        // the cursor arithmetic the key handler depends on.
+        // With a command running, Stop is appended --- the cursor lands on
+        // it (the row the key handler's Enter cancels), the buttons above
+        // keep their indices.
         let mut processes = ProcessManager::new();
         panel.start(
             BuildKind::Build.label(),
@@ -1329,10 +1340,17 @@ mod tests {
             Follow::Lifecycle,
             crate::process::Command::new(fake("west")),
             &mut processes,
+            &zephyr,
         );
-        assert_eq!(panel.action_at(&zephyr, 0), Some(BuildAction::Stop));
+        let running = panel.actions(&zephyr);
+        assert_eq!(running.last(), Some(&BuildAction::Stop));
         assert_eq!(
-            panel.action_at(&zephyr, 4),
+            panel.action_at(&zephyr, panel.cursor),
+            Some(BuildAction::Stop),
+            "a started command parks the cursor on Stop"
+        );
+        assert_eq!(
+            panel.action_at(&zephyr, 5),
             Some(BuildAction::Build(BuildKind::Rebuild))
         );
     }

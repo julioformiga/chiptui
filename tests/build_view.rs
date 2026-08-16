@@ -146,8 +146,10 @@ fn enter_builds_and_streams_into_the_monitor_tab() {
     let mut app = app_with_west("run", "west");
     app.focus = Focus::Build;
 
-    // The list is Menuconfig, Clean, Build, Rebuild, Flash: two rows down
-    // sits Build.
+    // The list is Update Zephyr, SDK List, Menuconfig, Clean, Build,
+    // Rebuild, Flash: four rows down sits Build.
+    app.handle(key(KeyCode::Down));
+    app.handle(key(KeyCode::Down));
     app.handle(key(KeyCode::Down));
     app.handle(key(KeyCode::Down));
     app.handle(key(KeyCode::Enter));
@@ -218,7 +220,9 @@ fn clean_asks_before_running() {
     let mut app = app_with_west("clean", "west");
     app.focus = Focus::Build;
 
-    app.handle(key(KeyCode::Down)); // Build
+    app.handle(key(KeyCode::Down)); // Update Zephyr
+    app.handle(key(KeyCode::Down)); // SDK List
+    app.handle(key(KeyCode::Down)); // Menuconfig
     app.handle(key(KeyCode::Enter)); // Clean
 
     // Destructive capability (Capability::Clean): a confirm quoting the
@@ -273,8 +277,8 @@ fn rebuild_is_pristine_and_pins_the_cached_board() {
     let mut app = app_with_west("rebuild", "west");
     app.focus = Focus::Build;
 
-    for _ in 0..3 {
-        // Menuconfig, Clean, Build
+    for _ in 0..5 {
+        // Update Zephyr, SDK List, Menuconfig, Clean, Build
         app.handle(key(KeyCode::Down));
     } // Rebuild
     app.handle(key(KeyCode::Enter));
@@ -306,16 +310,67 @@ fn stop_cancels_the_running_command() {
     let mut app = app_with_west("stop", "slow");
     app.focus = Focus::Build;
 
-    // Menuconfig, Clean, then Build.
+    // The pane's height must not move when the command starts: the
+    // footer's rows are reserved even while idle, so every pane border
+    // (and the log pane below) sits on the same row as before.
+    let idle = render(&mut app, 100, 30);
+
+    // Update Zephyr, SDK List, Menuconfig, Clean, then Build.
+    app.handle(key(KeyCode::Down));
+    app.handle(key(KeyCode::Down));
     app.handle(key(KeyCode::Down));
     app.handle(key(KeyCode::Down));
     app.handle(key(KeyCode::Enter));
     assert!(app.build.as_ref().unwrap().is_busy());
+    let running_frame = render(&mut app, 100, 30);
+    // Height constancy: the structural borders --- every pane's bottom
+    // rule starts the line with `╰` (the Stop box's own rules are indented
+    // into the pane's right half, so they never match) --- must sit on the
+    // same rows as before the command started.
+    let border_rows = |frame: &str| -> Vec<usize> {
+        frame
+            .lines()
+            .enumerate()
+            .filter(|(_, line)| line.starts_with('╰'))
+            .map(|(index, _)| index)
+            .collect()
+    };
+    assert_eq!(
+        border_rows(&idle),
+        border_rows(&running_frame),
+        "the pane layout must not change when a command starts:\n{idle}\n---\n{running_frame}"
+    );
 
-    // While running, Stop heads the list and holds the cursor (starting
-    // the build left focus on the panel): Enter cancels.
-    let frame = render(&mut app, 100, 30);
-    assert!(frame.contains("Stop"), "no stop row:\n{frame}");
+    // While running, Stop trails the list as the footer box and holds the
+    // cursor (starting the build left focus on the panel): Enter cancels.
+    // The footer hugs the stack --- the box's top rule directly under the
+    // stack's bottom rule, no blank row between Flash and Stop --- and is
+    // split horizontally: the state on the left half, the box on the right
+    // half of the pane (itself the terminal's right half, so the glyph
+    // lands past the third quarter of the line), both on the same row.
+    let frame = running_frame;
+    let lines: Vec<&str> = frame.lines().collect();
+    let stop_idx = lines
+        .iter()
+        .position(|line| line.contains("■ Stop"))
+        .unwrap_or_else(|| panic!("no stop box:\n{frame}"));
+    assert!(
+        lines[stop_idx - 1].contains("╭"),
+        "the box's top rule must sit directly above the label:\n{frame}"
+    );
+    assert!(
+        lines[stop_idx - 2].contains("╰"),
+        "the stack's bottom rule must sit directly above the box --- no blank row between Flash and Stop:\n{frame}"
+    );
+    let stop_x = lines[stop_idx].find("■ Stop").unwrap();
+    assert!(
+        stop_x > 75,
+        "the Stop box must sit in the pane's right half ({stop_x}):\n{frame}"
+    );
+    assert!(
+        lines[stop_idx].contains("running ·"),
+        "the state must share the footer row, beside the box:\n{frame}"
+    );
     assert_eq!(app.focus, Focus::Build);
     app.handle(key(KeyCode::Enter));
 
@@ -327,6 +382,17 @@ fn stop_cancels_the_running_command() {
     assert!(cancelled, "the cancellation never reported");
     let last = app.build.as_ref().unwrap().last.as_ref().unwrap();
     assert!(!last.ok, "a cancelled build is not a success");
+
+    // Idle again: the box is gone, the stack whole.
+    let frame = render(&mut app, 100, 30);
+    assert!(
+        !frame.contains("■ Stop"),
+        "no Stop box may show while idle:\n{frame}"
+    );
+    assert!(
+        frame.contains("⇧ Flash"),
+        "the stack's tail must be back:\n{frame}"
+    );
 }
 
 #[test]
@@ -335,7 +401,9 @@ fn a_failed_command_reports_and_keeps_the_panel_usable() {
     let mut app = app_with_west("fail", "noisy");
     app.focus = Focus::Build;
 
-    // Menuconfig, Clean, then Build.
+    // Update Zephyr, SDK List, Menuconfig, Clean, then Build.
+    app.handle(key(KeyCode::Down));
+    app.handle(key(KeyCode::Down));
     app.handle(key(KeyCode::Down));
     app.handle(key(KeyCode::Down));
     app.handle(key(KeyCode::Enter));
@@ -701,10 +769,11 @@ fn opening_a_directory_from_the_workspace_file_section_descends_into_it() {
     app.workspace.as_mut().unwrap().reload_files();
     app.focus = Focus::Workspace;
 
-    // Five downs from the checklist's first row (Zephyr Base) walk off its
-    // last row (Shield) into the file section, landing on `src` ---
-    // directories sort ahead of files, so it is the first entry.
-    for _ in 0..5 {
+    // Downs from the checklist's first row (Zephyr Base) walk off its last
+    // row (Shield) into the file section, where `src` sits third --- behind
+    // the fixture's `dev`/`home` seam directories, which sort ahead of it
+    // (directories first, then alphabetically).
+    for _ in 0..7 {
         app.handle(key(KeyCode::Down));
     }
     assert!(app.workspace.as_ref().unwrap().in_files);
@@ -815,8 +884,9 @@ fn flash_is_listed_confirms_and_runs_through_west() {
     let mut app = app_with_west("flash", "west");
     app.focus = Focus::Build;
 
-    // Flash sits last: Menuconfig, Clean, Build, Rebuild, then it.
-    for _ in 0..4 {
+    // Flash sits last: Update Zephyr, SDK List, Menuconfig, Clean, Build,
+    // Rebuild, then it.
+    for _ in 0..6 {
         app.handle(key(KeyCode::Down));
     }
     app.handle(key(KeyCode::Enter));
@@ -968,12 +1038,9 @@ fn the_workspace_pane_resolves_from_project_config_and_runs_update() {
     );
 
     // Enter on the Update Zephyr button confirms first (it rewrites the
-    // shared workspace) --- it lives in the Project actions pane now, five
-    // rows past Menuconfig (Clean, Build, Rebuild, Flash, Update Zephyr).
+    // shared workspace) --- it leads the Project actions pane now, the
+    // list's first row.
     app.focus = Focus::Build;
-    for _ in 0..5 {
-        app.handle(key(KeyCode::Down));
-    }
     app.handle(key(KeyCode::Enter));
     assert!(matches!(
         app.overlay,
@@ -1226,7 +1293,9 @@ fn menuconfig_hands_the_terminal_over_instead_of_piping() {
     let mut app = app_with_west("menuconfig", "west");
     app.focus = Focus::Build;
 
-    // Menuconfig is the panel's first row.
+    // Menuconfig sits two rows down (the workspace pair leads the list).
+    app.handle(key(KeyCode::Down));
+    app.handle(key(KeyCode::Down));
     app.handle(key(KeyCode::Enter));
 
     let command = app.take_pending_command().expect("a parked command");

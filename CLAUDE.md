@@ -133,7 +133,12 @@ finds it; `ZEPHYR_SDK_INSTALL_DIR`/`PATH`/`VIRTUAL_ENV` when applicable —
 `<build-dir>/zephyr/CMakeCache.txt`, falling
 back to the sysbuild top-level cache; a hand-picked board is session state no finished
 command demotes) or a hand pick, and gates
-Menuconfig/Clean/Build/Rebuild/Flash (the list's order; `Stop` heads it only while a command runs)
+Update Zephyr/SDK List/Menuconfig/Clean/Build/Rebuild/Flash (the list's order; while a
+command runs `Stop` is appended and appears in the pane's three-row footer, always reserved
+--- the pane's height never changes when a command starts --- hugging the stack's bottom rule
+and split horizontally: the state line on the left half, `Stop` as its own half-width button
+box on the right, same rows, side by side — never a row of the stack; a pane too short for
+both pins the box to the bottom and clips the stack above it)
 via
 `BuildPanel::lifecycle_ready`, the command state pinned to the pane's last line (skipped
 when the rows already fill the pane); starting Build/Rebuild shows the Monitor tab

@@ -463,7 +463,15 @@ impl App {
             return;
         };
         let full_label = command.to_string();
-        if !panel.start(label, updates_board, follow, command, &mut self.processes) {
+        let caps = self.manager.capabilities();
+        if !panel.start(
+            label,
+            updates_board,
+            follow,
+            command,
+            &mut self.processes,
+            &caps,
+        ) {
             return;
         }
         self.logs.info(format!("running {full_label}"));
