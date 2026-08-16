@@ -140,6 +140,21 @@ impl Workspace {
         }
     }
 
+    /// The tools whose *location* this workspace owns, for
+    /// [`crate::backend::BackendRegistry::tool_status`]: judging them
+    /// against `PATH` would call a perfectly good venv west "missing" for
+    /// never having been exported. Resolution's own fallback --- a bare
+    /// program name --- is not a location, so it is reported as absent here
+    /// and the `PATH` answer stands, which is what `west = "west"` (and a
+    /// venv with no west installed into it) asks for.
+    pub fn tool_locations(&self) -> Vec<(&'static str, PathBuf)> {
+        let west = Path::new(&self.west);
+        if is_bare_name(west) {
+            return Vec::new();
+        }
+        vec![(super::commands::PROGRAM, west.to_path_buf())]
+    }
+
     /// The checkout's version, read from `zephyr/VERSION` (a file west
     /// already keeps exact --- no subprocess for a fact the workspace owns).
     pub fn zephyr_version(&self) -> Option<String> {
@@ -284,14 +299,13 @@ fn from_settings(
         // program name carries no directory and stays a `PATH` lookup ---
         // `west = "west"` asks for exactly that.
         let west = expand_home(west, input.home);
-        let bare_name = west
-            .parent()
-            .is_none_or(|parent| parent.as_os_str().is_empty());
-        if bare_name {
-            west.display().to_string()
+        if is_bare_name(&west) {
+            west
         } else {
-            dir.join(west).display().to_string()
+            dir.join(west)
         }
+        .display()
+        .to_string()
     } else if let Some(venv) = &venv
         && venv.join("bin/west").is_file()
     {
@@ -311,6 +325,16 @@ fn from_settings(
         west,
         sdk,
     }
+}
+
+/// Whether a configured program is a bare name --- no directory component
+/// at all, which means `PATH` decides where it comes from, exactly as it
+/// does for every tool nobody configured. Anything with a directory in it
+/// is a *location*, and gets treated as one.
+fn is_bare_name(program: &Path) -> bool {
+    program
+        .parent()
+        .is_none_or(|parent| parent.as_os_str().is_empty())
 }
 
 /// Reads `.west/config`'s `[manifest] path` key (west keeps the file in

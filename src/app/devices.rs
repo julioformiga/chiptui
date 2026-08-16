@@ -77,7 +77,7 @@ impl App {
     /// the redirected home.
     pub fn set_home_dir(&mut self, dir: impl Into<std::path::PathBuf>) {
         self.home_dir = dir.into();
-        self.config_dir = self.home_dir.join(".config");
+        self.config_dir = crate::settings::config_dir_in(&self.home_dir);
     }
 
     /// Scans `serial_dir` for USB serial ports and applies the result:

@@ -976,7 +976,7 @@ fn startup_asks_where_the_installation_is_when_nothing_is_configured() {
     );
 
     // The choice was validated and persisted to the user config…
-    let config = chiptui::settings::user_config_path(&home.join(".config"));
+    let config = chiptui::settings::user_config_path(&chiptui::settings::config_dir_in(&home));
     let saved = std::fs::read_to_string(&config).unwrap();
     assert!(
         saved.contains(&format!("workspace = \"{}\"", ws.display())),
@@ -1002,7 +1002,7 @@ fn a_configured_location_never_re_asks() {
     let home = root.join("home");
     let ws = workspace_under(&home, "myzephyr");
     chiptui::settings::save_workspace(
-        &chiptui::settings::user_config_path(&home.join(".config")),
+        &chiptui::settings::user_config_path(&chiptui::settings::config_dir_in(&home)),
         &ws,
     )
     .unwrap();

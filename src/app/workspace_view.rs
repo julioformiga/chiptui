@@ -225,6 +225,23 @@ impl App {
     /// the project's `chiptui.toml` when the project pins its own location,
     /// else the user config. A directory that fails validation keeps the
     /// picker open with the reason (and the install guide) under the list.
+    /// Which config file an answered environment question is written to: a
+    /// project that pins its own installation keeps both keys together in
+    /// its `chiptui.toml`, everyone else answers once, machine-wide. Shared
+    /// by both accept paths so the two halves of the environment can never
+    /// end up in different files.
+    fn settings_target(
+        &self,
+        root: &Path,
+        project_settings: Option<&crate::settings::ZephyrSettings>,
+    ) -> PathBuf {
+        if project_settings.is_some_and(|settings| settings.workspace.is_some()) {
+            root.join(crate::project::config::FILE_NAME)
+        } else {
+            self.user_config_path()
+        }
+    }
+
     pub(super) fn accept_workspace_dir(&mut self, dir: PathBuf) {
         let (root, project_settings, user_settings) = self.zephyr_settings();
         // The picker validates through whatever explicit west/sdk keys the
@@ -247,14 +264,7 @@ impl App {
         );
         match checked {
             Resolution::Single(_) => {
-                let target = if project_settings
-                    .as_ref()
-                    .is_some_and(|settings| settings.workspace.is_some())
-                {
-                    root.join(crate::project::config::FILE_NAME)
-                } else {
-                    self.user_config_path()
-                };
+                let target = self.settings_target(&root, project_settings.as_ref());
                 match crate::settings::save_workspace(&target, &dir) {
                     Ok(()) => {
                         self.logs
@@ -287,14 +297,7 @@ impl App {
         match projects::dir_check(dir.clone()) {
             ProjectsResolution::Configured(_) => {
                 let (root, project_settings, _user_settings) = self.zephyr_settings();
-                let target = if project_settings
-                    .as_ref()
-                    .is_some_and(|settings| settings.workspace.is_some())
-                {
-                    root.join(crate::project::config::FILE_NAME)
-                } else {
-                    self.user_config_path()
-                };
+                let target = self.settings_target(&root, project_settings.as_ref());
                 match crate::settings::save_projects(&target, &dir) {
                     Ok(()) => {
                         self.logs

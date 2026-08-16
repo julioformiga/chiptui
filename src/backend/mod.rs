@@ -352,11 +352,14 @@ fn lookup_on_path(name: &str, path: &std::ffi::OsStr) -> bool {
     std::env::split_paths(path)
         // An *empty* `PATH` entry (a `::`, or a leading/trailing `:`) means
         // the current directory, to `split_paths` and to `execvp` alike ---
-        // `PathBuf::from("").join("west")` is just `west`. Honoring it would
-        // report a `west` dropped in whatever project directory ChipTUI was
-        // started from as the system tool, and then run it. A malformed
-        // `PATH` is not a reason to execute an untrusted binary, so those
-        // entries are skipped rather than resolved.
+        // `PathBuf::from("").join("west")` is just `west`. Reporting a
+        // binary that happens to sit in whatever project directory ChipTUI
+        // was started from as *the system tool* is a claim this cannot back,
+        // so those entries are skipped. Note the scope: this makes the
+        // report stricter than execution, never the reverse. Spawning still
+        // hands the bare program name to `execvp`, which reads the
+        // unfiltered `PATH` --- refusing to run it would belong at the spawn
+        // layer, not here.
         .filter(|dir| !dir.as_os_str().is_empty())
         .any(|dir| executable_at(&dir.join(name)))
 }
@@ -367,18 +370,22 @@ fn lookup_on_path(name: &str, path: &std::ffi::OsStr) -> bool {
 /// console script). Existence alone is not enough: a checkout without the
 /// permission bit, or a `west.py` named as the executable, fails at spawn
 /// with `Permission denied` long after the UI called it available.
+///
+/// One `stat` answers both halves: this runs once per `PATH` entry per
+/// tool, so asking the filesystem twice for the same metadata is pure
+/// waste.
 pub fn executable_at(path: &std::path::Path) -> bool {
-    path.is_file() && is_executable(path)
+    std::fs::metadata(path).is_ok_and(|meta| meta.is_file() && is_executable(&meta))
 }
 
 #[cfg(unix)]
-fn is_executable(path: &std::path::Path) -> bool {
+fn is_executable(meta: &std::fs::Metadata) -> bool {
     use std::os::unix::fs::PermissionsExt;
-    std::fs::metadata(path).is_ok_and(|meta| meta.permissions().mode() & 0o111 != 0)
+    meta.permissions().mode() & 0o111 != 0
 }
 
 #[cfg(not(unix))]
-fn is_executable(_path: &std::path::Path) -> bool {
+fn is_executable(_meta: &std::fs::Metadata) -> bool {
     true
 }
 

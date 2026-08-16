@@ -113,7 +113,16 @@ pub fn default_config_dir(home: &Path) -> PathBuf {
     std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .filter(|dir| dir.is_absolute())
-        .unwrap_or_else(|| home.join(".config"))
+        .unwrap_or_else(|| config_dir_in(home))
+}
+
+/// The XDG fallback on its own: the config directory a given home implies.
+/// Separate from [`default_config_dir`] because the callers that *redirect*
+/// the home ([`crate::App::set_home_dir`] and its fixtures) need this
+/// convention without the environment overruling it --- an inherited
+/// `$XDG_CONFIG_HOME` is precisely what they are escaping.
+pub fn config_dir_in(home: &Path) -> PathBuf {
+    home.join(".config")
 }
 
 /// The user config's location inside a resolved config directory. This is

@@ -24,6 +24,7 @@ use std::time::Duration;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use time::OffsetDateTime;
 
+use crate::backend::zephyr::workspace::Workspace;
 use crate::backend::{BackendKind, Capabilities, Capability};
 use crate::browser::{Browser, Side};
 use crate::console::{ConsoleLine, LineConsole};
@@ -692,11 +693,11 @@ pub struct App {
     config_dir: std::path::PathBuf,
     /// Memoized [`Self::tool_status`]. The render path asks twice a frame
     /// (once to measure the pane, once to draw it) for an answer that only
-    /// changes with the selected backend or the resolved workspace, and
+    /// changes with the selected backend or the resolved tool locations, and
     /// computing it walks every `PATH` entry per tool. Keyed on those two
-    /// inputs, so a backend override applied straight to `manager` --- as
-    /// tests do --- still recomputes.
-    tool_status: std::cell::RefCell<Option<ToolStatusMemo>>,
+    /// inputs rather than invalidated by hand, so a backend override applied
+    /// straight to `manager` --- as tests do --- still recomputes.
+    tool_status_cache: std::cell::RefCell<Option<ToolStatusMemo>>,
     should_quit: bool,
     last_port_count: Option<usize>,
 }
@@ -705,8 +706,7 @@ pub struct App {
 /// [`App::tool_status`].
 struct ToolStatusMemo {
     kind: BackendKind,
-    /// The resolved workspace's west executable, or empty without one.
-    west: String,
+    located: Vec<(&'static str, std::path::PathBuf)>,
     status: Vec<(&'static str, bool)>,
 }
 
@@ -751,9 +751,9 @@ impl App {
             probed_port: None,
             restore_pending: false,
             serial_dir: std::path::PathBuf::from("/dev"),
-            home_dir: home.clone(),
             config_dir: crate::settings::default_config_dir(&home),
-            tool_status: std::cell::RefCell::new(None),
+            home_dir: home,
+            tool_status_cache: std::cell::RefCell::new(None),
             should_quit: false,
             last_port_count: None,
         }
@@ -896,57 +896,39 @@ impl App {
 
     /// The selected backend's required tools with whether each is actually
     /// runnable --- the one definition, shared by [`Self::report_tools`]'s
-    /// warning and the Project pane's tools row. `west` is the one tool
-    /// whose location a resolved Zephyr workspace owns (the venv's console
-    /// script, or a configured path), so that executable is what gets
-    /// checked --- with the same predicate a `PATH` lookup uses, since a
-    /// file that cannot be executed is not a tool. A west installed only in
-    /// the workspace venv is therefore not "missing" for never being on
-    /// `PATH`; conversely the bare program name (no override, and no
-    /// `west` inside the venv --- including a venv that exists but never
-    /// had west installed into it) leaves `PATH` as the only place it can
-    /// come from.
+    /// warning and the Project pane's tools row.
     ///
-    /// Memoized on (backend, resolved west): the render path asks twice a
-    /// frame and the answer costs a `PATH` walk per tool.
+    /// The only thing added here is the *answer* to "did anything resolve a
+    /// location for one of these tools": a resolved workspace names the
+    /// tools it owns ([`crate::backend::zephyr::workspace::Workspace::tool_locations`])
+    /// and the registry judges those files instead of `PATH`. Which tool
+    /// that happens to be is the workspace's business, never a branch here.
+    ///
+    /// Memoized on those two inputs: the render path asks twice a frame and
+    /// a miss costs a `PATH` walk per unlocated tool.
     pub fn tool_status(&self) -> Vec<(&'static str, bool)> {
         let Some(kind) = self.manager.selected_kind() else {
             return Vec::new();
         };
-        let resolved_west = self
+        let located = self
             .workspace
             .as_ref()
             .and_then(|panel| panel.resolved.as_ref())
-            .map_or("", |workspace| workspace.west.as_str());
+            .map(Workspace::tool_locations)
+            .unwrap_or_default();
 
-        let mut cache = self.tool_status.borrow_mut();
+        let mut cache = self.tool_status_cache.borrow_mut();
         if let Some(memo) = cache.as_ref()
             && memo.kind == kind
-            && memo.west == resolved_west
+            && memo.located == located
         {
             return memo.status.clone();
         }
 
-        let west = crate::backend::zephyr::commands::PROGRAM;
-        let status: Vec<(&'static str, bool)> = self
-            .manager
-            .registry()
-            .tool_status(kind)
-            .into_iter()
-            .map(|(tool, on_path)| {
-                if tool == west && !resolved_west.is_empty() && resolved_west != west {
-                    (
-                        tool,
-                        crate::backend::executable_at(std::path::Path::new(resolved_west)),
-                    )
-                } else {
-                    (tool, on_path)
-                }
-            })
-            .collect();
+        let status = self.manager.registry().tool_status(kind, &located);
         *cache = Some(ToolStatusMemo {
             kind,
-            west: resolved_west.to_string(),
+            located,
             status: status.clone(),
         });
         status
@@ -2377,13 +2359,20 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("chiptui-west-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("west"), "#!/bin/sh\n").unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(dir.join("west"), std::fs::Permissions::from_mode(0o755))
-                .unwrap();
-        }
+        let write_tool = |name: &str, mode: u32| {
+            let path = dir.join(name);
+            std::fs::write(&path, "#!/bin/sh\n").unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+            }
+            // Permissions are the point of the fixture, but only on unix.
+            #[cfg(not(unix))]
+            let _ = mode;
+            path.display().to_string()
+        };
+        let runnable = write_tool("west", 0o755);
         let panel = |west: String| {
             crate::workspace::WorkspacePanel::new(
                 crate::backend::zephyr::workspace::Resolution::Single(
@@ -2407,7 +2396,7 @@ mod tests {
                 .unwrap()
         };
 
-        app.workspace = Some(panel(dir.join("west").display().to_string()));
+        app.workspace = Some(panel(runnable));
         assert!(
             west_available(&app),
             "the venv's west is runnable wherever the file is, PATH aside"
@@ -2424,11 +2413,7 @@ mod tests {
         // called it available.
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            let plain = dir.join("west.py");
-            std::fs::write(&plain, "#!/bin/sh\n").unwrap();
-            std::fs::set_permissions(&plain, std::fs::Permissions::from_mode(0o644)).unwrap();
-            app.workspace = Some(panel(plain.display().to_string()));
+            app.workspace = Some(panel(write_tool("west.py", 0o644)));
             assert!(!west_available(&app), "a file is not an executable");
         }
 

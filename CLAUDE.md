@@ -74,12 +74,17 @@ are not navigable). A validated pick is persisted
 (`settings::save_workspace`, a line-level merge that preserves every other key/section) to
 the user config, or to `chiptui.toml` when the project pins its own location --- so the
 config stays the single source of truth and later starts never re-ask. Tool reporting
-honors the same answer: `App::report_tools` resolves the workspace first (creating the
-panel early is what keeps startup from warning about a `west` that was never on `PATH`
-because it lives in the workspace venv) and `App::tool_status` is the one availability
-definition shared by that warning and the Project pane's `tools:` row --- a resolved
-workspace's west executable is checked with the same "is it runnable" predicate a `PATH` lookup
-uses (`backend::executable_at`), the bare `west` name falls back to `PATH`.
+honors the same answer: every `App::report_tools` call site resolves the workspace first
+(creating the panel early is what keeps startup from warning about a `west` that was never
+on `PATH` because it lives in the workspace venv) and `App::tool_status` is the one
+availability definition shared by that warning and the Project pane's `tools:` row. It
+names no tool: a resolved workspace declares the tools whose *location* it owns
+(`Workspace::tool_locations`, empty when resolution fell through to the bare program name)
+and `BackendRegistry::tool_status(kind, located)` judges those files with
+`backend::executable_at` --- the same "is it runnable" predicate (metadata: a file, with an
+execute bit) a `PATH` lookup uses --- while every unlocated tool keeps the `PATH` answer.
+`PATH` lookups skip empty entries, which mean the cwd; that makes the *report* stricter
+than `execvp`, never the reverse.
 Below the separator
 it offers
 `west update` (confirm-gated --- it rewrites the shared workspace,

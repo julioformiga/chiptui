@@ -689,8 +689,15 @@ impl FlashPanel {
         self.in_flight.is_some() || self.in_flight_fetch.is_some()
     }
 
+    /// A configured curl is judged the same way a resolved `west` is: the
+    /// file itself, with [`crate::backend::executable_at`]. Taking
+    /// `is_some()` as the answer would call an unrunnable path available and
+    /// fail at spawn.
     fn curl_available(&self) -> bool {
-        self.curl_tool_path.is_some() || tool_available(curl_commands::PROGRAM)
+        self.curl_tool_path.as_deref().map_or_else(
+            || tool_available(curl_commands::PROGRAM),
+            |path| crate::backend::executable_at(std::path::Path::new(path)),
+        )
     }
 
     fn build_curl(&self, command: crate::process::Command) -> crate::process::Command {
