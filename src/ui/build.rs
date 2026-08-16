@@ -30,7 +30,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let footer_top = draw_rows(frame, inner, app, panel);
+    let footer_top = draw_rows(frame, inner, app, panel, palette);
     draw_state(frame, inner, panel, footer_top, palette);
 }
 
@@ -101,7 +101,13 @@ fn report_line(report: &BuildReport, palette: Palette) -> Line<'static> {
 /// its space waiting), the state line on the left half. Reserving the
 /// rows is what keeps the pane's height --- and every row's place ---
 /// constant when a command starts or ends. Returns the footer's top row.
-fn draw_rows(frame: &mut Frame, area: Rect, app: &App, panel: &BuildPanel) -> u16 {
+fn draw_rows(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    panel: &BuildPanel,
+    palette: Palette,
+) -> u16 {
     let caps = app.manager.capabilities();
     let actions = panel.actions(&caps);
     // `Stop` trails the list exactly while a command runs; the stack shows
@@ -152,7 +158,7 @@ fn draw_rows(frame: &mut Frame, area: Rect, app: &App, panel: &BuildPanel) -> u1
         height: footer_top.saturating_sub(area.y),
         ..area
     };
-    button::render_stack(frame, stack_area, y, &buttons);
+    button::render_stack(frame, stack_area, y, &buttons, palette);
     if stop {
         // The right half of the footer: the same stacked-button widget,
         // one button of its own, sharing its label row with the state.
@@ -169,6 +175,7 @@ fn draw_rows(frame: &mut Frame, area: Rect, app: &App, panel: &BuildPanel) -> u1
             corner,
             footer_top,
             &[Button::new("■ Stop").selected(selected)],
+            palette,
         );
     }
     footer_top

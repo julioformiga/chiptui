@@ -88,6 +88,27 @@ impl App {
                 }
                 _ => {}
             },
+            Overlay::ThemePicker { selected } => {
+                let count = ratatui_themes::ThemeName::all().len();
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('q') => self.overlay = None,
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        self.overlay = Some(Overlay::ThemePicker {
+                            selected: (selected + count - 1) % count,
+                        });
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        self.overlay = Some(Overlay::ThemePicker {
+                            selected: (selected + 1) % count,
+                        });
+                    }
+                    KeyCode::Enter => {
+                        self.overlay = None;
+                        self.apply_theme_picker(selected);
+                    }
+                    _ => {}
+                }
+            }
             Overlay::DevicePicker { selected } => {
                 let count = self.devices.devices().len().max(1);
                 match key.code {

@@ -55,13 +55,15 @@ icon that says *this needs defining*), `✓` once answered, a red `✗` when a c
 answer fails validation --- `Zephyr Base`, `Projects Base`, `Project path`, `Board` (the
 last two answered by the build panel but asked here, under `ProjectSelect`/`BoardSelect`:
 `WorkspaceAction::Project`/`Board` open the same flows) --- over a horizontal separator and
-the operation buttons --- a small monochrome custom widget (`src/ui/button.rs`: one stacked
+the operation buttons --- a small custom widget (`src/ui/button.rs`: one stacked
 group sharing a rounded border, a centered icon label per row, a `├─┤` divider between each
 pair --- N buttons cost 2N+1 lines, and `draw_dashboard`'s `row2_content_height` sizes row 2
 to that content (the log pane, which scrolls, takes the remainder; the browser row keeps
-60/40); bold/dim/reversed only, no colors, the REVERSED
-selection filling the button's whole inner row edge to edge, never the side rules, dividers or
-outer rules), which stay
+60/40); the group's frame stays neutral, label weight is bold/dim only, and the selected row
+is `palette.selection`/`palette.fg` (not `Modifier::REVERSED`, which read inconsistently
+across terminals) applied as a `Buffer::set_style` patch over the row's inner cells *after*
+the label is drawn, filling it edge to edge without ever painting over the side rules,
+dividers or outer rules), which stay
 visible but dimmed until their answers exist (`WorkspacePanel::action_enabled`,
 `App::build_action_enabled`) --- Enter on a dimmed row is a no-op; rows carry no trailing
 text (the confirm overlays quote the literal commands, `SPEC.md` §15, not the rows). The

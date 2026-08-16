@@ -1,24 +1,36 @@
 //! The row-2 panes' operation buttons, as a custom widget
 //! (`https://ratatui.rs/examples/widgets/custom_widget/`, minus the
-//! example's gradient --- deliberately colorless, unlike the rest of the
-//! UI (`crate::ui::Palette`): the `REVERSED` selection highlight must read
-//! unambiguously whatever theme is active, and a themed button would blunt
-//! that contrast, so the widget speaks only in modifiers). The buttons are
-//! stacked in one bordered group that shares
-//! its top and bottom rules, one centered label per row: N buttons cost
-//! N+2 lines, so a pane full of them still fits vertically. Each
-//! button's icon label is bold while the action can run, dim while it
-//! waits for the checklist's answers --- and the selection highlight is
-//! *internal*: reversed fills the button's whole inner row from side
-//! rule to side rule, a solid bar that never paints over the group's
-//! frame.
+//! example's gradient). The buttons are stacked in one bordered group that
+//! shares its top and bottom rules --- kept neutral/uncolored on purpose,
+//! unlike the rest of the UI (`crate::ui::Palette`), so the group's frame
+//! never competes with a selected row for attention --- one centered label
+//! per row: N buttons cost N+2 lines, so a pane full of them still fits
+//! vertically. Each button's icon label is bold while the action can run,
+//! dim while it waits for the checklist's answers.
+//!
+//! The selection highlight is `palette.selection`/`palette.fg` --- an
+//! explicit, deterministic fill instead of `Modifier::REVERSED` (which this
+//! widget used to rely on). `REVERSED` swaps whatever the terminal's own
+//! default colors happen to be, on top of the same style's `bold`/`dim`
+//! weight modifier --- a combination different terminals render with
+//! different fidelity, sometimes leaving a selected row looking patchy
+//! rather than a solid bar. An explicit theme color sidesteps that
+//! entirely, and reads consistently with the rest of the themed UI
+//! (`crate::ui::Palette`) besides. It is applied via
+//! [`ratatui::buffer::Buffer::set_style`] over the row's inner cells
+//! *after* the border and label are drawn (see [`highlight_selected`]) ---
+//! one uniform pass over the whole row, rather than folded into the same
+//! `Span` as the icon/label text, so the fill and the label's own weight
+//! stay two independent concerns.
 
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Widget;
+
+use crate::ui::Palette;
 
 #[derive(Debug, Clone)]
 pub struct Button {
@@ -49,18 +61,14 @@ impl Button {
         self
     }
 
-    /// The button's content style: bold/dim by readiness, reversed only
-    /// when selected --- the group's frame stays unstyled either way.
+    /// The button's text weight: bold by readiness, dim while it waits.
+    /// The selection highlight is a separate `set_style` patch (see
+    /// [`ButtonStack::render`]), not part of this style.
     fn row_style(&self) -> Style {
-        let style = if self.enabled {
+        if self.enabled {
             Style::new().bold()
         } else {
             Style::new().dim()
-        };
-        if self.selected {
-            style.add_modifier(Modifier::REVERSED)
-        } else {
-            style
         }
     }
 }
@@ -76,9 +84,10 @@ pub(super) fn stack_height(buttons: &[Button]) -> u16 {
 }
 
 /// One shared-border stack of [`Button`]s.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ButtonStack {
     buttons: Vec<Button>,
+    palette: Palette,
 }
 
 impl ButtonStack {
@@ -99,12 +108,20 @@ impl Widget for ButtonStack {
             // No room for a box: one bare label per row, clipped by the
             // buffer like any other row.
             for (offset, button) in self.buttons.iter().enumerate() {
+                let y = area.y + offset as u16;
                 put(
                     buf,
                     area,
-                    area.y + offset as u16,
+                    y,
                     Line::styled(truncate(&button.label, width), button.row_style()),
                 );
+                let row = Rect {
+                    x: area.x,
+                    y,
+                    width: area.width,
+                    height: 1,
+                };
+                highlight_selected(buf, area, row, button.selected, self.palette);
             }
             return;
         }
@@ -118,10 +135,6 @@ impl Widget for ButtonStack {
             let label_width = label.chars().count();
             let left = (inner - label_width) / 2;
             let right = inner - label_width - left;
-            // The button's style reaches only its inner cells: the side
-            // rules stay plain whatever the state, so a selected button
-            // fills its row completely --- edge to edge between the rules
-            // --- without ever painting over them.
             put(
                 buf,
                 area,
@@ -135,6 +148,17 @@ impl Widget for ButtonStack {
                     Span::raw("│"),
                 ]),
             );
+            // A `set_style` patch over the row's inner cells, done *after*
+            // the label --- see the module doc for why this, and not a
+            // styled `Span`, carries the selection color. Confined to
+            // `x+1..width-1` so the side rules `│` never get painted over.
+            let inner_row = Rect {
+                x: area.x + 1,
+                y,
+                width: area.width.saturating_sub(2),
+                height: 1,
+            };
+            highlight_selected(buf, area, inner_row, button.selected, self.palette);
             y += 1;
             // The divider between stacked buttons: never after the last
             // one, and unstyled like the outer rules --- the selection
@@ -146,6 +170,19 @@ impl Widget for ButtonStack {
         }
         put(buf, area, y, Line::raw(format!("╰{rule}╯")));
     }
+}
+
+/// Patches `row`'s cells to the theme's selection colors when `selected`
+/// --- a no-op otherwise, and clipped the same way [`put`] clips: nothing
+/// past `area`'s bottom. See the module doc: this runs after the label is
+/// drawn and overrides only fg/bg (`Cell::set_style` patches, it does not
+/// touch the glyph or its weight), so it always lands as one uniform,
+/// deterministic band regardless of what the label drew underneath.
+fn highlight_selected(buf: &mut Buffer, area: Rect, row: Rect, selected: bool, palette: Palette) {
+    if !selected || row.y >= area.bottom() {
+        return;
+    }
+    buf.set_style(row, Style::new().bg(palette.selection).fg(palette.fg));
 }
 
 /// Writes one row at `y` unless it falls past the area's bottom.
@@ -173,12 +210,19 @@ fn truncate(text: &str, max: usize) -> String {
 /// Renders the buttons as one stacked group at `y` and returns the next
 /// row's y. The full height is consumed even when the pane clips the
 /// rows, so callers measuring their content agree with what is drawn.
-pub(super) fn render_stack(frame: &mut Frame, area: Rect, y: u16, buttons: &[Button]) -> u16 {
+pub(super) fn render_stack(
+    frame: &mut Frame,
+    area: Rect,
+    y: u16,
+    buttons: &[Button],
+    palette: Palette,
+) -> u16 {
     if buttons.is_empty() {
         return y;
     }
     let stack = ButtonStack {
         buttons: buttons.to_vec(),
+        palette,
     };
     let height = stack.height();
     frame.render_widget(
@@ -197,10 +241,15 @@ pub(super) fn render_stack(frame: &mut Frame, area: Rect, y: u16, buttons: &[But
 mod tests {
     use super::*;
 
+    fn palette() -> Palette {
+        ratatui_themes::ThemeName::TokyoNight.palette()
+    }
+
     /// The rendered stack, without TestBackend's quoting.
     fn render(width: u16, buttons: &[Button]) -> String {
         let stack = ButtonStack {
             buttons: buttons.to_vec(),
+            palette: palette(),
         };
         let height = stack.height();
         let mut terminal =
@@ -239,11 +288,13 @@ mod tests {
 
     #[test]
     fn a_selected_button_fills_its_inner_row_without_touching_the_rules() {
+        let palette = palette();
         let stack = ButtonStack {
             buttons: vec![
                 Button::new("▶ Build").selected(true),
                 Button::new("× Clean").selected(true),
             ],
+            palette,
         };
         let height = stack.height();
         let mut terminal =
@@ -252,20 +303,51 @@ mod tests {
             .draw(|frame| frame.render_widget(stack, frame.area()))
             .unwrap();
         let buf = terminal.backend().buffer();
-        let reversed = |x: u16, y: u16| buf[(x, y)].modifier.contains(Modifier::REVERSED);
+        let filled = |x: u16, y: u16| buf[(x, y)].bg == palette.selection;
         // The outer rules and the divider between the buttons stay plain.
         for y in [0, 2, 4] {
             for x in 0..14 {
-                assert!(!reversed(x, y), "rule cell ({x},{y}) must stay plain");
+                assert!(!filled(x, y), "rule cell ({x},{y}) must stay plain");
             }
         }
         // A selected button is a solid bar between the side rules: every
-        // inner cell reversed, the `│` themselves untouched.
+        // inner cell filled with the theme's selection color, the `│`
+        // themselves untouched.
         for y in [1, 3] {
-            assert!(!reversed(0, y) && !reversed(13, y), "side rule on row {y}");
+            assert!(!filled(0, y) && !filled(13, y), "side rule on row {y}");
             for x in 1..13 {
-                assert!(reversed(x, y), "inner cell ({x},{y}) should be filled");
+                assert!(filled(x, y), "inner cell ({x},{y}) should be filled");
+                assert_eq!(buf[(x, y)].fg, palette.fg, "inner cell ({x},{y}) fg");
             }
+        }
+    }
+
+    /// The color fill and the label's weight are two independent passes
+    /// now (`row_style` vs. [`highlight_selected`]) --- a disabled-but-
+    /// selected button (waiting on the checklist, cursor parked on it
+    /// anyway) must still get the full theme-colored bar, dim text and all.
+    #[test]
+    fn a_disabled_selected_button_still_gets_the_full_fill() {
+        use ratatui::style::Modifier;
+
+        let palette = palette();
+        let stack = ButtonStack {
+            buttons: vec![Button::new("↻ Update Zephyr").enabled(false).selected(true)],
+            palette,
+        };
+        let height = stack.height();
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(20, height)).unwrap();
+        terminal
+            .draw(|frame| frame.render_widget(stack, frame.area()))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        for x in 1..19 {
+            assert_eq!(buf[(x, 1)].bg, palette.selection, "cell {x} bg");
+            assert!(
+                buf[(x, 1)].modifier.contains(Modifier::DIM),
+                "cell {x} must keep its dim weight"
+            );
         }
     }
 }

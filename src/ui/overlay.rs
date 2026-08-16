@@ -22,6 +22,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
         Overlay::DevicePicker { selected } => {
             draw_device_picker(frame, area, app, selected, palette)
         }
+        Overlay::ThemePicker { selected } => draw_theme_picker(frame, area, app, selected, palette),
         Overlay::Confirm { message, confirm } => {
             draw_confirm(frame, area, &message, confirm, palette)
         }
@@ -1319,6 +1320,7 @@ fn draw_help(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
                 "re-run project detection, or reload the focused file browser pane",
             ),
             ("o", "override the detected backend"),
+            ("t", "pick a color theme"),
             (
                 "enter",
                 "open the menu for the selected entry (send/download, run, view, edit, delete)",
@@ -1425,6 +1427,41 @@ fn draw_picker(frame: &mut Frame, area: Rect, app: &App, selected: usize, palett
     frame.render_stateful_widget(
         List::new(items)
             .block(modal("Backend", palette))
+            .highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
+        popup,
+        &mut state,
+    );
+}
+
+/// The theme picker: every `ratatui_themes::ThemeName`, each row swatched in
+/// its own accent color so the pick can be judged before it is applied,
+/// rather than by name alone.
+fn draw_theme_picker(frame: &mut Frame, area: Rect, app: &App, selected: usize, palette: Palette) {
+    let themes = ratatui_themes::ThemeName::all();
+    let active = app.theme();
+
+    let items: Vec<ListItem> = themes
+        .iter()
+        .map(|theme| {
+            let swatch = theme.palette().accent;
+            let mut spans = vec![
+                Span::styled("██ ", Style::new().fg(swatch)),
+                Span::raw(format!("{:<16}", theme.display_name())),
+            ];
+            if *theme == active {
+                spans.push(Span::styled("(active)", Style::new().dim()));
+            }
+            ListItem::new(Line::from(spans))
+        })
+        .collect();
+
+    let popup = centered(area, 44, themes.len() as u16 + 2);
+    let mut state = ListState::default().with_selected(Some(selected));
+
+    frame.render_widget(Clear, popup);
+    frame.render_stateful_widget(
+        List::new(items)
+            .block(modal("Theme", palette))
             .highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
         popup,
         &mut state,

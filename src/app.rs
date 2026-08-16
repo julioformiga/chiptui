@@ -146,6 +146,14 @@ pub enum Overlay {
     DevicePicker {
         selected: usize,
     },
+    /// The color theme picker (`t`): every `ratatui_themes::ThemeName`,
+    /// cursor starting on whichever is active. Picking one applies
+    /// immediately and persists to the user config's `[ui] theme`
+    /// (`App::apply_theme_picker`) --- unlike the backend override, there is
+    /// no "Automatic" row, since the theme has no detection to fall back to.
+    ThemePicker {
+        selected: usize,
+    },
     /// A destructive esptool action awaiting explicit confirmation
     /// (`SPEC.md` §15). `message` is the literal command about to run, never
     /// a paraphrase.
@@ -785,12 +793,71 @@ impl App {
         self.should_quit
     }
 
-    /// The active palette for this frame --- deliberately named apart from
-    /// [`crate::backend::BackendKind::palette`], which answers a different
-    /// question ("which backend is this row?") and coexists with this one
-    /// rather than being replaced by it.
+    /// The palette actually rendered this frame --- deliberately named apart
+    /// from [`crate::backend::BackendKind::palette`], which answers a
+    /// different question ("which backend is this row?") and coexists with
+    /// this one rather than being replaced by it. While [`Overlay::ThemePicker`]
+    /// is open this previews the hovered row live (the whole UI behind the
+    /// popup, popup included, so a pick can be judged before it commits);
+    /// [`Self::theme`] itself is untouched until `Enter`, so `Esc` reverts
+    /// for free --- nothing was ever committed to preview.
     pub fn theme_palette(&self) -> ratatui_themes::ThemePalette {
-        self.theme.palette()
+        self.previewed_theme().palette()
+    }
+
+    /// The active theme's name --- unlike [`Self::theme_palette`], this is
+    /// never the live preview: it is what the picker's "(active)" marker
+    /// means (the answer `Esc` would keep), and [`Self::apply_theme_picker`]
+    /// is the only thing that changes it.
+    pub fn theme(&self) -> ratatui_themes::ThemeName {
+        self.theme
+    }
+
+    fn previewed_theme(&self) -> ratatui_themes::ThemeName {
+        match &self.overlay {
+            Some(Overlay::ThemePicker { selected }) => ratatui_themes::ThemeName::all()
+                .get(*selected)
+                .copied()
+                .unwrap_or(self.theme),
+            _ => self.theme,
+        }
+    }
+
+    /// Opens the theme picker (`t`) with the cursor on the currently active
+    /// theme, the same "start where the current answer is" convention the
+    /// backend override picker follows.
+    fn open_theme_picker(&mut self) {
+        let selected = ratatui_themes::ThemeName::all()
+            .iter()
+            .position(|&candidate| candidate == self.theme)
+            .unwrap_or(0);
+        self.overlay = Some(Overlay::ThemePicker { selected });
+    }
+
+    /// Applies the picked theme immediately (no restart needed --- the next
+    /// frame just reads a different [`Self::theme_palette`]) and persists it
+    /// to the user config the same way `workspace_view`'s
+    /// `accept_workspace_dir` saves the workspace answer: a failed write
+    /// still applies the theme for this session, it just cannot survive a
+    /// restart, so it is logged as a warning rather than lost silently.
+    fn apply_theme_picker(&mut self, selected: usize) {
+        let Some(theme) = ratatui_themes::ThemeName::all().get(selected).copied() else {
+            return;
+        };
+        self.theme = theme;
+        let config = self.user_config_path();
+        match crate::settings::save_theme(&config, theme.slug()) {
+            Ok(()) => self.logs.info(format!(
+                "theme set to {} ({})",
+                theme.display_name(),
+                config.display()
+            )),
+            Err(err) => self.logs.warn(format!(
+                "theme set to {} for this session, but could not save it to {}: {err}",
+                theme.display_name(),
+                config.display()
+            )),
+        }
     }
 
     /// Where `~` in configuration resolves; also what the workspace pane
@@ -1615,6 +1682,10 @@ impl App {
                 self.open_picker();
                 return;
             }
+            KeyCode::Char('t') => {
+                self.open_theme_picker();
+                return;
+            }
             KeyCode::Char('x') => {
                 self.open_flash();
                 return;
@@ -1824,6 +1895,7 @@ impl App {
             Some(
                 Overlay::BackendPicker { .. }
                 | Overlay::DevicePicker { .. }
+                | Overlay::ThemePicker { .. }
                 | Overlay::FirmwarePicker { .. }
                 | Overlay::ProjectSetup { .. }
                 | Overlay::FileActions { .. }
@@ -1900,6 +1972,7 @@ impl App {
                         keys.push(("r", "re-detect"));
                     }
                     keys.push(("o", "backend"));
+                    keys.push(("t", "theme"));
                     if caps.contains(Capability::Flash) || caps.contains(Capability::EraseFlash) {
                         keys.push(("x", "flash"));
                     }
@@ -2184,6 +2257,69 @@ mod tests {
             Focus::Workspace,
             "clamping must land on the workspace pane, the row's first stop"
         );
+    }
+
+    #[test]
+    fn t_opens_the_theme_picker_on_the_active_theme() {
+        let mut app = app();
+        app.handle(key(KeyCode::Char('t')));
+        let expected = ratatui_themes::ThemeName::all()
+            .iter()
+            .position(|&candidate| candidate == app.theme())
+            .unwrap();
+        assert_eq!(
+            app.overlay,
+            Some(Overlay::ThemePicker { selected: expected })
+        );
+    }
+
+    #[test]
+    fn navigating_the_theme_picker_previews_without_committing() {
+        let mut app = app();
+        let original = app.theme();
+        app.handle(key(KeyCode::Char('t')));
+        app.handle(key(KeyCode::Down));
+        let Some(Overlay::ThemePicker { selected }) = app.overlay else {
+            panic!("theme picker should be open");
+        };
+        let hovered = ratatui_themes::ThemeName::all()[selected];
+
+        assert_eq!(
+            app.theme_palette(),
+            hovered.palette(),
+            "the hovered row previews live"
+        );
+        assert_eq!(app.theme(), original, "nothing commits until Enter");
+
+        app.handle(key(KeyCode::Esc));
+        assert_eq!(app.overlay, None);
+        assert_eq!(app.theme(), original, "Esc reverts for free");
+        assert_eq!(app.theme_palette(), original.palette());
+    }
+
+    #[test]
+    fn picking_a_theme_applies_it_immediately_and_persists_to_the_config() {
+        let mut app = app();
+        let home = std::env::temp_dir().join(format!("chiptui-theme-pick-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        app.set_home_dir(&home);
+
+        app.handle(key(KeyCode::Char('t')));
+        app.handle(key(KeyCode::Down));
+        let Some(Overlay::ThemePicker { selected }) = app.overlay else {
+            panic!("theme picker should be open");
+        };
+        let expected = ratatui_themes::ThemeName::all()[selected];
+        app.handle(key(KeyCode::Enter));
+
+        assert_eq!(app.overlay, None);
+        assert_eq!(app.theme(), expected, "applies without a restart");
+        assert_eq!(
+            crate::settings::theme(&home.join(".config")).as_deref(),
+            Some(expected.slug()),
+            "and survives one"
+        );
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]
