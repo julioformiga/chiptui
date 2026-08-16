@@ -78,7 +78,8 @@ honors the same answer: `App::report_tools` resolves the workspace first (creati
 panel early is what keeps startup from warning about a `west` that was never on `PATH`
 because it lives in the workspace venv) and `App::tool_status` is the one availability
 definition shared by that warning and the Project pane's `tools:` row --- a resolved
-workspace's west executable is file-checked, the bare `west` name falls back to `PATH`.
+workspace's west executable is checked with the same "is it runnable" predicate a `PATH` lookup
+uses (`backend::executable_at`), the bare `west` name falls back to `PATH`.
 Below the separator
 it offers
 `west update` (confirm-gated --- it rewrites the shared workspace,

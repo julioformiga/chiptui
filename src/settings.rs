@@ -25,7 +25,9 @@ pub struct ZephyrSettings {
     /// Optional toolchain location, exported as `ZEPHYR_SDK_INSTALL_DIR`.
     pub sdk: Option<String>,
     /// Optional explicit west executable; without one, `<workspace>/.venv/
-    /// bin/west` is used when it exists, then `west` from `PATH`.
+    /// bin/west` is used when it exists, then `west` from `PATH`. A
+    /// relative path is resolved against the workspace, and a bare program
+    /// name is a deliberate `PATH` lookup.
     pub west: Option<String>,
 }
 
@@ -99,23 +101,33 @@ pub fn expand_home(path: &str, home: &Path) -> PathBuf {
     PathBuf::from(path)
 }
 
-/// The user config's location: `$XDG_CONFIG_HOME/chiptui/config.toml`, or
-/// `~/.config/chiptui/config.toml` when XDG names no directory. This is the
-/// path the unresolved-workspace pane tells the user about, so it must be
-/// the one the app actually reads.
-pub fn user_config_path(home: &Path) -> PathBuf {
-    let config_home = std::env::var_os("XDG_CONFIG_HOME")
+/// The config directory the *process environment* names:
+/// `$XDG_CONFIG_HOME`, or `<home>/.config` when XDG names nothing absolute.
+///
+/// Read once, at startup, and carried as a value from there on
+/// ([`crate::App::set_home_dir`] replaces it wholesale). Consulting the
+/// variable on every lookup instead would overrule a redirected home ---
+/// which is precisely what tests redirect it for, so an inherited
+/// `XDG_CONFIG_HOME` would leak the developer's real config into fixtures.
+pub fn default_config_dir(home: &Path) -> PathBuf {
+    std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .filter(|dir| dir.is_absolute())
-        .unwrap_or_else(|| home.join(".config"));
-    config_home.join("chiptui/config.toml")
+        .unwrap_or_else(|| home.join(".config"))
+}
+
+/// The user config's location inside a resolved config directory. This is
+/// the path the unresolved-workspace pane tells the user about, so it must
+/// be the one the app actually reads.
+pub fn user_config_path(config_dir: &Path) -> PathBuf {
+    config_dir.join("chiptui/config.toml")
 }
 
 /// Reads the user config, if it exists. A missing file is `None` --- "not
 /// configured yet", never an error (`SPEC.md` §13's project levels stay
 /// optional).
-pub fn load_user(home: &Path) -> Option<ZephyrSettings> {
-    let text = std::fs::read_to_string(user_config_path(home)).ok()?;
+pub fn load_user(config_dir: &Path) -> Option<ZephyrSettings> {
+    let text = std::fs::read_to_string(user_config_path(config_dir)).ok()?;
     let settings = ZephyrSettings::parse(&text);
     (!settings.is_empty()).then_some(settings)
 }

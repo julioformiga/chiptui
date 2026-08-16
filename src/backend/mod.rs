@@ -343,10 +343,32 @@ pub fn tool_available(name: &str) -> bool {
     let Some(path) = std::env::var_os("PATH") else {
         return false;
     };
-    std::env::split_paths(&path).any(|dir| {
-        let candidate = dir.join(name);
-        candidate.is_file() && is_executable(&candidate)
-    })
+    lookup_on_path(name, &path)
+}
+
+/// The pure half of [`tool_available`], with `PATH` passed in --- mutating
+/// the process environment would make these tests parallel-hostile.
+fn lookup_on_path(name: &str, path: &std::ffi::OsStr) -> bool {
+    std::env::split_paths(path)
+        // An *empty* `PATH` entry (a `::`, or a leading/trailing `:`) means
+        // the current directory, to `split_paths` and to `execvp` alike ---
+        // `PathBuf::from("").join("west")` is just `west`. Honoring it would
+        // report a `west` dropped in whatever project directory ChipTUI was
+        // started from as the system tool, and then run it. A malformed
+        // `PATH` is not a reason to execute an untrusted binary, so those
+        // entries are skipped rather than resolved.
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .any(|dir| executable_at(&dir.join(name)))
+}
+
+/// Whether `path` names a file that can actually be executed --- the one
+/// definition of "runnable", shared by the `PATH` lookup above and by
+/// callers holding an explicit location (a configured tool, a venv's
+/// console script). Existence alone is not enough: a checkout without the
+/// permission bit, or a `west.py` named as the executable, fails at spawn
+/// with `Permission denied` long after the UI called it available.
+pub fn executable_at(path: &std::path::Path) -> bool {
+    path.is_file() && is_executable(path)
 }
 
 #[cfg(unix)]
@@ -363,6 +385,46 @@ fn is_executable(_path: &std::path::Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A file is not a tool: `west` without the permission bit (a checkout
+    /// that lost it, or a `west.py` named as the executable) would be
+    /// reported as available and then fail at spawn.
+    #[test]
+    fn availability_needs_the_execute_bit() {
+        let dir = std::env::temp_dir().join(format!("chiptui-tool-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let tool = dir.join("faketool");
+        std::fs::write(&tool, "#!/bin/sh\n").unwrap();
+
+        assert!(!executable_at(&tool), "no execute bit, no tool");
+        assert!(!lookup_on_path("faketool", dir.as_os_str()));
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert!(executable_at(&tool));
+            assert!(lookup_on_path("faketool", dir.as_os_str()));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `split_paths` turns a `::` or a trailing `:` into an empty entry,
+    /// which joins to a bare relative path --- the cwd. The fixture below is
+    /// executable and lives at a known path relative to the package root
+    /// (the cwd of a test binary), so honoring the empty entry would find it.
+    #[test]
+    fn an_empty_path_entry_is_not_the_current_directory() {
+        let relative = std::path::Path::new("tests/fixtures/bin/mpremote");
+        assert!(
+            executable_at(relative),
+            "the fixture must be executable for this test to prove anything"
+        );
+        let name = relative.to_str().unwrap();
+        assert!(!lookup_on_path(name, std::ffi::OsStr::new("")));
+        assert!(!lookup_on_path(name, std::ffi::OsStr::new("/nonexistent:")));
+    }
 
     #[test]
     fn capability_bits_are_distinct() {

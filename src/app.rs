@@ -685,12 +685,35 @@ pub struct App {
     /// point it at a fixture directory so workspace discovery stays
     /// deterministic regardless of the machine).
     home_dir: std::path::PathBuf,
+    /// Where the user config lives, resolved once from the environment
+    /// ([`crate::settings::default_config_dir`]) and moved with `home_dir`
+    /// afterwards --- so redirecting the home really does redirect every
+    /// config read, `$XDG_CONFIG_HOME` included.
+    config_dir: std::path::PathBuf,
+    /// Memoized [`Self::tool_status`]. The render path asks twice a frame
+    /// (once to measure the pane, once to draw it) for an answer that only
+    /// changes with the selected backend or the resolved workspace, and
+    /// computing it walks every `PATH` entry per tool. Keyed on those two
+    /// inputs, so a backend override applied straight to `manager` --- as
+    /// tests do --- still recomputes.
+    tool_status: std::cell::RefCell<Option<ToolStatusMemo>>,
     should_quit: bool,
     last_port_count: Option<usize>,
 }
 
+/// A tool report with the two inputs it was computed from --- see
+/// [`App::tool_status`].
+struct ToolStatusMemo {
+    kind: BackendKind,
+    /// The resolved workspace's west executable, or empty without one.
+    west: String,
+    status: Vec<(&'static str, bool)>,
+}
+
 impl App {
     pub fn new(start_dir: impl Into<PathBuf>) -> Self {
+        let home =
+            std::env::var_os("HOME").map_or_else(std::path::PathBuf::new, std::path::PathBuf::from);
         Self {
             manager: ProjectManager::new(start_dir),
             logs: LogStore::default(),
@@ -728,8 +751,9 @@ impl App {
             probed_port: None,
             restore_pending: false,
             serial_dir: std::path::PathBuf::from("/dev"),
-            home_dir: std::env::var_os("HOME")
-                .map_or_else(std::path::PathBuf::new, std::path::PathBuf::from),
+            home_dir: home.clone(),
+            config_dir: crate::settings::default_config_dir(&home),
+            tool_status: std::cell::RefCell::new(None),
             should_quit: false,
             last_port_count: None,
         }
@@ -743,6 +767,11 @@ impl App {
     /// names when it tells the user where the config file lives.
     pub fn home_dir(&self) -> &std::path::Path {
         &self.home_dir
+    }
+
+    /// The user config file this session reads and writes.
+    pub fn user_config_path(&self) -> std::path::PathBuf {
+        crate::settings::user_config_path(&self.config_dir)
     }
 
     pub fn quit(&mut self) {
@@ -801,6 +830,7 @@ impl App {
                     }
                 }
 
+                self.ensure_workspace_panel();
                 self.report_tools();
             }
             Err(err) => self.logs.error(err.to_string()),
@@ -841,14 +871,14 @@ impl App {
 
     /// Warns about required tools that cannot be run.
     ///
-    /// The workspace is resolved first when the backend has one: a Zephyr
-    /// `west` usually lives in the workspace venv, and judging it against
-    /// the inherited `PATH` before that venv is known is a false alarm.
+    /// Judging a Zephyr `west` against the inherited `PATH` before the
+    /// workspace venv holding it is known would be a false alarm, so every
+    /// call site resolves the workspace first --- see
+    /// [`Self::ensure_workspace_panel`].
     fn report_tools(&mut self) {
         let Some(kind) = self.manager.selected_kind() else {
             return;
         };
-        self.ensure_workspace_panel();
         let missing: Vec<&str> = self
             .tool_status()
             .into_iter()
@@ -869,32 +899,57 @@ impl App {
     /// warning and the Project pane's tools row. `west` is the one tool
     /// whose location a resolved Zephyr workspace owns (the venv's console
     /// script, or a configured path), so that executable is what gets
-    /// checked: a west installed only in the workspace venv is not
-    /// "missing" for never being on `PATH`. The bare program name means
-    /// resolution found no venv and no override, so `PATH` is still where
-    /// west has to come from.
+    /// checked --- with the same predicate a `PATH` lookup uses, since a
+    /// file that cannot be executed is not a tool. A west installed only in
+    /// the workspace venv is therefore not "missing" for never being on
+    /// `PATH`; conversely the bare program name (no override, and no
+    /// `west` inside the venv --- including a venv that exists but never
+    /// had west installed into it) leaves `PATH` as the only place it can
+    /// come from.
+    ///
+    /// Memoized on (backend, resolved west): the render path asks twice a
+    /// frame and the answer costs a `PATH` walk per tool.
     pub fn tool_status(&self) -> Vec<(&'static str, bool)> {
         let Some(kind) = self.manager.selected_kind() else {
             return Vec::new();
         };
-        self.manager
+        let resolved_west = self
+            .workspace
+            .as_ref()
+            .and_then(|panel| panel.resolved.as_ref())
+            .map_or("", |workspace| workspace.west.as_str());
+
+        let mut cache = self.tool_status.borrow_mut();
+        if let Some(memo) = cache.as_ref()
+            && memo.kind == kind
+            && memo.west == resolved_west
+        {
+            return memo.status.clone();
+        }
+
+        let west = crate::backend::zephyr::commands::PROGRAM;
+        let status: Vec<(&'static str, bool)> = self
+            .manager
             .registry()
             .tool_status(kind)
             .into_iter()
             .map(|(tool, on_path)| {
-                let west = crate::backend::zephyr::commands::PROGRAM;
-                match self
-                    .workspace
-                    .as_ref()
-                    .and_then(|panel| panel.resolved.as_ref())
-                {
-                    Some(workspace) if tool == west && workspace.west != west => {
-                        (tool, std::path::Path::new(&workspace.west).is_file())
-                    }
-                    _ => (tool, on_path),
+                if tool == west && !resolved_west.is_empty() && resolved_west != west {
+                    (
+                        tool,
+                        crate::backend::executable_at(std::path::Path::new(resolved_west)),
+                    )
+                } else {
+                    (tool, on_path)
                 }
             })
-            .collect()
+            .collect();
+        *cache = Some(ToolStatusMemo {
+            kind,
+            west: resolved_west.to_string(),
+            status: status.clone(),
+        });
+        status
     }
 
     pub fn handle(&mut self, event: AppEvent) {
@@ -2297,6 +2352,20 @@ mod tests {
         );
     }
 
+    /// Redirecting the home has to redirect the config too, or an inherited
+    /// `$XDG_CONFIG_HOME` reads the developer's real `config.toml` into
+    /// fixtures that expect "nothing configured".
+    #[test]
+    fn redirecting_the_home_redirects_the_user_config() {
+        let mut app = App::new(std::env::temp_dir());
+        let home = std::env::temp_dir().join("chiptui-home-fixture");
+        app.set_home_dir(&home);
+        assert_eq!(
+            app.user_config_path(),
+            home.join(".config/chiptui/config.toml")
+        );
+    }
+
     #[test]
     fn west_availability_follows_the_resolved_workspace() {
         let mut app = App::new(std::env::temp_dir());
@@ -2309,6 +2378,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("west"), "#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(dir.join("west"), std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+        }
         let panel = |west: String| {
             crate::workspace::WorkspacePanel::new(
                 crate::backend::zephyr::workspace::Resolution::Single(
@@ -2343,6 +2418,19 @@ mod tests {
             !west_available(&app),
             "a workspace naming a west that is not there is genuinely broken"
         );
+
+        // Present but not executable is broken too --- it would reach the
+        // build as `Permission denied` at spawn, long after the pane
+        // called it available.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let plain = dir.join("west.py");
+            std::fs::write(&plain, "#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(&plain, std::fs::Permissions::from_mode(0o644)).unwrap();
+            app.workspace = Some(panel(plain.display().to_string()));
+            assert!(!west_available(&app), "a file is not an executable");
+        }
 
         // The bare program name (no venv, no override) keeps the `PATH`
         // check --- resolution found nothing to override it with.

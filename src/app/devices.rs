@@ -72,9 +72,12 @@ impl App {
 
     /// Points workspace discovery's `~` at a directory other than `$HOME`
     /// --- how tests make the user-config and `~/zephyrproject` conventions
-    /// deterministic.
+    /// deterministic. The config directory moves with it, so an inherited
+    /// `$XDG_CONFIG_HOME` cannot pull the real user config back in behind
+    /// the redirected home.
     pub fn set_home_dir(&mut self, dir: impl Into<std::path::PathBuf>) {
         self.home_dir = dir.into();
+        self.config_dir = self.home_dir.join(".config");
     }
 
     /// Scans `serial_dir` for USB serial ports and applies the result:
@@ -164,9 +167,12 @@ impl App {
     /// message. No directory conventions, no environment variables.
     ///
     /// Called ahead of `ensure_build_panel` (the panel's commands carry the
-    /// answer) and of `App::report_tools` (the tool report judges `west`
-    /// against the workspace's venv, so the workspace must exist first ---
-    /// this is why the report runs *after* resolution, not before).
+    /// answer) and ahead of `App::report_tools` (the tool report judges
+    /// `west` against the workspace's venv, so the workspace must exist
+    /// first). That second ordering is written out at each call site rather
+    /// than hidden inside the report: this reads two config files and can
+    /// log a resolution error, which is not what a caller asking for a tool
+    /// warning expects to trigger.
     pub(super) fn ensure_workspace_panel(&mut self) {
         if !self
             .manager
@@ -237,7 +243,7 @@ impl App {
                 .ok()
                 .map(|text| crate::settings::ZephyrSettings::parse(&text))
                 .filter(|settings| !settings.is_empty());
-        let user_settings = crate::settings::load_user(&self.home_dir);
+        let user_settings = crate::settings::load_user(&self.config_dir);
         (root, project_settings, user_settings)
     }
 
@@ -492,6 +498,7 @@ impl App {
             PickerOption::Backend(kind) => {
                 self.manager.set_override(Some(kind));
                 self.logs.info(format!("backend overridden to {kind}"));
+                self.ensure_workspace_panel();
                 self.report_tools();
             }
         }
@@ -525,6 +532,7 @@ impl App {
             self.logs
                 .warn(format!("could not create src/firmware layout: {err}"));
         }
+        self.ensure_workspace_panel();
         self.report_tools();
         self.maybe_scan_devices();
         self.clamp_focus();

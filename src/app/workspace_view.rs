@@ -253,7 +253,7 @@ impl App {
                 {
                     root.join(crate::project::config::FILE_NAME)
                 } else {
-                    crate::settings::user_config_path(&self.home_dir)
+                    self.user_config_path()
                 };
                 match crate::settings::save_workspace(&target, &dir) {
                     Ok(()) => {
@@ -293,7 +293,7 @@ impl App {
                 {
                     root.join(crate::project::config::FILE_NAME)
                 } else {
-                    crate::settings::user_config_path(&self.home_dir)
+                    self.user_config_path()
                 };
                 match crate::settings::save_projects(&target, &dir) {
                     Ok(()) => {
