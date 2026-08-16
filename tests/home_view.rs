@@ -51,9 +51,10 @@ impl Drop for Fixture {
 }
 
 fn render(screen: &HomeScreen, width: u16, height: u16) -> String {
+    let theme = ratatui_themes::ThemeName::TokyoNight.palette();
     let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test terminal");
     terminal
-        .draw(|frame| chiptui::ui::home::draw(frame, screen))
+        .draw(|frame| chiptui::ui::home::draw(frame, screen, theme))
         .expect("draw succeeds");
     terminal.backend().to_string()
 }
@@ -124,8 +125,9 @@ fn a_project_row_is_tinted_with_its_backend_colour() {
 
     let mut terminal = Terminal::new(TestBackend::new(100, 20)).expect("test terminal");
     let screen = fixture.screen();
+    let theme = ratatui_themes::ThemeName::TokyoNight.palette();
     terminal
-        .draw(|frame| chiptui::ui::home::draw(frame, &screen))
+        .draw(|frame| chiptui::ui::home::draw(frame, &screen, theme))
         .expect("draw succeeds");
     let buffer = terminal.backend().buffer().clone();
 

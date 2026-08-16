@@ -414,6 +414,22 @@ pub fn last_parent(config_dir: &Path, home: &Path) -> Option<PathBuf> {
     section_value(&text, "projects", "last_parent").map(|value| expand_home(&value, home))
 }
 
+/// Reads `[ui] theme` from the user config: the raw slug (e.g.
+/// `"tokyo-night"`), unvalidated --- the caller turns it into a
+/// `ratatui_themes::ThemeName`, falling back to the default theme on an
+/// absent or unparsable value. User-config-only: a color theme is an
+/// operator/terminal preference, not a project property, unlike `[zephyr]`.
+pub fn theme(config_dir: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(user_config_path(config_dir)).ok()?;
+    section_value(&text, "ui", "theme")
+}
+
+/// Persists `[ui] theme = slug`, the same one-line replace-or-insert shape as
+/// [`save_last_parent`].
+pub fn save_theme(config: &Path, slug: &str) -> std::io::Result<()> {
+    save_key(config, "ui", "theme", slug)
+}
+
 fn save_key(config: &Path, section: &str, key: &str, value: &str) -> std::io::Result<()> {
     let text = std::fs::read_to_string(config).unwrap_or_default();
     let updated = upsert_key(&text, section, key, value);
@@ -716,6 +732,39 @@ mod tests {
         );
         assert!(updated.contains("[ui]\nmouse = false"));
         assert!(updated.ends_with("[zephyr]\nworkspace = \"/opt/myzephyr\"\n"));
+    }
+
+    #[test]
+    fn theme_round_trips_through_save_and_read() {
+        let dir =
+            std::env::temp_dir().join(format!("chiptui-theme-{}-{}", std::process::id(), line!()));
+        let config = dir.join("chiptui/config.toml");
+        save_theme(&config, "nord").unwrap();
+
+        assert_eq!(theme(&dir).as_deref(), Some("nord"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn theme_is_none_when_unset() {
+        let dir = std::env::temp_dir().join(format!(
+            "chiptui-theme-unset-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        assert_eq!(theme(&dir), None);
+    }
+
+    #[test]
+    fn save_theme_replaces_only_its_own_line() {
+        let existing = "[ui]\ntheme = \"dracula\"\n\n[zephyr]\nworkspace = \"/ws\"\n";
+        let updated = upsert_key(existing, "ui", "theme", "tokyo-night");
+        assert!(updated.contains("theme = \"tokyo-night\""));
+        assert!(!updated.contains("dracula"));
+        assert!(
+            updated.contains("workspace = \"/ws\""),
+            "other sections survive:\n{updated}"
+        );
     }
 
     fn temp_dir(label: &str) -> PathBuf {

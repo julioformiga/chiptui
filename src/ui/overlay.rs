@@ -2,7 +2,7 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Flex, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style, Stylize};
+use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, List, ListItem, ListState, Paragraph};
 
@@ -10,16 +10,21 @@ use crate::app::{App, FileAction, Overlay, PickerOption, View, ViewerSource, Vie
 use crate::backend::BackendKind;
 use crate::browser::SyncPlan;
 use crate::highlight::{self, TokenKind};
+use crate::ui::Palette;
 
-pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
+pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
     let Some(overlay) = app.overlay.clone() else {
         return;
     };
     match overlay {
-        Overlay::Help => draw_help(frame, area, app),
-        Overlay::BackendPicker { selected } => draw_picker(frame, area, app, selected),
-        Overlay::DevicePicker { selected } => draw_device_picker(frame, area, app, selected),
-        Overlay::Confirm { message, confirm } => draw_confirm(frame, area, &message, confirm),
+        Overlay::Help => draw_help(frame, area, app, palette),
+        Overlay::BackendPicker { selected } => draw_picker(frame, area, app, selected, palette),
+        Overlay::DevicePicker { selected } => {
+            draw_device_picker(frame, area, app, selected, palette)
+        }
+        Overlay::Confirm { message, confirm } => {
+            draw_confirm(frame, area, &message, confirm, palette)
+        }
         Overlay::ConfirmBuild {
             action: crate::build::BuildAction::UpdateZephyr,
             confirm,
@@ -44,11 +49,11 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
                 .unwrap_or_else(|| "this action".to_string());
             let quoted = shorten_tail(&command, 63);
             let lines = vec![
-                Line::from("Run this in the shared workspace?".fg(Color::Yellow)),
+                Line::from("Run this in the shared workspace?".fg(palette.warning)),
                 Line::from(quoted),
                 Line::from("It rewrites the checkouts every project in it shares.".dim()),
             ];
-            draw_confirm_dialog(frame, area, "Confirm", lines, confirm, 72, 8);
+            draw_confirm_dialog(frame, area, "Confirm", lines, confirm, (72, 8), palette);
         }
         Overlay::ConfirmBuild { action, confirm } => {
             // The message is derived, not stored: whatever the panel would
@@ -79,36 +84,47 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
                 area,
                 &format!("Run {}?", shorten_tail(&message, 60)),
                 confirm,
+                palette,
             );
         }
         Overlay::BoardPicker { input, selected } => {
-            draw_board_picker(frame, area, app, &input, selected)
+            draw_board_picker(frame, area, app, &input, selected, palette)
         }
         Overlay::ShieldPicker { input, selected } => {
-            draw_shield_picker(frame, area, app, &input, selected)
+            draw_shield_picker(frame, area, app, &input, selected, palette)
         }
         Overlay::DirPicker {
             purpose,
             path,
             selected,
             error,
-        } => draw_dir_picker(frame, area, purpose, &path, selected, error.as_deref()),
+        } => draw_dir_picker(
+            frame,
+            area,
+            purpose,
+            &path,
+            selected,
+            error.as_deref(),
+            palette,
+        ),
         Overlay::BuildDirPicker { input, selected } => {
-            draw_build_dir_picker(frame, area, app, &input, selected)
+            draw_build_dir_picker(frame, area, app, &input, selected, palette)
         }
         Overlay::ProjectPicker { selected, error } => {
-            draw_project_picker(frame, area, app, selected, error.as_deref())
+            draw_project_picker(frame, area, app, selected, error.as_deref(), palette)
         }
-        Overlay::FirmwarePicker { selected } => draw_firmware_picker(frame, area, app, selected),
-        Overlay::ProjectSetup { selected } => draw_project_setup(frame, area, selected),
+        Overlay::FirmwarePicker { selected } => {
+            draw_firmware_picker(frame, area, app, selected, palette)
+        }
+        Overlay::ProjectSetup { selected } => draw_project_setup(frame, area, selected, palette),
         Overlay::ConfirmDownloadOverwrite { url, dest, confirm } => {
-            draw_confirm_download_overwrite(frame, area, &url, &dest, confirm)
+            draw_confirm_download_overwrite(frame, area, &url, &dest, confirm, palette)
         }
         Overlay::ConfirmUpload {
             name,
             is_dir,
             confirm,
-        } => draw_confirm_upload(frame, area, &name, is_dir, confirm),
+        } => draw_confirm_upload(frame, area, &name, is_dir, confirm, palette),
         Overlay::FileActions {
             side,
             name,
@@ -119,32 +135,36 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
             let is_text = crate::files::is_text_like(&name);
             let actions =
                 FileAction::for_entry(side, is_dir, is_text, status, app.manager.capabilities());
-            draw_file_actions(frame, area, &name, is_dir, &actions, selected);
+            draw_file_actions(frame, area, &name, is_dir, &actions, selected, palette);
         }
-        Overlay::FileViewer => draw_file_viewer(frame, area, app),
+        Overlay::FileViewer => draw_file_viewer(frame, area, app, palette),
         Overlay::ConfirmRestartDevice { confirm } => {
-            draw_confirm_restart_device(frame, area, app, confirm)
+            draw_confirm_restart_device(frame, area, app, confirm, palette)
         }
         Overlay::ConfirmEraseForMicroPython { confirm } => {
-            draw_confirm_erase_for_micropython(frame, area, confirm)
+            draw_confirm_erase_for_micropython(frame, area, confirm, palette)
         }
         Overlay::ConfirmSwitchProject { confirm } => {
-            draw_confirm_switch_project(frame, area, app, confirm)
+            draw_confirm_switch_project(frame, area, app, confirm, palette)
         }
         Overlay::ConfirmDelete {
             side,
             name,
             is_dir,
             confirm,
-        } => draw_confirm_delete(frame, area, side, &name, is_dir, confirm),
-        Overlay::CreateEntry { side, input } => draw_create_entry(frame, area, side, &input),
-        Overlay::PackageInstall { input } => draw_package_install(frame, area, &input),
-        Overlay::SyncPreview { plan, confirm } => draw_sync_preview(frame, area, &plan, confirm),
+        } => draw_confirm_delete(frame, area, side, &name, is_dir, confirm, palette),
+        Overlay::CreateEntry { side, input } => {
+            draw_create_entry(frame, area, side, &input, palette)
+        }
+        Overlay::PackageInstall { input } => draw_package_install(frame, area, &input, palette),
+        Overlay::SyncPreview { plan, confirm } => {
+            draw_sync_preview(frame, area, &plan, confirm, palette)
+        }
         Overlay::ConfirmInterruptDevice { confirm } => {
-            draw_confirm_interrupt_device(frame, area, confirm)
+            draw_confirm_interrupt_device(frame, area, confirm, palette)
         }
         Overlay::RestoreDeviceScript { selected } => {
-            draw_restore_device_script(frame, area, selected)
+            draw_restore_device_script(frame, area, selected, palette)
         }
     }
 }
@@ -155,11 +175,12 @@ fn draw_confirm_dialog(
     title: &str,
     message: Vec<Line>,
     confirm: bool,
-    width: u16,
-    height: u16,
+    size: (u16, u16),
+    palette: Palette,
 ) {
+    let (width, height) = size;
     let popup = centered(area, width.min(area.width), height);
-    let block = modal(title);
+    let block = modal(title, palette);
     let inner = block.inner(popup);
 
     frame.render_widget(Clear, popup);
@@ -186,27 +207,47 @@ fn draw_confirm_dialog(
     .flex(Flex::Center)
     .areas(buttons_area);
 
-    draw_dialog_button(frame, no_area, "No", !confirm);
-    draw_dialog_button(frame, yes_area, "Yes", confirm);
+    draw_dialog_button(frame, no_area, "No", !confirm, palette);
+    draw_dialog_button(frame, yes_area, "Yes", confirm, palette);
 }
 
 // Reached two ways now: right after a post-edit reupload lands, and from the
 // standalone `shift+r` binding --- the wording stays generic so neither
 // caller needs a variant of its own just to describe why it fired.
-fn draw_confirm_restart_device(frame: &mut Frame, area: Rect, app: &App, confirm: bool) {
+fn draw_confirm_restart_device(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    confirm: bool,
+    palette: Palette,
+) {
     let command = crate::backend::micropython::commands::soft_reset(app.devices.selected_port());
     let message = vec![
-        Line::from("Restart the device now (soft-reset)?".fg(Color::Yellow)),
+        Line::from("Restart the device now (soft-reset)?".fg(palette.warning)),
         Line::from(""),
         Line::from(command.to_string().dim()),
     ];
-    draw_confirm_dialog(frame, area, "Restart device?", message, confirm, 54, 8);
+    draw_confirm_dialog(
+        frame,
+        area,
+        "Restart device?",
+        message,
+        confirm,
+        (54, 8),
+        palette,
+    );
 }
 
 /// Leaving the project while work is in flight. The count is the whole
 /// point: "2 commands" is what tells the user whether the build they started
 /// is the thing about to die.
-fn draw_confirm_switch_project(frame: &mut Frame, area: Rect, app: &App, confirm: bool) {
+fn draw_confirm_switch_project(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    confirm: bool,
+    palette: Palette,
+) {
     let running = app.running_commands();
     let message = vec![
         Line::from(
@@ -214,23 +255,46 @@ fn draw_confirm_switch_project(frame: &mut Frame, area: Rect, app: &App, confirm
                 "{running} command{} still running in this project.",
                 if running == 1 { " is" } else { "s are" }
             )
-            .fg(Color::Yellow),
+            .fg(palette.warning),
         ),
         Line::from("Going back to the project list cancels them.".dim()),
         Line::from(""),
-        Line::from("Leave this project?".fg(Color::White)),
+        Line::from("Leave this project?".fg(palette.fg)),
     ];
-    draw_confirm_dialog(frame, area, "Switch project?", message, confirm, 62, 9);
+    draw_confirm_dialog(
+        frame,
+        area,
+        "Switch project?",
+        message,
+        confirm,
+        (62, 9),
+        palette,
+    );
 }
 
-fn draw_confirm_erase_for_micropython(frame: &mut Frame, area: Rect, confirm: bool) {
+fn draw_confirm_erase_for_micropython(
+    frame: &mut Frame,
+    area: Rect,
+    confirm: bool,
+    palette: Palette,
+) {
     let message = vec![
-        Line::from("Device is unresponsive to MicroPython commands.".fg(Color::Yellow)),
-        Line::from("It might have a different firmware (e.g. Zephyr) installed.".fg(Color::Yellow)),
+        Line::from("Device is unresponsive to MicroPython commands.".fg(palette.warning)),
+        Line::from(
+            "It might have a different firmware (e.g. Zephyr) installed.".fg(palette.warning),
+        ),
         Line::from(""),
-        Line::from("Would you like to install MicroPython?".fg(Color::White)),
+        Line::from("Would you like to install MicroPython?".fg(palette.fg)),
     ];
-    draw_confirm_dialog(frame, area, "Install MicroPython?", message, confirm, 65, 9);
+    draw_confirm_dialog(
+        frame,
+        area,
+        "Install MicroPython?",
+        message,
+        confirm,
+        (65, 9),
+        palette,
+    );
 }
 
 /// A device command is waiting on the user because the board is believed to
@@ -238,15 +302,23 @@ fn draw_confirm_erase_for_micropython(frame: &mut Frame, area: Rect, confirm: bo
 /// every filesystem operation, so the interruption is the user's call, not a
 /// silent side effect. Naming what happens afterwards matters as much as the
 /// warning --- the script can be brought back.
-fn draw_confirm_interrupt_device(frame: &mut Frame, area: Rect, confirm: bool) {
+fn draw_confirm_interrupt_device(frame: &mut Frame, area: Rect, confirm: bool, palette: Palette) {
     let message = vec![
-        Line::from("A script is running on the device.".fg(Color::Yellow)),
+        Line::from("A script is running on the device.".fg(palette.warning)),
         Line::from("Every mpremote command interrupts it (Ctrl-C) to use the REPL.".dim()),
         Line::from(""),
-        Line::from("Run the pending device command anyway?".fg(Color::White)),
+        Line::from("Run the pending device command anyway?".fg(palette.fg)),
         Line::from("Afterwards you can restart the script from the prompt that follows.".dim()),
     ];
-    draw_confirm_dialog(frame, area, "Device is busy", message, confirm, 64, 10);
+    draw_confirm_dialog(
+        frame,
+        area,
+        "Device is busy",
+        message,
+        confirm,
+        (64, 10),
+        palette,
+    );
 }
 
 /// How to bring back a script that was interrupted for a device operation:
@@ -254,7 +326,7 @@ fn draw_confirm_interrupt_device(frame: &mut Frame, area: Rect, confirm: bool) {
 /// and a fast relaunch with different tradeoffs. "Leave it stopped" is the
 /// default highlight --- restarting re-runs code the user may still be
 /// changing.
-fn draw_restore_device_script(frame: &mut Frame, area: Rect, selected: usize) {
+fn draw_restore_device_script(frame: &mut Frame, area: Rect, selected: usize, palette: Palette) {
     const CHOICES: [(&str, &str); 3] = [
         ("Reset the board", "reboot; runs boot.py + main.py again"),
         (
@@ -278,7 +350,7 @@ fn draw_restore_device_script(frame: &mut Frame, area: Rect, selected: usize) {
         .collect();
 
     let popup = centered(area, 64, CHOICES.len() as u16 + 4);
-    let block = modal("Restart device script?");
+    let block = modal("Restart device script?", palette);
     let inner = block.inner(popup);
     let [message, list] =
         Layout::vertical([Constraint::Length(2), Constraint::Min(CHOICES.len() as u16)])
@@ -306,6 +378,7 @@ fn draw_confirm_delete(
     name: &str,
     is_dir: bool,
     confirm: bool,
+    palette: Palette,
 ) {
     let side_str = match side {
         crate::browser::Side::Local => "locally",
@@ -317,23 +390,37 @@ fn draw_confirm_delete(
         format!("Delete '{}'?", name)
     };
     let message = vec![
-        Line::from(label.fg(Color::Yellow)),
+        Line::from(label.fg(palette.warning)),
         Line::from(format!("This will remove it {}.", side_str).dim()),
     ];
-    draw_confirm_dialog(frame, area, "Confirm Delete", message, confirm, 54, 9);
+    draw_confirm_dialog(
+        frame,
+        area,
+        "Confirm Delete",
+        message,
+        confirm,
+        (54, 9),
+        palette,
+    );
 }
 
 /// One btop-style dialog button: a bordered box, filled solid when selected
 /// so the highlighted choice reads at a glance rather than needing the
 /// border colour alone to carry it (the same "never rely on colour alone"
 /// reasoning as the file panes' sync markers, `ui/files.rs`).
-fn draw_dialog_button(frame: &mut Frame, area: Rect, label: &str, selected: bool) {
+fn draw_dialog_button(
+    frame: &mut Frame,
+    area: Rect,
+    label: &str,
+    selected: bool,
+    palette: Palette,
+) {
     let (border_style, text_style) = if selected {
         (
-            Style::new().fg(Color::Cyan),
+            Style::new().fg(palette.accent),
             Style::new()
-                .fg(Color::Black)
-                .bg(Color::Cyan)
+                .fg(palette.bg)
+                .bg(palette.accent)
                 .add_modifier(Modifier::BOLD),
         )
     } else {
@@ -362,6 +449,7 @@ fn draw_file_actions(
     is_dir: bool,
     actions: &[FileAction],
     selected: usize,
+    palette: Palette,
 ) {
     let items: Vec<ListItem> = actions
         .iter()
@@ -379,7 +467,7 @@ fn draw_file_actions(
     frame.render_widget(Clear, popup);
     frame.render_stateful_widget(
         List::new(items)
-            .block(modal(&title))
+            .block(modal(&title, palette))
             .highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
         popup,
         &mut state,
@@ -393,7 +481,7 @@ fn draw_file_actions(
 /// Publishes [`App::viewer_viewport`] the same way `panels::draw_logs`
 /// publishes `log_viewport`, so `PageUp`/`PageDown` scroll by exactly what is
 /// on screen.
-fn draw_file_viewer(frame: &mut Frame, area: Rect, app: &mut App) {
+fn draw_file_viewer(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
     let Some(viewer) = &app.viewer else { return };
 
     let width = area.width.saturating_sub(6).max(20);
@@ -409,7 +497,7 @@ fn draw_file_viewer(frame: &mut Frame, area: Rect, app: &mut App) {
         ),
         ViewerState::Loading | ViewerState::Error(_) => format!(" {name} "),
     };
-    let block = modal(&title);
+    let block = modal(&title, palette);
     let inner = block.inner(popup);
     app.viewer_viewport = inner.height.max(1) as usize;
 
@@ -422,7 +510,7 @@ fn draw_file_viewer(frame: &mut Frame, area: Rect, app: &mut App) {
         }
         ViewerState::Error(message) => {
             frame.render_widget(
-                Paragraph::new(message.clone().fg(Color::Yellow))
+                Paragraph::new(message.clone().fg(palette.warning))
                     .wrap(ratatui::widgets::Wrap { trim: false }),
                 inner,
             );
@@ -432,7 +520,7 @@ fn draw_file_viewer(frame: &mut Frame, area: Rect, app: &mut App) {
             let rendered: Vec<Line> = if is_diff {
                 lines
                     .iter()
-                    .map(|line| Line::from(diff_line_spans(line)))
+                    .map(|line| Line::from(diff_line_spans(line, palette)))
                     .collect()
             } else {
                 let language = highlight::Language::from_filename(&name);
@@ -442,7 +530,9 @@ fn draw_file_viewer(frame: &mut Frame, area: Rect, app: &mut App) {
                         Line::from(
                             highlight::highlight_line(line, language)
                                 .into_iter()
-                                .map(|token| Span::styled(token.text, token_style(token.kind)))
+                                .map(|token| {
+                                    Span::styled(token.text, token_style(token.kind, palette))
+                                })
                                 .collect::<Vec<_>>(),
                         )
                     })
@@ -473,13 +563,13 @@ fn shorten_tail(text: &str, max_chars: usize) -> String {
     }
 }
 
-fn token_style(kind: TokenKind) -> Style {
+fn token_style(kind: TokenKind, palette: Palette) -> Style {
     match kind {
         TokenKind::Plain => Style::new(),
-        TokenKind::Keyword => Style::new().fg(Color::Magenta),
-        TokenKind::String => Style::new().fg(Color::Green),
-        TokenKind::Comment => Style::new().fg(Color::DarkGray).italic(),
-        TokenKind::Number => Style::new().fg(Color::Cyan),
+        TokenKind::Keyword => Style::new().fg(palette.secondary),
+        TokenKind::String => Style::new().fg(palette.success),
+        TokenKind::Comment => Style::new().fg(palette.muted).italic(),
+        TokenKind::Number => Style::new().fg(palette.accent),
     }
 }
 
@@ -487,11 +577,11 @@ fn token_style(kind: TokenKind) -> Style {
 /// removed lines red, hunk headers (`@@`) cyan, and unchanged context plain.
 /// The whole line shares one colour rather than per-token highlighting so the
 /// diff's added/removed regions read at a glance, the way `diff --color` does.
-fn diff_line_spans(line: &str) -> Vec<Span<'_>> {
+fn diff_line_spans(line: &str, palette: Palette) -> Vec<Span<'_>> {
     let style = match line.chars().next() {
-        Some('+') => Style::new().fg(Color::Green),
-        Some('-') => Style::new().fg(Color::Red),
-        Some('@') => Style::new().fg(Color::Cyan),
+        Some('+') => Style::new().fg(palette.success),
+        Some('-') => Style::new().fg(palette.error),
+        Some('@') => Style::new().fg(palette.accent),
         _ => Style::new(),
     };
     vec![Span::styled(line.to_string(), style)]
@@ -506,19 +596,36 @@ fn draw_confirm_download_overwrite(
     url: &str,
     dest: &std::path::Path,
     confirm: bool,
+    palette: Palette,
 ) {
     let message = vec![
-        Line::from(format!("{} already exists.", dest.display()).fg(Color::Yellow)),
+        Line::from(format!("{} already exists.", dest.display()).fg(palette.warning)),
         Line::from(format!("Overwrite it by downloading {url}?")),
     ];
-    draw_confirm_dialog(frame, area, "Overwrite firmware?", message, confirm, 70, 8);
+    draw_confirm_dialog(
+        frame,
+        area,
+        "Overwrite firmware?",
+        message,
+        confirm,
+        (70, 8),
+        palette,
+    );
 }
 
-fn draw_confirm_upload(frame: &mut Frame, area: Rect, name: &str, is_dir: bool, confirm: bool) {
+fn draw_confirm_upload(
+    frame: &mut Frame,
+    area: Rect,
+    name: &str,
+    is_dir: bool,
+    confirm: bool,
+    palette: Palette,
+) {
     let message = if is_dir {
         vec![
             Line::from(
-                format!("Upload '{}/' and everything in it to the device?", name).fg(Color::Yellow),
+                format!("Upload '{}/' and everything in it to the device?", name)
+                    .fg(palette.warning),
             ),
             Line::from(
                 "This will overwrite any existing files with the same names on the device.".dim(),
@@ -526,26 +633,40 @@ fn draw_confirm_upload(frame: &mut Frame, area: Rect, name: &str, is_dir: bool, 
         ]
     } else {
         vec![
-            Line::from(format!("Upload '{}' to the device?", name).fg(Color::Yellow)),
+            Line::from(format!("Upload '{}' to the device?", name).fg(palette.warning)),
             Line::from(
                 "This will overwrite any existing file with the same name on the device.".dim(),
             ),
         ]
     };
-    draw_confirm_dialog(frame, area, "Confirm Upload", message, confirm, 65, 8);
+    draw_confirm_dialog(
+        frame,
+        area,
+        "Confirm Upload",
+        message,
+        confirm,
+        (65, 8),
+        palette,
+    );
 }
 
 /// Inline text entry for creating a file or directory (`a`), in whichever
 /// pane last had focus --- a trailing `/` on the typed name is what decides
 /// file vs directory, explained right in the box so the rule needs no
 /// separate help lookup.
-fn draw_create_entry(frame: &mut Frame, area: Rect, side: crate::browser::Side, input: &str) {
+fn draw_create_entry(
+    frame: &mut Frame,
+    area: Rect,
+    side: crate::browser::Side,
+    input: &str,
+    palette: Palette,
+) {
     let popup = centered(area, 54, 6);
     let title = match side {
         crate::browser::Side::Local => "New (local)",
         crate::browser::Side::Device => "New (device)",
     };
-    let block = modal(title);
+    let block = modal(title, palette);
     let inner = block.inner(popup);
 
     frame.render_widget(Clear, popup);
@@ -561,13 +682,13 @@ fn draw_create_entry(frame: &mut Frame, area: Rect, side: crate::browser::Side, 
 
     let field = Block::bordered()
         .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(Color::Cyan));
+        .border_style(Style::new().fg(palette.accent));
     let field_inner = field.inner(input_area);
     frame.render_widget(field, input_area);
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::raw(input),
-            Span::raw("_").fg(Color::Cyan),
+            Span::raw("_").fg(palette.accent),
         ])),
         field_inner,
     );
@@ -576,9 +697,9 @@ fn draw_create_entry(frame: &mut Frame, area: Rect, side: crate::browser::Side, 
 /// Inline text entry for `mip install` (`i` on the device pane) --- same
 /// shape as [`draw_create_entry`], just with no `side` (it always acts on
 /// the device) and a hint describing a package spec instead of a filename.
-fn draw_package_install(frame: &mut Frame, area: Rect, input: &str) {
+fn draw_package_install(frame: &mut Frame, area: Rect, input: &str, palette: Palette) {
     let popup = centered(area, 54, 6);
-    let block = modal("Install package (mip)");
+    let block = modal("Install package (mip)", palette);
     let inner = block.inner(popup);
 
     frame.render_widget(Clear, popup);
@@ -594,13 +715,13 @@ fn draw_package_install(frame: &mut Frame, area: Rect, input: &str) {
 
     let field = Block::bordered()
         .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(Color::Cyan));
+        .border_style(Style::new().fg(palette.accent));
     let field_inner = field.inner(input_area);
     frame.render_widget(field, input_area);
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::raw(input),
-            Span::raw("_").fg(Color::Cyan),
+            Span::raw("_").fg(palette.accent),
         ])),
         field_inner,
     );
@@ -609,14 +730,14 @@ fn draw_package_install(frame: &mut Frame, area: Rect, input: &str) {
 /// Empty or unrecognized project (`SPEC.md` §7): asks which backend this
 /// directory is, offering no "Automatic" row since detection already failed
 /// to conclude one.
-fn draw_project_setup(frame: &mut Frame, area: Rect, selected: usize) {
+fn draw_project_setup(frame: &mut Frame, area: Rect, selected: usize, palette: Palette) {
     let items: Vec<ListItem> = BackendKind::ALL
         .iter()
         .map(|kind| ListItem::new(Line::from(format!(" {} ", kind.display_name()))))
         .collect();
 
     let popup = centered(area, 60, BackendKind::ALL.len() as u16 + 4);
-    let block = modal("New project");
+    let block = modal("New project", palette);
     let inner = block.inner(popup);
     let [message, list] = Layout::vertical([
         Constraint::Length(2),
@@ -647,9 +768,9 @@ fn draw_project_setup(frame: &mut Frame, area: Rect, selected: usize) {
 /// A destructive esptool action awaiting explicit confirmation (`SPEC.md`
 /// §15). `message` is always the literal command about to run, never a
 /// paraphrase, so shown as-is.
-fn draw_confirm(frame: &mut Frame, area: Rect, message: &str, confirm: bool) {
-    let lines = vec![Line::from(message.to_string().fg(Color::Yellow))];
-    draw_confirm_dialog(frame, area, "Confirm", lines, confirm, 70, 7);
+fn draw_confirm(frame: &mut Frame, area: Rect, message: &str, confirm: bool, palette: Palette) {
+    let lines = vec![Line::from(message.to_string().fg(palette.warning))];
+    draw_confirm_dialog(frame, area, "Confirm", lines, confirm, (70, 7), palette);
 }
 
 /// Installation-directory selection: a real filesystem browser --- "use
@@ -663,6 +784,7 @@ fn draw_dir_picker(
     path: &std::path::Path,
     selected: usize,
     error: Option<&str>,
+    palette: Palette,
 ) {
     let title = match purpose {
         crate::workspace::DirPurpose::Installation => "Where is the Zephyr installation?",
@@ -672,7 +794,7 @@ fn draw_dir_picker(
     let width = 72u16;
     let popup = centered(area, width, height);
     frame.render_widget(Clear, popup);
-    let block = modal(title);
+    let block = modal(title, palette);
     frame.render_widget(block.clone(), popup);
 
     let inner = block.inner(popup);
@@ -696,7 +818,7 @@ fn draw_dir_picker(
         .iter()
         .map(|row| match row.kind {
             crate::workspace::DirRowKind::Use => ListItem::new(Line::from(vec![
-                Span::styled("→ ", Style::new().fg(Color::Cyan)),
+                Span::styled("→ ", Style::new().fg(palette.accent)),
                 "use this directory".bold(),
             ])),
             crate::workspace::DirRowKind::Parent | crate::workspace::DirRowKind::Dir => {
@@ -712,8 +834,8 @@ fn draw_dir_picker(
     );
 
     let footer = match (error, read_error.as_deref()) {
-        (Some(error), _) => Line::from(error.to_string().fg(Color::Red)),
-        (None, Some(read)) => Line::from(read.fg(Color::Yellow)),
+        (Some(error), _) => Line::from(error.to_string().fg(palette.error)),
+        (None, Some(read)) => Line::from(read.fg(palette.warning)),
         (None, None) => Line::from(
             "enter: open / accept · ←: up · esc: cancel — the choice is saved to the config".dim(),
         ),
@@ -734,12 +856,13 @@ fn draw_project_picker(
     app: &App,
     selected: usize,
     error: Option<&str>,
+    palette: Palette,
 ) {
     let height = 18u16;
     let width = 72u16;
     let popup = centered(area, width, height);
     frame.render_widget(Clear, popup);
-    let block = modal("Which project?");
+    let block = modal("Which project?", palette);
     frame.render_widget(block.clone(), popup);
 
     let inner = block.inner(popup);
@@ -756,7 +879,7 @@ fn draw_project_picker(
         .and_then(|panel| panel.projects.clone());
     let Some(dir) = dir else {
         frame.render_widget(
-            Paragraph::new("no projects folder configured".fg(Color::Yellow)),
+            Paragraph::new("no projects folder configured".fg(palette.warning)),
             dir_area,
         );
         return;
@@ -779,7 +902,7 @@ fn draw_project_picker(
                     Span::raw("  "),
                     row.name.clone().bold(),
                     Span::raw("  "),
-                    Span::styled("✓ CMakeLists.txt", Style::new().fg(Color::Green)),
+                    Span::styled("✓ CMakeLists.txt", Style::new().fg(palette.success)),
                 ]))
             } else {
                 ListItem::new(Line::from(vec![
@@ -799,13 +922,13 @@ fn draw_project_picker(
     );
 
     let footer = if let Some(error) = error {
-        Line::from(error.to_string().fg(Color::Red))
+        Line::from(error.to_string().fg(palette.error))
     } else if let Some(read) = read_error {
-        Line::from(read.fg(Color::Yellow))
+        Line::from(read.fg(palette.warning))
     } else if rows.is_empty() {
         Line::from(
             "no subdirectories here — put an application in the folder, or choose another"
-                .fg(Color::Yellow),
+                .fg(palette.warning),
         )
     } else {
         Line::from("enter: build this one · esc: cancel — the choice is session-only".dim())
@@ -818,7 +941,14 @@ fn draw_project_picker(
 
 /// Build-directory selection: the project's configured directories plus a
 /// typed new name (`west build -d`).
-fn draw_build_dir_picker(frame: &mut Frame, area: Rect, app: &App, input: &str, selected: usize) {
+fn draw_build_dir_picker(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    input: &str,
+    selected: usize,
+    palette: Palette,
+) {
     let height = 16u16;
     let width = 60u16;
     let popup = centered(area, width, height);
@@ -828,20 +958,20 @@ fn draw_build_dir_picker(frame: &mut Frame, area: Rect, app: &App, input: &str, 
         return;
     };
     let title = format!("Build directory (currently {})", panel.build_dir);
-    frame.render_widget(modal(&title), popup);
+    frame.render_widget(modal(&title, palette), popup);
 
     let [filter_area, hint_area, list_area] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(2),
         Constraint::Min(1),
     ])
-    .areas(modal(&title).inner(popup));
+    .areas(modal(&title, palette).inner(popup));
 
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled("name  ", Style::new().dim()),
             Span::raw(input.to_string()),
-            Span::styled("▏", Style::new().fg(Color::Cyan)),
+            Span::styled("▏", Style::new().fg(palette.accent)),
         ])),
         filter_area,
     );
@@ -884,7 +1014,13 @@ fn draw_build_dir_picker(frame: &mut Frame, area: Rect, app: &App, input: &str, 
 }
 
 /// Chooses among several `.bin`/`.elf` candidates found in the project root.
-fn draw_firmware_picker(frame: &mut Frame, area: Rect, app: &App, selected: usize) {
+fn draw_firmware_picker(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    selected: usize,
+    palette: Palette,
+) {
     let firmware = app
         .flash
         .as_ref()
@@ -896,9 +1032,9 @@ fn draw_firmware_picker(frame: &mut Frame, area: Rect, app: &App, selected: usiz
         frame.render_widget(Clear, popup);
         frame.render_widget(
             Paragraph::new(vec![Line::from(
-                "No .bin/.elf firmware found in the project root.".fg(Color::Yellow),
+                "No .bin/.elf firmware found in the project root.".fg(palette.warning),
             )])
-            .block(modal("Firmware")),
+            .block(modal("Firmware", palette)),
             popup,
         );
         return;
@@ -920,7 +1056,7 @@ fn draw_firmware_picker(frame: &mut Frame, area: Rect, app: &App, selected: usiz
     frame.render_widget(Clear, popup);
     frame.render_stateful_widget(
         List::new(items)
-            .block(modal("Firmware"))
+            .block(modal("Firmware", palette))
             .highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
         popup,
         &mut state,
@@ -932,7 +1068,14 @@ fn draw_firmware_picker(frame: &mut Frame, area: Rect, app: &App, selected: usiz
 /// the choice is saved with the project, so the header of the modal says
 /// where the current answer comes from instead of letting the user
 /// discover it from a changed file).
-fn draw_board_picker(frame: &mut Frame, area: Rect, app: &App, input: &str, selected: usize) {
+fn draw_board_picker(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    input: &str,
+    selected: usize,
+    palette: Palette,
+) {
     use crate::build::ListState as FetchState;
     use crate::ui::SPINNER;
 
@@ -971,14 +1114,14 @@ fn draw_board_picker(frame: &mut Frame, area: Rect, app: &App, input: &str, sele
         Constraint::Length(2),
         Constraint::Min(1),
     ])
-    .areas(modal(&title).inner(popup));
+    .areas(modal(&title, palette).inner(popup));
 
-    frame.render_widget(modal(&title), popup);
+    frame.render_widget(modal(&title, palette), popup);
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled("filter ", Style::new().dim()),
             Span::raw(input.to_string()),
-            Span::styled("▏", Style::new().fg(Color::Cyan)),
+            Span::styled("▏", Style::new().fg(palette.accent)),
         ])),
         filter_area,
     );
@@ -1027,7 +1170,14 @@ fn draw_board_picker(frame: &mut Frame, area: Rect, app: &App, input: &str, sele
 /// Shield selection: the same filter box over the `west shields` list, with
 /// a leading `(none)` row --- the shield is optional, and that row is how an
 /// existing answer is cleared (saved with the board, like a board pick).
-fn draw_shield_picker(frame: &mut Frame, area: Rect, app: &App, input: &str, selected: usize) {
+fn draw_shield_picker(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    input: &str,
+    selected: usize,
+    palette: Palette,
+) {
     use crate::build::ListState as FetchState;
     use crate::ui::SPINNER;
 
@@ -1050,14 +1200,14 @@ fn draw_shield_picker(frame: &mut Frame, area: Rect, app: &App, input: &str, sel
         Constraint::Length(2),
         Constraint::Min(1),
     ])
-    .areas(modal(&title).inner(popup));
+    .areas(modal(&title, palette).inner(popup));
 
-    frame.render_widget(modal(&title), popup);
+    frame.render_widget(modal(&title, palette), popup);
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled("filter ", Style::new().dim()),
             Span::raw(input.to_string()),
-            Span::styled("▏", Style::new().fg(Color::Cyan)),
+            Span::styled("▏", Style::new().fg(palette.accent)),
         ])),
         filter_area,
     );
@@ -1108,7 +1258,7 @@ fn draw_shield_picker(frame: &mut Frame, area: Rect, app: &App, input: &str, sel
 
 /// Serial device selection. Reached automatically when a scan finds more than
 /// one board, because guessing would be the wrong kind of convenience.
-fn draw_device_picker(frame: &mut Frame, area: Rect, app: &App, selected: usize) {
+fn draw_device_picker(frame: &mut Frame, area: Rect, app: &App, selected: usize, palette: Palette) {
     let devices = app.devices.devices();
 
     if devices.is_empty() {
@@ -1116,10 +1266,10 @@ fn draw_device_picker(frame: &mut Frame, area: Rect, app: &App, selected: usize)
         frame.render_widget(Clear, popup);
         frame.render_widget(
             Paragraph::new(vec![
-                Line::from("No MicroPython device found.".fg(Color::Yellow)),
+                Line::from("No MicroPython device found.".fg(palette.warning)),
                 Line::from("Connect a board and press 'd' to scan again.".dim()),
             ])
-            .block(modal("Device")),
+            .block(modal("Device", palette)),
             popup,
         );
         return;
@@ -1137,7 +1287,7 @@ fn draw_device_picker(frame: &mut Frame, area: Rect, app: &App, selected: usize)
                 Some(vendor) => format!("  {} ({vendor})", device.vid_pid),
                 None => format!("  {}", device.vid_pid),
             };
-            spans.push(Span::styled(vid_pid, Style::new().fg(Color::Cyan)));
+            spans.push(Span::styled(vid_pid, Style::new().fg(palette.accent)));
             ListItem::new(Line::from(spans))
         })
         .collect();
@@ -1148,14 +1298,14 @@ fn draw_device_picker(frame: &mut Frame, area: Rect, app: &App, selected: usize)
     frame.render_widget(Clear, popup);
     frame.render_stateful_widget(
         List::new(items)
-            .block(modal("Device"))
+            .block(modal("Device", palette))
             .highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
         popup,
         &mut state,
     );
 }
 
-fn draw_help(frame: &mut Frame, area: Rect, app: &App) {
+fn draw_help(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
     // Help follows the screen: listing dashboard keys while browsing files
     // would describe bindings that do nothing.
     let bindings: &[(&str, &str)] = match app.view {
@@ -1230,17 +1380,17 @@ fn draw_help(frame: &mut Frame, area: Rect, app: &App) {
     let mut lines = vec![Line::from("Keyboard".bold()), Line::from("")];
     lines.extend(bindings.iter().map(|(key, description)| {
         Line::from(vec![
-            Span::styled(format!("  {key:<18}"), Style::new().fg(Color::Cyan)),
+            Span::styled(format!("  {key:<18}"), Style::new().fg(palette.accent)),
             Span::raw(*description),
         ])
     }));
 
     let popup = centered(area, 56, lines.len() as u16 + 2);
     frame.render_widget(Clear, popup);
-    frame.render_widget(Paragraph::new(lines).block(modal("Help")), popup);
+    frame.render_widget(Paragraph::new(lines).block(modal("Help", palette)), popup);
 }
 
-fn draw_picker(frame: &mut Frame, area: Rect, app: &App, selected: usize) {
+fn draw_picker(frame: &mut Frame, area: Rect, app: &App, selected: usize, palette: Palette) {
     let options = PickerOption::all();
     let active = app.manager.override_kind();
 
@@ -1261,7 +1411,7 @@ fn draw_picker(frame: &mut Frame, area: Rect, app: &App, selected: usize) {
             {
                 spans.push(Span::styled(
                     format!("  {:.2}", detection.confidence_of(*kind)),
-                    Style::new().fg(Color::Cyan),
+                    Style::new().fg(palette.accent),
                 ));
             }
             ListItem::new(Line::from(spans))
@@ -1274,14 +1424,20 @@ fn draw_picker(frame: &mut Frame, area: Rect, app: &App, selected: usize) {
     frame.render_widget(Clear, popup);
     frame.render_stateful_widget(
         List::new(items)
-            .block(modal("Backend"))
+            .block(modal("Backend", palette))
             .highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
         popup,
         &mut state,
     );
 }
 
-fn draw_sync_preview(frame: &mut Frame, area: Rect, plan: &SyncPlan, confirm: bool) {
+fn draw_sync_preview(
+    frame: &mut Frame,
+    area: Rect,
+    plan: &SyncPlan,
+    confirm: bool,
+    palette: Palette,
+) {
     let mut lines = Vec::new();
 
     if plan.is_empty() {
@@ -1289,7 +1445,15 @@ fn draw_sync_preview(frame: &mut Frame, area: Rect, plan: &SyncPlan, confirm: bo
             "Nothing to do \u{2014} local and device are in sync.".dim(),
         ));
         let height = 7u16;
-        draw_confirm_dialog(frame, area, "Sync preview", lines, confirm, 58, height);
+        draw_confirm_dialog(
+            frame,
+            area,
+            "Sync preview",
+            lines,
+            confirm,
+            (58, height),
+            palette,
+        );
         return;
     }
 
@@ -1330,10 +1494,10 @@ fn draw_sync_preview(frame: &mut Frame, area: Rect, plan: &SyncPlan, confirm: bo
 
     if !plan.deletes.is_empty() {
         lines.push(Line::from(
-            format!("Delete {} device-only file(s):", plan.deletes.len()).fg(Color::Yellow),
+            format!("Delete {} device-only file(s):", plan.deletes.len()).fg(palette.warning),
         ));
         for path in plan.deletes.iter().take(8) {
-            lines.push(Line::from(format!("  \u{2717} {path}").fg(Color::Yellow)));
+            lines.push(Line::from(format!("  \u{2717} {path}").fg(palette.warning)));
         }
         if plan.deletes.len() > 8 {
             lines.push(Line::from(
@@ -1343,16 +1507,24 @@ fn draw_sync_preview(frame: &mut Frame, area: Rect, plan: &SyncPlan, confirm: bo
     }
 
     let height = (lines.len() as u16 + 5).min(area.height.saturating_sub(2));
-    draw_confirm_dialog(frame, area, "Sync preview", lines, confirm, 60, height);
+    draw_confirm_dialog(
+        frame,
+        area,
+        "Sync preview",
+        lines,
+        confirm,
+        (60, height),
+        palette,
+    );
 }
 
-fn modal(title: &str) -> Block<'static> {
+fn modal(title: &str, palette: Palette) -> Block<'static> {
     Block::bordered()
         .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(Color::Cyan))
+        .border_style(Style::new().fg(palette.accent))
         .title(Span::styled(
             format!(" {title} "),
-            Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::new().fg(palette.accent).add_modifier(Modifier::BOLD),
         ))
 }
 

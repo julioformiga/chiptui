@@ -1,8 +1,10 @@
 //! The row-2 panes' operation buttons, as a custom widget
 //! (`https://ratatui.rs/examples/widgets/custom_widget/`, minus the
-//! example's gradient --- `AGENTS.md` asks for terminal-native colors
-//! rather than an imposed theme, so the widget speaks only in
-//! modifiers). The buttons are stacked in one bordered group that shares
+//! example's gradient --- deliberately colorless, unlike the rest of the
+//! UI (`crate::ui::Palette`): the `REVERSED` selection highlight must read
+//! unambiguously whatever theme is active, and a themed button would blunt
+//! that contrast, so the widget speaks only in modifiers). The buttons are
+//! stacked in one bordered group that shares
 //! its top and bottom rules, one centered label per row: N buttons cost
 //! N+2 lines, so a pane full of them still fits vertically. Each
 //! button's icon label is bold while the action can run, dim while it

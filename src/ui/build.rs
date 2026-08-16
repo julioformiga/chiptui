@@ -11,7 +11,7 @@
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Stylize};
+use ratatui::style::Stylize;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
@@ -19,19 +19,19 @@ use super::button::{self, Button};
 use super::workspace::label;
 use crate::app::{App, Focus};
 use crate::build::{BuildPanel, BuildReport};
-use crate::ui::{dashboard_focused, pane_block};
+use crate::ui::{Palette, dashboard_focused, pane_block};
 
-pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
+pub fn draw(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
     let Some(panel) = &app.build else {
         return;
     };
     let focused = dashboard_focused(app, Focus::Build);
-    let block = pane_block("Project actions", focused);
+    let block = pane_block("Project actions", focused, palette);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
     let footer_top = draw_rows(frame, inner, app, panel);
-    draw_state(frame, inner, panel, footer_top);
+    draw_state(frame, inner, panel, footer_top, palette);
 }
 
 /// The command state: the live counter while a command runs, the last
@@ -40,17 +40,23 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
 /// whether or not the `Stop` box is showing --- beside the box, on the
 /// left half, while one runs; full-width over the empty reservation
 /// otherwise. Nothing in the pane moves when a command starts or ends.
-fn draw_state(frame: &mut Frame, area: Rect, panel: &BuildPanel, footer_top: u16) {
+fn draw_state(
+    frame: &mut Frame,
+    area: Rect,
+    panel: &BuildPanel,
+    footer_top: u16,
+    palette: Palette,
+) {
     if area.height < 2 || footer_top + 1 >= area.bottom() {
         return;
     }
     let line = if let Some(elapsed) = panel.elapsed() {
         Line::from(vec![
             label("state"),
-            format!("running · {}", BuildPanel::secs(elapsed)).fg(Color::Cyan),
+            format!("running · {}", BuildPanel::secs(elapsed)).fg(palette.accent),
         ])
     } else if let Some(report) = &panel.last {
-        report_line(report)
+        report_line(report, palette)
     } else {
         Line::from(vec![label("state"), "never built".dim()])
     };
@@ -66,12 +72,12 @@ fn draw_state(frame: &mut Frame, area: Rect, panel: &BuildPanel, footer_top: u16
     frame.render_widget(Paragraph::new(line), rect);
 }
 
-fn report_line(report: &BuildReport) -> Line<'static> {
+fn report_line(report: &BuildReport, palette: Palette) -> Line<'static> {
     let what = report.what;
     let (mark, style) = if report.ok {
-        ("✓", ratatui::style::Style::new().fg(Color::Green))
+        ("✓", ratatui::style::Style::new().fg(palette.success))
     } else {
-        ("✗", ratatui::style::Style::new().fg(Color::Red))
+        ("✗", ratatui::style::Style::new().fg(palette.error))
     };
     let outcome = if report.ok {
         format!("{what} ok in {}", BuildPanel::secs(report.duration))

@@ -580,6 +580,16 @@ impl PickerOption {
     }
 }
 
+/// Resolves the active theme from `[ui] theme` in the user config, falling
+/// back to Tokyo Night on an absent or unparsable slug --- shared by
+/// [`App::new`] and `main.rs`'s home screen, which draws before an `App`
+/// exists at all.
+pub fn resolve_theme(config_dir: &std::path::Path) -> ratatui_themes::ThemeName {
+    crate::settings::theme(config_dir)
+        .and_then(|slug| slug.parse().ok())
+        .unwrap_or(ratatui_themes::ThemeName::TokyoNight)
+}
+
 pub struct App {
     pub manager: ProjectManager,
     pub logs: LogStore,
@@ -689,6 +699,11 @@ pub struct App {
     /// afterwards --- so redirecting the home really does redirect every
     /// config read, `$XDG_CONFIG_HOME` included.
     config_dir: std::path::PathBuf,
+    /// The active UI theme --- Tokyo Night unless overridden by `[ui] theme`
+    /// in the user config. Loaded once at startup and cached: unlike
+    /// [`ZephyrSettings`](crate::settings::ZephyrSettings) (recomputed on
+    /// demand), this is read every frame by the renderer.
+    theme: ratatui_themes::ThemeName,
     /// Memoized [`Self::tool_status`]. The render path asks twice a frame
     /// (once to measure the pane, once to draw it) for an answer that only
     /// changes with the selected backend or the resolved tool locations, and
@@ -716,6 +731,7 @@ impl App {
         let home =
             std::env::var_os("HOME").map_or_else(std::path::PathBuf::new, std::path::PathBuf::from);
         let config_dir = crate::settings::default_config_dir(&home);
+        let theme = resolve_theme(&config_dir);
         let mut manager = ProjectManager::new(start_dir);
         manager.set_known_projects(crate::settings::ProjectRegistry::load(&config_dir, &home));
         Self {
@@ -756,6 +772,7 @@ impl App {
             restore_pending: false,
             serial_dir: std::path::PathBuf::from("/dev"),
             config_dir,
+            theme,
             home_dir: home,
             tool_status_cache: std::cell::RefCell::new(None),
             switch_requested: false,
@@ -766,6 +783,14 @@ impl App {
 
     pub fn should_quit(&self) -> bool {
         self.should_quit
+    }
+
+    /// The active palette for this frame --- deliberately named apart from
+    /// [`crate::backend::BackendKind::palette`], which answers a different
+    /// question ("which backend is this row?") and coexists with this one
+    /// rather than being replaced by it.
+    pub fn theme_palette(&self) -> ratatui_themes::ThemePalette {
+        self.theme.palette()
     }
 
     /// Where `~` in configuration resolves; also what the workspace pane

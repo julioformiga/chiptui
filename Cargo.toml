@@ -14,6 +14,12 @@ portable-pty = "0.9.0"
 # Crossterm is used through `ratatui::crossterm` rather than as a direct
 # dependency, so the backend and the terminal driver can never drift apart.
 ratatui = "0.30.2"
+# Backs the app-wide color theme (default: Tokyo Night, overridable via `[ui]
+# theme` in the user config --- see settings.rs). `default-features = false`
+# drops the crate's default `serde` feature: chiptui's config is a hand-rolled
+# parser (settings.rs), so theme names round-trip as plain strings via
+# `ThemeName`'s own `Display`/`FromStr`, no serde needed.
+ratatui-themes = { version = "0.3.0", default-features = false }
 # Local half of the content check: the device side is hashed by
 # `mpremote fs sha256sum`, and std has no hashing to match it with.
 sha2 = { version = "0.11.0", default-features = false }

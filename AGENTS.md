@@ -162,7 +162,9 @@ The UI should be:
 -   compact;
 -   readable in normal terminal sizes.
 
-Prefer terminal-native colors and avoid imposing an elaborate theme.
+Use the `ratatui-themes` crate for a consistent, swappable color theme
+(default: Tokyo Night); the operator can override it via `[ui] theme` in the
+user config.
 
 Long-running operations should show progress/status without freezing
 navigation.

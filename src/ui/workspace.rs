@@ -7,36 +7,36 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style, Stylize};
+use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{ListItem, Paragraph, Wrap};
 
 use crate::app::{App, Focus};
-use crate::ui::{dashboard_focused, pane_block};
+use crate::ui::{Palette, dashboard_focused, pane_block};
 use crate::workspace::{WorkspaceAction, WorkspacePanel};
 
 /// Draws the full second row for a workspace+build backend: the workspace
 /// pane on the left, the project panel (already its own module) on the right.
-pub fn draw_row(frame: &mut Frame, area: Rect, app: &App) {
+pub fn draw_row(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
     let [left, right] =
         Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(area);
-    draw(frame, left, app);
-    super::build::draw(frame, right, app);
+    draw(frame, left, app, palette);
+    super::build::draw(frame, right, app, palette);
 }
 
-pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
+pub fn draw(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
     if app.workspace.is_none() {
         return;
     }
     let focused = dashboard_focused(app, Focus::Workspace);
-    let block = pane_block("Workspace", focused);
+    let block = pane_block("Workspace", focused, palette);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    draw_rows(frame, inner, app);
+    draw_rows(frame, inner, app, palette);
 }
 
-fn draw_rows(frame: &mut Frame, area: Rect, app: &App) {
+fn draw_rows(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
     let Some(panel) = &app.workspace else {
         return;
     };
@@ -64,7 +64,9 @@ fn draw_rows(frame: &mut Frame, area: Rect, app: &App) {
                                 .map(|workspace| workspace.dir.display().to_string()),
                             panel.invalid.is_some(),
                             area.width,
+                            palette,
                         ),
+                        palette,
                     ),
                     selected,
                 );
@@ -72,7 +74,7 @@ fn draw_rows(frame: &mut Frame, area: Rect, app: &App) {
                 // wrapped so the install guide link survives. Not part of
                 // the navigation --- the cursor never lands here.
                 if let Some(message) = &panel.invalid {
-                    y = render_info(frame, area, y, message.clone().fg(Color::Red), 4);
+                    y = render_info(frame, area, y, message.clone().fg(palette.error), 4);
                 }
             }
             WorkspaceAction::Projects => {
@@ -88,7 +90,9 @@ fn draw_rows(frame: &mut Frame, area: Rect, app: &App) {
                             panel.projects.as_ref().map(|dir| dir.display().to_string()),
                             panel.projects_invalid.is_some(),
                             area.width,
+                            palette,
                         ),
+                        palette,
                     ),
                     selected,
                 );
@@ -115,7 +119,9 @@ fn draw_rows(frame: &mut Frame, area: Rect, app: &App) {
                             }),
                             false,
                             area.width,
+                            palette,
                         ),
+                        palette,
                     ),
                     selected,
                 );
@@ -149,7 +155,8 @@ fn draw_rows(frame: &mut Frame, area: Rect, app: &App) {
                         value.is_some(),
                         false,
                         "Board",
-                        answer_value(value, false, area.width),
+                        answer_value(value, false, area.width, palette),
+                        palette,
                     ),
                     selected,
                 );
@@ -162,7 +169,7 @@ fn draw_rows(frame: &mut Frame, area: Rect, app: &App) {
                 // valid.
                 let shield = app.build.as_ref().and_then(|panel| panel.shield.clone());
                 let value = match shield {
-                    Some(name) => answer_value(Some(name), false, area.width),
+                    Some(name) => answer_value(Some(name), false, area.width, palette),
                     None => Span::raw("none (optional)").dim(),
                 };
                 let done = app
@@ -173,14 +180,14 @@ fn draw_rows(frame: &mut Frame, area: Rect, app: &App) {
                     frame,
                     area,
                     y,
-                    checklist_row(done, false, "Shield", value),
+                    checklist_row(done, false, "Shield", value, palette),
                     selected,
                 );
             }
         }
     }
     y = separator(frame, area, y);
-    draw_files_section(frame, area, y, app, panel);
+    draw_files_section(frame, area, y, app, panel, palette);
 }
 
 /// The embedded file list under the checklist: a header naming the browsed
@@ -190,7 +197,14 @@ fn draw_rows(frame: &mut Frame, area: Rect, app: &App) {
 /// (`row`'s `None` arm draws no marker column at all --- this pane has no
 /// other side to compare against), so an empty listing, an overlong name
 /// and a directory marker read identically here.
-fn draw_files_section(frame: &mut Frame, area: Rect, y: u16, app: &App, panel: &WorkspacePanel) {
+fn draw_files_section(
+    frame: &mut Frame,
+    area: Rect,
+    y: u16,
+    app: &App,
+    panel: &WorkspacePanel,
+    palette: Palette,
+) {
     if y >= area.bottom() {
         return;
     }
@@ -225,7 +239,7 @@ fn draw_files_section(frame: &mut Frame, area: Rect, y: u16, app: &App, panel: &
     };
     if let Some(error) = &panel.files_error {
         frame.render_widget(
-            Paragraph::new(error.clone().fg(Color::Red)).wrap(Wrap { trim: true }),
+            Paragraph::new(error.clone().fg(palette.error)).wrap(Wrap { trim: true }),
             list_area,
         );
         return;
@@ -236,7 +250,14 @@ fn draw_files_section(frame: &mut Frame, area: Rect, y: u16, app: &App, panel: &
         .visible_files()
         .iter()
         .map(|entry| {
-            super::files::row(&entry.name, entry.is_dir, entry.size, None, list_area.width)
+            super::files::row(
+                &entry.name,
+                entry.is_dir,
+                entry.size,
+                None,
+                list_area.width,
+                palette,
+            )
         })
         .collect();
     let cursor = panel.in_files.then_some(panel.files_cursor);
@@ -253,11 +274,12 @@ pub(super) fn checklist_row(
     broken: bool,
     label: &str,
     value: Span<'static>,
+    palette: Palette,
 ) -> Line<'static> {
     let mark = if broken {
-        Span::styled("✗", Style::new().fg(Color::Red).bold())
+        Span::styled("✗", Style::new().fg(palette.error).bold())
     } else if done {
-        Span::styled("✓", Style::new().fg(Color::Green).bold())
+        Span::styled("✓", Style::new().fg(palette.success).bold())
     } else {
         Span::styled("□", Style::new().dim())
     };
@@ -272,15 +294,20 @@ pub(super) fn checklist_row(
 /// The right-hand side of a checklist row: the answer when there is one,
 /// a red `!` when a configured one failed validation, a yellow `?` while
 /// the question is open.
-pub(super) fn answer_value(answer: Option<String>, broken: bool, width: u16) -> Span<'static> {
+pub(super) fn answer_value(
+    answer: Option<String>,
+    broken: bool,
+    width: u16,
+    palette: Palette,
+) -> Span<'static> {
     if let Some(answer) = answer {
         shorten_start(&answer, value_budget(width))
-            .fg(Color::Green)
+            .fg(palette.success)
             .bold()
     } else if broken {
-        "!".fg(Color::Red).bold()
+        "!".fg(palette.error).bold()
     } else {
-        "?".fg(Color::Yellow).bold()
+        "?".fg(palette.warning).bold()
     }
 }
 

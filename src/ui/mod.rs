@@ -2,8 +2,11 @@
 //!
 //! Rendering is a pure function of [`App`] state (plus the log viewport height,
 //! which the renderer publishes back so scrolling matches what is on screen).
-//! Colors come from the terminal's own 16-color palette --- `AGENTS.md` asks
-//! for terminal-native output rather than an imposed theme.
+//! Colors come from [`App::theme_palette`] --- a `ratatui-themes` palette
+//! (default: Tokyo Night, overridable via `[ui] theme` in the user config,
+//! see `settings.rs`) computed once per frame in [`draw`] and threaded down
+//! through every `draw_*` call as a `Palette` parameter, the same way `Focus`
+//! already is.
 
 mod build;
 mod button;
@@ -17,7 +20,7 @@ mod workspace;
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Flex, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style, Stylize};
+use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, BorderType, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap,
@@ -34,6 +37,12 @@ const MIN_HEIGHT: u16 = 14;
 /// board picker's fetch, and the Monitor tab's live status.
 pub(crate) const SPINNER: [&str; 4] = ["⠋", "⠙", "⠹", "⠸"];
 
+/// The active theme, threaded through render calls the same way `Focus`/
+/// `bool` already are --- computed once per frame in [`draw`] from
+/// [`App::theme_palette`] and passed down, rather than re-read off `App` at
+/// every call site (a single source of truth for the frame being drawn).
+pub(crate) type Palette = ratatui_themes::ThemePalette;
+
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
 
@@ -42,6 +51,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         return;
     }
 
+    let palette = app.theme_palette();
+
     let [header, body, footer] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(0),
@@ -49,19 +60,19 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     ])
     .areas(area);
 
-    draw_header(frame, header, app);
+    draw_header(frame, header, app, palette);
 
     // The flash view is a dialog layered over the dashboard, never a
     // full-screen replacement, so the project/device/files panes stay
     // visible (and, via `pane`'s `View::Dashboard` check below, visibly
     // dimmed) while esptool commands run.
-    draw_dashboard(frame, body, app);
+    draw_dashboard(frame, body, app, palette);
     if app.view == View::Flash {
-        draw_flash_dialog(frame, body, app);
+        draw_flash_dialog(frame, body, app, palette);
     }
 
-    draw_footer(frame, footer, app);
-    overlay::draw(frame, area, app);
+    draw_footer(frame, footer, app, palette);
+    overlay::draw(frame, area, app, palette);
 }
 
 /// The flash action menu/options, sized to its content (like
@@ -70,12 +81,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 /// --- a real dialog, not a near-fullscreen replacement. Running an action
 /// closes this dialog (`App::show_flash_in_monitor`), so it never needs to
 /// size itself for streamed output.
-fn draw_flash_dialog(frame: &mut Frame, body: Rect, app: &App) {
+fn draw_flash_dialog(frame: &mut Frame, body: Rect, app: &App, palette: Palette) {
     let Some(flash) = &app.flash else { return };
     let (width, height) = flash::dialog_size(flash);
     let popup = centered(body, width, height);
     frame.render_widget(Clear, popup);
-    flash::draw(frame, popup, app);
+    flash::draw(frame, popup, app, palette);
 }
 
 /// Centers a `width`×`height` box inside `area`, shrinking to fit. Shared
@@ -100,10 +111,10 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
 /// Row 1's height adapts to its content: the taller of the two info panes
 /// plus borders. Both are informational (never focused), so the row starts
 /// compact and only grows when device details accumulate.
-fn draw_dashboard(frame: &mut Frame, body: Rect, app: &mut App) {
+fn draw_dashboard(frame: &mut Frame, body: Rect, app: &mut App, palette: Palette) {
     let half_width = (body.width / 2).max(1) as usize;
-    let project_n = panels::project_content(app, half_width).len();
-    let device_n = panels::device_content(app).len();
+    let project_n = panels::project_content(app, half_width, palette).len();
+    let device_n = panels::device_content(app, palette).len();
     let info_height = project_n.max(device_n).max(1) as u16 + 2;
 
     let [row1, rest] =
@@ -125,8 +136,8 @@ fn draw_dashboard(frame: &mut Frame, body: Rect, app: &mut App) {
     let [project, device] =
         Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(row1);
 
-    panels::draw_project(frame, project, app);
-    panels::draw_detection(frame, device, app);
+    panels::draw_project(frame, project, app, palette);
+    panels::draw_detection(frame, device, app, palette);
 
     // Row 2 belongs to whichever panes the backend's capabilities give it:
     // the dual-pane file browser under `Capability::Filesystem`, the
@@ -134,21 +145,21 @@ fn draw_dashboard(frame: &mut Frame, body: Rect, app: &mut App) {
     // filesystem (`SPEC.md` §11), and a placeholder only in the window
     // before the panes exist at all.
     if app.workspace_pane_visible() {
-        workspace::draw_row(frame, row2, app);
+        workspace::draw_row(frame, row2, app, palette);
     } else if app.browser.is_some() {
-        files::draw(frame, row2, app);
+        files::draw(frame, row2, app, palette);
     } else {
-        panels::draw_no_filesystem(frame, row2, app);
+        panels::draw_no_filesystem(frame, row2, app, palette);
     }
 
     // Row 3 is one bordered pane for the whole width: the Log/Monitor tab
     // strip lives on the pane's own top border (`SPEC.md` §11), like the
     // Ratatui `Tabs` example, and the selected tab's body fills the pane.
     match app.log_tab {
-        LogTab::Log => panels::draw_logs(frame, row3, app),
-        LogTab::Monitor => monitor::draw(frame, row3, app),
+        LogTab::Log => panels::draw_logs(frame, row3, app, palette),
+        LogTab::Monitor => monitor::draw(frame, row3, app, palette),
     }
-    panels::draw_log_tabs(frame, row3, app);
+    panels::draw_log_tabs(frame, row3, app, palette);
 }
 
 /// The minimum rows the workspace pane's embedded file list gets, past the
@@ -196,7 +207,7 @@ fn draw_too_small(frame: &mut Frame, area: Rect) {
     frame.render_widget(message, area);
 }
 
-fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
+fn draw_header(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
     let project = app.header_project();
     let backend = app
         .manager
@@ -206,7 +217,7 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
     let header = Line::from(vec![
         Span::styled(
             " ChipTUI ",
-            Style::new().fg(Color::Black).bg(Color::Cyan).bold(),
+            Style::new().fg(palette.bg).bg(palette.accent).bold(),
         ),
         Span::raw(" "),
         Span::styled("project ", Style::new().dim()),
@@ -217,7 +228,7 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
         Span::styled(
             app.devices.summary(),
             if app.devices.selected().is_some() {
-                Style::new().fg(Color::Green)
+                Style::new().fg(palette.success)
             } else {
                 Style::new().dim()
             },
@@ -234,7 +245,7 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
 /// the way to the rest). So hints are dropped whole, from the *middle*,
 /// rather than letting the line truncate mid-word: a cut-off " q  qui" is
 /// worse than one fewer hint.
-fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
+fn draw_footer(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
     const KEEP_LAST: usize = 2;
 
     let mut hints = app.shortcuts();
@@ -252,7 +263,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
     for (key, label) in hints {
         spans.push(Span::styled(
             format!(" {key} "),
-            Style::new().bg(Color::DarkGray),
+            Style::new().bg(palette.muted),
         ));
         spans.push(Span::styled(format!(" {label}  "), Style::new().dim()));
     }
@@ -282,27 +293,27 @@ fn content_style(focused: bool) -> Style {
 }
 
 /// A bordered block that shows whether it holds focus.
-fn pane_block(title: &str, focused: bool) -> Block<'static> {
-    pane_border(focused).title(title_span(title, focused))
+fn pane_block(title: &str, focused: bool, palette: Palette) -> Block<'static> {
+    pane_border(focused, palette).title(title_span(title, focused, palette))
 }
 
 /// An untitled bordered block that shows whether it holds focus: row 3's
 /// pane, whose border row belongs to the Log/Monitor tab strip (with the
 /// active tab's status at its right --- see `panels::draw_log_tabs`).
-pub(crate) fn pane_border(focused: bool) -> Block<'static> {
+pub(crate) fn pane_border(focused: bool, palette: Palette) -> Block<'static> {
     let border = if focused {
-        Style::new().fg(Color::Cyan)
+        Style::new().fg(palette.accent)
     } else {
-        Style::new().fg(Color::DarkGray)
+        Style::new().fg(palette.muted)
     };
     Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(border)
 }
 
-fn title_span(title: &str, focused: bool) -> Line<'static> {
+fn title_span(title: &str, focused: bool, palette: Palette) -> Line<'static> {
     let title_style = if focused {
-        Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+        Style::new().fg(palette.accent).add_modifier(Modifier::BOLD)
     } else {
         Style::new().dim()
     };
@@ -321,6 +332,7 @@ pub(crate) fn draw_scrollbar(
     content: usize,
     viewport: usize,
     position: usize,
+    palette: Palette,
 ) {
     if content <= viewport || inner.width == 0 || inner.height == 0 {
         return;
@@ -334,8 +346,8 @@ pub(crate) fn draw_scrollbar(
         .end_symbol(None)
         .track_symbol(Some("│"))
         .thumb_symbol("┃")
-        .track_style(Style::new().fg(Color::DarkGray))
-        .thumb_style(Style::new().fg(Color::Gray));
+        .track_style(Style::new().fg(palette.muted))
+        .thumb_style(Style::new().fg(palette.fg));
     frame.render_stateful_widget(
         bar,
         Rect {

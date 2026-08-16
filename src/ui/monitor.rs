@@ -12,7 +12,7 @@
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style, Stylize};
+use ratatui::style::{Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Padding, Paragraph, Wrap};
 
@@ -21,7 +21,7 @@ use crate::backend::Capability;
 use crate::flash::{OptionsField, RunState};
 use crate::logs::wrap_rows;
 use crate::ui::flash::{field_label, field_value};
-use crate::ui::{content_style, dashboard_focused, draw_scrollbar, pane_border};
+use crate::ui::{Palette, content_style, dashboard_focused, draw_scrollbar, pane_border};
 
 /// Chip + offset, always meaningful for `WriteFlash`/`VerifyFlash` on the
 /// recap above the console --- the options screen's full field list
@@ -29,13 +29,13 @@ use crate::ui::{content_style, dashboard_focused, draw_scrollbar, pane_border};
 /// flags, more detail than a short recap needs.
 const RECAP_FIELDS: &[OptionsField] = &[OptionsField::Chip, OptionsField::Offset];
 
-pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
+pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
     let focused = dashboard_focused(app, Focus::Logs);
     match app.monitor_source {
-        MonitorSource::Flash => draw_flash_output(frame, area, app, focused),
-        MonitorSource::Device => draw_device_monitor(frame, area, app, focused),
-        MonitorSource::Run => draw_run_output(frame, area, app, focused),
-        MonitorSource::Build => draw_build_output(frame, area, app, focused),
+        MonitorSource::Flash => draw_flash_output(frame, area, app, focused, palette),
+        MonitorSource::Device => draw_device_monitor(frame, area, app, focused, palette),
+        MonitorSource::Run => draw_run_output(frame, area, app, focused, palette),
+        MonitorSource::Build => draw_build_output(frame, area, app, focused, palette),
     }
 }
 
@@ -43,10 +43,16 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
 /// output's shape: the panel's own header carries board/state, and the tab
 /// strip carries the live status (see `panels::monitor_status`), so this
 /// pane is just the console.
-fn draw_build_output(frame: &mut Frame, area: Rect, app: &mut App, focused: bool) {
+fn draw_build_output(
+    frame: &mut Frame,
+    area: Rect,
+    app: &mut App,
+    focused: bool,
+    palette: Palette,
+) {
     let doc: Vec<Line> = {
         let Some(panel) = app.build.as_ref() else {
-            draw_device_monitor(frame, area, app, focused);
+            draw_device_monitor(frame, area, app, focused, palette);
             return;
         };
 
@@ -61,15 +67,21 @@ fn draw_build_output(frame: &mut Frame, area: Rect, app: &mut App, focused: bool
         doc
     };
 
-    let block = console_block(focused);
+    let block = console_block(focused, palette);
     let layout = console_layout(&block, area);
-    render_console(frame, area, block, layout, &doc, app);
+    render_console(frame, area, block, layout, &doc, app, palette);
 }
 
 /// The live device serial/REPL session, or its placeholders.
-fn draw_device_monitor(frame: &mut Frame, area: Rect, app: &mut App, focused: bool) {
+fn draw_device_monitor(
+    frame: &mut Frame,
+    area: Rect,
+    app: &mut App,
+    focused: bool,
+    palette: Palette,
+) {
     if app.device_monitor_process.is_some() || !app.device_monitor_output.is_empty() {
-        let block = console_block(focused);
+        let block = console_block(focused, palette);
         let layout = console_layout(&block, area);
 
         let mut console: Vec<Line> = app
@@ -91,11 +103,11 @@ fn draw_device_monitor(frame: &mut Frame, area: Rect, app: &mut App, focused: bo
             console.push(Line::from("(connected)".dim()));
         }
 
-        render_console(frame, area, block, layout, &console, app);
+        render_console(frame, area, block, layout, &console, app, palette);
         return;
     }
 
-    let block = pane_border(focused);
+    let block = pane_border(focused, palette);
 
     let message = if app.manager.capabilities().contains(Capability::Monitor) {
         "not connected — press 'm' to start".to_string()
@@ -117,9 +129,15 @@ fn draw_device_monitor(frame: &mut Frame, area: Rect, app: &mut App, focused: bo
 
 /// Streamed `esptool` output, moved here from the Flash dialog's former
 /// `FlashScreen::Output` screen --- same content, different home.
-fn draw_flash_output(frame: &mut Frame, area: Rect, app: &mut App, focused: bool) {
+fn draw_flash_output(
+    frame: &mut Frame,
+    area: Rect,
+    app: &mut App,
+    focused: bool,
+    palette: Palette,
+) {
     let Some(flash) = app.flash.as_ref() else {
-        draw_device_monitor(frame, area, app, focused);
+        draw_device_monitor(frame, area, app, focused, palette);
         return;
     };
 
@@ -134,7 +152,7 @@ fn draw_flash_output(frame: &mut Frame, area: Rect, app: &mut App, focused: bool
     // live status icon and title ride on the tab strip instead
     // (`panels::monitor_status`).
     let (block, mut doc) = if action.needs_firmware() {
-        let block = console_block(focused);
+        let block = console_block(focused, palette);
         let rule = "─".repeat(block.inner(area).width as usize);
 
         let mut lines: Vec<Line> = RECAP_FIELDS
@@ -156,7 +174,7 @@ fn draw_flash_output(frame: &mut Frame, area: Rect, app: &mut App, focused: bool
         lines.push(Line::from("console".dim()));
         (block, lines)
     } else {
-        (console_block(focused), Vec::new())
+        (console_block(focused, palette), Vec::new())
     };
     let layout = console_layout(&block, area);
 
@@ -170,19 +188,19 @@ fn draw_flash_output(frame: &mut Frame, area: Rect, app: &mut App, focused: bool
     // output.
     if let RunState::Failed(error) = &flash.state {
         console.push(Line::from(""));
-        console.push(Line::from(error.clone().fg(Color::Red)));
+        console.push(Line::from(error.clone().fg(palette.error)));
     }
     if console.is_empty() {
         console.push(Line::from("(no output yet)".dim()));
     }
     doc.extend(console);
 
-    render_console(frame, area, block, layout, &doc, app);
+    render_console(frame, area, block, layout, &doc, app, palette);
 }
 
 /// Streamed output of a `mpremote run` session, one timestamped line per row.
-fn draw_run_output(frame: &mut Frame, area: Rect, app: &mut App, focused: bool) {
-    let block = console_block(focused);
+fn draw_run_output(frame: &mut Frame, area: Rect, app: &mut App, focused: bool, palette: Palette) {
+    let block = console_block(focused, palette);
     let layout = console_layout(&block, area);
 
     let mut lines: Vec<Line> = app
@@ -208,15 +226,15 @@ fn draw_run_output(frame: &mut Frame, area: Rect, app: &mut App, focused: bool) 
         lines.push(Line::from("(no output yet)".dim()));
     }
 
-    render_console(frame, area, block, layout, &lines, app);
+    render_console(frame, area, block, layout, &lines, app, palette);
 }
 
 /// A console pane's block: like [`pane_border`] (the Log/Monitor tab strip
 /// owns the border row), but with the rightmost content column reserved for
 /// the scrollbar --- always, so wrapped lines do not reflow the moment the
 /// console outgrows the pane (the same rule the Log pane follows).
-fn console_block(focused: bool) -> Block<'static> {
-    pane_border(focused).padding(Padding::right(1))
+fn console_block(focused: bool, palette: Palette) -> Block<'static> {
+    pane_border(focused, palette).padding(Padding::right(1))
 }
 
 /// The pane geometry every console renderer needs: the inner area *with* the
@@ -259,6 +277,7 @@ fn render_console(
     layout: ConsoleLayout,
     doc: &[Line<'_>],
     app: &mut App,
+    palette: Palette,
 ) {
     let (inner, viewport, width) = layout;
     let rows: usize = doc.iter().map(|line| wrap_rows(&plain(line), width)).sum();
@@ -281,7 +300,7 @@ fn render_console(
             .wrap(Wrap { trim: false }),
         area,
     );
-    draw_scrollbar(frame, inner, rows, viewport, first);
+    draw_scrollbar(frame, inner, rows, viewport, first, palette);
 }
 
 /// The lines whose wrapped rows intersect `[first, first + viewport)`, plus

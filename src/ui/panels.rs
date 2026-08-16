@@ -2,7 +2,7 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Rect};
-use ratatui::style::{Color, Modifier, Style, Stylize};
+use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::symbols;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Tabs, Wrap};
@@ -12,16 +12,16 @@ use crate::backend::Capability;
 use crate::flash::RunState;
 use crate::logs::{Level, PREFIX_WIDTH};
 use crate::project::DetectionOutcome;
-use crate::ui::{SPINNER, content_style, dashboard_focused, pane_block, pane_border};
+use crate::ui::{Palette, SPINNER, content_style, dashboard_focused, pane_block, pane_border};
 
 /// Project identity: where it is, what it is, and how sure we are.
 ///
 /// This pane is informational only --- it never holds focus, so it always
 /// renders with a neutral (non-dimmed) style regardless of which pane is
 /// active.
-pub fn draw_project(frame: &mut Frame, area: Rect, app: &App) {
-    let block = pane_block("Project", false);
-    let lines = project_content(app, area.width as usize);
+pub fn draw_project(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
+    let block = pane_block("Project", false, palette);
+    let lines = project_content(app, area.width as usize, palette);
     frame.render_widget(
         Paragraph::new(lines)
             .block(block)
@@ -33,7 +33,7 @@ pub fn draw_project(frame: &mut Frame, area: Rect, app: &App) {
 /// Builds the Project pane's content lines. Extracted so the dashboard layout
 /// can size the info row to fit the taller of the two panes (`draw_dashboard`)
 /// without rendering twice.
-pub(super) fn project_content(app: &App, width: usize) -> Vec<Line<'static>> {
+pub(super) fn project_content(app: &App, width: usize, palette: Palette) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     let detection = app.manager.detection();
 
@@ -73,7 +73,7 @@ pub(super) fn project_content(app: &App, width: usize) -> Vec<Line<'static>> {
             lines.push(field_styled(
                 "type",
                 kind.display_name().to_string(),
-                Style::new().fg(Color::Green).bold(),
+                Style::new().fg(palette.success).bold(),
             ));
         }
         Some(DetectionOutcome::Ambiguous(kinds)) => {
@@ -85,14 +85,14 @@ pub(super) fn project_content(app: &App, width: usize) -> Vec<Line<'static>> {
             lines.push(field_styled(
                 "type",
                 format!("ambiguous: {names} --- press 'o' to choose"),
-                Style::new().fg(Color::Yellow),
+                Style::new().fg(palette.warning),
             ));
         }
         Some(DetectionOutcome::Unknown) => {
             lines.push(field_styled(
                 "type",
                 "unknown".to_string(),
-                Style::new().fg(Color::Red),
+                Style::new().fg(palette.error),
             ));
         }
         None => lines.push(field("type", "not detected yet".to_string())),
@@ -127,9 +127,9 @@ pub(super) fn project_content(app: &App, width: usize) -> Vec<Line<'static>> {
         let mut spans = vec![label_span("tools")];
         for (tool, available) in app.tool_status() {
             let style = if available {
-                Style::new().fg(Color::Green)
+                Style::new().fg(palette.success)
             } else {
-                Style::new().fg(Color::Red)
+                Style::new().fg(palette.error)
             };
             spans.push(Span::styled(
                 format!("{} {tool}  ", if available { "✓" } else { "✗" }),
@@ -149,9 +149,9 @@ pub(super) fn project_content(app: &App, width: usize) -> Vec<Line<'static>> {
 /// lives in the Project pane above, so this space is spent on the board itself
 /// instead of repeating it. Like the Project pane it is informational only and
 /// never holds focus.
-pub fn draw_detection(frame: &mut Frame, area: Rect, app: &App) {
-    let block = pane_block("Device info", false);
-    let lines = device_content(app);
+pub fn draw_detection(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
+    let block = pane_block("Device info", false, palette);
+    let lines = device_content(app, palette);
     frame.render_widget(
         Paragraph::new(lines)
             .block(block)
@@ -162,7 +162,7 @@ pub fn draw_detection(frame: &mut Frame, area: Rect, app: &App) {
 
 /// Builds the Device info pane's content lines (placeholder or details). See
 /// [`project_content`] for why this is split out.
-pub(super) fn device_content(app: &App) -> Vec<Line<'static>> {
+pub(super) fn device_content(app: &App, palette: Palette) -> Vec<Line<'static>> {
     let caps = app.manager.capabilities();
     let dim = Style::new().add_modifier(Modifier::DIM);
 
@@ -204,7 +204,7 @@ pub(super) fn device_content(app: &App) -> Vec<Line<'static>> {
             label_span("chip"),
             Span::styled(
                 family.label().to_string(),
-                Style::new().fg(Color::Green).bold(),
+                Style::new().fg(palette.success).bold(),
             ),
         ];
         if let Some(revision) = &details.revision {
@@ -230,8 +230,8 @@ pub(super) fn device_content(app: &App) -> Vec<Line<'static>> {
 /// Once the browser exists the local pane always renders, whatever the
 /// backend; the right half is the device pane under
 /// [`Capability::Filesystem`], else [`crate::ui::files`]'s placeholder.
-pub fn draw_no_filesystem(frame: &mut Frame, area: Rect, app: &App) {
-    let block = pane_block("Files", false);
+pub fn draw_no_filesystem(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
+    let block = pane_block("Files", false, palette);
     let backend = app
         .manager
         .selected_kind()
@@ -247,11 +247,11 @@ pub fn draw_no_filesystem(frame: &mut Frame, area: Rect, app: &App) {
 /// Long entries wrap at the pane's width with a hanging indent past the
 /// stamp, so a wrapped paragraph stays visually tied to its timestamp
 /// instead of overflowing or being cut off at the terminal edge.
-pub fn draw_logs(frame: &mut Frame, area: Rect, app: &mut App) {
+pub fn draw_logs(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
     // The tab strip owns the border row (see `draw_log_tabs`), so the pane
     // itself carries no title.
     let focused = dashboard_focused(app, Focus::Logs);
-    let block = pane_border(focused);
+    let block = pane_border(focused, palette);
 
     // Publish the usable height so page-scrolling matches the rendered view,
     // and the wrapping width so clamping matches too. One column is reserved
@@ -270,9 +270,9 @@ pub fn draw_logs(frame: &mut Frame, area: Rect, app: &mut App) {
         .map(|row| {
             let style = match row.entry.level {
                 Level::Info => Style::new(),
-                Level::Success => Style::new().fg(Color::Green),
-                Level::Warn => Style::new().fg(Color::Yellow),
-                Level::Error => Style::new().fg(Color::Red),
+                Level::Success => Style::new().fg(palette.success),
+                Level::Warn => Style::new().fg(palette.warning),
+                Level::Error => Style::new().fg(palette.error),
             };
             if row.first {
                 let centis = row.entry.at.millisecond() / 10;
@@ -307,13 +307,13 @@ pub fn draw_logs(frame: &mut Frame, area: Rect, app: &mut App) {
         area,
     );
 
-    draw_log_scrollbar(frame, inner, app);
+    draw_log_scrollbar(frame, inner, app, palette);
 }
 
 /// The log pane's scrollbar: the shared bar (see [`crate::ui::draw_scrollbar`])
 /// over visual (post-wrap) lines, with the thumb reflecting the scroll
 /// position (bottom while following the tail).
-fn draw_log_scrollbar(frame: &mut Frame, inner: Rect, app: &App) {
+fn draw_log_scrollbar(frame: &mut Frame, inner: Rect, app: &App, palette: Palette) {
     let total = app.logs.total_lines();
     let viewport = app.log_viewport;
     if total <= viewport {
@@ -321,7 +321,7 @@ fn draw_log_scrollbar(frame: &mut Frame, inner: Rect, app: &App) {
     }
     let max_scroll = total - viewport;
     let top = max_scroll - app.logs.scroll().min(max_scroll);
-    crate::ui::draw_scrollbar(frame, inner, total, viewport, top);
+    crate::ui::draw_scrollbar(frame, inner, total, viewport, top, palette);
 }
 
 /// Row 3's tab strip, drawn over the pane's own top border like the Ratatui
@@ -332,7 +332,7 @@ fn draw_log_scrollbar(frame: &mut Frame, inner: Rect, app: &App) {
 /// animated spinner while a command runs, a green check --- red cross on
 /// failure --- for the last finished one) and the output's row count; for
 /// Log, the entry count and, while scrolled, how far up the view sits.
-pub fn draw_log_tabs(frame: &mut Frame, pane: Rect, app: &App) {
+pub fn draw_log_tabs(frame: &mut Frame, pane: Rect, app: &App, palette: Palette) {
     // The strip spans the border row between the corners; drawn after the
     // pane's own widgets so it sits on top of the border.
     let strip = Rect {
@@ -355,7 +355,7 @@ pub fn draw_log_tabs(frame: &mut Frame, pane: Rect, app: &App) {
     // pane is unfocused).
     let active_style = if focused {
         Style::new()
-            .fg(Color::Cyan)
+            .fg(palette.accent)
             .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
     } else {
         Style::new().add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
@@ -399,14 +399,14 @@ pub fn draw_log_tabs(frame: &mut Frame, pane: Rect, app: &App) {
 
     frame.render_widget(tabs, strip);
     frame.render_widget(
-        Paragraph::new(tab_status(app)).alignment(Alignment::Right),
+        Paragraph::new(tab_status(app, palette)).alignment(Alignment::Right),
         strip,
     );
 }
 
 /// The active tab's status, drawn at the strip's right edge. A leading
 /// space keeps the pane's border dashes from touching it.
-fn tab_status(app: &App) -> Line<'static> {
+fn tab_status(app: &App, palette: Palette) -> Line<'static> {
     match app.log_tab {
         LogTab::Log => {
             let mut text = format!(" Log ({})", app.logs.total_lines());
@@ -415,22 +415,22 @@ fn tab_status(app: &App) -> Line<'static> {
             }
             Line::from(text).dim()
         }
-        LogTab::Monitor => monitor_status(app),
+        LogTab::Monitor => monitor_status(app, palette),
     }
 }
 
 /// The Monitor tab's status: the source's title with its live icon and the
 /// output's row count (`App::monitor_view.rows`, published by the console's
 /// renderer --- the strip draws after it, so the count is fresh).
-fn monitor_status(app: &App) -> Line<'static> {
+fn monitor_status(app: &App, palette: Palette) -> Line<'static> {
     let spinner = || {
         Some((
             SPINNER[(app.ticks as usize) % SPINNER.len()],
-            Style::new().fg(Color::Yellow),
+            Style::new().fg(palette.warning),
         ))
     };
-    let check = || ("\u{2713}", Style::new().fg(Color::Green));
-    let cross = || ("\u{2717}", Style::new().fg(Color::Red));
+    let check = || ("\u{2713}", Style::new().fg(palette.success));
+    let cross = || ("\u{2717}", Style::new().fg(palette.error));
 
     let (icon, title): (Option<(&str, Style)>, String) = match app.monitor_source {
         MonitorSource::Build => match app.build.as_ref() {

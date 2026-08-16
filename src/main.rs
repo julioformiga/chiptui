@@ -83,10 +83,11 @@ fn home_loop(
     home: &std::path::Path,
 ) -> Result<Option<PathBuf>> {
     let mut screen = HomeScreen::new(config_dir, home);
+    let theme = chiptui::app::resolve_theme(config_dir).palette();
     loop {
         guard
             .terminal()
-            .draw(|frame| ui::home::draw(frame, &screen))?;
+            .draw(|frame| ui::home::draw(frame, &screen, theme))?;
         let AppEvent::Key(key) = events.next_event()? else {
             // Ticks and resizes only need the redraw above; the home screen
             // has no processes to poll.

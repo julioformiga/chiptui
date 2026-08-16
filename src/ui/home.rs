@@ -25,7 +25,13 @@ use super::centered;
 /// Widest the panel gets; beyond this the path column stops being scannable.
 const MAX_WIDTH: u16 = 100;
 
-pub fn draw(frame: &mut Frame, screen: &HomeScreen) {
+/// The screen exists before any [`crate::app::App`] --- `main.rs`'s
+/// `home_loop` resolves the theme straight from the user config and passes
+/// it down. Named `theme` here (not `palette`) because every row already
+/// has a local `palette` of its own kind
+/// ([`crate::backend::BackendKind::palette`], the row's backend-identity
+/// tint) --- the two are orthogonal and coexist on the same row.
+pub fn draw(frame: &mut Frame, screen: &HomeScreen, theme: super::Palette) {
     let area = frame.area();
     let panel = centered(
         area,
@@ -37,10 +43,10 @@ pub fn draw(frame: &mut Frame, screen: &HomeScreen) {
 
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(Color::Cyan))
+        .border_style(Style::new().fg(theme.accent))
         .title(Span::styled(
             " ChipTUI ",
-            Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
         ));
     let inner = block.inner(body);
     frame.render_widget(block, body);
@@ -71,7 +77,7 @@ pub fn draw(frame: &mut Frame, screen: &HomeScreen) {
         Paragraph::new(Line::from(vec![
             Span::raw(" 🔍 "),
             Span::raw(screen.query().to_string()),
-            Span::styled("▏", Style::new().fg(Color::Cyan)),
+            Span::styled("▏", Style::new().fg(theme.accent)),
         ])),
         search_area,
     );
@@ -118,7 +124,7 @@ pub fn draw(frame: &mut Frame, screen: &HomeScreen) {
     }
 
     let status = match screen.status() {
-        Some(status) => Line::from(status.to_string().fg(Color::Yellow)),
+        Some(status) => Line::from(status.to_string().fg(theme.warning)),
         None => Line::from(""),
     };
     frame.render_widget(Paragraph::new(status), status_area);
@@ -131,7 +137,7 @@ pub fn draw(frame: &mut Frame, screen: &HomeScreen) {
     );
 
     if let Some(flow) = screen.flow() {
-        draw_flow(frame, area, screen, flow);
+        draw_flow(frame, area, screen, flow, theme);
     }
 }
 
@@ -183,29 +189,35 @@ fn fit(text: &str, max: usize) -> String {
     format!("{kept}…")
 }
 
-fn draw_flow(frame: &mut Frame, area: Rect, screen: &HomeScreen, flow: &Flow) {
+fn draw_flow(
+    frame: &mut Frame,
+    area: Rect,
+    screen: &HomeScreen,
+    flow: &Flow,
+    theme: super::Palette,
+) {
     match flow {
         Flow::CreateDir {
             path,
             selected,
             error,
-        } => draw_create_dir(frame, area, path, *selected, error.as_deref()),
+        } => draw_create_dir(frame, area, path, *selected, error.as_deref(), theme),
         Flow::CreateName {
             parent,
             input,
             error,
-        } => draw_create_name(frame, area, screen, parent, input, error.as_deref()),
-        Flow::Forget { path, name } => draw_forget(frame, area, screen, path, name),
+        } => draw_create_name(frame, area, screen, parent, input, error.as_deref(), theme),
+        Flow::Forget { path, name } => draw_forget(frame, area, screen, path, name, theme),
     }
 }
 
-fn modal(title: &str) -> Block<'static> {
+fn modal(title: &str, theme: super::Palette) -> Block<'static> {
     Block::bordered()
         .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(Color::Cyan))
+        .border_style(Style::new().fg(theme.accent))
         .title(Span::styled(
             format!(" {title} "),
-            Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
         ))
 }
 
@@ -215,10 +227,11 @@ fn draw_create_dir(
     path: &std::path::Path,
     selected: usize,
     error: Option<&str>,
+    theme: super::Palette,
 ) {
     let popup = centered(area, 72, 18);
     frame.render_widget(Clear, popup);
-    let block = modal("Where should the project folder go?");
+    let block = modal("Where should the project folder go?", theme);
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 
@@ -242,7 +255,7 @@ fn draw_create_dir(
         .iter()
         .map(|row| match row.kind {
             DirRowKind::Use => ListItem::new(Line::from(vec![
-                Span::styled("→ ", Style::new().fg(Color::Cyan)),
+                Span::styled("→ ", Style::new().fg(theme.accent)),
                 "put it in this directory".bold(),
             ])),
             DirRowKind::Parent | DirRowKind::Dir => {
@@ -258,8 +271,8 @@ fn draw_create_dir(
     );
 
     let footer = match (error, read_error.as_deref()) {
-        (Some(error), _) => Line::from(error.to_string().fg(Color::Red)),
-        (None, Some(read)) => Line::from(read.fg(Color::Yellow)),
+        (Some(error), _) => Line::from(error.to_string().fg(theme.error)),
+        (None, Some(read)) => Line::from(read.fg(theme.warning)),
         (None, None) => Line::from("enter: open / accept · ←: up · esc: cancel".dim()),
     };
     frame.render_widget(
@@ -275,10 +288,11 @@ fn draw_create_name(
     parent: &std::path::Path,
     input: &str,
     error: Option<&str>,
+    theme: super::Palette,
 ) {
     let popup = centered(area, 72, 9);
     frame.render_widget(Clear, popup);
-    let block = modal("Name the project");
+    let block = modal("Name the project", theme);
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 
@@ -302,7 +316,7 @@ fn draw_create_name(
         Paragraph::new(Line::from(vec![
             Span::styled("name ", Style::new().dim()),
             Span::raw(input.to_string()),
-            Span::styled("▏", Style::new().fg(Color::Cyan)),
+            Span::styled("▏", Style::new().fg(theme.accent)),
         ])),
         input_area,
     );
@@ -320,7 +334,7 @@ fn draw_create_name(
     );
 
     let footer = match error {
-        Some(error) => Line::from(error.to_string().fg(Color::Red)),
+        Some(error) => Line::from(error.to_string().fg(theme.error)),
         None => {
             Line::from("enter: create the folder · esc: back — the backend is asked next".dim())
         }
@@ -337,10 +351,11 @@ fn draw_forget(
     screen: &HomeScreen,
     path: &std::path::Path,
     name: &str,
+    theme: super::Palette,
 ) {
     let popup = centered(area, 66, 7);
     frame.render_widget(Clear, popup);
-    let block = modal("Remove from the list?");
+    let block = modal("Remove from the list?", theme);
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 

@@ -8,13 +8,13 @@
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style, Stylize};
+use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{List, ListItem, ListState, Paragraph, Wrap};
 
 use crate::app::App;
 use crate::flash::{ChipGuess, FlashAction, FlashPanel, FlashScreen, OptionsField};
-use crate::ui::pane_block;
+use crate::ui::{Palette, pane_block};
 
 /// The dialog's width×height for `flash.screen`, sized to its content like
 /// every other modal in `ui::overlay` rather than a fraction of the screen.
@@ -32,7 +32,7 @@ pub fn dialog_size(flash: &FlashPanel) -> (u16, u16) {
     }
 }
 
-pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
+pub fn draw(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
     let Some(flash) = &app.flash else {
         frame.render_widget(
             Paragraph::new("the flash view has not been opened".dim()),
@@ -43,15 +43,15 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
 
     let focused = app.overlay.is_none();
     match flash.screen {
-        FlashScreen::Menu => draw_menu(frame, area, flash, focused),
-        FlashScreen::Options => draw_options(frame, area, flash, focused),
-        FlashScreen::OnlineBoards => draw_online_boards(frame, area, flash, focused),
-        FlashScreen::OnlineFirmware => draw_online_firmware(frame, area, flash, focused),
-        FlashScreen::CustomUrl => draw_custom_url(frame, area, flash, focused),
+        FlashScreen::Menu => draw_menu(frame, area, flash, focused, palette),
+        FlashScreen::Options => draw_options(frame, area, flash, focused, palette),
+        FlashScreen::OnlineBoards => draw_online_boards(frame, area, flash, focused, palette),
+        FlashScreen::OnlineFirmware => draw_online_firmware(frame, area, flash, focused, palette),
+        FlashScreen::CustomUrl => draw_custom_url(frame, area, flash, focused, palette),
     }
 }
 
-fn draw_menu(frame: &mut Frame, area: Rect, flash: &FlashPanel, focused: bool) {
+fn draw_menu(frame: &mut Frame, area: Rect, flash: &FlashPanel, focused: bool, palette: Palette) {
     let items: Vec<ListItem> = FlashAction::ALL
         .iter()
         .map(|action| {
@@ -59,7 +59,7 @@ fn draw_menu(frame: &mut Frame, area: Rect, flash: &FlashPanel, focused: bool) {
             // Destructive operations are flagged wherever they appear, same
             // convention as the capabilities pane (`SPEC.md` §15).
             if action.is_destructive() {
-                spans.push(Span::styled("confirm", Style::new().fg(Color::Yellow)));
+                spans.push(Span::styled("confirm", Style::new().fg(palette.warning)));
             }
             ListItem::new(Line::from(spans))
         })
@@ -68,14 +68,20 @@ fn draw_menu(frame: &mut Frame, area: Rect, flash: &FlashPanel, focused: bool) {
     let mut state = ListState::default().with_selected(Some(flash.cursor));
     frame.render_stateful_widget(
         List::new(items)
-            .block(pane_block("Flash", focused))
+            .block(pane_block("Flash", focused, palette))
             .highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
         area,
         &mut state,
     );
 }
 
-fn draw_options(frame: &mut Frame, area: Rect, flash: &FlashPanel, focused: bool) {
+fn draw_options(
+    frame: &mut Frame,
+    area: Rect,
+    flash: &FlashPanel,
+    focused: bool,
+    palette: Palette,
+) {
     let action = flash.selected_action();
     let fields = FlashPanel::options_fields(action);
 
@@ -85,7 +91,7 @@ fn draw_options(frame: &mut Frame, area: Rect, flash: &FlashPanel, focused: bool
         let label = field_label(*field);
         let value = field_value(flash, *field);
         let value_style = if flash.options_focus == *field {
-            Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+            Style::new().fg(palette.accent).add_modifier(Modifier::BOLD)
         } else {
             Style::new()
         };
@@ -105,7 +111,7 @@ fn draw_options(frame: &mut Frame, area: Rect, flash: &FlashPanel, focused: bool
 
     frame.render_widget(
         Paragraph::new(lines)
-            .block(pane_block("Options", focused))
+            .block(pane_block("Options", focused, palette))
             .wrap(Wrap { trim: false }),
         area,
     );
@@ -149,10 +155,20 @@ pub(super) fn field_value(flash: &FlashPanel, field: OptionsField) -> String {
 }
 
 /// Boards found by [`crate::flash::FlashPanel::search_online`].
-fn draw_online_boards(frame: &mut Frame, area: Rect, flash: &FlashPanel, focused: bool) {
+fn draw_online_boards(
+    frame: &mut Frame,
+    area: Rect,
+    flash: &FlashPanel,
+    focused: bool,
+    palette: Palette,
+) {
     if flash.online_boards.is_empty() {
         frame.render_widget(
-            Paragraph::new("no boards found".dim()).block(pane_block("Boards online", focused)),
+            Paragraph::new("no boards found".dim()).block(pane_block(
+                "Boards online",
+                focused,
+                palette,
+            )),
             area,
         );
         return;
@@ -164,7 +180,10 @@ fn draw_online_boards(frame: &mut Frame, area: Rect, flash: &FlashPanel, focused
         .map(|board| {
             ListItem::new(Line::from(vec![
                 Span::raw(format!(" {} ", board.product)),
-                Span::styled(format!("{}  ", board.vendor), Style::new().fg(Color::Cyan)),
+                Span::styled(
+                    format!("{}  ", board.vendor),
+                    Style::new().fg(palette.accent),
+                ),
                 Span::styled(board.id.clone(), Style::new().dim()),
             ]))
         })
@@ -173,7 +192,7 @@ fn draw_online_boards(frame: &mut Frame, area: Rect, flash: &FlashPanel, focused
     let mut state = ListState::default().with_selected(Some(flash.online_cursor));
     frame.render_stateful_widget(
         List::new(items)
-            .block(pane_block("Boards online", focused))
+            .block(pane_block("Boards online", focused, palette))
             .highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
         area,
         &mut state,
@@ -181,11 +200,20 @@ fn draw_online_boards(frame: &mut Frame, area: Rect, flash: &FlashPanel, focused
 }
 
 /// Firmware builds found for the board picked from [`draw_online_boards`].
-fn draw_online_firmware(frame: &mut Frame, area: Rect, flash: &FlashPanel, focused: bool) {
+fn draw_online_firmware(
+    frame: &mut Frame,
+    area: Rect,
+    flash: &FlashPanel,
+    focused: bool,
+    palette: Palette,
+) {
     if flash.online_firmware.is_empty() {
         frame.render_widget(
-            Paragraph::new("no flashable firmware found".dim())
-                .block(pane_block("Firmware online", focused)),
+            Paragraph::new("no flashable firmware found".dim()).block(pane_block(
+                "Firmware online",
+                focused,
+                palette,
+            )),
             area,
         );
         return;
@@ -209,7 +237,7 @@ fn draw_online_firmware(frame: &mut Frame, area: Rect, flash: &FlashPanel, focus
     let mut state = ListState::default().with_selected(Some(flash.online_cursor));
     frame.render_stateful_widget(
         List::new(items)
-            .block(pane_block("Firmware online", focused))
+            .block(pane_block("Firmware online", focused, palette))
             .highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
         area,
         &mut state,
@@ -218,7 +246,13 @@ fn draw_online_firmware(frame: &mut Frame, area: Rect, flash: &FlashPanel, focus
 
 /// Free-text entry for a direct firmware download URL (`SPEC.md` §9: the
 /// user may paste a link instead of searching).
-fn draw_custom_url(frame: &mut Frame, area: Rect, flash: &FlashPanel, focused: bool) {
+fn draw_custom_url(
+    frame: &mut Frame,
+    area: Rect,
+    flash: &FlashPanel,
+    focused: bool,
+    palette: Palette,
+) {
     let lines = vec![
         Line::from("Paste a direct firmware download URL, then press enter.".dim()),
         Line::from(""),
@@ -226,14 +260,14 @@ fn draw_custom_url(frame: &mut Frame, area: Rect, flash: &FlashPanel, focused: b
             Span::styled("url  ", Style::new().dim()),
             Span::styled(
                 flash.custom_url.as_str(),
-                Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                Style::new().fg(palette.accent).add_modifier(Modifier::BOLD),
             ),
         ]),
     ];
 
     frame.render_widget(
         Paragraph::new(lines)
-            .block(pane_block("Firmware URL", focused))
+            .block(pane_block("Firmware URL", focused, palette))
             .wrap(Wrap { trim: false }),
         area,
     );

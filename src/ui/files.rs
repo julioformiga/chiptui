@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style, Stylize};
+use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Gauge, List, ListItem, ListState, Paragraph, Wrap};
 
@@ -18,11 +18,11 @@ use crate::backend::Capability;
 use crate::browser::{Browser, PaneState};
 use crate::device::{DiscoveryState, ScriptState};
 use crate::files::SyncStatus;
-use crate::ui::{SPINNER, content_style, dashboard_focused, pane_block};
+use crate::ui::{Palette, SPINNER, content_style, dashboard_focused, pane_block};
 
-pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
+pub fn draw(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
     let Some(browser) = &app.browser else {
-        let block = pane_block("Files", false);
+        let block = pane_block("Files", false, palette);
         frame.render_widget(
             Paragraph::new("the file listing has not started yet".dim()).block(block),
             area,
@@ -45,16 +45,16 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
         Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(body);
 
     let statuses = browser.statuses();
-    draw_local(frame, left, app, browser, &statuses);
+    draw_local(frame, left, app, browser, &statuses, palette);
     if has_filesystem {
-        draw_device(frame, right, app, browser, &statuses);
+        draw_device(frame, right, app, browser, &statuses, palette);
     } else if app.build_pane_visible() {
-        super::build::draw(frame, right, app);
+        super::build::draw(frame, right, app, palette);
     } else {
-        draw_no_device(frame, right, app);
+        draw_no_device(frame, right, app, palette);
     }
     if let Some(legend) = legend {
-        draw_legend(frame, legend);
+        draw_legend(frame, legend, palette);
     }
 }
 
@@ -62,12 +62,12 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
 /// (today: Zephyr): there is no device filesystem to browse, and this is the
 /// space its build panel will occupy. Kept capability-gated, never
 /// backend-kind-gated (`AGENTS.md` §3).
-fn draw_no_device(frame: &mut Frame, area: Rect, app: &App) {
+fn draw_no_device(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
     let backend = app
         .manager
         .selected_kind()
         .map_or("this backend".to_string(), |kind| kind.to_string());
-    let block = pane_block("Device", false);
+    let block = pane_block("Device", false, palette);
     frame.render_widget(
         Paragraph::new(format!("{backend}: no device filesystem").dim()).block(block),
         area,
@@ -80,17 +80,18 @@ fn draw_local(
     app: &App,
     browser: &Browser,
     statuses: &BTreeMap<String, SyncStatus>,
+    palette: Palette,
 ) {
     let focused = dashboard_focused(app, Focus::FilesLocal);
     let title = format!(
         "Local files: {}",
         shorten(&browser.local_path.display().to_string(), area.width)
     );
-    let block = pane_block(&title, focused);
+    let block = pane_block(&title, focused, palette);
 
     if let Some(error) = &browser.local_error {
         frame.render_widget(
-            Paragraph::new(error.clone().fg(Color::Red))
+            Paragraph::new(error.clone().fg(palette.error))
                 .block(block)
                 .wrap(Wrap { trim: true }),
             area,
@@ -111,6 +112,7 @@ fn draw_local(
                 entry.size,
                 statuses.get(&entry.name).copied(),
                 inner.width,
+                palette,
             )
         })
         .collect();
@@ -124,6 +126,7 @@ fn draw_device(
     app: &App,
     browser: &Browser,
     statuses: &BTreeMap<String, SyncStatus>,
+    palette: Palette,
 ) {
     let focused = dashboard_focused(app, Focus::FilesDevice);
     // The running-script flag rides along in the title rather than the body:
@@ -132,7 +135,7 @@ fn draw_device(
     if app.devices.script_state() == ScriptState::Running {
         title.push_str(" · script running");
     }
-    let block = pane_block(&title, focused);
+    let block = pane_block(&title, focused, palette);
 
     match &browser.device_state {
         PaneState::Idle => {
@@ -162,7 +165,7 @@ fn draw_device(
         }
         PaneState::Failed(error) => {
             frame.render_widget(
-                Paragraph::new(error.clone().fg(Color::Red))
+                Paragraph::new(error.clone().fg(palette.error))
                     .block(block)
                     .wrap(Wrap { trim: true }),
                 area,
@@ -187,6 +190,7 @@ fn draw_device(
                 entry.size,
                 statuses.get(&entry.name).copied(),
                 list_area.width,
+                palette,
             )
         })
         .collect();
@@ -198,24 +202,24 @@ fn draw_device(
         Some(browser.device_cursor),
         focused,
     );
-    draw_device_footer(frame, footer_area, browser);
+    draw_device_footer(frame, footer_area, browser, palette);
 }
 
 /// Free space on the connected board, as a progress bar --- filled by the
 /// used fraction, colored green/yellow/red at 70%/90% used so it doubles as
 /// an early warning before an upload runs out of room.
-fn draw_device_footer(frame: &mut Frame, area: Rect, browser: &Browser) {
+fn draw_device_footer(frame: &mut Frame, area: Rect, browser: &Browser, palette: Palette) {
     match &browser.device_space {
         Some(Ok(usage)) if usage.total > 0 => {
             // `Gauge::ratio` panics outside 0.0..=1.0; `total > 0` above and the
             // clamp here keep a malformed or stale reading from crashing the UI.
             let used_ratio = (usage.used as f64 / usage.total as f64).clamp(0.0, 1.0);
             let color = if used_ratio >= 0.9 {
-                Color::Red
+                palette.error
             } else if used_ratio >= 0.7 {
-                Color::Yellow
+                palette.warning
             } else {
-                Color::Green
+                palette.success
             };
             // `Gauge::label` is always centered, with no alignment option ---
             // left-padding the text to the full width forces it flush right
@@ -282,6 +286,7 @@ pub(super) fn row(
     size: u64,
     status: Option<SyncStatus>,
     width: u16,
+    palette: Palette,
 ) -> ListItem<'static> {
     let size_text = if is_dir {
         "DIR".to_string()
@@ -300,7 +305,7 @@ pub(super) fn row(
     let padding = name_width.saturating_sub(display.chars().count());
 
     let name_style = if is_dir {
-        Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+        Style::new().fg(palette.accent).add_modifier(Modifier::BOLD)
     } else {
         Style::new()
     };
@@ -309,7 +314,7 @@ pub(super) fn row(
     if let Some(status) = status {
         spans.push(Span::styled(
             format!("{} ", status.marker()),
-            status_style(status),
+            status_style(status, palette),
         ));
     }
     spans.push(Span::raw(format!("{} ", icon(name, is_dir))));
@@ -342,19 +347,19 @@ fn icon(name: &str, is_dir: bool) -> &'static str {
     }
 }
 
-fn status_style(status: SyncStatus) -> Style {
+fn status_style(status: SyncStatus, palette: Palette) -> Style {
     match status {
-        SyncStatus::Identical => Style::new().fg(Color::Green),
-        SyncStatus::SameSize => Style::new().fg(Color::Green).dim(),
-        SyncStatus::Differs => Style::new().fg(Color::Yellow),
-        SyncStatus::LocalOnly => Style::new().fg(Color::Cyan),
-        SyncStatus::DeviceOnly => Style::new().fg(Color::Magenta),
+        SyncStatus::Identical => Style::new().fg(palette.success),
+        SyncStatus::SameSize => Style::new().fg(palette.success).dim(),
+        SyncStatus::Differs => Style::new().fg(palette.warning),
+        SyncStatus::LocalOnly => Style::new().fg(palette.accent),
+        SyncStatus::DeviceOnly => Style::new().fg(palette.secondary),
         SyncStatus::Directory => Style::new().dim(),
-        SyncStatus::TypeMismatch => Style::new().fg(Color::Red),
+        SyncStatus::TypeMismatch => Style::new().fg(palette.error),
     }
 }
 
-fn draw_legend(frame: &mut Frame, area: Rect) {
+fn draw_legend(frame: &mut Frame, area: Rect, palette: Palette) {
     let entries = [
         (SyncStatus::Identical, "identical"),
         (SyncStatus::SameSize, "same size"),
@@ -367,7 +372,7 @@ fn draw_legend(frame: &mut Frame, area: Rect) {
     for (status, label) in entries {
         spans.push(Span::styled(
             format!(" {} ", status.marker()),
-            status_style(status),
+            status_style(status, palette),
         ));
         spans.push(Span::styled(format!("{label}  "), Style::new().dim()));
     }
@@ -449,13 +454,14 @@ mod tests {
     fn each_status_gets_its_own_colour() {
         // The marker alone must not be the only cue, for narrow terminals and
         // for anyone reading at a glance.
+        let palette = ratatui_themes::ThemeName::TokyoNight.palette();
         assert_ne!(
-            status_style(SyncStatus::LocalOnly),
-            status_style(SyncStatus::DeviceOnly)
+            status_style(SyncStatus::LocalOnly, palette),
+            status_style(SyncStatus::DeviceOnly, palette)
         );
         assert_ne!(
-            status_style(SyncStatus::Differs),
-            status_style(SyncStatus::Identical)
+            status_style(SyncStatus::Differs, palette),
+            status_style(SyncStatus::Identical, palette)
         );
     }
 
