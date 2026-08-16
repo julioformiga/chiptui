@@ -12,6 +12,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use crate::backend::zephyr::projects::{self, ProjectsResolution};
 use crate::backend::zephyr::workspace::{Resolution, WorkspaceOrigin};
 use crate::browser::Side;
+use crate::build::BuildAction;
 use crate::workspace::{DirPurpose, WorkspaceAction};
 
 use super::{App, Focus, LogTab, MonitorSource, Overlay};
@@ -415,6 +416,7 @@ impl App {
     pub(super) fn start_workspace_command(
         &mut self,
         label: &'static str,
+        action: BuildAction,
         command: impl FnOnce(
             &mut crate::workspace::WorkspacePanel,
             &dyn crate::backend::Backend,
@@ -441,7 +443,7 @@ impl App {
         if !panel.start(
             label,
             false,
-            crate::build::Follow::Keep,
+            action,
             command,
             &mut self.processes,
             &self.manager.capabilities(),
@@ -456,8 +458,10 @@ impl App {
 
     /// The confirm overlay's accept path for `west update`.
     pub(super) fn start_workspace_update(&mut self) {
-        self.start_workspace_command("West update", |panel, backend| {
-            panel.update_command(backend)
-        });
+        self.start_workspace_command(
+            "West update",
+            BuildAction::UpdateZephyr,
+            |panel, backend| panel.update_command(backend),
+        );
     }
 }

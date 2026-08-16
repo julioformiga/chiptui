@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
 use crate::backend::BuildKind;
-use crate::build::{BuildAction, Follow};
+use crate::build::BuildAction;
 
 use super::{App, Focus, LogTab, MonitorSource, Overlay};
 
@@ -215,7 +215,7 @@ impl App {
                 });
             }
             BuildAction::SdkList => {
-                self.start_workspace_command("SDK list", |panel, backend| {
+                self.start_workspace_command("SDK list", BuildAction::SdkList, |panel, backend| {
                     panel.sdk_list_command(backend)
                 });
             }
@@ -364,7 +364,7 @@ impl App {
         self.start_build_command(
             kind.label(),
             updates_board,
-            Follow::Lifecycle,
+            BuildAction::Build(kind),
             Focus::Build,
             |panel, backend| panel.command(kind, backend),
         );
@@ -385,7 +385,7 @@ impl App {
         self.start_build_command(
             "Flash",
             false,
-            Follow::Keep,
+            BuildAction::Flash,
             Focus::Logs,
             |panel, backend| panel.flash_command(backend),
         );
@@ -435,12 +435,13 @@ impl App {
     /// compose through the panel, run, and point the Monitor tab at the
     /// output. `focus` is where the user sits while it runs --- the panel
     /// for the build lifecycle, the Monitor tab for a flash --- and
-    /// `follow` says where the panel's cursor lands when it finishes.
+    /// `action` is the row that was started, so the panel's cursor can
+    /// return there (or its lifecycle successor) when it finishes.
     fn start_build_command(
         &mut self,
         label: &'static str,
         updates_board: bool,
-        follow: Follow,
+        action: BuildAction,
         focus: Focus,
         command: impl FnOnce(
             &mut crate::build::BuildPanel,
@@ -467,7 +468,7 @@ impl App {
         if !panel.start(
             label,
             updates_board,
-            follow,
+            action,
             command,
             &mut self.processes,
             &caps,

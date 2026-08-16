@@ -59,20 +59,13 @@ struct Running {
     /// A successful run leaves a fresh CMakeCache behind (build/rebuild;
     /// `west flash` does not reconfigure). See [`BuildPanel::finish`].
     updates_board: bool,
-    /// Where the cursor lands when this command finishes. See [`Follow`].
-    follow: Follow,
+    /// The action that was started, so [`BuildPanel::finish`] can point the
+    /// cursor at where it belongs once the list loses its `Stop` tail ---
+    /// `self.cursor` itself is not usable for that: `start` always parks it
+    /// on `Stop` the moment a command begins, so by the time it finishes the
+    /// row it was launched from is already gone.
+    action: BuildAction,
     started: Instant,
-}
-
-/// How the cursor follows the command that just finished: the build
-/// lifecycle's next step is knowable --- Flash after a successful
-/// build/rebuild, Build after anything else (a retry, or the build that
-/// follows a clean) --- while other commands (flash) keep the row they
-/// started from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Follow {
-    Lifecycle,
-    Keep,
 }
 
 /// One board target from `west boards`: the name `west build -b` takes and
@@ -669,15 +662,16 @@ impl BuildPanel {
 
     /// Starts `command` as this panel's running process. `what` labels it in
     /// the report line; `updates_board` marks commands whose success leaves
-    /// a fresh CMakeCache behind; `follow` says where the cursor lands when
-    /// it finishes; `caps` shapes the list `Stop` lands on. `false`
-    /// (without side effects) when something is already running --- one
-    /// build at a time, same rule as the flash panel.
+    /// a fresh CMakeCache behind; `action` is the row that was started, so
+    /// `finish` can send the cursor back to it; `caps` shapes the list
+    /// `Stop` lands on. `false` (without side effects) when something is
+    /// already running --- one build at a time, same rule as the flash
+    /// panel.
     pub fn start(
         &mut self,
         what: &'static str,
         updates_board: bool,
-        follow: Follow,
+        action: BuildAction,
         command: crate::process::Command,
         processes: &mut ProcessManager,
         caps: &Capabilities,
@@ -695,7 +689,7 @@ impl BuildPanel {
             id,
             what,
             updates_board,
-            follow,
+            action,
             started: Instant::now(),
         });
         // `Stop` now trails the list, drawn as the half-width box in the
@@ -828,20 +822,26 @@ impl BuildPanel {
         // this reader does not know, a build that wrote elsewhere) must not
         // erase the user's explicit choice.
         // The list just lost its `Stop` tail, so a cursor still sitting on
-        // it would point past the end. Point the lifecycle's follow-up at
-        // its row instead: Flash after a successful build/rebuild (flash
-        // what was just built), Build otherwise (a retry, or the build a
-        // clean clears the way for); other commands keep the row they
-        // started from (clamped, since the tail row is gone).
+        // it (parked there by `start`) would point past the end --- and
+        // predate this command anyway, so it cannot say where to land.
+        // Derive the target from the action that was actually started
+        // instead: Flash after a successful build/rebuild (flash what was
+        // just built), Build otherwise --- a retry, or, for Clean
+        // specifically, the build it exists to clear the way for (matching
+        // the `Build` row `start_build` parks the cursor on while a clean
+        // runs); every other command (Flash, UpdateZephyr, SdkList) lands
+        // back on its own row.
         let settled = BuildAction::list(caps, false);
-        let target = match running.follow {
-            Follow::Lifecycle if ok => Some(BuildAction::Flash),
-            Follow::Lifecycle => Some(BuildAction::Build(BuildKind::Build)),
-            Follow::Keep => None,
+        let target = match running.action {
+            BuildAction::Build(BuildKind::Clean) => BuildAction::Build(BuildKind::Build),
+            BuildAction::Build(_) if ok => BuildAction::Flash,
+            BuildAction::Build(_) => BuildAction::Build(BuildKind::Build),
+            other => other,
         };
-        self.cursor = target
-            .and_then(|action| settled.iter().position(|candidate| *candidate == action))
-            .unwrap_or_else(|| self.cursor.min(settled.len() - 1));
+        self.cursor = settled
+            .iter()
+            .position(|candidate| *candidate == target)
+            .unwrap_or(0);
 
         if ok && running.updates_board {
             let cached = cached_board(&self.root, &self.build_dir).map(|name| BoardChoice {
@@ -1026,7 +1026,7 @@ mod tests {
         assert!(panel.start(
             BuildKind::Build.label(),
             true,
-            Follow::Lifecycle,
+            BuildAction::Build(BuildKind::Build),
             crate::process::Command::new(fake("west")),
             &mut processes,
             &crate::backend::Capabilities::from_slice(&[crate::backend::Capability::Build]),
@@ -1051,6 +1051,92 @@ mod tests {
             "a finished command must never erase a hand-picked board"
         );
         assert_eq!(panel.board.as_ref().unwrap().origin, BoardOrigin::Picked);
+    }
+
+    #[test]
+    fn a_keep_command_lands_the_cursor_back_on_its_own_row() {
+        // Regression: `start` always parks the cursor on the trailing
+        // `Stop` slot, so a fallback that clamped that stale index into
+        // the post-command list (rather than tracking the action that was
+        // actually started) always resolved to the *last* row --- `Flash`,
+        // a destructive action --- no matter which command had run.
+        let dir = fixture_dir("keep-cursor");
+        let mut panel = BuildPanel::new(&dir, UtcOffset::UTC);
+        let caps = crate::backend::Capabilities::from_slice(&[
+            crate::backend::Capability::Build,
+            crate::backend::Capability::Clean,
+            crate::backend::Capability::Flash,
+            crate::backend::Capability::WorkspaceSync,
+        ]);
+
+        let mut processes = ProcessManager::new();
+        assert!(panel.start(
+            "Update Zephyr",
+            false,
+            BuildAction::UpdateZephyr,
+            crate::process::Command::new(fake("west")),
+            &mut processes,
+            &caps,
+        ));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            for event in processes.drain() {
+                panel.on_process(&event, &caps);
+            }
+            if panel.last.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(panel.last.as_ref().is_some_and(|report| report.ok));
+        assert_eq!(
+            panel.action_at(&caps, panel.cursor),
+            Some(BuildAction::UpdateZephyr),
+            "West update finishing must land back on its own row, not Flash"
+        );
+    }
+
+    #[test]
+    fn a_finished_clean_lands_the_cursor_on_build_not_flash() {
+        // Regression: `finish`'s lifecycle-follow branch sent the cursor to
+        // Flash after any successful lifecycle command, including Clean,
+        // even though Clean's start-time code parks it on Build --- Clean
+        // exists to clear the way for a build, never to be followed by a
+        // flash of a build directory that was just wiped.
+        let dir = fixture_dir("clean-cursor");
+        let mut panel = BuildPanel::new(&dir, UtcOffset::UTC);
+        panel.set_picked("nrf52840dk/nrf52840");
+        let caps = crate::backend::Capabilities::from_slice(&[
+            crate::backend::Capability::Build,
+            crate::backend::Capability::Clean,
+            crate::backend::Capability::Flash,
+        ]);
+
+        let mut processes = ProcessManager::new();
+        assert!(panel.start(
+            BuildKind::Clean.label(),
+            false,
+            BuildAction::Build(BuildKind::Clean),
+            crate::process::Command::new(fake("west")),
+            &mut processes,
+            &caps,
+        ));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            for event in processes.drain() {
+                panel.on_process(&event, &caps);
+            }
+            if panel.last.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(panel.last.as_ref().is_some_and(|report| report.ok));
+        assert_eq!(
+            panel.action_at(&caps, panel.cursor),
+            Some(BuildAction::Build(BuildKind::Build)),
+            "a finished Clean must land on Build, not Flash"
+        );
     }
 
     #[test]
@@ -1337,7 +1423,7 @@ mod tests {
         panel.start(
             BuildKind::Build.label(),
             true,
-            Follow::Lifecycle,
+            BuildAction::Build(BuildKind::Build),
             crate::process::Command::new(fake("west")),
             &mut processes,
             &zephyr,

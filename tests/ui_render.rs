@@ -519,7 +519,7 @@ fn the_monitor_tab_shows_the_running_command_with_a_spinner() {
         .start(
             "Build",
             false,
-            chiptui::build::Follow::Keep,
+            chiptui::build::BuildAction::Build(chiptui::backend::BuildKind::Build),
             command,
             &mut app.processes,
             &app.manager.capabilities(),
