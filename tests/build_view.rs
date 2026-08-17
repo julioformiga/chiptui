@@ -763,7 +763,7 @@ fn board_and_shield_picks_are_saved_and_reloaded_with_the_project() {
 }
 
 #[test]
-fn opening_a_directory_from_the_workspace_file_section_descends_into_it() {
+fn enter_in_the_workspace_file_section_descends_directly() {
     let (mut app, root) = zephyr_app("open-dir", None);
     std::fs::create_dir_all(root.join("src")).unwrap();
     app.workspace.as_mut().unwrap().reload_files();
@@ -787,14 +787,175 @@ fn opening_a_directory_from_the_workspace_file_section_descends_into_it() {
         "src"
     );
 
-    // Enter opens the per-entry menu, defaulted to `Open`; Enter again must
-    // actually descend --- `run_file_action` used to reach only into
-    // `self.browser`, which is always `None` for Zephyr, so this was a no-op.
-    app.handle(key(KeyCode::Enter));
-    assert!(matches!(app.overlay, Some(Overlay::FileActions { .. })));
+    // Enter descends straight into the directory --- there is no action
+    // menu between the keypress and the navigation anymore.
     app.handle(key(KeyCode::Enter));
     assert_eq!(app.overlay, None);
     assert_eq!(app.workspace.as_ref().unwrap().files_path, root.join("src"));
+}
+
+/// Walks the workspace cursor from the checklist's first row onto the file
+/// list entry named `name` (assumed to exist), asserting it landed there.
+/// Only walks down; to reach an entry above the cursor, close what is open
+/// and walk up instead.
+fn workspace_cursor_on(app: &mut App, name: &str) {
+    for _ in 0..32 {
+        let panel = app.workspace.as_ref().unwrap();
+        if panel.in_files && panel.files_selected().is_some_and(|e| e.name == name) {
+            return;
+        }
+        app.handle(key(KeyCode::Down));
+    }
+    panic!("never reached the {name} entry");
+}
+
+/// The upward mirror of [`workspace_cursor_on`].
+fn workspace_cursor_up_to(app: &mut App, name: &str) {
+    for _ in 0..32 {
+        let panel = app.workspace.as_ref().unwrap();
+        if panel.in_files && panel.files_selected().is_some_and(|e| e.name == name) {
+            return;
+        }
+        app.handle(key(KeyCode::Up));
+    }
+    panic!("never reached the {name} entry");
+}
+
+#[test]
+fn enter_on_a_text_file_in_the_workspace_file_section_queues_the_editor() {
+    let (mut app, root) = zephyr_app("edit-file", None);
+    std::fs::write(root.join("main.c"), "int main(void) { return 0; }\n").unwrap();
+    app.workspace.as_mut().unwrap().reload_files();
+    app.focus = Focus::Workspace;
+
+    workspace_cursor_on(&mut app, "main.c");
+    app.handle(key(KeyCode::Enter));
+
+    // No menu: Enter on an editable file goes straight to $EDITOR.
+    assert_eq!(app.overlay, None);
+    let pending = app
+        .take_pending_edit()
+        .expect("Enter on a text file must queue $EDITOR");
+    assert_eq!(pending.path, root.join("main.c"));
+    assert_eq!(
+        pending.device_target, None,
+        "a local edit has no device half"
+    );
+}
+
+#[test]
+fn enter_and_v_on_a_binary_workspace_file_do_nothing() {
+    let (mut app, root) = zephyr_app("binary-file", None);
+    std::fs::write(root.join("zephyr.bin"), [0u8, 1, 2, 3]).unwrap();
+    app.workspace.as_mut().unwrap().reload_files();
+    app.focus = Focus::Workspace;
+
+    workspace_cursor_on(&mut app, "zephyr.bin");
+    app.handle(key(KeyCode::Enter));
+    app.handle(key(KeyCode::Char('v')));
+
+    assert_eq!(app.overlay, None);
+    assert!(app.viewer.is_none());
+    assert!(app.take_pending_edit().is_none());
+    assert!(
+        root.join("zephyr.bin").exists(),
+        "nothing was deleted either"
+    );
+}
+
+#[test]
+fn v_on_a_text_file_in_the_workspace_file_section_opens_the_viewer() {
+    let (mut app, root) = zephyr_app("view-file", None);
+    std::fs::write(root.join("prj.conf"), "CONFIG_SERIAL=y\n").unwrap();
+    app.workspace.as_mut().unwrap().reload_files();
+    app.focus = Focus::Workspace;
+
+    workspace_cursor_on(&mut app, "prj.conf");
+    app.handle(key(KeyCode::Char('v')));
+
+    assert_eq!(app.overlay, Some(Overlay::FileViewer));
+    let viewer = app.viewer.as_ref().unwrap();
+    assert_eq!(
+        viewer.source,
+        chiptui::app::ViewerSource::Local(root.join("prj.conf"))
+    );
+    assert!(matches!(
+        viewer.state,
+        chiptui::app::ViewerState::Ready { .. }
+    ));
+
+    // `v` is a file action: on a directory it does nothing. Close the
+    // viewer, walk up to the `dev` seam directory and try again.
+    app.handle(key(KeyCode::Esc));
+    workspace_cursor_up_to(&mut app, "dev");
+    app.handle(key(KeyCode::Char('v')));
+    assert_eq!(app.overlay, None);
+    assert!(app.viewer.is_none());
+}
+
+#[test]
+fn del_in_the_workspace_file_section_asks_first_and_defaults_to_no() {
+    let (mut app, root) = zephyr_app("del-file", None);
+    std::fs::write(root.join("prj.conf"), "CONFIG_SERIAL=y\n").unwrap();
+    app.workspace.as_mut().unwrap().reload_files();
+    app.focus = Focus::Workspace;
+
+    workspace_cursor_on(&mut app, "prj.conf");
+
+    // Del asks, with No highlighted: a reflex Enter declines and the file
+    // survives.
+    app.handle(key(KeyCode::Delete));
+    match app.overlay {
+        Some(Overlay::ConfirmDelete {
+            name: ref file,
+            confirm: false,
+            ..
+        }) => assert_eq!(file, "prj.conf"),
+        other => panic!("expected a default-No delete confirmation, got {other:?}"),
+    }
+    app.handle(key(KeyCode::Enter));
+    assert_eq!(app.overlay, None);
+    assert!(
+        root.join("prj.conf").exists(),
+        "a reflex Enter must not delete"
+    );
+
+    // Answering Yes (here via `y`) deletes and refreshes the listing.
+    app.handle(key(KeyCode::Delete));
+    app.handle(key(KeyCode::Char('y')));
+    assert_eq!(app.overlay, None);
+    assert!(!root.join("prj.conf").exists());
+    assert!(
+        !app.workspace
+            .as_ref()
+            .unwrap()
+            .files_entries
+            .iter()
+            .any(|entry| entry.name == "prj.conf"),
+        "the listing must drop the deleted entry"
+    );
+}
+
+#[test]
+fn del_on_a_workspace_directory_asks_before_removing_it_recursively() {
+    let (mut app, root) = zephyr_app("del-dir", None);
+    std::fs::create_dir_all(root.join("src/sub")).unwrap();
+    std::fs::write(root.join("src/sub/file.c"), "x\n").unwrap();
+    app.workspace.as_mut().unwrap().reload_files();
+    app.focus = Focus::Workspace;
+
+    workspace_cursor_on(&mut app, "src");
+    app.handle(key(KeyCode::Delete));
+    assert!(matches!(
+        app.overlay,
+        Some(Overlay::ConfirmDelete {
+            is_dir: true,
+            confirm: false,
+            ..
+        })
+    ));
+    app.handle(key(KeyCode::Char('y')));
+    assert!(!root.join("src").exists(), "the directory tree is removed");
 }
 
 #[test]

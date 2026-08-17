@@ -244,11 +244,13 @@ pub enum Overlay {
         input: String,
         selected: usize,
     },
-    /// The entry under the cursor in the files pane (`enter`): a small menu
-    /// of what to do with it. Which actions show up depends on the pane, on
-    /// whether it is a directory, and --- for a file --- whether
+    /// The entry under the cursor in the file browser (`enter`): a small
+    /// menu of what to do with it. Which actions show up depends on the pane,
+    /// on whether it is a directory, and --- for a file --- whether
     /// [`crate::files::is_text_like`] considers it text --- see
-    /// [`FileAction::for_entry`].
+    /// [`FileAction::for_entry`]. The Zephyr workspace pane's embedded file
+    /// list never opens this: its keys act directly (see
+    /// [`App::run_file_action`]).
     FileActions {
         side: Side,
         name: String,
@@ -384,13 +386,11 @@ impl FileAction {
     ///
     /// The transfer actions are capability-gated like `Run`, not just hidden
     /// by this menu's judgement: a backend without [`Capability::Upload`]
-    /// (Zephyr --- no device filesystem to send *to*) offers no
-    /// `SendToDevice`, so its local pane menu is exactly open/view/edit/
-    /// delete. `Diff` needs [`Capability::Filesystem`] --- there is no second
-    /// copy to compare against without one --- and is offered when `status`
-    /// marks the entry as differing or as same-size but unchecked, since that
-    /// is exactly when a content diff adds information the size markers
-    /// cannot.
+    /// offers no `SendToDevice`, and `Diff` needs
+    /// [`Capability::Filesystem`] --- there is no second copy to compare
+    /// against without one --- offered when `status` marks the entry as
+    /// differing or as same-size but unchecked, since that is exactly when a
+    /// content diff adds information the size markers cannot.
     pub fn for_entry(
         side: Side,
         is_dir: bool,
@@ -1967,6 +1967,20 @@ impl App {
                             && caps.contains(Capability::PackageInstall)
                         {
                             keys.push(("i", "install pkg"));
+                        }
+                    } else if self.focus == Focus::Workspace {
+                        // The pane's two regions answer to different grammars:
+                        // the checklist opens pickers, the file list below it
+                        // acts directly (no menu --- Enter edits, v views, Del
+                        // asks before deleting).
+                        keys.push(("↑/↓", "select"));
+                        if self.workspace.as_ref().is_some_and(|panel| panel.in_files) {
+                            keys.push(("enter", "open / edit"));
+                            keys.push(("v", "view"));
+                            keys.push(("del", "delete"));
+                            keys.push(("a", "new"));
+                        } else {
+                            keys.push(("enter", "answer"));
                         }
                     } else {
                         keys.push(("r", "re-detect"));

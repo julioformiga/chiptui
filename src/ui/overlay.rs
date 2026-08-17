@@ -1322,8 +1322,13 @@ fn draw_help(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
             ("o", "override the detected backend"),
             ("t", "pick a color theme"),
             (
-                "enter",
-                "open the menu for the selected entry (send/download, run, view, edit, delete)",
+                "enter (files)",
+                "browser: open the entry menu; workspace files: enter a directory or edit a text file",
+            ),
+            ("v (workspace files)", "view a text file in the viewer"),
+            (
+                "del (workspace files)",
+                "delete the selected entry, after confirmation",
             ),
             ("→", "descend into the selected directory directly"),
             (

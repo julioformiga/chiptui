@@ -13,9 +13,10 @@ use crate::backend::zephyr::projects::{self, ProjectsResolution};
 use crate::backend::zephyr::workspace::{Resolution, WorkspaceOrigin};
 use crate::browser::Side;
 use crate::build::BuildAction;
+use crate::files;
 use crate::workspace::{DirPurpose, WorkspaceAction};
 
-use super::{App, Focus, LogTab, MonitorSource, Overlay};
+use super::{App, FileAction, Focus, LogTab, MonitorSource, Overlay};
 
 impl App {
     /// Handles a key while [`Focus::Workspace`] holds focus: one cursor over
@@ -26,11 +27,20 @@ impl App {
     /// embedded file list instead of wrapping. Once inside the file list,
     /// `Up` at the first entry crosses back; `→`/`←`/Backspace descend/ascend
     /// directories (pure navigation, mirroring the file browser's own
-    /// contract); `Enter` opens the file-action menu; `a` creates an entry.
+    /// contract). This pane has no action menu: `Enter` descends into a
+    /// directory and opens a text file straight in `$EDITOR` (a binary or a
+    /// directory-less extension does nothing --- there is nothing to open);
+    /// `v` views a text file in the viewer; `Del` asks before deleting
+    /// anything (default No, [`Overlay::ConfirmDelete`]); `a` creates an
+    /// entry.
     pub(super) fn on_workspace_key(&mut self, key: KeyEvent) {
         let caps = self.manager.capabilities();
         let mut action = None;
-        let mut file_menu: Option<(String, bool)> = None;
+        // (name, is_dir, action) for the entry under the file-list cursor,
+        // resolved to a direct [`FileAction`] --- this pane has no menu, so
+        // `Enter`/`v`/`Del` map straight onto edit/view/delete and run
+        // through the same `run_file_action` path the menu uses.
+        let mut file_action: Option<(String, bool, FileAction)> = None;
         let mut open_create = false;
 
         if let Some(panel) = self.workspace.as_mut() {
@@ -83,7 +93,28 @@ impl App {
                     KeyCode::Left | KeyCode::Backspace => panel.ascend_files(),
                     KeyCode::Enter => {
                         if let Some(entry) = panel.files_selected() {
-                            file_menu = Some((entry.name.clone(), entry.is_dir));
+                            if entry.is_dir {
+                                panel.enter_files();
+                            } else if files::is_text_like(&entry.name) {
+                                file_action = Some((entry.name.clone(), false, FileAction::Edit));
+                            }
+                            // A binary or otherwise non-editable file does
+                            // nothing: there is no menu to fall back on, and
+                            // guessing an action would hide that.
+                        }
+                    }
+                    KeyCode::Char('v') => {
+                        if let Some(entry) = panel.files_selected()
+                            && !entry.is_dir
+                            && files::is_text_like(&entry.name)
+                        {
+                            file_action = Some((entry.name.clone(), false, FileAction::View));
+                        }
+                    }
+                    KeyCode::Delete => {
+                        if let Some(entry) = panel.files_selected() {
+                            file_action =
+                                Some((entry.name.clone(), entry.is_dir, FileAction::Delete));
                         }
                     }
                     KeyCode::Char('a') => open_create = true,
@@ -95,14 +126,8 @@ impl App {
         if let Some(action) = action {
             self.run_workspace_action(action);
         }
-        if let Some((name, is_dir)) = file_menu {
-            self.overlay = Some(Overlay::FileActions {
-                side: Side::Local,
-                name,
-                is_dir,
-                status: None,
-                selected: 0,
-            });
+        if let Some((name, is_dir, file)) = file_action {
+            self.run_file_action(Side::Local, &name, is_dir, file);
         }
         if open_create {
             self.overlay = Some(Overlay::CreateEntry {

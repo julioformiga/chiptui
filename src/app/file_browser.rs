@@ -184,6 +184,11 @@ impl App {
     /// offer the same variant (`Delete`, or a directory's `SendToDevice`/
     /// `Download`) for either kind of entry, and only the browser call
     /// underneath differs.
+    ///
+    /// The workspace pane's embedded file list reaches this too, without a
+    /// menu: its `Enter`/`v`/`Del` resolve to `Edit`/`View`/`Delete` on
+    /// [`Side::Local`] directly, so both surfaces share one path per action
+    /// (including the delete confirmation's default-No).
     pub(super) fn run_file_action(
         &mut self,
         side: Side,
