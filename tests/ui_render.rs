@@ -285,7 +285,11 @@ fn rendering_survives_a_wide_range_of_sizes() {
 fn overlays_draw_above_the_dashboard() {
     let mut app = app_with_backend(BackendKind::Zephyr);
 
-    app.overlay = Some(Overlay::Help { selected: 0 });
+    app.overlay = Some(Overlay::Help {
+        filter: String::new(),
+        filtering: false,
+        selected: 0,
+    });
     let help = render(&mut app, 100, 30);
     assert!(
         help.contains("Navigation"),
@@ -328,7 +332,11 @@ fn overlays_draw_above_the_dashboard() {
 fn help_fits_one_line_per_binding_and_scrolls_under_the_cursor() {
     let mut app = app_with_backend(BackendKind::Zephyr);
     let last = help::bindings(app.view, HelpSection::Commands).len() - 1;
-    app.overlay = Some(Overlay::Help { selected: last });
+    app.overlay = Some(Overlay::Help {
+        filter: String::new(),
+        filtering: false,
+        selected: last,
+    });
 
     // Wide enough for the whole table: every binding stays on one line ---
     // a description leaking onto a second line means the text outgrew the
@@ -352,6 +360,35 @@ fn help_fits_one_line_per_binding_and_scrolls_under_the_cursor() {
     assert!(
         short.contains("q / ctrl+c"),
         "the last binding was cut off vertically:\n{short}"
+    );
+}
+
+#[test]
+fn the_help_window_narrows_under_the_filter() {
+    let mut app = app_with_backend(BackendKind::Zephyr);
+    app.overlay = Some(Overlay::Help {
+        filter: "sync".to_string(),
+        filtering: true,
+        selected: 0,
+    });
+
+    let frame = render(&mut app, 100, 30);
+    assert!(
+        frame.contains("filter sync"),
+        "the filter line is missing:\n{frame}"
+    );
+    assert!(
+        frame.contains("shift+s"),
+        "the row whose description mentions the filter is missing:\n{frame}"
+    );
+    assert!(
+        !frame.contains("override the detected backend"),
+        "rows the filter excludes are still drawn:\n{frame}"
+    );
+    // A section that matched nothing disappears with its title.
+    assert!(
+        !frame.contains("Navigation"),
+        "an empty section keeps its title:\n{frame}"
     );
 }
 

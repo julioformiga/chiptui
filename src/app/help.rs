@@ -1,10 +1,17 @@
-//! The help overlay's content (`?`): one window, two titled divisions.
+//! The keybinding table: one declaration per binding, consumed by *both*
+//! surfaces that show keys --- the help overlay (`?`) renders the rows,
+//! the contextual footer renders each row's [`Site`]s --- so footer and
+//! help cannot drift apart. Adding or changing a binding means editing one
+//! row here and both pick it up; the footer's context filtering is data
+//! ([`Site`]), not a hand-maintained twin of the help list.
+//!
 //! [`HelpSection::Navigation`] holds the movement keys as plain rows;
 //! [`HelpSection::Commands`] is the select --- arrows move, `Enter`
 //! activates the row by replaying its key (`HelpBinding::event`) once the
 //! help has closed, so the list doubles as a launcher. Help follows the
-//! screen (see [`View`]): listing dashboard keys while browsing files would
-//! describe bindings that do nothing.
+//! screen (see [`View`]) and narrows under a `/` filter (the same grammar
+//! the board picker uses): the dashboard alone lists twenty-eight rows, so
+//! search is the way through them.
 //!
 //! The descriptions are part of the data, not the rendering: each is
 //! summarized to fit its row on one line at the width the table needs (the
@@ -14,7 +21,9 @@
 
 use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 
-use super::View;
+use super::{Focus, LogTab, View};
+use crate::backend::{Capabilities, Capability};
+use crate::flash::FlashScreen;
 
 /// One of the two divisions the help bindings are split into.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,11 +52,94 @@ impl HelpSection {
 /// select's rows --- the event `Enter` replays to activate it. `None` rows
 /// (the help toggle, plain typing) have no sensible replay and simply close
 /// the overlay.
+///
+/// `sites` is the footer half of the same declaration: every context in
+/// which the binding is live, and what the footer calls it there. One row
+/// can have several sites with different labels --- `enter` is "menu" on
+/// the file columns and "run / stop" in the build pane.
 #[derive(Debug, Clone, Copy)]
 pub struct HelpBinding {
     pub key: &'static str,
     pub description: &'static str,
     pub event: Option<(KeyCode, KeyModifiers)>,
+    pub sites: &'static [Site],
+}
+
+/// One context a [`HelpBinding`] is live in, as the footer shows it: the
+/// key label and one-line description the footer renders, and the
+/// conditions under which it applies. `rank` is the footer position ---
+/// a number, so the ordering lives with the row instead of in the code
+/// that assembles the footer.
+#[derive(Debug, Clone, Copy)]
+pub struct Site {
+    pub label: &'static str,
+    pub short: &'static str,
+    pub rank: u8,
+    /// The focused panes this site applies to; empty means any.
+    pub foci: &'static [Focus],
+    /// Capabilities of which *any one* must be present; empty means none
+    /// are required.
+    pub caps: &'static [Capability],
+    pub when: When,
+}
+
+/// The extra state beyond view/focus/capabilities that a [`Site`] can
+/// depend on. Kept as data so the whole table stays declarative.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum When {
+    Always,
+    /// The workspace pane's embedded file list (vs the checklist above it).
+    WorkspaceFiles,
+    /// The workspace pane's checklist (vs the file list below it).
+    WorkspaceChecklist,
+    /// A script is running on the device (`ctrl+c` interrupts it instead
+    /// of quitting).
+    RunActive,
+    /// The Monitor tab is showing a captured run output (so `s` can save
+    /// it).
+    RunView,
+    /// The Log tab (not the Monitor one) is showing --- its scroll keys
+    /// are inert on Monitor.
+    LogTab,
+    /// A specific flash-view screen; `None` is the flash view without a
+    /// panel (its fallback footer).
+    Screen(Option<FlashScreen>),
+}
+
+/// Everything a [`Site`] can be tested against: the state the footer is
+/// rendered for, built by `App::shortcuts`.
+#[derive(Debug, Clone, Copy)]
+pub struct Context {
+    pub focus: Focus,
+    pub caps: Capabilities,
+    pub workspace_files: bool,
+    pub run_active: bool,
+    pub run_view: bool,
+    pub log_tab: LogTab,
+    pub flash_screen: Option<FlashScreen>,
+}
+
+impl Site {
+    /// Whether this site is live for `ctx`.
+    fn matches(&self, ctx: &Context) -> bool {
+        (self.foci.is_empty() || self.foci.contains(&ctx.focus))
+            && (self.caps.is_empty() || self.caps.iter().any(|cap| ctx.caps.contains(*cap)))
+            && self.when.matches(ctx)
+    }
+}
+
+impl When {
+    fn matches(self, ctx: &Context) -> bool {
+        match self {
+            When::Always => true,
+            When::WorkspaceFiles => ctx.workspace_files,
+            When::WorkspaceChecklist => !ctx.workspace_files,
+            When::RunActive => ctx.run_active,
+            When::RunView => ctx.run_view,
+            When::LogTab => ctx.log_tab == LogTab::Log,
+            When::Screen(screen) => ctx.flash_screen == screen,
+        }
+    }
 }
 
 const fn binding(key: &'static str, description: &'static str) -> HelpBinding {
@@ -55,111 +147,582 @@ const fn binding(key: &'static str, description: &'static str) -> HelpBinding {
         key,
         description,
         event: None,
+        sites: &[],
     }
 }
 
-const fn action(key: &'static str, description: &'static str, code: KeyCode) -> HelpBinding {
+/// A row with footer sites but no replay event (the help toggle: replaying
+/// `?` would just reopen the window).
+const fn sited(
+    key: &'static str,
+    description: &'static str,
+    sites: &'static [Site],
+) -> HelpBinding {
+    HelpBinding {
+        key,
+        description,
+        event: None,
+        sites,
+    }
+}
+
+const fn action(
+    key: &'static str,
+    description: &'static str,
+    code: KeyCode,
+    sites: &'static [Site],
+) -> HelpBinding {
     HelpBinding {
         key,
         description,
         event: Some((code, KeyModifiers::NONE)),
+        sites,
     }
 }
 
-const fn shifted(key: &'static str, description: &'static str, code: KeyCode) -> HelpBinding {
+const fn shifted(
+    key: &'static str,
+    description: &'static str,
+    code: KeyCode,
+    sites: &'static [Site],
+) -> HelpBinding {
     HelpBinding {
         key,
         description,
         event: Some((code, KeyModifiers::SHIFT)),
+        sites,
     }
 }
 
-const DASHBOARD_NAVIGATION: [HelpBinding; 7] = [
-    binding("tab / shift+tab", "move focus between panes"),
-    binding("↑ ↓ / k j", "navigate inside the focused pane"),
+const fn site(
+    label: &'static str,
+    short: &'static str,
+    rank: u8,
+    foci: &'static [Focus],
+    caps: &'static [Capability],
+    when: When,
+) -> Site {
+    Site {
+        label,
+        short,
+        rank,
+        foci,
+        caps,
+        when,
+    }
+}
+
+const ANY_FOCUS: &[Focus] = &[];
+const FILES: &[Focus] = &[Focus::FilesLocal, Focus::FilesDevice];
+
+/// Footer ranks: 0 the focus tour key, 10..=49 the focused pane's own
+/// rows, 50..=59 the dashboard-wide commands, 60..=69 the Logs extras,
+/// 70..=72 the tail every context keeps. Flash screens reuse the same
+/// bands per screen (their sites never co-match).
+const DASHBOARD_NAVIGATION: [HelpBinding; 8] = [
+    sited(
+        "tab / shift+tab",
+        "move focus between panes",
+        &[site("tab", "focus", 0, ANY_FOCUS, &[], When::Always)],
+    ),
+    sited(
+        "↑ ↓ / k j",
+        "navigate inside the focused pane",
+        &[
+            site(
+                "↑/↓",
+                "select",
+                10,
+                &[Focus::Workspace, Focus::Build],
+                &[],
+                When::Always,
+            ),
+            site("↑/↓", "scroll", 63, &[Focus::Logs], &[], When::LogTab),
+        ],
+    ),
     binding("page up/down", "scroll the log by one screen"),
     binding("home / end", "jump to start / end"),
-    binding("→", "descend into the selected directory"),
-    binding("backspace / ←", "go to the parent directory"),
-    binding("shift+p", "back to the project list"),
+    sited(
+        "→",
+        "descend into the selected directory",
+        &[site("→", "descend", 11, FILES, &[], When::Always)],
+    ),
+    sited(
+        "backspace / ←",
+        "go to the parent directory",
+        &[site("←/bksp", "up", 12, FILES, &[], When::Always)],
+    ),
+    sited(
+        "← / →",
+        "switch the Log and Monitor tabs",
+        &[site(
+            "←/→",
+            "log/monitor",
+            60,
+            &[Focus::Logs],
+            &[Capability::Monitor],
+            When::Always,
+        )],
+    ),
+    sited(
+        "shift+p",
+        "back to the project list",
+        &[site(
+            "shift+p",
+            "projects",
+            70,
+            ANY_FOCUS,
+            &[],
+            When::Always,
+        )],
+    ),
 ];
 
-const DASHBOARD_COMMANDS: [HelpBinding; 18] = [
+const DASHBOARD_COMMANDS: [HelpBinding; 20] = [
     action(
         "r",
         "re-detect, reload, or rename (file list)",
         KeyCode::Char('r'),
+        &[
+            site("r", "reload", 13, FILES, &[], When::Always),
+            site(
+                "r",
+                "rename",
+                15,
+                &[Focus::Workspace],
+                &[],
+                When::WorkspaceFiles,
+            ),
+            site("r", "re-detect", 10, &[Focus::Logs], &[], When::Always),
+        ],
     ),
-    action("o", "override the detected backend", KeyCode::Char('o')),
-    action("t", "pick a color theme", KeyCode::Char('t')),
+    action(
+        "o",
+        "override the detected backend",
+        KeyCode::Char('o'),
+        &[site("o", "backend", 50, ANY_FOCUS, &[], When::Always)],
+    ),
+    action(
+        "t",
+        "pick a color theme",
+        KeyCode::Char('t'),
+        &[site("t", "theme", 51, ANY_FOCUS, &[], When::Always)],
+    ),
+    action(
+        "x",
+        "open the flash view (esptool)",
+        KeyCode::Char('x'),
+        &[site(
+            "x",
+            "flash",
+            52,
+            ANY_FOCUS,
+            &[Capability::Flash, Capability::EraseFlash],
+            When::Always,
+        )],
+    ),
     action(
         "enter (files)",
-        "browser: entry menu; workspace: open/edit",
+        "browser: entry menu; workspace: open or answer",
         KeyCode::Enter,
+        &[
+            site("enter", "menu", 10, FILES, &[], When::Always),
+            site(
+                "enter",
+                "open / edit",
+                11,
+                &[Focus::Workspace],
+                &[],
+                When::WorkspaceFiles,
+            ),
+            site(
+                "enter",
+                "answer",
+                11,
+                &[Focus::Workspace],
+                &[],
+                When::WorkspaceChecklist,
+            ),
+        ],
     ),
     action(
         "v (workspace files)",
         "view a text file in the viewer",
         KeyCode::Char('v'),
+        &[site(
+            "v",
+            "view",
+            12,
+            &[Focus::Workspace],
+            &[],
+            When::WorkspaceFiles,
+        )],
     ),
     action(
         "del (workspace files)",
         "delete the selected entry (asks first)",
         KeyCode::Delete,
+        &[site(
+            "del",
+            "delete",
+            13,
+            &[Focus::Workspace],
+            &[],
+            When::WorkspaceFiles,
+        )],
     ),
     action(
         "a",
         "create a file, or a dir if the name ends with /",
         KeyCode::Char('a'),
+        &[
+            site("a", "new", 14, FILES, &[], When::Always),
+            site(
+                "a",
+                "new",
+                14,
+                &[Focus::Workspace],
+                &[],
+                When::WorkspaceFiles,
+            ),
+        ],
     ),
     action(
         "c",
         "compare the selected file by sha256",
         KeyCode::Char('c'),
+        &[site(
+            "c",
+            "compare",
+            15,
+            FILES,
+            &[Capability::Filesystem],
+            When::Always,
+        )],
     ),
     shifted(
         "shift+s",
         "sync local files to the device",
         KeyCode::Char('s'),
+        &[site(
+            "shift+s",
+            "sync",
+            16,
+            FILES,
+            &[Capability::Filesystem],
+            When::Always,
+        )],
     ),
-    action("h", "show or hide dot-files", KeyCode::Char('h')),
+    action(
+        "h",
+        "show or hide dot-files",
+        KeyCode::Char('h'),
+        &[site("h", "hidden", 17, FILES, &[], When::Always)],
+    ),
     action(
         "enter (build pane)",
         "run the selected build action",
         KeyCode::Enter,
+        &[site(
+            "enter",
+            "run / stop",
+            11,
+            &[Focus::Build],
+            &[],
+            When::Always,
+        )],
     ),
     action(
         "d",
         "scan for devices (mpremote or USB serial)",
         KeyCode::Char('d'),
+        &[site("d", "scan devices", 49, ANY_FOCUS, &[], When::Always)],
     ),
-    action("i", "install a package via mip", KeyCode::Char('i')),
+    action(
+        "i",
+        "install a package via mip",
+        KeyCode::Char('i'),
+        &[site(
+            "i",
+            "install pkg",
+            18,
+            &[Focus::FilesDevice],
+            &[Capability::PackageInstall],
+            When::Always,
+        )],
+    ),
     action(
         "m",
         "open the device monitor/REPL; ctrl+] exits",
         KeyCode::Char('m'),
+        &[site(
+            "m",
+            "monitor/REPL",
+            53,
+            ANY_FOCUS,
+            &[Capability::Monitor],
+            When::Always,
+        )],
     ),
     shifted(
         "shift+r",
         "restart the device (soft-reset)",
         KeyCode::Char('r'),
+        &[site(
+            "shift+r",
+            "restart device",
+            54,
+            ANY_FOCUS,
+            &[Capability::Reset],
+            When::Always,
+        )],
     ),
-    action("e", "edit the viewed file with $EDITOR", KeyCode::Char('e')),
-    binding("?", "toggle this help"),
-    action("q / ctrl+c", "quit", KeyCode::Char('q')),
+    action(
+        "e",
+        "edit the viewed file with $EDITOR",
+        KeyCode::Char('e'),
+        &[],
+    ),
+    action(
+        "s",
+        "save the run output to a file",
+        KeyCode::Char('s'),
+        &[site(
+            "s",
+            "save output",
+            62,
+            &[Focus::Logs],
+            &[],
+            When::RunView,
+        )],
+    ),
+    sited(
+        "?",
+        "toggle this help",
+        &[site("?", "help", 71, ANY_FOCUS, &[], When::Always)],
+    ),
+    action(
+        "q / ctrl+c",
+        "quit; interrupts a running script",
+        KeyCode::Char('q'),
+        &[
+            site("q", "quit", 72, ANY_FOCUS, &[], When::Always),
+            site(
+                "ctrl+c",
+                "interrupt",
+                61,
+                &[Focus::Logs],
+                &[],
+                When::RunActive,
+            ),
+        ],
+    ),
 ];
 
 const FLASH_NAVIGATION: [HelpBinding; 3] = [
-    binding("↑ ↓ / k j", "move the menu cursor"),
-    binding("tab", "move between option fields"),
-    binding("q / esc", "back one screen, then the dashboard"),
+    sited(
+        "↑ ↓ / k j",
+        "move the menu cursor",
+        &[
+            site(
+                "↑/↓",
+                "select",
+                10,
+                ANY_FOCUS,
+                &[],
+                When::Screen(Some(FlashScreen::Menu)),
+            ),
+            site(
+                "↑/↓",
+                "select",
+                10,
+                ANY_FOCUS,
+                &[],
+                When::Screen(Some(FlashScreen::OnlineBoards)),
+            ),
+            site(
+                "↑/↓",
+                "select",
+                10,
+                ANY_FOCUS,
+                &[],
+                When::Screen(Some(FlashScreen::OnlineFirmware)),
+            ),
+            site("↑/↓", "select", 10, ANY_FOCUS, &[], When::Screen(None)),
+        ],
+    ),
+    sited(
+        "tab",
+        "move between option fields",
+        &[site(
+            "tab",
+            "field",
+            10,
+            ANY_FOCUS,
+            &[],
+            When::Screen(Some(FlashScreen::Options)),
+        )],
+    ),
+    sited(
+        "q / esc",
+        "back one screen, then the dashboard",
+        &[
+            site(
+                "q",
+                "back",
+                14,
+                ANY_FOCUS,
+                &[],
+                When::Screen(Some(FlashScreen::Menu)),
+            ),
+            site(
+                "q",
+                "menu",
+                14,
+                ANY_FOCUS,
+                &[],
+                When::Screen(Some(FlashScreen::Options)),
+            ),
+            site(
+                "q",
+                "menu",
+                12,
+                ANY_FOCUS,
+                &[],
+                When::Screen(Some(FlashScreen::OnlineBoards)),
+            ),
+            site(
+                "q",
+                "menu",
+                12,
+                ANY_FOCUS,
+                &[],
+                When::Screen(Some(FlashScreen::OnlineFirmware)),
+            ),
+            site(
+                "q",
+                "menu",
+                12,
+                ANY_FOCUS,
+                &[],
+                When::Screen(Some(FlashScreen::CustomUrl)),
+            ),
+            site("q", "back", 12, ANY_FOCUS, &[], When::Screen(None)),
+        ],
+    ),
 ];
 
-const FLASH_COMMANDS: [HelpBinding; 4] = [
-    action("enter", "run the selected action", KeyCode::Enter),
-    action("← →", "cycle an option's value", KeyCode::Right),
-    binding("type / backspace", "edit offset or extra flags"),
-    action("ctrl+c", "quit", KeyCode::Char('q')),
+const FLASH_COMMANDS: [HelpBinding; 6] = [
+    action(
+        "enter",
+        "run the selected action",
+        KeyCode::Enter,
+        &[
+            site(
+                "enter",
+                "run",
+                11,
+                ANY_FOCUS,
+                &[],
+                When::Screen(Some(FlashScreen::Menu)),
+            ),
+            site(
+                "enter",
+                "run",
+                13,
+                ANY_FOCUS,
+                &[],
+                When::Screen(Some(FlashScreen::Options)),
+            ),
+            site(
+                "enter",
+                "choose",
+                11,
+                ANY_FOCUS,
+                &[],
+                When::Screen(Some(FlashScreen::OnlineBoards)),
+            ),
+            site(
+                "enter",
+                "choose",
+                11,
+                ANY_FOCUS,
+                &[],
+                When::Screen(Some(FlashScreen::OnlineFirmware)),
+            ),
+            site(
+                "enter",
+                "download",
+                11,
+                ANY_FOCUS,
+                &[],
+                When::Screen(Some(FlashScreen::CustomUrl)),
+            ),
+            site("enter", "run", 11, ANY_FOCUS, &[], When::Screen(None)),
+        ],
+    ),
+    action(
+        "← →",
+        "cycle an option's value",
+        KeyCode::Right,
+        &[site(
+            "←/→",
+            "cycle",
+            11,
+            ANY_FOCUS,
+            &[],
+            When::Screen(Some(FlashScreen::Options)),
+        )],
+    ),
+    sited(
+        "type / backspace",
+        "edit offset, flags, or a URL",
+        &[
+            site(
+                "type",
+                "edit",
+                12,
+                ANY_FOCUS,
+                &[],
+                When::Screen(Some(FlashScreen::Options)),
+            ),
+            site(
+                "type",
+                "edit",
+                10,
+                ANY_FOCUS,
+                &[],
+                When::Screen(Some(FlashScreen::CustomUrl)),
+            ),
+        ],
+    ),
+    action("ctrl+c", "quit", KeyCode::Char('q'), &[]),
+    action(
+        "s",
+        "search boards and firmware online",
+        KeyCode::Char('s'),
+        &[site(
+            "s",
+            "search online",
+            12,
+            ANY_FOCUS,
+            &[],
+            When::Screen(Some(FlashScreen::Menu)),
+        )],
+    ),
+    action(
+        "u",
+        "flash firmware from a URL",
+        KeyCode::Char('u'),
+        &[site(
+            "u",
+            "paste URL",
+            13,
+            ANY_FOCUS,
+            &[],
+            When::Screen(Some(FlashScreen::Menu)),
+        )],
+    ),
 ];
 
 /// The bindings `view` shows under `section`.
@@ -170,6 +733,37 @@ pub fn bindings(view: View, section: HelpSection) -> &'static [HelpBinding] {
         (View::Flash, HelpSection::Navigation) => &FLASH_NAVIGATION,
         (View::Flash, HelpSection::Commands) => &FLASH_COMMANDS,
     }
+}
+
+/// The rows of `table` whose key or description mention `filter`
+/// (case-insensitive), or all of them when `filter` is empty --- the same
+/// grammar the board picker's filter uses.
+pub fn visible<'a>(table: &'a [HelpBinding], filter: &str) -> Vec<&'a HelpBinding> {
+    let filter = filter.to_lowercase();
+    table
+        .iter()
+        .filter(|row| {
+            filter.is_empty()
+                || row.key.to_lowercase().contains(&filter)
+                || row.description.to_lowercase().contains(&filter)
+        })
+        .collect()
+}
+
+/// The footer for `view` under `ctx`: every live site's label and
+/// one-liner, in `rank` order.
+pub fn footer(view: View, ctx: &Context) -> Vec<(&'static str, &'static str)> {
+    let mut hits: Vec<(u8, &'static str, &'static str)> = HelpSection::ALL
+        .iter()
+        .flat_map(|&section| bindings(view, section))
+        .flat_map(|binding| binding.sites.iter())
+        .filter(|site| site.matches(ctx))
+        .map(|site| (site.rank, site.label, site.short))
+        .collect();
+    hits.sort_by_key(|&(rank, _, _)| rank);
+    hits.into_iter()
+        .map(|(_, label, short)| (label, short))
+        .collect()
 }
 
 #[cfg(test)]
@@ -247,5 +841,256 @@ mod tests {
             .max()
             .unwrap_or(0);
         assert!(2 + key_col + 2 + widest + 2 <= 80);
+    }
+
+    /// A MicroPython-shaped capability set (files + device session).
+    fn micropython() -> Capabilities {
+        Capabilities::from_slice(&[
+            Capability::Filesystem,
+            Capability::Repl,
+            Capability::Monitor,
+            Capability::Run,
+            Capability::Reset,
+            Capability::Upload,
+            Capability::Download,
+            Capability::EraseFlash,
+            Capability::DeviceInfo,
+            Capability::PackageInstall,
+        ])
+    }
+
+    /// A Zephyr-shaped capability set (build, no device filesystem).
+    fn zephyr() -> Capabilities {
+        Capabilities::from_slice(&[
+            Capability::Build,
+            Capability::Clean,
+            Capability::Flash,
+            Capability::Monitor,
+            Capability::BoardSelect,
+            Capability::ShieldSelect,
+            Capability::ProjectSelect,
+            Capability::WorkspaceSync,
+            Capability::DeviceInfo,
+        ])
+    }
+
+    fn ctx(caps: Capabilities, focus: Focus) -> Context {
+        Context {
+            focus,
+            caps,
+            workspace_files: false,
+            run_active: false,
+            run_view: false,
+            log_tab: LogTab::Log,
+            flash_screen: None,
+        }
+    }
+
+    fn footer_keys(view: View, ctx: &Context) -> Vec<&'static str> {
+        footer(view, ctx).into_iter().map(|(key, _)| key).collect()
+    }
+
+    #[test]
+    fn the_footer_lists_every_live_site_in_rank_order() {
+        // The files columns: the browser's own grammar first, then the
+        // dashboard-wide commands, then the tail.
+        let files = footer(View::Dashboard, &ctx(micropython(), Focus::FilesLocal));
+        assert_eq!(
+            files,
+            vec![
+                ("tab", "focus"),
+                ("enter", "menu"),
+                ("→", "descend"),
+                ("←/bksp", "up"),
+                ("r", "reload"),
+                ("a", "new"),
+                ("c", "compare"),
+                ("shift+s", "sync"),
+                ("h", "hidden"),
+                ("d", "scan devices"),
+                ("o", "backend"),
+                ("t", "theme"),
+                ("x", "flash"),
+                ("m", "monitor/REPL"),
+                ("shift+r", "restart device"),
+                ("shift+p", "projects"),
+                ("?", "help"),
+                ("q", "quit"),
+            ]
+        );
+
+        // The device column adds the package install.
+        let device_keys = footer_keys(View::Dashboard, &ctx(micropython(), Focus::FilesDevice));
+        assert!(device_keys.contains(&"i"), "{device_keys:?}");
+
+        // Logs while a run is active: the run's own keys ride between the
+        // dashboard commands and the tail.
+        let mut logs = ctx(micropython(), Focus::Logs);
+        logs.run_active = true;
+        logs.run_view = true;
+        assert_eq!(
+            footer_keys(View::Dashboard, &logs),
+            vec![
+                "tab", "r", "d", "o", "t", "x", "m", "shift+r", "←/→", "ctrl+c", "s", "↑/↓",
+                "shift+p", "?", "q",
+            ]
+        );
+
+        // The scroll hint belongs to the Log tab only.
+        let mut monitor = logs;
+        monitor.log_tab = LogTab::Monitor;
+        let keys = footer_keys(View::Dashboard, &monitor);
+        assert!(!keys.contains(&"↑/↓"), "{keys:?}");
+
+        // Zephyr's build pane.
+        assert_eq!(
+            footer_keys(View::Dashboard, &ctx(zephyr(), Focus::Build)),
+            vec![
+                "tab", "↑/↓", "enter", "d", "o", "t", "x", "m", "shift+p", "?", "q",
+            ]
+        );
+
+        // The workspace pane's two regions.
+        let mut checklist = ctx(zephyr(), Focus::Workspace);
+        assert_eq!(
+            footer_keys(View::Dashboard, &checklist),
+            vec![
+                "tab", "↑/↓", "enter", "d", "o", "t", "x", "m", "shift+p", "?", "q",
+            ]
+        );
+        checklist.workspace_files = true;
+        assert_eq!(
+            footer_keys(View::Dashboard, &checklist),
+            vec![
+                "tab", "↑/↓", "enter", "v", "del", "a", "r", "d", "o", "t", "x", "m", "shift+p",
+                "?", "q",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_flash_footer_follows_the_screen() {
+        for (screen, expected) in [
+            (
+                Some(FlashScreen::Menu),
+                vec![
+                    ("↑/↓", "select"),
+                    ("enter", "run"),
+                    ("s", "search online"),
+                    ("u", "paste URL"),
+                    ("q", "back"),
+                ],
+            ),
+            (
+                Some(FlashScreen::Options),
+                vec![
+                    ("tab", "field"),
+                    ("←/→", "cycle"),
+                    ("type", "edit"),
+                    ("enter", "run"),
+                    ("q", "menu"),
+                ],
+            ),
+            (
+                Some(FlashScreen::OnlineBoards),
+                vec![("↑/↓", "select"), ("enter", "choose"), ("q", "menu")],
+            ),
+            (
+                Some(FlashScreen::OnlineFirmware),
+                vec![("↑/↓", "select"), ("enter", "choose"), ("q", "menu")],
+            ),
+            (
+                Some(FlashScreen::CustomUrl),
+                vec![("type", "edit"), ("enter", "download"), ("q", "menu")],
+            ),
+            (
+                None,
+                vec![("↑/↓", "select"), ("enter", "run"), ("q", "back")],
+            ),
+        ] {
+            let mut context = ctx(zephyr(), Focus::Logs);
+            context.flash_screen = screen;
+            assert_eq!(footer(View::Flash, &context), expected, "screen {screen:?}");
+        }
+    }
+
+    #[test]
+    fn no_context_repeats_a_footer_label() {
+        // Sites are the single source, so two of them firing at once would
+        // render the same key twice. Walk every context shape.
+        for caps in [micropython(), zephyr(), Capabilities::empty()] {
+            for focus in [
+                Focus::FilesLocal,
+                Focus::FilesDevice,
+                Focus::Workspace,
+                Focus::Build,
+                Focus::Logs,
+            ] {
+                for workspace_files in [false, true] {
+                    for run_active in [false, true] {
+                        for run_view in [false, true] {
+                            for log_tab in [LogTab::Log, LogTab::Monitor] {
+                                let mut context = ctx(caps, focus);
+                                context.workspace_files = workspace_files;
+                                context.run_active = run_active;
+                                context.run_view = run_view;
+                                context.log_tab = log_tab;
+                                let keys = footer_keys(View::Dashboard, &context);
+                                let mut sorted = keys.clone();
+                                sorted.sort_unstable();
+                                sorted.dedup();
+                                assert_eq!(
+                                    keys.len(),
+                                    sorted.len(),
+                                    "duplicate label: {keys:?} (focus {focus:?}, files {workspace_files})"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_footer_entry_is_a_described_binding() {
+        // The parity guarantee: anything the footer can show belongs to a
+        // row the help window lists, so there is always a place to read
+        // what a footer chip does.
+        for view in [View::Dashboard, View::Flash] {
+            let described: Vec<&str> = HelpSection::ALL
+                .iter()
+                .flat_map(|&section| bindings(view, section))
+                .map(|row| row.key)
+                .collect();
+            for binding in HelpSection::ALL
+                .iter()
+                .flat_map(|&section| bindings(view, section))
+            {
+                for site in binding.sites {
+                    assert!(!site.label.is_empty());
+                    assert!(!site.short.is_empty());
+                    assert!(described.contains(&binding.key));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_filter_narrows_keys_and_descriptions() {
+        let rows = bindings(View::Dashboard, HelpSection::Commands);
+        assert_eq!(visible(rows, "").len(), rows.len());
+
+        let sync = visible(rows, "sync");
+        assert!(
+            sync.iter().any(|row| row.key == "shift+s"),
+            "matches the description"
+        );
+
+        let theme = visible(rows, "THEME");
+        assert_eq!(theme.len(), 1, "case-insensitive, key or description");
+        assert_eq!(theme[0].key, "t");
+
+        assert!(visible(rows, "no such binding").is_empty());
     }
 }

@@ -18,7 +18,11 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
         return;
     };
     match overlay {
-        Overlay::Help { selected } => draw_help(frame, area, app, selected, palette),
+        Overlay::Help {
+            filter,
+            filtering,
+            selected,
+        } => draw_help(frame, area, app, &filter, filtering, selected, palette),
         Overlay::BackendPicker { selected } => draw_picker(frame, area, app, selected, palette),
         Overlay::DevicePicker { selected } => {
             draw_device_picker(frame, area, app, selected, palette)
@@ -1351,20 +1355,32 @@ fn draw_device_picker(frame: &mut Frame, area: Rect, app: &App, selected: usize,
 /// are written to fit it (see `app::help`), truncating with an ellipsis
 /// only on terminals narrower than the table. The command list scrolls
 /// under its cursor when the terminal is too short for the whole window.
-fn draw_help(frame: &mut Frame, area: Rect, app: &App, selected: usize, palette: Palette) {
-    let navigation = help::bindings(app.view, HelpSection::Navigation);
-    let commands = help::bindings(app.view, HelpSection::Commands);
+/// The first line is the search field: `/` starts typing, and the filter
+/// narrows both divisions (an empty section loses its title too).
+fn draw_help(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    filter: &str,
+    filtering: bool,
+    selected: usize,
+    palette: Palette,
+) {
+    let navigation = help::visible(help::bindings(app.view, HelpSection::Navigation), filter);
+    let commands = help::visible(help::bindings(app.view, HelpSection::Commands), filter);
 
-    let key_col = navigation
+    // Widths come from the whole table, not the filtered subset, so the
+    // popup does not jump around as the filter changes.
+    let key_col = HelpSection::ALL
         .iter()
-        .chain(commands)
+        .flat_map(|&section| help::bindings(app.view, section))
         .map(|binding| binding.key.chars().count())
         .max()
         .unwrap_or(0);
     let indent = 2 + key_col + 2;
-    let widest = navigation
+    let widest = HelpSection::ALL
         .iter()
-        .chain(commands)
+        .flat_map(|&section| help::bindings(app.view, section))
         .map(
             |binding| indent + binding.description.chars().count() + 2, /* borders */
         )
@@ -1383,7 +1399,11 @@ fn draw_help(frame: &mut Frame, area: Rect, app: &App, selected: usize, palette:
         ])
     };
 
-    let fixed = 2 /* section titles */ + 2 /* borders */;
+    // A section that matched nothing is hidden entirely, title included ---
+    // the layout below allocates for it only when it renders.
+    let visible_titles = usize::from(!navigation.is_empty()) + usize::from(!commands.is_empty());
+
+    let fixed = 1 /* filter line */ + visible_titles /* section titles */ + 2 /* borders */;
     let height = (fixed + navigation.len() + commands.len()) as u16;
     let height = height.min(area.height);
     let popup = centered(area, width, height);
@@ -1403,35 +1423,73 @@ fn draw_help(frame: &mut Frame, area: Rect, app: &App, selected: usize, palette:
         ))
     };
 
-    let [nav_title, nav_rows, cmd_title, cmd_rows] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Length(navigation.len() as u16),
-        Constraint::Length(1),
-        Constraint::Min(0),
-    ])
-    .areas(inner);
+    let filter_line = Line::from(vec![
+        Span::styled("filter ", Style::new().dim()),
+        Span::raw(filter.to_string()),
+        Span::styled(
+            if filtering { "▏" } else { " " },
+            Style::new().fg(palette.accent),
+        ),
+        // The way into the search is a key the browsing mode owns, so it
+        // rides on the line itself rather than in the footer alone.
+        Span::styled(
+            if filter.is_empty() && !filtering {
+                "  / to search"
+            } else {
+                ""
+            },
+            Style::new().dim(),
+        ),
+    ]);
 
-    frame.render_widget(
-        Paragraph::new(title(HelpSection::Navigation.title())),
-        nav_title,
-    );
-    frame.render_widget(
-        Paragraph::new(navigation.iter().map(&row).collect::<Vec<_>>()),
-        nav_rows,
-    );
-    frame.render_widget(
-        Paragraph::new(title(HelpSection::Commands.title())),
-        cmd_title,
-    );
+    let mut constraints: Vec<Constraint> = vec![Constraint::Length(1) /* filter line */];
+    if !navigation.is_empty() {
+        constraints.push(Constraint::Length(1));
+        constraints.push(Constraint::Length(navigation.len() as u16));
+    }
+    if !commands.is_empty() {
+        constraints.push(Constraint::Length(1));
+    }
+    constraints.push(Constraint::Min(0));
+    let areas = Layout::vertical(constraints).split(inner);
+
+    let mut next = 0;
+    frame.render_widget(Paragraph::new(filter_line), areas[0]);
+    next += 1;
+    if !navigation.is_empty() {
+        frame.render_widget(
+            Paragraph::new(title(HelpSection::Navigation.title())),
+            areas[next],
+        );
+        next += 1;
+        frame.render_widget(
+            Paragraph::new(
+                navigation
+                    .iter()
+                    .map(|binding| row(binding))
+                    .collect::<Vec<_>>(),
+            ),
+            areas[next],
+        );
+        next += 1;
+    }
+    if !commands.is_empty() {
+        frame.render_widget(
+            Paragraph::new(title(HelpSection::Commands.title())),
+            areas[next],
+        );
+        next += 1;
+    }
 
     let items: Vec<ListItem> = commands
         .iter()
         .map(|binding| ListItem::new(row(binding)))
         .collect();
-    let mut state = ListState::default().with_selected(Some(selected));
+    let selected = (!commands.is_empty()).then_some(selected.min(commands.len() - 1));
+    let mut state = ListState::default().with_selected(selected);
     frame.render_stateful_widget(
         List::new(items).highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
-        cmd_rows,
+        areas[next],
         &mut state,
     );
 }

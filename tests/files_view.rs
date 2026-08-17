@@ -1057,10 +1057,19 @@ fn dashboard_help_describes_file_browser_keys_when_a_files_pane_is_focused() {
          separate screen to leave"
     );
 
-    app.overlay = Some(Overlay::Help { selected: 0 });
+    app.overlay = Some(Overlay::Help {
+        filter: String::new(),
+        filtering: false,
+        selected: 0,
+    });
     assert_eq!(
         app.shortcuts(),
-        vec![("↑/↓", "select"), ("enter", "activate"), ("esc", "close")]
+        vec![
+            ("↑/↓", "select"),
+            ("/", "filter"),
+            ("enter", "activate"),
+            ("esc", "close")
+        ]
     );
 }
 

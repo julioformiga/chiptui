@@ -61,50 +61,130 @@ impl App {
             return;
         };
         match overlay {
-            Overlay::Help { selected } => {
-                let count = help::bindings(self.view, HelpSection::Commands)
-                    .len()
-                    .max(1);
-                match key.code {
-                    // `?` and `q` mirror how the overlay is opened.
-                    KeyCode::Esc | KeyCode::Char('?' | 'q') => self.overlay = None,
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        self.overlay = Some(Overlay::Help {
-                            selected: (selected + count - 1) % count,
-                        });
-                    }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        self.overlay = Some(Overlay::Help {
-                            selected: (selected + 1) % count,
-                        });
-                    }
-                    KeyCode::Home => {
-                        self.overlay = Some(Overlay::Help { selected: 0 });
-                    }
-                    KeyCode::End => {
-                        self.overlay = Some(Overlay::Help {
-                            selected: count - 1,
-                        });
-                    }
-                    // Activate the row: close the help, then replay the
-                    // row's key through the screen's own handler --- exactly
-                    // the event pressing that key outside the help would
-                    // send. Rows without an event (the toggle itself, plain
-                    // typing) just close.
-                    KeyCode::Enter => {
-                        let binding = help::bindings(self.view, HelpSection::Commands)
+            Overlay::Help {
+                filter,
+                filtering,
+                selected,
+            } => {
+                // The cursor walks the *filtered* command rows, so every
+                // filter change re-clamps `selected` against the length the
+                // changed filter produces (typing can only shrink it, but
+                // backspace grows it too).
+                let count =
+                    help::visible(help::bindings(self.view, HelpSection::Commands), &filter)
+                        .len()
+                        .max(1);
+                // Close, then replay the row under the cursor through the
+                // screen's own handler --- exactly the event pressing that
+                // key outside the help would send. Rows without an event
+                // (the toggle itself, plain typing) just close.
+                let activate = |app: &mut Self, selected: usize| {
+                    let event =
+                        help::visible(help::bindings(app.view, HelpSection::Commands), &filter)
                             .get(selected)
-                            .copied();
-                        self.overlay = None;
-                        if let Some((code, modifiers)) = binding.and_then(|row| row.event) {
-                            let event = KeyEvent::new(code, modifiers);
-                            match self.view {
-                                View::Dashboard => self.on_dashboard_key(event),
-                                View::Flash => self.on_flash_key(event),
-                            }
+                            .and_then(|row| row.event);
+                    app.overlay = None;
+                    if let Some((code, modifiers)) = event {
+                        let event = KeyEvent::new(code, modifiers);
+                        match app.view {
+                            View::Dashboard => app.on_dashboard_key(event),
+                            View::Flash => app.on_flash_key(event),
                         }
                     }
-                    _ => {}
+                };
+                if filtering {
+                    match key.code {
+                        // Editing: every printable char is filter text,
+                        // `j`/`k` included (typing "dk" must not move the
+                        // cursor) --- the rule the board picker set.
+                        KeyCode::Char(c) => {
+                            let mut text = filter.clone();
+                            text.push(c);
+                            self.overlay = Some(Overlay::Help {
+                                filter: text,
+                                filtering: true,
+                                selected: selected.min(count.saturating_sub(1)),
+                            });
+                        }
+                        KeyCode::Backspace => {
+                            let mut text = filter.clone();
+                            text.pop();
+                            self.overlay = Some(Overlay::Help {
+                                filter: text,
+                                filtering: true,
+                                selected: selected.min(count.saturating_sub(1)),
+                            });
+                        }
+                        // Esc is the only way out of editing; the second
+                        // press closes the window. The filter persists, so
+                        // `/` Esc `/` resumes where the search left off.
+                        KeyCode::Esc => {
+                            self.overlay = Some(Overlay::Help {
+                                filter,
+                                filtering: false,
+                                selected: selected.min(count.saturating_sub(1)),
+                            });
+                        }
+                        KeyCode::Up => {
+                            self.overlay = Some(Overlay::Help {
+                                filter,
+                                filtering: true,
+                                selected: (selected + count - 1) % count,
+                            });
+                        }
+                        KeyCode::Down => {
+                            self.overlay = Some(Overlay::Help {
+                                filter,
+                                filtering: true,
+                                selected: (selected + 1) % count,
+                            });
+                        }
+                        KeyCode::Enter => activate(self, selected),
+                        _ => {}
+                    }
+                } else {
+                    match key.code {
+                        // `?` and `q` mirror how the overlay is opened; `/`
+                        // starts the search.
+                        KeyCode::Esc | KeyCode::Char('?' | 'q') => self.overlay = None,
+                        KeyCode::Char('/') => {
+                            self.overlay = Some(Overlay::Help {
+                                filter,
+                                filtering: true,
+                                selected: selected.min(count.saturating_sub(1)),
+                            });
+                        }
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            self.overlay = Some(Overlay::Help {
+                                filter,
+                                filtering: false,
+                                selected: (selected + count - 1) % count,
+                            });
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            self.overlay = Some(Overlay::Help {
+                                filter,
+                                filtering: false,
+                                selected: (selected + 1) % count,
+                            });
+                        }
+                        KeyCode::Home => {
+                            self.overlay = Some(Overlay::Help {
+                                filter,
+                                filtering: false,
+                                selected: 0,
+                            });
+                        }
+                        KeyCode::End => {
+                            self.overlay = Some(Overlay::Help {
+                                filter,
+                                filtering: false,
+                                selected: count - 1,
+                            });
+                        }
+                        KeyCode::Enter => activate(self, selected),
+                        _ => {}
+                    }
                 }
             }
             Overlay::BackendPicker { selected } => match key.code {

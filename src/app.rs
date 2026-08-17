@@ -31,7 +31,7 @@ use crate::console::{ConsoleLine, LineConsole};
 use crate::device::{DevicePath, DeviceState};
 use crate::event::AppEvent;
 use crate::files::SyncStatus;
-use crate::flash::{FlashPanel, FlashScreen};
+use crate::flash::FlashPanel;
 use crate::logs::LogStore;
 use crate::process::{ProcessId, ProcessManager};
 use crate::project::{DetectionOutcome, DetectionSource, ProjectManager};
@@ -140,9 +140,18 @@ pub struct MonitorView {
 pub enum Overlay {
     /// The help overlay (`?` / F1): one window with both divisions of
     /// [`crate::app::help`] --- Navigation as plain rows, Commands as the
-    /// select. `selected` is the cursor among the command rows; `Enter`
-    /// activates the row by replaying its key after the help closes.
-    Help { selected: usize },
+    /// select. `selected` is the cursor among the (filtered) command rows;
+    /// `Enter` activates the row by replaying its key after the help
+    /// closes. `filter`/`filtering` are the search state --- `/` starts
+    /// typing (every printable char is filter text, `j`/`k` included, so
+    /// `Esc` returns to the cursor first and closes on the second press),
+    /// and the filter narrows both divisions: the dashboard alone lists
+    /// twenty-eight rows, so search is the way through them.
+    Help {
+        filter: String,
+        filtering: bool,
+        selected: usize,
+    },
     /// Manual backend selection (`AGENTS.md` §4: detection must be overridable).
     BackendPicker { selected: usize },
     /// Serial device selection (`SPEC.md` §8: never guess which board).
@@ -410,6 +419,13 @@ impl FileAction {
         }
     }
 }
+
+/// A freshly opened help overlay: no filter, cursor on the first command.
+pub const OVERLAY_HELP: Overlay = Overlay::Help {
+    filter: String::new(),
+    filtering: false,
+    selected: 0,
+};
 
 /// Contents behind [`Overlay::FileViewer`].
 pub struct FileViewer {
@@ -1672,7 +1688,7 @@ impl App {
                 return;
             }
             KeyCode::Char('?') | KeyCode::F(1) => {
-                self.overlay = Some(Overlay::Help { selected: 0 });
+                self.overlay = Some(OVERLAY_HELP);
                 return;
             }
             KeyCode::Char('d') => {
@@ -1815,6 +1831,11 @@ impl App {
     }
 
     /// Keybindings for the current context, rendered in the footer.
+    ///
+    /// The dashboard and flash rows come from the binding table
+    /// (`help::footer`): the same declarations the help window lists, so
+    /// the two surfaces cannot drift apart. The modal rows below are
+    /// dialog-local grammars with no help counterpart.
     pub fn shortcuts(&self) -> Vec<(&'static str, &'static str)> {
         // Every other binding below is a lie while the REPL owns the
         // keyboard: `on_key` forwards raw bytes into the pty instead of
@@ -1825,8 +1846,22 @@ impl App {
             return vec![("ctrl+]", "exit REPL/monitor"), ("type", "send to device")];
         }
         match self.overlay {
-            Some(Overlay::Help { .. }) => {
-                vec![("↑/↓", "select"), ("enter", "activate"), ("esc", "close")]
+            Some(Overlay::Help { filtering, .. }) => {
+                if filtering {
+                    vec![
+                        ("type", "filter"),
+                        ("↑/↓", "select"),
+                        ("enter", "activate"),
+                        ("esc", "done"),
+                    ]
+                } else {
+                    vec![
+                        ("↑/↓", "select"),
+                        ("/", "filter"),
+                        ("enter", "activate"),
+                        ("esc", "close"),
+                    ]
+                }
             }
             Some(Overlay::FileViewer) => vec![
                 ("↑/↓", "scroll"),
@@ -1904,101 +1939,18 @@ impl App {
                     ("esc", "cancel"),
                 ]
             }
-            None => match self.view {
-                View::Flash => match self.flash.as_ref().map(|flash| flash.screen) {
-                    Some(FlashScreen::Options) => vec![
-                        ("tab", "field"),
-                        ("←/→", "cycle"),
-                        ("type", "edit"),
-                        ("enter", "run"),
-                        ("q", "menu"),
-                    ],
-                    Some(FlashScreen::Menu) => vec![
-                        ("↑/↓", "select"),
-                        ("enter", "run"),
-                        ("s", "search online"),
-                        ("u", "paste URL"),
-                        ("q", "back"),
-                    ],
-                    Some(FlashScreen::OnlineBoards | FlashScreen::OnlineFirmware) => {
-                        vec![("↑/↓", "select"), ("enter", "choose"), ("q", "menu")]
-                    }
-                    Some(FlashScreen::CustomUrl) => {
-                        vec![("type", "edit"), ("enter", "download"), ("q", "menu")]
-                    }
-                    None => vec![("↑/↓", "select"), ("enter", "run"), ("q", "back")],
+            None => help::footer(
+                self.view,
+                &help::Context {
+                    focus: self.focus,
+                    caps: self.manager.capabilities(),
+                    workspace_files: self.workspace.as_ref().is_some_and(|panel| panel.in_files),
+                    run_active: self.is_run_active(),
+                    run_view: self.is_run_view(),
+                    log_tab: self.log_tab,
+                    flash_screen: self.flash.as_ref().map(|flash| flash.screen),
                 },
-                View::Dashboard => {
-                    let mut keys = vec![("tab", "focus")];
-                    let caps = self.manager.capabilities();
-                    if self.focus == Focus::Build {
-                        keys.push(("↑/↓", "select"));
-                        keys.push(("enter", "run / stop"));
-                    } else if matches!(self.focus, Focus::FilesLocal | Focus::FilesDevice) {
-                        keys.push(("enter", "menu"));
-                        keys.push(("→", "descend"));
-                        keys.push(("←/bksp", "up"));
-                        keys.push(("r", "reload"));
-                        keys.push(("a", "new"));
-                        if caps.contains(Capability::Filesystem) {
-                            keys.push(("c", "compare"));
-                            keys.push(("shift+s", "sync"));
-                        }
-                        keys.push(("h", "hidden"));
-                        if self.focus == Focus::FilesDevice
-                            && caps.contains(Capability::PackageInstall)
-                        {
-                            keys.push(("i", "install pkg"));
-                        }
-                    } else if self.focus == Focus::Workspace {
-                        // The pane's two regions answer to different grammars:
-                        // the checklist opens pickers, the file list below it
-                        // acts directly (no menu --- Enter edits, v views, Del
-                        // asks before deleting).
-                        keys.push(("↑/↓", "select"));
-                        if self.workspace.as_ref().is_some_and(|panel| panel.in_files) {
-                            keys.push(("enter", "open / edit"));
-                            keys.push(("v", "view"));
-                            keys.push(("del", "delete"));
-                            keys.push(("a", "new"));
-                            keys.push(("r", "rename"));
-                        } else {
-                            keys.push(("enter", "answer"));
-                        }
-                    } else {
-                        keys.push(("r", "re-detect"));
-                    }
-                    keys.push(("o", "backend"));
-                    keys.push(("t", "theme"));
-                    if caps.contains(Capability::Flash) || caps.contains(Capability::EraseFlash) {
-                        keys.push(("x", "flash"));
-                    }
-                    if caps.contains(Capability::Monitor) {
-                        keys.push(("m", "monitor/REPL"));
-                    }
-                    if caps.contains(Capability::Reset) {
-                        keys.push(("shift+r", "restart device"));
-                    }
-                    if self.focus == Focus::Logs {
-                        if caps.contains(Capability::Monitor) {
-                            keys.push(("←/→", "log/monitor"));
-                        }
-                        if self.is_run_active() {
-                            keys.push(("ctrl+c", "interrupt"));
-                        }
-                        if self.is_run_view() {
-                            keys.push(("s", "save output"));
-                        }
-                        if self.log_tab == LogTab::Log {
-                            keys.push(("↑/↓", "scroll"));
-                        }
-                    }
-                    keys.push(("shift+p", "projects"));
-                    keys.push(("?", "help"));
-                    keys.push(("q", "quit"));
-                    keys
-                }
-            },
+            ),
         }
     }
 }
@@ -2154,7 +2106,7 @@ mod tests {
     fn ctrl_c_quits_from_any_context() {
         for overlay in [
             None,
-            Some(Overlay::Help { selected: 0 }),
+            Some(OVERLAY_HELP),
             Some(Overlay::BackendPicker { selected: 0 }),
         ] {
             let mut app = app();
@@ -2170,7 +2122,7 @@ mod tests {
     #[test]
     fn esc_closes_the_overlay_and_never_quits() {
         let mut app = app();
-        app.overlay = Some(Overlay::Help { selected: 0 });
+        app.overlay = Some(OVERLAY_HELP);
         app.handle(key(KeyCode::Esc));
         assert_eq!(app.overlay, None);
         assert!(!app.should_quit());
@@ -2188,19 +2140,20 @@ mod tests {
     #[test]
     fn help_walks_the_command_select_and_activates_rows() {
         let mut app = app();
-        app.overlay = Some(Overlay::Help { selected: 0 });
+        app.overlay = Some(OVERLAY_HELP);
 
         // The cursor walks the command rows, wrapping at both ends.
         let count = help::bindings(app.view, HelpSection::Commands).len();
         app.handle(key(KeyCode::Up));
-        assert_eq!(
+        assert!(matches!(
             app.overlay,
-            Some(Overlay::Help {
-                selected: count - 1
-            })
-        );
+            Some(Overlay::Help { selected, .. }) if selected == count - 1
+        ));
         app.handle(key(KeyCode::Down));
-        assert_eq!(app.overlay, Some(Overlay::Help { selected: 0 }));
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::Help { selected: 0, .. })
+        ));
 
         // Enter activates the row: the `t` row replays its key, which opens
         // the theme picker.
@@ -2208,7 +2161,11 @@ mod tests {
             .iter()
             .position(|row| row.key == "t")
             .unwrap();
-        app.overlay = Some(Overlay::Help { selected: theme });
+        app.overlay = Some(Overlay::Help {
+            filter: String::new(),
+            filtering: false,
+            selected: theme,
+        });
         app.handle(key(KeyCode::Enter));
         assert!(matches!(app.overlay, Some(Overlay::ThemePicker { .. })));
 
@@ -2217,8 +2174,54 @@ mod tests {
             .iter()
             .position(|row| row.key == "?")
             .unwrap();
-        app.overlay = Some(Overlay::Help { selected: toggle });
+        app.overlay = Some(Overlay::Help {
+            filter: String::new(),
+            filtering: false,
+            selected: toggle,
+        });
         app.handle(key(KeyCode::Enter));
+        assert_eq!(app.overlay, None);
+    }
+
+    #[test]
+    fn help_filters_and_activates_through_the_filter() {
+        let mut app = app();
+        app.overlay = Some(OVERLAY_HELP);
+
+        // `/` starts typing; every printable char is filter text (`j` and
+        // `k` included, so they must not move the cursor while editing).
+        app.handle(key(KeyCode::Char('/')));
+        for c in "theme".chars() {
+            app.handle(key(KeyCode::Char(c)));
+        }
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::Help { ref filter, filtering: true, .. })
+                if filter == "theme"
+        ));
+
+        // Enter activates the row the filter left --- "theme" narrows the
+        // commands to the one row, so the replay opens the theme picker.
+        app.handle(key(KeyCode::Enter));
+        assert!(matches!(app.overlay, Some(Overlay::ThemePicker { .. })));
+    }
+
+    #[test]
+    fn help_esc_leaves_the_filter_before_it_closes() {
+        let mut app = app();
+        app.overlay = Some(OVERLAY_HELP);
+
+        app.handle(key(KeyCode::Char('/')));
+        app.handle(key(KeyCode::Char('z')));
+        app.handle(key(KeyCode::Esc));
+        // Out of editing, filter kept: the window is still up...
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::Help { ref filter, filtering: false, .. })
+                if filter == "z"
+        ));
+        // ...and the second esc closes it.
+        app.handle(key(KeyCode::Esc));
         assert_eq!(app.overlay, None);
     }
 

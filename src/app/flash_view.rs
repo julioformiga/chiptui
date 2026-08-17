@@ -59,7 +59,7 @@ impl App {
                 return;
             }
             KeyCode::Char('?') | KeyCode::F(1) => {
-                self.overlay = Some(Overlay::Help { selected: 0 });
+                self.overlay = Some(crate::app::OVERLAY_HELP);
                 return;
             }
             _ => {}
