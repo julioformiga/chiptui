@@ -737,9 +737,12 @@ one-line contextual shortcut footer:
 └───────────────────────────────────────────────────────────────┘
 ```
 
-- **Row 1** --- Project and Device, side by side. The Project pane reports the state being
+- **Row 1** --- Project and Device, side by side, both a fixed four content rows (shorter
+  content is padded with blanks) so the rows below never shift when a workspace resolves or
+  device details accumulate. The Project pane reports the state being
   built against: `root` (following the project picker's answer for a backend that makes the
-  project a question), `type`, the environment `versions` (Zephyr and venv Python, read from
+  project a question; a working directory the search climbed from rides the same line as a
+  muted suffix), `type`, the environment `versions` (Zephyr and venv Python, read from
   files once a workspace resolves) and `tools` availability.
 - **Row 2** --- the dual-pane local/device file browser, shown whenever the selected backend
   declares `Capability::Filesystem`; for a backend that builds without a device filesystem

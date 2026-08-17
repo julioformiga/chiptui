@@ -312,8 +312,11 @@ fn stop_cancels_the_running_command() {
 
     // The pane's height must not move when the command starts: the
     // footer's rows are reserved even while idle, so every pane border
-    // (and the log pane below) sits on the same row as before.
-    let idle = render(&mut app, 100, 30);
+    // (and the log pane below) sits on the same row as before. Rendered
+    // at 31 rows: row 1's fixed four content rows make the unclipped
+    // layout (header + info + the build pane's full stack + the log
+    // pane's minimum + footer) exactly this tall.
+    let idle = render(&mut app, 100, 31);
 
     // Update Zephyr, SDK List, Menuconfig, Clean, then Build.
     app.handle(key(KeyCode::Down));
@@ -322,7 +325,7 @@ fn stop_cancels_the_running_command() {
     app.handle(key(KeyCode::Down));
     app.handle(key(KeyCode::Enter));
     assert!(app.build.as_ref().unwrap().is_busy());
-    let running_frame = render(&mut app, 100, 30);
+    let running_frame = render(&mut app, 100, 31);
     // Height constancy: the structural borders --- every pane's bottom
     // rule starts the line with `╰` (the Stop box's own rules are indented
     // into the pane's right half, so they never match) --- must sit on the
@@ -1316,6 +1319,15 @@ fn workspace_under(home: &std::path::Path, name: &str) -> std::path::PathBuf {
 #[test]
 fn the_workspace_pane_resolves_from_project_config_and_runs_update() {
     let (mut app, root) = zephyr_app("ws", None);
+    // Where row 2 starts before the workspace resolves: resolving adds the
+    // Project pane's versions line, which must not move anything (row 1 is
+    // a fixed four content rows).
+    let unresolved = render(&mut app, 100, 30);
+    let row2 = unresolved
+        .lines()
+        .position(|l| l.contains("Workspace"))
+        .expect("the workspace pane renders before resolution");
+
     let home = root.join("home");
     let ws = workspace_under(&home, "zephyrproject");
     // A toolchain outside CMake's default locations, pinned through the
@@ -1365,6 +1377,11 @@ fn the_workspace_pane_resolves_from_project_config_and_runs_update() {
     assert!(
         frame.contains("versions:"),
         "the versions field must be named:\n{frame}"
+    );
+    assert_eq!(
+        frame.lines().position(|l| l.contains("Workspace")),
+        Some(row2),
+        "the versions line must not shift row 2:\n{frame}"
     );
     assert!(
         !frame.contains("source:"),

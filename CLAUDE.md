@@ -77,7 +77,10 @@ header's `project` field is the project question's other half (`App::header_proj
 empty while the root is not a buildable application, then the picked project's folder name;
 row 1's Project pane follows the same answer (`root:` comes from the build panel under
 `ProjectSelect`) and reports the environment's `versions:` (Zephyr + venv Python, read from
-files) in place of the old detection-`source:` line.
+files) in place of the old detection-`source:` line. Row 1 itself is a fixed height: both
+panes pad their content to four rows (`ui::panels::INFO_ROWS`) in every backend and state,
+and the cwd note rides `root:`'s own line as a muted suffix instead of taking a row, so the
+rows below never shift when a workspace resolves or device details accumulate.
 The **workspace pane**
 (`src/workspace.rs`, `src/ui/workspace.rs`, `src/app/workspace_view.rs`) is the environment
 half: it resolves the Zephyr *installation* (`src/backend/zephyr/workspace.rs`) from

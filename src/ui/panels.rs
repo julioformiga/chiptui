@@ -17,6 +17,24 @@ use crate::ui::{
     tilde_path,
 };
 
+/// Row 1's fixed content height: the Project and the Device info panes
+/// both render exactly this many lines --- shorter content is padded with
+/// blanks --- in every backend and state, so the rows below never shift
+/// when a workspace resolves or device details accumulate.
+pub(super) const INFO_ROWS: usize = 4;
+
+/// Pads an info pane's lines to [`INFO_ROWS`] blank rows.
+fn pad_info(mut lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
+    debug_assert!(
+        lines.len() <= INFO_ROWS,
+        "an info pane grew past its fixed {INFO_ROWS} rows"
+    );
+    while lines.len() < INFO_ROWS {
+        lines.push(Line::from(""));
+    }
+    lines
+}
+
 /// Project identity: where it is, what it is, and how sure we are.
 ///
 /// This pane is informational only --- it never holds focus, so it always
@@ -33,10 +51,10 @@ pub fn draw_project(frame: &mut Frame, area: Rect, app: &App, palette: Palette) 
     );
 }
 
-/// Builds the Project pane's content lines. Extracted so the dashboard layout
-/// can size the info row to fit the taller of the two panes (`draw_dashboard`)
-/// without rendering twice.
-pub(super) fn project_content(app: &App, width: usize, palette: Palette) -> Vec<Line<'static>> {
+/// Builds the Project pane's content lines, padded to [`INFO_ROWS`] so the
+/// pane --- and row 1 with it --- keeps one fixed height in every backend
+/// and state.
+fn project_content(app: &App, width: usize, palette: Palette) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     let detection = app.manager.detection();
 
@@ -60,17 +78,39 @@ pub(super) fn project_content(app: &App, width: usize, palette: Palette) -> Vec<
             |root| tilde_path(root, app.home_dir()),
         )
     };
-    lines.push(field("root", truncate_start(&root, path_budget), palette));
-
-    // Only worth showing when the search climbed out of the working directory.
-    if app
+    // Only worth showing when the search climbed out of the working
+    // directory --- and then it rides the root's own line as a muted
+    // suffix: the pane is a fixed [`INFO_ROWS`] tall, so the cwd must not
+    // take a row from the fields every pane owes (type, versions, tools).
+    // The root keeps width priority; the cwd takes what is left (at most a
+    // third of the budget). 7 is " (cwd )".len().
+    let shows_cwd = app
         .manager
         .root()
-        .is_some_and(|root| root != app.manager.start_dir())
-    {
+        .is_some_and(|root| root != app.manager.start_dir());
+    let mut root_budget = path_budget;
+    let mut cwd_suffix = None;
+    if shows_cwd {
         let cwd = tilde_path(app.manager.start_dir(), app.home_dir());
-        lines.push(field("cwd", truncate_start(&cwd, path_budget), palette));
+        let take = if root.chars().count() + 7 + cwd.chars().count() <= path_budget {
+            cwd.chars().count()
+        } else {
+            (path_budget / 3).saturating_sub(7).min(cwd.chars().count())
+        };
+        if take > 0 {
+            root_budget = path_budget.saturating_sub(7 + take);
+            cwd_suffix = Some(truncate_start(&cwd, take));
+        }
     }
+    let mut spans = vec![label_span("root", palette)];
+    spans.push(Span::styled(
+        truncate_start(&root, root_budget),
+        Style::new().fg(palette.fg),
+    ));
+    if let Some(cwd) = cwd_suffix {
+        spans.push(Span::styled(format!(" (cwd {cwd})"), muted_style(palette)));
+    }
+    lines.push(Line::from(spans));
 
     match detection.map(|d| &d.outcome) {
         Some(DetectionOutcome::Detected(kind)) => {
@@ -146,7 +186,7 @@ pub(super) fn project_content(app: &App, width: usize, palette: Palette) -> Vec<
         lines.push(Line::from(spans));
     }
 
-    lines
+    pad_info(lines)
 }
 
 /// What esptool has reported about the connected board so far: identity
@@ -167,9 +207,9 @@ pub fn draw_detection(frame: &mut Frame, area: Rect, app: &App, palette: Palette
     );
 }
 
-/// Builds the Device info pane's content lines (placeholder or details). See
-/// [`project_content`] for why this is split out.
-pub(super) fn device_content(app: &App, palette: Palette) -> Vec<Line<'static>> {
+/// Builds the Device info pane's content lines (placeholder or details),
+/// padded to [`INFO_ROWS`]; see [`project_content`] for why.
+fn device_content(app: &App, palette: Palette) -> Vec<Line<'static>> {
     let caps = app.manager.capabilities();
     let muted = muted_style(palette);
 
@@ -182,18 +222,18 @@ pub(super) fn device_content(app: &App, palette: Palette) -> Vec<Line<'static>> 
     let esptool_flash_view =
         caps.contains(Capability::DeviceInfo) || caps.contains(Capability::EraseFlash);
     let Some(flash) = app.flash.as_ref() else {
-        return vec![
+        return pad_info(vec![
             if esptool_flash_view {
                 Line::from("press 'x' to open Flash and query the device")
             } else {
                 Line::from("no device information for this project")
             }
             .style(muted),
-        ];
+        ]);
     };
     let details = &flash.details;
     if details.is_empty() {
-        return vec![
+        return pad_info(vec![
             if esptool_flash_view {
                 Line::from(
                     "no device data yet --- run chip or flash information from the Flash menu",
@@ -202,7 +242,7 @@ pub(super) fn device_content(app: &App, palette: Palette) -> Vec<Line<'static>> 
                 Line::from("no device information for this project")
             }
             .style(muted),
-        ];
+        ]);
     }
 
     let mut lines = Vec::new();
@@ -232,7 +272,7 @@ pub(super) fn device_content(app: &App, palette: Palette) -> Vec<Line<'static>> 
         lines.push(field("MAC", mac.clone(), palette));
     }
 
-    lines
+    pad_info(lines)
 }
 
 /// Row 2 placeholder for the window before a browser exists at all (a

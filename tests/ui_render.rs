@@ -358,6 +358,98 @@ fn device_pane_shows_chip_details_once_esptool_has_reported_them() {
     );
 }
 
+/// Row 2's top border carries its pane's title, so the line it sits on is
+/// where row 1 ends: the same line in every backend, because the Project
+/// and Device info panes are a fixed four content rows (`ui::panels`).
+#[test]
+fn row_one_is_the_same_fixed_height_in_both_backends() {
+    let mut zephyr = app_with_backend(BackendKind::Zephyr);
+    let mut micropython = app_with_backend(BackendKind::MicroPython);
+    let z = render(&mut zephyr, 100, 30);
+    let m = render(&mut micropython, 100, 30);
+
+    let z_row2 = z.lines().position(|l| l.contains("Files"));
+    let m_row2 = m.lines().position(|l| l.contains("Files"));
+    // Header (1) + four content rows + the panes' borders (2) = row 2
+    // starts on the eighth line.
+    assert_eq!(
+        z_row2,
+        Some(7),
+        "Zephyr's row 1 must be exactly four content rows:\n{z}"
+    );
+    assert_eq!(
+        z_row2, m_row2,
+        "row 1 must be equally tall in both backends:\n{z}\n{m}"
+    );
+}
+
+#[test]
+fn device_details_arriving_do_not_shift_the_dashboard() {
+    let mut app = app_with_backend(BackendKind::MicroPython);
+    let before = render(&mut app, 100, 30);
+    let row2 = before
+        .lines()
+        .position(|l| l.contains("Files"))
+        .expect("row 2 renders while the pane is a placeholder");
+
+    // A full report fills all four content rows; the dashboard below must
+    // not move a single line.
+    let mut flash = FlashPanel::new(std::env::temp_dir());
+    flash.details = DeviceDetails {
+        family: Some(ChipFamily::Esp32S3),
+        revision: Some("3".to_string()),
+        features: Some("WiFi, BLE".to_string()),
+        crystal_mhz: Some("40MHz".to_string()),
+        mac: Some("24:6f:28:12:34:56".to_string()),
+        ..DeviceDetails::default()
+    };
+    app.flash = Some(flash);
+
+    let after = render(&mut app, 100, 30);
+    assert!(
+        after.contains("24:6f:28:12:34:56"),
+        "the details must show:\n{after}"
+    );
+    assert_eq!(
+        after.lines().position(|l| l.contains("Files")),
+        Some(row2),
+        "a full device report must not move row 2:\n{after}"
+    );
+}
+
+#[test]
+fn a_start_dir_below_the_project_root_rides_the_root_line() {
+    // Detection climbed from the working directory to an ancestor with
+    // evidence: the cwd no longer takes a row of its own (the pane is a
+    // fixed four) --- it rides `root:`'s line as a muted suffix.
+    let base = std::env::temp_dir().join(format!("chiptui-cwd-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let start = base.join("projects/app");
+    std::fs::create_dir_all(&start).unwrap();
+    for file in ["boot.py", "main.py", "config.py"] {
+        std::fs::write(base.join(file), "").unwrap();
+    }
+    std::fs::create_dir_all(base.join("home")).unwrap();
+
+    let mut app = App::new(&start);
+    app.set_home_dir(base.join("home"));
+    app.bootstrap();
+    app.manager.set_override(Some(BackendKind::MicroPython));
+    let frame = render(&mut app, 100, 30);
+
+    assert!(
+        frame.contains("(cwd "),
+        "the working directory must ride the root line:\n{frame}"
+    );
+    assert_eq!(
+        frame.lines().position(|l| l.contains("Files")),
+        Some(7),
+        "the cwd suffix must not add a row to the pane:\n{frame}"
+    );
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+
 #[test]
 fn a_too_small_terminal_degrades_instead_of_panicking() {
     let mut app = app_with_backend(BackendKind::Zephyr);

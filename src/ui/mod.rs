@@ -128,14 +128,13 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
 /// Log/Monitor tab strip over the selected tab's body, full width
 /// (`SPEC.md` §11).
 ///
-/// Row 1's height adapts to its content: the taller of the two info panes
-/// plus borders. Both are informational (never focused), so the row starts
-/// compact and only grows when device details accumulate.
+/// Row 1 is a fixed height: both info panes pad their content to
+/// [`panels::INFO_ROWS`] lines in every backend and state, so the rows below
+/// never shift when a workspace resolves or device details accumulate. Both
+/// are informational (never focused).
 fn draw_dashboard(frame: &mut Frame, body: Rect, app: &mut App, palette: Palette) {
-    let half_width = (body.width / 2).max(1) as usize;
-    let project_n = panels::project_content(app, half_width, palette).len();
-    let device_n = panels::device_content(app, palette).len();
-    let info_height = project_n.max(device_n).max(1) as u16 + 2;
+    // The info panes' content rows plus their borders.
+    let info_height = panels::INFO_ROWS as u16 + 2;
 
     let [row1, rest] =
         Layout::vertical([Constraint::Length(info_height), Constraint::Min(0)]).areas(body);
