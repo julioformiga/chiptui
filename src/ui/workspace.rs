@@ -12,7 +12,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
 
 use crate::app::{App, Focus};
-use crate::ui::{Palette, dashboard_focused, pane_block};
+use crate::ui::{Palette, dashboard_focused, pane_block, tilde_path};
 use crate::workspace::{WorkspaceAction, WorkspacePanel};
 
 /// Draws the full second row for a workspace+build backend: the workspace
@@ -61,7 +61,7 @@ fn draw_rows(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
                             panel
                                 .resolved
                                 .as_ref()
-                                .map(|workspace| workspace.dir.display().to_string()),
+                                .map(|workspace| tilde_path(&workspace.dir, app.home_dir())),
                             panel.invalid.is_some(),
                             area.width,
                             palette,
@@ -87,7 +87,10 @@ fn draw_rows(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
                         panel.projects_invalid.is_some(),
                         "Projects Base",
                         answer_value(
-                            panel.projects.as_ref().map(|dir| dir.display().to_string()),
+                            panel
+                                .projects
+                                .as_ref()
+                                .map(|dir| tilde_path(dir, app.home_dir())),
                             panel.projects_invalid.is_some(),
                             area.width,
                             palette,
@@ -113,7 +116,7 @@ fn draw_rows(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
                             project_ok.then(|| {
                                 format!(
                                     "{} · {}",
-                                    app.build.as_ref().unwrap().root.display(),
+                                    tilde_path(&app.build.as_ref().unwrap().root, app.home_dir()),
                                     app.build.as_ref().unwrap().project_origin.label()
                                 )
                             }),
@@ -216,7 +219,7 @@ fn draw_files_section(
         .files_root
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| panel.files_root.display().to_string());
+        .unwrap_or_else(|| tilde_path(&panel.files_root, app.home_dir()));
     let title = panel
         .files_path
         .strip_prefix(&panel.files_root)

@@ -12,7 +12,9 @@ use crate::backend::Capability;
 use crate::flash::RunState;
 use crate::logs::{Level, PREFIX_WIDTH};
 use crate::project::DetectionOutcome;
-use crate::ui::{Palette, SPINNER, content_style, dashboard_focused, pane_block, pane_border};
+use crate::ui::{
+    Palette, SPINNER, content_style, dashboard_focused, pane_block, pane_border, tilde_path,
+};
 
 /// Project identity: where it is, what it is, and how sure we are.
 ///
@@ -42,18 +44,19 @@ pub(super) fn project_content(app: &App, width: usize, palette: Palette) -> Vec<
     let path_budget = width.saturating_sub(2 + LABEL_WIDTH);
     // A backend that makes the project a question (`ProjectSelect`) answers
     // it with the build panel's root, so a picked project re-roots this
-    // field too; every other backend keeps the detection root.
+    // field too; every other backend keeps the detection root. Home
+    // prefixes collapse to `~`.
     let root = if app
         .manager
         .capabilities()
         .contains(Capability::ProjectSelect)
         && let Some(panel) = &app.build
     {
-        panel.root.display().to_string()
+        tilde_path(&panel.root, app.home_dir())
     } else {
         app.manager.root().map_or_else(
-            || app.manager.start_dir().display().to_string(),
-            |root| root.display().to_string(),
+            || tilde_path(app.manager.start_dir(), app.home_dir()),
+            |root| tilde_path(root, app.home_dir()),
         )
     };
     lines.push(field("root", truncate_start(&root, path_budget)));
@@ -64,7 +67,7 @@ pub(super) fn project_content(app: &App, width: usize, palette: Palette) -> Vec<
         .root()
         .is_some_and(|root| root != app.manager.start_dir())
     {
-        let cwd = app.manager.start_dir().display().to_string();
+        let cwd = tilde_path(app.manager.start_dir(), app.home_dir());
         lines.push(field("cwd", truncate_start(&cwd, path_budget)));
     }
 

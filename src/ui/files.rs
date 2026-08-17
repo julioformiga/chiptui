@@ -288,16 +288,34 @@ pub(super) fn row(
     width: u16,
     palette: Palette,
 ) -> ListItem<'static> {
+    ListItem::new(Line::from(row_spans(
+        name, is_dir, size, status, width, palette,
+    )))
+}
+
+/// The spans [`row`] stacks, split out so the width test can assert them
+/// (a `ListItem`'s content is private to ratatui).
+fn row_spans(
+    name: &str,
+    is_dir: bool,
+    size: u64,
+    status: Option<SyncStatus>,
+    width: u16,
+    palette: Palette,
+) -> Vec<Span<'static>> {
     let size_text = if is_dir {
         "DIR".to_string()
     } else {
         human_size(size)
     };
 
-    // The icon column is its *display* width (folder emoji are two cells)
-    // plus the trailing space; guessing one column too few pushed the size
-    // past the pane edge, truncating it ("DI"). A marker costs 2 more.
-    let icon_width = Span::raw(icon(name, is_dir)).width() + 1;
+    // Every icon is exactly one emoji, and every terminal draws an emoji
+    // two cells wide --- however unicode-width scores the codepoint (⚙️
+    // U+2699 is East-Asian *ambiguous*, scored 1, which budgeted the
+    // column one too narrow and pushed the name into the icon). The
+    // column is fixed at 2 cells + the trailing space. A marker costs 2
+    // more.
+    let icon_width = 3;
     let marker_width = usize::from(status.is_some()) * 2;
     let name_width =
         (width as usize).saturating_sub(icon_width + marker_width + size_text.len() + 1);
@@ -321,7 +339,7 @@ pub(super) fn row(
     spans.push(Span::styled(display, name_style));
     spans.push(Span::raw(" ".repeat(padding + 1)));
     spans.push(Span::styled(size_text, Style::new().dim()));
-    ListItem::new(Line::from(spans))
+    spans
 }
 
 /// A glyph hinting at the entry's kind: a folder, or a common extension's
@@ -341,7 +359,7 @@ fn icon(name: &str, is_dir: bool) -> &'static str {
         Some("c" | "h" | "cc" | "cpp" | "hpp") => "🔧",
         Some("dts" | "dtsi" | "overlay") => "🔌",
         Some("md" | "rst") => "📝",
-        Some("conf" | "cfg" | "ini" | "toml" | "yaml" | "yml" | "json") => "⚙",
+        Some("conf" | "cfg" | "ini" | "toml" | "yaml" | "yml" | "json") => "⚙️",
         Some("sh") => "🐚",
         _ => "📄",
     }
@@ -475,8 +493,37 @@ mod tests {
     fn known_extensions_get_a_distinct_icon() {
         assert_eq!(icon("main.py", false), "🐍");
         assert_eq!(icon("readme.TXT", false), "📄");
-        assert_eq!(icon("prj.conf", false), "⚙");
+        assert_eq!(icon("prj.conf", false), "⚙️");
         assert_eq!(icon("board.overlay", false), "🔌");
+    }
+
+    #[test]
+    fn every_icon_reserves_the_same_column_and_leaves_the_name_its_space() {
+        // The icon column is budgeted for one two-cell emoji regardless of
+        // the codepoint's unicode-width score (⚙️ is scored 1 but drawn 2,
+        // which used to glue the name onto the icon). Whatever the entry,
+        // the drawn spans stay inside `width` and the name keeps at least
+        // one space before the size.
+        let palette = ratatui_themes::ThemeName::TokyoNight.palette();
+        for name in [
+            "src",
+            "main.py",
+            "prj.conf",
+            "west.yml",
+            "app.json",
+            "Kconfig",
+            "firmware.bin",
+        ] {
+            let is_dir = name == "src";
+            let spans = row_spans(name, is_dir, 128, None, 40, palette);
+            assert!(
+                spans[0].content.ends_with(' '),
+                "{name}: the icon column must end in a space (got {:?})",
+                spans[0].content
+            );
+            let total: usize = spans.iter().map(|span| span.width()).sum();
+            assert!(total <= 40, "{name}: row is {total} wide, beyond the pane");
+        }
     }
 
     #[test]

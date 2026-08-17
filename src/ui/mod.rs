@@ -18,6 +18,8 @@ mod overlay;
 mod panels;
 mod workspace;
 
+use std::path::Path;
+
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Flex, Layout, Rect};
 use ratatui::style::{Modifier, Style, Stylize};
@@ -292,6 +294,21 @@ fn content_style(focused: bool) -> Style {
     }
 }
 
+/// Renders `path` for display, collapsing a `home` prefix to `~` (the form
+/// the user types and reads, and shorter in a pane's answer column). A path
+/// *next to* home (`/home/julio-dev` beside `/home/julio`) keeps its full
+/// form: `Path::strip_prefix` compares whole components, never bytes.
+pub(crate) fn tilde_path(path: &Path, home: &Path) -> String {
+    if home.as_os_str().is_empty() {
+        return path.display().to_string();
+    }
+    match path.strip_prefix(home) {
+        Ok(rest) if rest.as_os_str().is_empty() => "~".to_string(),
+        Ok(rest) => format!("~/{}", rest.display()),
+        Err(_) => path.display().to_string(),
+    }
+}
+
 /// A bordered block that shows whether it holds focus.
 fn pane_block(title: &str, focused: bool, palette: Palette) -> Block<'static> {
     pane_border(focused, palette).title(title_span(title, focused, palette))
@@ -358,4 +375,29 @@ pub(crate) fn draw_scrollbar(
         },
         &mut state,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tilde_path;
+    use std::path::Path;
+
+    #[test]
+    fn home_prefixed_paths_collapse_to_a_tilde() {
+        let home = Path::new("/home/julio");
+        assert_eq!(
+            tilde_path(Path::new("/home/julio/zephyrproject"), home),
+            "~/zephyrproject"
+        );
+        assert_eq!(tilde_path(Path::new("/home/julio"), home), "~");
+        // Component-wise, never byte-wise: a sibling directory that merely
+        // shares the prefix keeps its full form.
+        assert_eq!(
+            tilde_path(Path::new("/home/julio-dev/app"), home),
+            "/home/julio-dev/app"
+        );
+        assert_eq!(tilde_path(Path::new("/opt/app"), home), "/opt/app");
+        // An unset home (empty) must not claim every path as its own.
+        assert_eq!(tilde_path(Path::new("/opt/app"), Path::new("")), "/opt/app");
+    }
 }
