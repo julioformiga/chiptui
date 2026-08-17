@@ -66,7 +66,7 @@ impl App {
                     _ => {}
                 }
             } else {
-                let files_len = panel.files_entries.len();
+                let files_len = panel.files_row_count();
                 match key.code {
                     KeyCode::Up | KeyCode::Char('k') => {
                         if panel.files_cursor == 0 {
@@ -92,7 +92,10 @@ impl App {
                     KeyCode::Right => panel.enter_files(),
                     KeyCode::Left | KeyCode::Backspace => panel.ascend_files(),
                     KeyCode::Enter => {
-                        if let Some(entry) = panel.files_selected() {
+                        if panel.on_parent_row() {
+                            // The `[..]` row: Enter steps back up.
+                            panel.ascend_files();
+                        } else if let Some(entry) = panel.files_selected() {
                             if entry.is_dir {
                                 panel.enter_files();
                             } else if files::is_text_like(&entry.name) {

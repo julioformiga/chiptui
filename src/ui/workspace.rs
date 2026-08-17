@@ -9,7 +9,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{ListItem, Paragraph, Wrap};
+use ratatui::widgets::{Paragraph, Wrap};
 
 use crate::app::{App, Focus};
 use crate::ui::{Palette, dashboard_focused, pane_block};
@@ -190,13 +190,17 @@ fn draw_rows(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
     draw_files_section(frame, area, y, app, panel, palette);
 }
 
-/// The embedded file list under the checklist: a header naming the browsed
-/// directory (relative to the project root), then entries filling the rest
-/// of the pane --- the same `row`/`render_list` grammar `crate::ui::files`
-/// draws for MicroPython's local pane, reused with no comparison status
-/// (`row`'s `None` arm draws no marker column at all --- this pane has no
-/// other side to compare against), so an empty listing, an overlong name
-/// and a directory marker read identically here.
+/// The embedded file list under the checklist: a title bar --- the project's
+/// own name, concatenated with the path walked below it ("blinkety/",
+/// "blinkety/src/"), highlighted with the theme's selection background so it
+/// reads as a bar, distinct from the listing under it --- then entries
+/// filling the rest of the pane, the same `row`/`render_list` grammar
+/// `crate::ui::files` draws for MicroPython's local pane, reused with no
+/// comparison status (`row`'s `None` arm draws no marker column at all ---
+/// this pane has no other side to compare against), so an empty listing, an
+/// overlong name and a directory marker read identically here. A below-root
+/// listing leads with a `[..]` parent row (see
+/// [`WorkspacePanel::parent_row`]).
 fn draw_files_section(
     frame: &mut Frame,
     area: Rect,
@@ -208,23 +212,26 @@ fn draw_files_section(
     if y >= area.bottom() {
         return;
     }
-    let relative = panel
+    let project = panel
+        .files_root
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| panel.files_root.display().to_string());
+    let title = panel
         .files_path
         .strip_prefix(&panel.files_root)
-        .map(|relative| {
-            if relative.as_os_str().is_empty() {
-                ".".to_string()
-            } else {
-                relative.display().to_string()
-            }
-        })
-        .unwrap_or_else(|_| panel.files_path.display().to_string());
-    let header = Line::from(
-        format!(
-            "Files  {}",
-            shorten_start(&relative, value_budget(area.width))
-        )
-        .dim(),
+        .ok()
+        .filter(|relative| !relative.as_os_str().is_empty())
+        .map(|relative| format!("{project}/{}/", relative.display()))
+        .unwrap_or(format!("{project}/"));
+    // Padded to the full row so the background fills the bar edge to edge.
+    let text = shorten_start(&title, area.width as usize);
+    let padding = (area.width as usize).saturating_sub(text.chars().count());
+    let header = Line::from(format!("{text}{}", " ".repeat(padding))).style(
+        Style::new()
+            .bg(palette.selection)
+            .fg(palette.fg)
+            .add_modifier(Modifier::BOLD),
     );
     let y = render_row(frame, area, y, header, false);
     if y >= area.bottom() {
@@ -246,20 +253,30 @@ fn draw_files_section(
     }
 
     let focused = dashboard_focused(app, Focus::Workspace);
-    let items: Vec<ListItem> = panel
-        .visible_files()
-        .iter()
-        .map(|entry| {
-            super::files::row(
-                &entry.name,
-                entry.is_dir,
-                entry.size,
-                None,
-                list_area.width,
-                palette,
-            )
-        })
-        .collect();
+    // The `[..]` row leads whenever the listing is below the project root,
+    // so `files_cursor` (which addresses drawn rows, 0 first) can be passed
+    // straight through as the list's selection.
+    let mut items = Vec::with_capacity(panel.files_row_count());
+    if panel.parent_row() {
+        items.push(super::files::row(
+            "[..]",
+            true,
+            0,
+            None,
+            list_area.width,
+            palette,
+        ));
+    }
+    items.extend(panel.visible_files().iter().map(|entry| {
+        super::files::row(
+            &entry.name,
+            entry.is_dir,
+            entry.size,
+            None,
+            list_area.width,
+            palette,
+        )
+    }));
     let cursor = panel.in_files.then_some(panel.files_cursor);
     super::files::render_list(frame, list_area, items, cursor, focused);
 }

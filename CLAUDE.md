@@ -108,7 +108,15 @@ it offers
 `west update` (confirm-gated --- it rewrites the shared workspace,
 through `Overlay::ConfirmWorkspace`) and `west sdk list` as buttons enabled once the
 installation resolves, under `Capability::WorkspaceSync`; both
-run through the build panel's one process slot into the Monitor tab. The pane also owns the
+run through the build panel's one process slot into the Monitor tab. The same separator
+carries the pane's embedded **project file list** --- no action menu: `Enter` descends into a
+directory and opens a text file straight in `$EDITOR`, `v` views one in the viewer, `Del`
+asks through `Overlay::ConfirmDelete` (default No), and a binary/unknown entry ignores both
+keys (all through `App::run_file_action`, `Side::Local`); the section's title bar names the
+project with the walked path concatenated per descent (`proj/`, `proj/src/`) on a
+`palette.selection` background, and a below-root listing leads with a `[..]` parent row
+(`WorkspacePanel::parent_row`), selected after every descent, `Enter`/`→` on it stepping back
+up. The pane also owns the
 environment's second persisted fact: the **projects folder** (`[zephyr] projects`, resolved by
 `src/backend/zephyr/projects.rs` from the same two config levels, or picked through the same
 `DirPicker` with `DirPurpose::Projects` --- existence-only validation, saved via

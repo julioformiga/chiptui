@@ -129,8 +129,14 @@ fn zephyr_shows_the_workspace_and_build_panes_in_row_two() {
         !frame.contains("Device files:"),
         "no device pane may render without a filesystem:\n{frame}"
     );
+    // The embedded file list is titled with the project's own name (the
+    // fixture app is rooted at the temp directory).
+    let project = std::env::temp_dir()
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
     assert!(
-        frame.contains("Files"),
+        frame.contains(&format!("{project}/")),
         "the workspace pane's embedded project file list must show:\n{frame}"
     );
 }

@@ -788,10 +788,20 @@ fn enter_in_the_workspace_file_section_descends_directly() {
     );
 
     // Enter descends straight into the directory --- there is no action
-    // menu between the keypress and the navigation anymore.
+    // menu between the keypress and the navigation anymore. The listing
+    // inside starts on the `[..]` row, selected.
     app.handle(key(KeyCode::Enter));
     assert_eq!(app.overlay, None);
-    assert_eq!(app.workspace.as_ref().unwrap().files_path, root.join("src"));
+    let panel = app.workspace.as_ref().unwrap();
+    assert_eq!(panel.files_path, root.join("src"));
+    assert!(panel.on_parent_row(), "the [..] row must lead, selected");
+
+    // Enter on `[..]` steps back up, leaving "src" selected in its parent.
+    app.handle(key(KeyCode::Enter));
+    let panel = app.workspace.as_ref().unwrap();
+    assert_eq!(panel.files_path, root);
+    assert!(!panel.on_parent_row());
+    assert_eq!(panel.files_selected().unwrap().name, "src");
 }
 
 /// Walks the workspace cursor from the checklist's first row onto the file
@@ -807,6 +817,37 @@ fn workspace_cursor_on(app: &mut App, name: &str) {
         app.handle(key(KeyCode::Down));
     }
     panic!("never reached the {name} entry");
+}
+
+#[test]
+fn the_workspace_file_section_titles_with_the_project_and_offers_the_parent_row() {
+    let (mut app, root) = zephyr_app("section-title", None);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    app.workspace.as_mut().unwrap().reload_files();
+    app.focus = Focus::Workspace;
+
+    // At the root the title bar carries the project's own name…
+    let project = root.file_name().unwrap().to_string_lossy().into_owned();
+    let frame = render(&mut app, 100, 30);
+    assert!(
+        frame.contains(&format!("{project}/")),
+        "the title bar must name the project:\n{frame}"
+    );
+    assert!(
+        !frame.contains("[..]"),
+        "no parent row at the project root:\n{frame}"
+    );
+
+    // …and descending concatenates the walked path onto it, over a listing
+    // that leads with `[..]`.
+    workspace_cursor_on(&mut app, "src");
+    app.handle(key(KeyCode::Enter));
+    let frame = render(&mut app, 100, 30);
+    assert!(
+        frame.contains(&format!("{project}/src/")),
+        "the title bar must concatenate the descent:\n{frame}"
+    );
+    assert!(frame.contains("[..]"), "the parent row must lead:\n{frame}");
 }
 
 /// The upward mirror of [`workspace_cursor_on`].
