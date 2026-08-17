@@ -366,6 +366,44 @@ impl App {
         }
     }
 
+    /// Runs the rename prompt (`r` in the workspace file list): a new *name*
+    /// for the listed entry, in the same directory. A `/` in the typed text
+    /// would turn the rename into a move, so it is refused with the reason
+    /// instead of acted on. Local and synchronous, like
+    /// [`Self::create_entry`]'s local arm; a reload follows so the list
+    /// shows the new name.
+    pub(super) fn rename_entry(&mut self, old: &str, input: &str) {
+        let name = input.trim().trim_end_matches('/');
+        if name.is_empty() {
+            self.logs.warn("type a name first");
+            return;
+        }
+        // An unedited confirm is a quiet no-op, not an error.
+        if name == old {
+            return;
+        }
+        if name.contains('/') {
+            self.logs
+                .warn("rename stays in this directory (a name, not a path)");
+            return;
+        }
+        let Some(dir) = self.local_dir() else {
+            return;
+        };
+        let from = dir.join(old);
+        let to = dir.join(name);
+        match std::fs::rename(&from, &to) {
+            Ok(()) => {
+                self.logs
+                    .success(format!("{} renamed to {}", from.display(), to.display()));
+                self.reload_local_pane();
+            }
+            Err(e) => self
+                .logs
+                .error(format!("{}: rename failed: {e}", from.display())),
+        }
+    }
+
     /// Runs the package-install prompt (`i` on the device pane): queues
     /// `mip install` for the typed package name/spec through [`Browser`],
     /// like every other action here that touches the port.

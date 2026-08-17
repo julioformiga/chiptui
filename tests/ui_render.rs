@@ -296,7 +296,7 @@ fn overlays_draw_above_the_dashboard() {
         "commands division missing:\n{help}"
     );
     assert!(
-        help.contains("re-run detection, or reload the file pane"),
+        help.contains("re-detect, reload, or rename (file list)"),
         "help body missing:\n{help}"
     );
 

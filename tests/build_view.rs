@@ -978,6 +978,138 @@ fn del_in_the_workspace_file_section_asks_first_and_defaults_to_no() {
 }
 
 #[test]
+fn r_in_the_workspace_file_section_opens_a_prefilled_rename_prompt() {
+    let (mut app, root) = zephyr_app("rename-open", None);
+    std::fs::write(root.join("main.c"), "int main(void) { return 0; }\n").unwrap();
+    app.workspace.as_mut().unwrap().reload_files();
+    app.focus = Focus::Workspace;
+
+    workspace_cursor_on(&mut app, "main.c");
+    app.handle(key(KeyCode::Char('r')));
+    assert_eq!(
+        app.overlay,
+        Some(Overlay::RenameEntry {
+            name: "main.c".to_string(),
+            input: "main.c".to_string(),
+        }),
+        "the prompt must open pre-filled with the current name"
+    );
+
+    let frame = render(&mut app, 100, 30);
+    assert!(frame.contains("Rename"), "textbox not shown:\n{frame}");
+    assert!(
+        frame.contains("current name: main.c"),
+        "the current name must be visible:\n{frame}"
+    );
+
+    // An unedited confirm is a quiet no-op, not an error.
+    app.handle(key(KeyCode::Enter));
+    assert_eq!(app.overlay, None);
+    assert!(root.join("main.c").is_file());
+}
+
+#[test]
+fn renaming_a_workspace_file_moves_it_and_refreshes_the_list() {
+    let (mut app, root) = zephyr_app("rename-file", None);
+    std::fs::write(root.join("main.c"), "int main(void) { return 0; }\n").unwrap();
+    app.workspace.as_mut().unwrap().reload_files();
+    app.focus = Focus::Workspace;
+
+    workspace_cursor_on(&mut app, "main.c");
+    app.handle(key(KeyCode::Char('r')));
+    // The pre-filled field edits from its end: drop the extension, type a
+    // new one.
+    for _ in 0..2 {
+        app.handle(key(KeyCode::Backspace));
+    }
+    for c in "_v2.c".chars() {
+        app.handle(key(KeyCode::Char(c)));
+    }
+    app.handle(key(KeyCode::Enter));
+
+    assert_eq!(app.overlay, None);
+    assert!(!root.join("main.c").exists());
+    assert!(root.join("main_v2.c").is_file());
+    assert!(
+        app.workspace
+            .as_ref()
+            .unwrap()
+            .files_entries
+            .iter()
+            .any(|entry| entry.name == "main_v2.c"),
+        "the listing must refresh with the new name"
+    );
+}
+
+#[test]
+fn renaming_a_workspace_directory_works_the_same_way() {
+    let (mut app, root) = zephyr_app("rename-dir", None);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    app.workspace.as_mut().unwrap().reload_files();
+    app.focus = Focus::Workspace;
+
+    workspace_cursor_on(&mut app, "src");
+    app.handle(key(KeyCode::Char('r')));
+    for _ in 0..3 {
+        app.handle(key(KeyCode::Backspace));
+    }
+    for c in "boards".chars() {
+        app.handle(key(KeyCode::Char(c)));
+    }
+    app.handle(key(KeyCode::Enter));
+
+    assert_eq!(app.overlay, None);
+    assert!(!root.join("src").exists());
+    assert!(root.join("boards").is_dir());
+}
+
+#[test]
+fn escaping_rename_leaves_the_entry_alone() {
+    let (mut app, root) = zephyr_app("rename-escape", None);
+    std::fs::write(root.join("prj.conf"), "CONFIG_SERIAL=y\n").unwrap();
+    app.workspace.as_mut().unwrap().reload_files();
+    app.focus = Focus::Workspace;
+
+    workspace_cursor_on(&mut app, "prj.conf");
+    app.handle(key(KeyCode::Char('r')));
+    for _ in 0..8 {
+        app.handle(key(KeyCode::Backspace));
+    }
+    app.handle(key(KeyCode::Esc));
+
+    assert_eq!(app.overlay, None);
+    assert!(
+        root.join("prj.conf").is_file(),
+        "Esc must leave the entry untouched"
+    );
+}
+
+#[test]
+fn renaming_into_a_path_is_refused() {
+    let (mut app, root) = zephyr_app("rename-slash", None);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("main.c"), "int main(void) { return 0; }\n").unwrap();
+    app.workspace.as_mut().unwrap().reload_files();
+    app.focus = Focus::Workspace;
+
+    workspace_cursor_on(&mut app, "main.c");
+    app.handle(key(KeyCode::Char('r')));
+    for _ in 0..6 {
+        app.handle(key(KeyCode::Backspace));
+    }
+    for c in "src/main.c".chars() {
+        app.handle(key(KeyCode::Char(c)));
+    }
+    app.handle(key(KeyCode::Enter));
+
+    // A `/` would turn the rename into a move, so it is refused --- the
+    // file stays where and what it was.
+    assert_eq!(app.overlay, None);
+    assert!(root.join("main.c").is_file());
+    assert!(!root.join("src/main.c").exists());
+}
+
+#[test]
 fn del_on_a_workspace_directory_asks_before_removing_it_recursively() {
     let (mut app, root) = zephyr_app("del-dir", None);
     std::fs::create_dir_all(root.join("src/sub")).unwrap();

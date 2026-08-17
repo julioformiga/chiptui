@@ -526,6 +526,26 @@ impl App {
                 }
                 _ => {}
             },
+            // Same grammar as `CreateEntry`: printable characters edit,
+            // `Enter` applies, `Esc` leaves the entry exactly as it was.
+            Overlay::RenameEntry { name, input } => match key.code {
+                KeyCode::Esc => self.overlay = None,
+                KeyCode::Backspace => {
+                    let mut input = input;
+                    input.pop();
+                    self.overlay = Some(Overlay::RenameEntry { name, input });
+                }
+                KeyCode::Char(c) => {
+                    let mut input = input;
+                    input.push(c);
+                    self.overlay = Some(Overlay::RenameEntry { name, input });
+                }
+                KeyCode::Enter => {
+                    self.overlay = None;
+                    self.rename_entry(&name, &input);
+                }
+                _ => {}
+            },
             Overlay::PackageInstall { input } => match key.code {
                 KeyCode::Esc => self.overlay = None,
                 KeyCode::Backspace => {

@@ -32,7 +32,8 @@ impl App {
     /// directory-less extension does nothing --- there is nothing to open);
     /// `v` views a text file in the viewer; `Del` asks before deleting
     /// anything (default No, [`Overlay::ConfirmDelete`]); `a` creates an
-    /// entry.
+    /// entry; `r` renames the one under the cursor (files and directories
+    /// alike, via a pre-filled [`Overlay::RenameEntry`]).
     pub(super) fn on_workspace_key(&mut self, key: KeyEvent) {
         let caps = self.manager.capabilities();
         let mut action = None;
@@ -42,6 +43,7 @@ impl App {
         // through the same `run_file_action` path the menu uses.
         let mut file_action: Option<(String, bool, FileAction)> = None;
         let mut open_create = false;
+        let mut open_rename: Option<String> = None;
 
         if let Some(panel) = self.workspace.as_mut() {
             let checklist_len = panel.actions(&caps).len().max(1);
@@ -121,6 +123,16 @@ impl App {
                         }
                     }
                     KeyCode::Char('a') => open_create = true,
+                    // Renaming is a *name* change in the listed directory,
+                    // offered for every entry kind --- a binary's name can
+                    // change just as well as a text file's or a directory's.
+                    // The `[..]` parent row is not an entry (`files_selected`
+                    // returns `None`), so `r` there is a no-op.
+                    KeyCode::Char('r') => {
+                        if let Some(entry) = panel.files_selected() {
+                            open_rename = Some(entry.name.clone());
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -136,6 +148,12 @@ impl App {
             self.overlay = Some(Overlay::CreateEntry {
                 side: Side::Local,
                 input: String::new(),
+            });
+        }
+        if let Some(name) = open_rename {
+            self.overlay = Some(Overlay::RenameEntry {
+                name: name.clone(),
+                input: name,
             });
         }
     }

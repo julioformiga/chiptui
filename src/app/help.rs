@@ -87,7 +87,7 @@ const DASHBOARD_NAVIGATION: [HelpBinding; 7] = [
 const DASHBOARD_COMMANDS: [HelpBinding; 18] = [
     action(
         "r",
-        "re-run detection, or reload the file pane",
+        "re-detect, reload, or rename (file list)",
         KeyCode::Char('r'),
     ),
     action("o", "override the detected backend", KeyCode::Char('o')),

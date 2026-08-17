@@ -112,7 +112,10 @@ run through the build panel's one process slot into the Monitor tab. The same se
 carries the pane's embedded **project file list** --- no action menu: `Enter` descends into a
 directory and opens a text file straight in `$EDITOR`, `v` views one in the viewer, `Del`
 asks through `Overlay::ConfirmDelete` (default No), and a binary/unknown entry ignores both
-keys (all through `App::run_file_action`, `Side::Local`); the section's title bar names the
+keys (all through `App::run_file_action`, `Side::Local`); `r` renames the entry under the
+cursor --- any kind, via `Overlay::RenameEntry` pre-filled with the current name and a local
+`fs::rename` on confirm (`App::rename_entry`; a `/` in the typed name is refused, since a
+rename must not silently become a move); the section's title bar names the
 project with the walked path concatenated per descent (`proj/`, `proj/src/`) on a
 `palette.selection` background, and a below-root listing leads with a `[..]` parent row
 (`WorkspacePanel::parent_row`), selected after every descent, `Enter`/`→` on it stepping back

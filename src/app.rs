@@ -272,6 +272,11 @@ pub enum Overlay {
     /// directory" (`SPEC.md` §9's "create directory" action); otherwise an
     /// empty file.
     CreateEntry { side: Side, input: String },
+    /// Inline text entry for renaming the entry under the cursor (`r` in the
+    /// workspace file list). `name` is the entry's current name, `input` the
+    /// edit buffer, pre-filled with it --- editing starts from the end, and
+    /// an unedited `Enter` is a no-op, not an error.
+    RenameEntry { name: String, input: String },
     /// Inline text entry for `mip install` (`i` on the device pane). Unlike
     /// [`Overlay::CreateEntry`] this is not tied to `side` or a selected
     /// entry --- it acts on the device as a whole, not the file under the
@@ -1830,6 +1835,9 @@ impl App {
                 ("enter", "create ('name/' for a directory)"),
                 ("esc", "cancel"),
             ],
+            Some(Overlay::RenameEntry { .. }) => {
+                vec![("type", "new name"), ("enter", "rename"), ("esc", "cancel")]
+            }
             Some(Overlay::BoardPicker { .. }) => vec![
                 ("type", "filter"),
                 ("↑/↓", "select"),
@@ -1949,6 +1957,7 @@ impl App {
                             keys.push(("v", "view"));
                             keys.push(("del", "delete"));
                             keys.push(("a", "new"));
+                            keys.push(("r", "rename"));
                         } else {
                             keys.push(("enter", "answer"));
                         }

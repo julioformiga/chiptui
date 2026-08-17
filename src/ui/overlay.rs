@@ -158,6 +158,9 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
         Overlay::CreateEntry { side, input } => {
             draw_create_entry(frame, area, side, &input, palette)
         }
+        Overlay::RenameEntry { name, input } => {
+            draw_rename_entry(frame, area, &name, &input, palette)
+        }
         Overlay::PackageInstall { input } => draw_package_install(frame, area, &input, palette),
         Overlay::SyncPreview { plan, confirm } => {
             draw_sync_preview(frame, area, &plan, confirm, palette)
@@ -679,6 +682,40 @@ fn draw_create_entry(
 
     frame.render_widget(
         Paragraph::new("name, or 'name/' for a directory".dim()),
+        hint_area,
+    );
+
+    let field = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(palette.accent));
+    let field_inner = field.inner(input_area);
+    frame.render_widget(field, input_area);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::raw(input),
+            Span::raw("_").fg(palette.accent),
+        ])),
+        field_inner,
+    );
+}
+
+/// Inline text entry for renaming an entry (`r` in the workspace file list)
+/// --- same shape as [`draw_create_entry`], with the current name shown above
+/// a field pre-filled with it, so editing starts from the end of what is
+/// already there and an unedited confirm visibly changes nothing.
+fn draw_rename_entry(frame: &mut Frame, area: Rect, name: &str, input: &str, palette: Palette) {
+    let popup = centered(area, 54, 6);
+    let block = modal("Rename", palette);
+    let inner = block.inner(popup);
+
+    frame.render_widget(Clear, popup);
+    frame.render_widget(block, popup);
+
+    let [hint_area, input_area] =
+        Layout::vertical([Constraint::Length(1), Constraint::Length(3)]).areas(inner);
+
+    frame.render_widget(
+        Paragraph::new(format!("current name: {name}").dim()),
         hint_area,
     );
 
