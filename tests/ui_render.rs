@@ -79,6 +79,110 @@ fn dashboard_shows_project_device_and_log_panes() {
     assert!(frame.contains("quit"), "missing footer shortcuts:\n{frame}");
 }
 
+/// A Zephyr fixture with a buildable project root and one connected board.
+fn header_fixture(tag: &str) -> App {
+    use chiptui::device::DeviceInfo;
+
+    let base = std::env::temp_dir().join(format!("chiptui-header-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let root = base.join("esp32c3_oled");
+    std::fs::create_dir_all(root.join("dev")).unwrap();
+    std::fs::create_dir_all(base.join("home")).unwrap();
+    std::fs::write(
+        root.join("CMakeLists.txt"),
+        "find_package(Zephyr REQUIRED)\n",
+    )
+    .unwrap();
+
+    let mut app = App::new(&root);
+    app.set_serial_dir(root.join("dev"));
+    app.set_home_dir(base.join("home"));
+    app.bootstrap();
+    app.manager.set_override(Some(BackendKind::Zephyr));
+    app.maybe_scan_devices();
+    app.place_startup_focus();
+    // One USB device selects itself; the header owes it a port and a
+    // connected icon.
+    app.devices.set_devices(vec![DeviceInfo {
+        port: "/dev/ttyACM0".into(),
+        serial: None,
+        vid_pid: "303a:1001".into(),
+        description: "ESP32C3".into(),
+    }]);
+    app
+}
+
+#[test]
+fn header_shows_the_backend_left_the_project_centered_the_device_right() {
+    let mut app = header_fixture("wide");
+    let frame = render(&mut app, 140, 30);
+    let header = frame.lines().next().unwrap().trim_matches('"').to_string();
+
+    assert!(
+        header.contains("Backend ◆ Zephyr"),
+        "the backend section names the kind under its icon:\n{header}"
+    );
+    assert!(
+        header.contains("Project esp32c3_oled"),
+        "the picked project must be the center:\n{header}"
+    );
+    assert!(
+        header.trim_end().ends_with("● /dev/ttyACM0"),
+        "the connected device rides the right edge:\n{header}"
+    );
+
+    // Centered on the whole bar: the project section's column equals half
+    // the leftover width (`chars().count()` because `◆` is 3 bytes but
+    // one column).
+    let idx = header.find("Project").expect("the section to place");
+    let column = header[..idx].chars().count();
+    let section = "Project esp32c3_oled".chars().count();
+    assert!(
+        (140usize.saturating_sub(section)) / 2 == column,
+        "the project section must sit centered, starts at {column}:\n{header}"
+    );
+}
+
+#[test]
+fn a_narrow_header_ellipsizes_the_project_and_never_the_device() {
+    let mut app = header_fixture("narrow");
+    let frame = render(&mut app, 60, 24);
+    let header = frame.lines().next().unwrap().trim_matches('"').to_string();
+
+    assert!(
+        header.contains("Backend ◆ Zephyr"),
+        "the backend section keeps its shape:\n{header}"
+    );
+    assert!(
+        header.contains("Project esp32c3_o…"),
+        "the project name ellipsizes, label kept:\n{header}"
+    );
+    assert!(
+        !header.contains("esp32c3_oled"),
+        "a 60-column line cannot hold the whole name:\n{header}"
+    );
+    assert!(
+        header.trim_end().ends_with("● /dev/ttyACM0"),
+        "the device status never truncates:\n{header}"
+    );
+}
+
+#[test]
+fn an_unscanned_header_shows_the_disconnect_icon_and_reason() {
+    let mut app = app_with_backend(BackendKind::MicroPython);
+    let frame = render(&mut app, 100, 30);
+    let header = frame.lines().next().unwrap().trim_matches('"').to_string();
+
+    assert!(
+        header.contains("○ not scanned"),
+        "before any scan the header says so, dimmed:\n{header}"
+    );
+    assert!(
+        header.contains("Backend ▲ MicroPython"),
+        "each backend kind carries its own icon:\n{header}"
+    );
+}
+
 #[test]
 fn zephyr_shows_the_workspace_and_build_panes_in_row_two() {
     // Once startup has run, row 2 belongs entirely to the build backend: the

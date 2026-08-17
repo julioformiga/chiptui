@@ -723,7 +723,7 @@ one-line contextual shortcut footer:
 
 ``` text
 ┌───────────────────────────────────────────────────────────────┐
-│ ChipTUI │ Project │ Backend │ Device                          │
+│ ChipTUI Backend ◆ Zephyr      Project esp32c3_basic      ● /dev/ttyACM0 │
 ├───────────────────────────────┬───────────────────────────────┤
 │ Project                       │ Device                        │
 ├───────────────────────────────┴───────────────────────────────┤

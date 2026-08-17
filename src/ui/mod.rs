@@ -29,6 +29,7 @@ use ratatui::widgets::{
 };
 
 use crate::app::{App, Focus, LogTab, View};
+use crate::backend::BackendKind;
 
 /// Below this the panes cannot be rendered legibly.
 const MIN_WIDTH: u16 = 60;
@@ -209,35 +210,111 @@ fn draw_too_small(frame: &mut Frame, area: Rect) {
     frame.render_widget(message, area);
 }
 
+/// The title bar: the badge and the backend on the left, the project
+/// centered, the device on the right.
+///
+/// The center is centered on the whole bar but clamped into the space the
+/// two sides leave free, so the three zones never overwrite each other; a
+/// name too long for that space ellipsizes, and the section drops only
+/// when not even `Project …` fits. The right side --- the volatile half
+/// (a board plugs in, a scan finishes) --- never truncates.
 fn draw_header(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
-    let project = app.header_project();
-    let backend = app
-        .manager
-        .selected_kind()
-        .map_or("none", |kind| kind.display_name());
+    let left = backend_spans(app, palette);
+    let right = device_status(app, palette);
+    let left_width = spans_width(&left);
+    let right_width = spans_width(&right);
 
-    let header = Line::from(vec![
+    frame.render_widget(Paragraph::new(Line::from(left)), area);
+    frame.render_widget(
+        Paragraph::new(Line::from(right)).alignment(Alignment::Right),
+        area,
+    );
+
+    let zone_start = left_width + 1;
+    let zone = (area.width as usize)
+        .saturating_sub(right_width + 1)
+        .saturating_sub(zone_start);
+    let Some(center) = project_spans(app, palette, zone) else {
+        return;
+    };
+    let center_width = spans_width(&center) as u16;
+    let x = (area.width.saturating_sub(center_width) / 2)
+        .max(zone_start as u16)
+        .min(area.width.saturating_sub(right_width as u16 + center_width));
+    frame.render_widget(
+        Paragraph::new(Line::from(center)),
+        Rect {
+            x,
+            y: area.y,
+            width: center_width,
+            height: 1,
+        },
+    );
+}
+
+/// The header's left side: the badge, then the backend section. Labels
+/// carry the muted color and values the weight (bold default), so what the
+/// user asked about reads louder than the word that marked it.
+fn backend_spans(app: &App, palette: Palette) -> Vec<Span<'static>> {
+    let (icon, backend) = match app.manager.selected_kind() {
+        Some(BackendKind::Zephyr) => ("◆", BackendKind::Zephyr.display_name()),
+        Some(BackendKind::MicroPython) => ("▲", BackendKind::MicroPython.display_name()),
+        None => ("◇", "none"),
+    };
+    vec![
         Span::styled(
             " ChipTUI ",
             Style::new().fg(palette.bg).bg(palette.accent).bold(),
         ),
         Span::raw(" "),
-        Span::styled("project ", Style::new().dim()),
-        Span::raw(project),
-        Span::styled("  backend ", Style::new().dim()),
-        Span::raw(backend),
-        Span::styled("  device ", Style::new().dim()),
-        Span::styled(
-            app.devices.summary(),
-            if app.devices.selected().is_some() {
-                Style::new().fg(palette.success)
-            } else {
-                Style::new().dim()
-            },
-        ),
-    ]);
+        Span::styled("Backend", Style::new().fg(palette.muted)),
+        Span::raw(" "),
+        Span::styled(icon, Style::new().fg(palette.accent)),
+        Span::raw(" "),
+        Span::styled(backend, Style::new().fg(palette.fg).bold()),
+    ]
+}
 
-    frame.render_widget(Paragraph::new(header), area);
+/// The header's center: the project question's answer. `None` while the
+/// question is unanswered, or when the free zone cannot hold even
+/// `Project …` --- a lone label or a dangling cut is noise.
+fn project_spans(app: &App, palette: Palette, zone: usize) -> Option<Vec<Span<'static>>> {
+    let project = app.header_project();
+    if project.is_empty() || zone < "Project …".len() {
+        return None;
+    }
+    let keep = zone - "Project ".len();
+    let name = if project.chars().count() <= keep {
+        project
+    } else {
+        let mut short: String = project.chars().take(keep - 1).collect();
+        short.push('…');
+        short
+    };
+    Some(vec![
+        Span::styled("Project", Style::new().fg(palette.muted)),
+        Span::raw(" "),
+        Span::styled(name, Style::new().fg(palette.fg).bold()),
+    ])
+}
+
+fn spans_width(spans: &[Span<'_>]) -> usize {
+    spans.iter().map(|span| span.width()).sum()
+}
+
+/// The header's right edge: the connection icon plus the port when a
+/// device answers, dim and with the reason when none does.
+fn device_status(app: &App, palette: Palette) -> Vec<Span<'static>> {
+    match app.devices.selected() {
+        Some(device) => vec![
+            Span::styled("● ", Style::new().fg(palette.success)),
+            Span::styled(device.port.clone(), Style::new().fg(palette.fg)),
+        ],
+        None => vec![
+            Span::styled("○ ", Style::new().dim()),
+            Span::styled(app.devices.header_status(), Style::new().dim()),
+        ],
+    }
 }
 
 /// The contextual shortcut line.

@@ -297,6 +297,22 @@ impl DeviceState {
             },
         }
     }
+    /// Compact status for the header's right edge: the port when a device
+    /// answers, otherwise the reason none does. Vendor and script suffixes
+    /// stay out --- one line has no room for them, and the picker and the
+    /// Monitor tab already tell that story.
+    pub fn header_status(&self) -> String {
+        match self.discovery {
+            DiscoveryState::Unknown => "not scanned".to_string(),
+            DiscoveryState::Scanning => "scanning…".to_string(),
+            DiscoveryState::Failed => "unavailable".to_string(),
+            DiscoveryState::Ready => match self.selected() {
+                Some(device) => device.port.clone(),
+                None if self.known.is_empty() => "no device".to_string(),
+                None => format!("{} found, none selected", self.known.len()),
+            },
+        }
+    }
 }
 
 impl Default for DeviceState {
@@ -470,6 +486,28 @@ mod tests {
         assert_eq!(state.summary(), "none");
         state.set_devices(vec![device("/dev/ttyACM0"), device("/dev/ttyUSB0")]);
         assert_eq!(state.summary(), "2 found, none selected");
+    }
+
+    #[test]
+    fn header_status_names_the_port_without_vendor_or_script() {
+        let mut state = DeviceState::new();
+        state.set_devices(vec![device("/dev/ttyACM0")]);
+        state.set_script_state(ScriptState::Running);
+        assert_eq!(state.header_status(), "/dev/ttyACM0");
+    }
+
+    #[test]
+    fn header_status_reflects_each_discovery_state() {
+        let mut state = DeviceState::new();
+        assert_eq!(state.header_status(), "not scanned");
+        state.set_scanning();
+        assert_eq!(state.header_status(), "scanning…");
+        state.set_failed("mpremote not found");
+        assert_eq!(state.header_status(), "unavailable");
+        state.set_devices(Vec::new());
+        assert_eq!(state.header_status(), "no device");
+        state.set_devices(vec![device("/dev/ttyACM0"), device("/dev/ttyUSB0")]);
+        assert_eq!(state.header_status(), "2 found, none selected");
     }
 
     #[test]
