@@ -6,6 +6,8 @@
 //! of `$VISUAL`/`$EDITOR` is split on whitespace, not handed to a shell, so a
 //! value like `code -w` works but one relying on shell quoting does not.
 
+use std::path::{Path, PathBuf};
+
 /// A program plus arguments, ready to append the target path to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EditorCommand {
@@ -33,6 +35,19 @@ fn parse(value: Option<&str>) -> EditorCommand {
     let program = parts.next().unwrap_or(FALLBACK).to_string();
     let args = parts.map(str::to_string).collect();
     EditorCommand { program, args }
+}
+
+/// The path `$EDITOR` is handed for `path` when it runs *from* `cwd` (the
+/// project folder): relative to it when the file lies inside --- the
+/// `cd project && $EDITOR src/main.c` spelling, so an editor whose file
+/// explorer follows its working directory opens straight on the project's
+/// files --- and absolute otherwise, since a path outside the project (a
+/// device file's scratch copy, say) has no useful relative spelling.
+pub fn target_from(path: &Path, cwd: &Path) -> PathBuf {
+    match path.strip_prefix(cwd) {
+        Ok(relative) if !relative.as_os_str().is_empty() => relative.to_path_buf(),
+        _ => path.to_path_buf(),
+    }
 }
 
 #[cfg(test)]
@@ -69,5 +84,23 @@ mod tests {
         let command = parse(Some("  vim   -u  NONE  "));
         assert_eq!(command.program, "vim");
         assert_eq!(command.args, ["-u", "NONE"]);
+    }
+
+    #[test]
+    fn a_file_inside_the_cwd_is_addressed_relatively() {
+        let target = target_from(Path::new("/p/src/main.c"), Path::new("/p"));
+        assert_eq!(target, Path::new("src/main.c"));
+    }
+
+    #[test]
+    fn a_file_outside_the_cwd_keeps_its_absolute_spelling() {
+        let target = target_from(Path::new("/tmp/chiptui-edit-0/main.py"), Path::new("/p"));
+        assert_eq!(target, Path::new("/tmp/chiptui-edit-0/main.py"));
+    }
+
+    #[test]
+    fn the_cwd_itself_is_not_an_empty_relative_path() {
+        let target = target_from(Path::new("/p"), Path::new("/p"));
+        assert_eq!(target, Path::new("/p"));
     }
 }

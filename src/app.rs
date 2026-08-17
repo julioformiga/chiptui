@@ -2710,4 +2710,56 @@ mod tests {
         app.workspace = Some(panel("west".to_string()));
         assert_eq!(west_available(&app), crate::backend::tool_available("west"));
     }
+
+    #[test]
+    fn the_editor_runs_from_the_detection_root_for_a_browser_backend() {
+        let root = std::env::temp_dir().join(format!("chiptui-edit-cwd-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let mut app = App::new(&root);
+        app.bootstrap();
+        app.manager.set_override(Some(BackendKind::MicroPython));
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(
+            app.editor_cwd(),
+            root,
+            "$EDITOR must open with the project's files, not the launch directory's"
+        );
+    }
+
+    #[test]
+    fn the_editor_runs_from_the_workspace_panes_project_root() {
+        let mut app = app();
+        app.detect();
+        app.manager.set_override(Some(BackendKind::Zephyr));
+
+        let dir = std::env::temp_dir().join(format!("chiptui-edit-ws-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let panel = crate::workspace::WorkspacePanel::new(
+            crate::backend::zephyr::workspace::Resolution::Single(
+                crate::backend::zephyr::workspace::Workspace {
+                    dir: dir.clone(),
+                    origin: crate::backend::zephyr::workspace::WorkspaceOrigin::UserConfig,
+                    zephyr_base: dir.clone(),
+                    venv: None,
+                    west: "west".to_string(),
+                    sdk: None,
+                },
+            ),
+            "",
+        );
+        app.workspace = Some(panel);
+        // No project picked yet: the file list root is empty, so the editor
+        // must not be dropped into a nameless directory.
+        assert_ne!(app.editor_cwd(), PathBuf::new());
+
+        let project = dir.join("app");
+        std::fs::create_dir_all(&project).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        app.workspace.as_mut().unwrap().set_files_root(&project);
+        assert_eq!(
+            app.editor_cwd(),
+            project,
+            "a picked project is what $EDITOR's file explorer must show"
+        );
+    }
 }

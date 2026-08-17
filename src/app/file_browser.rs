@@ -3,7 +3,7 @@
 //! `app.rs` since it is the one subsystem `App` drives almost entirely
 //! through [`crate::browser::Browser`] and never touches [`crate::flash`].
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
@@ -786,6 +786,23 @@ impl App {
     /// itself.
     pub fn take_pending_edit(&mut self) -> Option<PendingEdit> {
         self.pending_edit.take()
+    }
+
+    /// The directory `$EDITOR` runs from: the project folder, so an editor
+    /// whose file explorer follows its working directory opens straight on
+    /// the project's files instead of wherever ChipTUI was launched. The
+    /// Zephyr flow's project is the workspace pane's listed root (the build
+    /// panel's root, which a pick can move mid-session); the browser's is
+    /// the detection root --- the tree the local pane lists.
+    pub fn editor_cwd(&self) -> PathBuf {
+        if let Some(panel) = &self.workspace
+            && !panel.files_root.as_os_str().is_empty()
+        {
+            return panel.files_root.clone();
+        }
+        self.manager
+            .root()
+            .map_or_else(|| self.manager.start_dir().to_path_buf(), Path::to_path_buf)
     }
 
     /// Takes the interactive command queued by the build panel's

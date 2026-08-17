@@ -158,7 +158,10 @@ fn event_loop(
 }
 
 /// Suspends the alternate screen so `$EDITOR` gets the real terminal, runs it
-/// on `pending.path`, and reports the outcome the way every other external
+/// on `pending.path` --- from the project folder, addressing the file
+/// relative to it (`cd project && $EDITOR src/main.c`), so an editor whose
+/// file explorer follows its working directory opens straight on the
+/// project's files --- and reports the outcome the way every other external
 /// tool does: into the log, never silently. The spawn/exit result is the
 /// editor's business, not a reason to tear down ChipTUI, so only a failure to
 /// toggle the terminal itself propagates (`guard.suspend`'s `?`).
@@ -173,12 +176,15 @@ fn run_editor(
     pending: PendingEdit,
 ) -> Result<()> {
     let command = editor::resolve();
-    let label = format!("{} {}", command.program, pending.path.display());
+    let cwd = app.editor_cwd();
+    let target = editor::target_from(&pending.path, &cwd);
+    let label = format!("{} {}", command.program, target.display());
 
     let outcome = guard.suspend(|| {
         std::process::Command::new(&command.program)
             .args(&command.args)
-            .arg(&pending.path)
+            .arg(&target)
+            .current_dir(&cwd)
             .status()
     })?;
 
