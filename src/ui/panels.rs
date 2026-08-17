@@ -13,7 +13,8 @@ use crate::flash::RunState;
 use crate::logs::{Level, PREFIX_WIDTH};
 use crate::project::DetectionOutcome;
 use crate::ui::{
-    Palette, SPINNER, content_style, dashboard_focused, pane_block, pane_border, tilde_path,
+    Palette, SPINNER, content_style, dashboard_focused, muted_style, pane_block, pane_border,
+    tilde_path,
 };
 
 /// Project identity: where it is, what it is, and how sure we are.
@@ -59,7 +60,7 @@ pub(super) fn project_content(app: &App, width: usize, palette: Palette) -> Vec<
             |root| tilde_path(root, app.home_dir()),
         )
     };
-    lines.push(field("root", truncate_start(&root, path_budget)));
+    lines.push(field("root", truncate_start(&root, path_budget), palette));
 
     // Only worth showing when the search climbed out of the working directory.
     if app
@@ -68,7 +69,7 @@ pub(super) fn project_content(app: &App, width: usize, palette: Palette) -> Vec<
         .is_some_and(|root| root != app.manager.start_dir())
     {
         let cwd = tilde_path(app.manager.start_dir(), app.home_dir());
-        lines.push(field("cwd", truncate_start(&cwd, path_budget)));
+        lines.push(field("cwd", truncate_start(&cwd, path_budget), palette));
     }
 
     match detection.map(|d| &d.outcome) {
@@ -77,6 +78,7 @@ pub(super) fn project_content(app: &App, width: usize, palette: Palette) -> Vec<
                 "type",
                 kind.display_name().to_string(),
                 Style::new().fg(palette.success).bold(),
+                palette,
             ));
         }
         Some(DetectionOutcome::Ambiguous(kinds)) => {
@@ -89,6 +91,7 @@ pub(super) fn project_content(app: &App, width: usize, palette: Palette) -> Vec<
                 "type",
                 format!("ambiguous: {names} --- press 'o' to choose"),
                 Style::new().fg(palette.warning),
+                palette,
             ));
         }
         Some(DetectionOutcome::Unknown) => {
@@ -96,9 +99,10 @@ pub(super) fn project_content(app: &App, width: usize, palette: Palette) -> Vec<
                 "type",
                 "unknown".to_string(),
                 Style::new().fg(palette.error),
+                palette,
             ));
         }
-        None => lines.push(field("type", "not detected yet".to_string())),
+        None => lines.push(field("type", "not detected yet".to_string(), palette)),
     }
 
     // The environment's versions, once a workspace resolves: read from
@@ -119,7 +123,7 @@ pub(super) fn project_content(app: &App, width: usize, palette: Palette) -> Vec<
         if let Some(python) = workspace.python_version() {
             versions.push_str(&format!(" · python {python}"));
         }
-        lines.push(field("versions", versions));
+        lines.push(field("versions", versions, palette));
     }
 
     // Tool availability, since a capability whose tool is missing is not
@@ -127,7 +131,7 @@ pub(super) fn project_content(app: &App, width: usize, palette: Palette) -> Vec<
     // lives in the resolved workspace's venv is checked against that
     // absolute path, not `PATH`.
     if app.manager.selected_kind().is_some() {
-        let mut spans = vec![label_span("tools")];
+        let mut spans = vec![label_span("tools", palette)];
         for (tool, available) in app.tool_status() {
             let style = if available {
                 Style::new().fg(palette.success)
@@ -167,7 +171,7 @@ pub fn draw_detection(frame: &mut Frame, area: Rect, app: &App, palette: Palette
 /// [`project_content`] for why this is split out.
 pub(super) fn device_content(app: &App, palette: Palette) -> Vec<Line<'static>> {
     let caps = app.manager.capabilities();
-    let dim = Style::new().add_modifier(Modifier::DIM);
+    let muted = muted_style(palette);
 
     // This pane is esptool's report (chip identity). A backend that flashes
     // another way (Zephyr: `west flash` through the build panel) has no
@@ -184,7 +188,7 @@ pub(super) fn device_content(app: &App, palette: Palette) -> Vec<Line<'static>> 
             } else {
                 Line::from("no device information for this project")
             }
-            .style(dim),
+            .style(muted),
         ];
     };
     let details = &flash.details;
@@ -197,32 +201,35 @@ pub(super) fn device_content(app: &App, palette: Palette) -> Vec<Line<'static>> 
             } else {
                 Line::from("no device information for this project")
             }
-            .style(dim),
+            .style(muted),
         ];
     }
 
     let mut lines = Vec::new();
     if let Some(family) = details.family {
         let mut spans = vec![
-            label_span("chip"),
+            label_span("chip", palette),
             Span::styled(
                 family.label().to_string(),
                 Style::new().fg(palette.success).bold(),
             ),
         ];
         if let Some(revision) = &details.revision {
-            spans.push(Span::raw(format!(" (revision {revision})")));
+            spans.push(Span::styled(
+                format!(" (revision {revision})"),
+                Style::new().fg(palette.fg),
+            ));
         }
         lines.push(Line::from(spans));
     }
     if let Some(features) = &details.features {
-        lines.push(field("features", features.clone()));
+        lines.push(field("features", features.clone(), palette));
     }
     if let Some(crystal) = &details.crystal_mhz {
-        lines.push(field("crystal", crystal.clone()));
+        lines.push(field("crystal", crystal.clone(), palette));
     }
     if let Some(mac) = &details.mac {
-        lines.push(field("MAC", mac.clone()));
+        lines.push(field("MAC", mac.clone(), palette));
     }
 
     lines
@@ -240,7 +247,8 @@ pub fn draw_no_filesystem(frame: &mut Frame, area: Rect, app: &App, palette: Pal
         .selected_kind()
         .map_or("this backend".to_string(), |kind| kind.to_string());
     frame.render_widget(
-        Paragraph::new(format!("{backend}: file browsing not implemented yet").dim()).block(block),
+        Paragraph::new(format!("{backend}: file browsing not implemented yet").fg(palette.muted))
+            .block(block),
         area,
     );
 }
@@ -272,7 +280,7 @@ pub fn draw_logs(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette)
         .into_iter()
         .map(|row| {
             let style = match row.entry.level {
-                Level::Info => Style::new(),
+                Level::Info => Style::new().fg(palette.fg),
                 Level::Success => Style::new().fg(palette.success),
                 Level::Warn => Style::new().fg(palette.warning),
                 Level::Error => Style::new().fg(palette.error),
@@ -287,7 +295,7 @@ pub fn draw_logs(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette)
                             row.entry.at.minute(),
                             row.entry.at.second()
                         ),
-                        Style::new().dim(),
+                        muted_style(palette),
                     ),
                     Span::styled(format!("{} ", row.entry.level.marker()), style),
                     Span::styled(row.text, style),
@@ -363,7 +371,7 @@ pub fn draw_log_tabs(frame: &mut Frame, pane: Rect, app: &App, palette: Palette)
     } else {
         Style::new().add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
     };
-    let inactive_style = Style::new().dim();
+    let inactive_style = muted_style(palette);
 
     let monitor = vec![Span::styled(
         "Monitor",
@@ -416,7 +424,7 @@ fn tab_status(app: &App, palette: Palette) -> Line<'static> {
             if !app.logs.is_following() {
                 text.push_str(&format!(" \u{2191}{}", app.logs.scroll()));
             }
-            Line::from(text).dim()
+            Line::from(text).fg(palette.muted)
         }
         LogTab::Monitor => monitor_status(app, palette),
     }
@@ -494,10 +502,10 @@ fn monitor_status(app: &App, palette: Palette) -> Line<'static> {
         spans.push(Span::styled(icon.to_string(), style));
         spans.push(Span::raw(" "));
     }
-    spans.push(Span::styled(title, Style::new().dim()));
+    spans.push(Span::styled(title, muted_style(palette)));
     spans.push(Span::styled(
         format!(" ({})", app.monitor_view.rows),
-        Style::new().dim(),
+        muted_style(palette),
     ));
     // The scrolled indicator Log shows: `↑N` with the rows *below* the view
     // (the same meaning as `LogStore::scroll`), shown only once the user
@@ -509,7 +517,7 @@ fn monitor_status(app: &App, palette: Palette) -> Line<'static> {
             .saturating_sub(app.monitor_view.viewport + app.monitor_scroll.offset);
         spans.push(Span::styled(
             format!(" \u{2191}{below}"),
-            Style::new().dim(),
+            muted_style(palette),
         ));
     }
     Line::from(spans)
@@ -518,10 +526,10 @@ fn monitor_status(app: &App, palette: Palette) -> Line<'static> {
 /// Width of the field-label column, including its colon and trailing space.
 const LABEL_WIDTH: usize = 11;
 
-fn label_span(label: &str) -> Span<'static> {
+fn label_span(label: &str, palette: Palette) -> Span<'static> {
     Span::styled(
         format!("{:<LABEL_WIDTH$}", format!("{label}:")),
-        Style::new().dim(),
+        muted_style(palette),
     )
 }
 
@@ -541,12 +549,15 @@ pub(super) fn truncate_start(text: &str, max: usize) -> String {
     format!("…{tail}")
 }
 
-fn field(label: &str, value: String) -> Line<'static> {
-    Line::from(vec![label_span(label), Span::raw(value)])
+fn field(label: &str, value: String, palette: Palette) -> Line<'static> {
+    Line::from(vec![
+        label_span(label, palette),
+        Span::styled(value, Style::new().fg(palette.fg)),
+    ])
 }
 
-fn field_styled(label: &str, value: String, style: Style) -> Line<'static> {
-    Line::from(vec![label_span(label), Span::styled(value, style)])
+fn field_styled(label: &str, value: String, style: Style, palette: Palette) -> Line<'static> {
+    Line::from(vec![label_span(label, palette), Span::styled(value, style)])
 }
 
 #[cfg(test)]

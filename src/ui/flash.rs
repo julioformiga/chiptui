@@ -14,7 +14,7 @@ use ratatui::widgets::{List, ListItem, ListState, Paragraph, Wrap};
 
 use crate::app::App;
 use crate::flash::{ChipGuess, FlashAction, FlashPanel, FlashScreen, OptionsField};
-use crate::ui::{Palette, pane_block};
+use crate::ui::{Palette, muted_style, pane_block, selection_style};
 
 /// The dialog's width×height for `flash.screen`, sized to its content like
 /// every other modal in `ui::overlay` rather than a fraction of the screen.
@@ -35,7 +35,7 @@ pub fn dialog_size(flash: &FlashPanel) -> (u16, u16) {
 pub fn draw(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
     let Some(flash) = &app.flash else {
         frame.render_widget(
-            Paragraph::new("the flash view has not been opened".dim()),
+            Paragraph::new("the flash view has not been opened".fg(palette.muted)),
             area,
         );
         return;
@@ -55,7 +55,10 @@ fn draw_menu(frame: &mut Frame, area: Rect, flash: &FlashPanel, focused: bool, p
     let items: Vec<ListItem> = FlashAction::ALL
         .iter()
         .map(|action| {
-            let mut spans = vec![Span::raw(format!(" {} {} ", action.icon(), action.label()))];
+            let mut spans = vec![Span::styled(
+                format!(" {} {} ", action.icon(), action.label()),
+                Style::new().fg(palette.fg),
+            )];
             // Destructive operations are flagged wherever they appear, same
             // convention as the capabilities pane (`SPEC.md` §15).
             if action.is_destructive() {
@@ -69,7 +72,7 @@ fn draw_menu(frame: &mut Frame, area: Rect, flash: &FlashPanel, focused: bool, p
     frame.render_stateful_widget(
         List::new(items)
             .block(pane_block("Flash", focused, palette))
-            .highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
+            .highlight_style(selection_style(palette)),
         area,
         &mut state,
     );
@@ -85,7 +88,10 @@ fn draw_options(
     let action = flash.selected_action();
     let fields = FlashPanel::options_fields(action);
 
-    let mut lines = vec![Line::from(action.label().bold()), Line::from("")];
+    let mut lines = vec![
+        Line::from(action.label().fg(palette.fg).bold()),
+        Line::from(""),
+    ];
 
     for field in fields {
         let label = field_label(*field);
@@ -93,10 +99,10 @@ fn draw_options(
         let value_style = if flash.options_focus == *field {
             Style::new().fg(palette.accent).add_modifier(Modifier::BOLD)
         } else {
-            Style::new()
+            Style::new().fg(palette.fg)
         };
         lines.push(Line::from(vec![
-            Span::styled(format!("{label:<12}"), Style::new().dim()),
+            Span::styled(format!("{label:<12}"), muted_style(palette)),
             Span::styled(value, value_style),
         ]));
     }
@@ -104,8 +110,8 @@ fn draw_options(
     if let Some(firmware) = flash.selected_firmware_path() {
         lines.push(Line::from(""));
         lines.push(Line::from(vec![
-            Span::styled(format!("{:<12}", "firmware"), Style::new().dim()),
-            Span::raw(firmware.display().to_string()),
+            Span::styled(format!("{:<12}", "firmware"), muted_style(palette)),
+            Span::styled(firmware.display().to_string(), Style::new().fg(palette.fg)),
         ]));
     }
 
@@ -164,7 +170,7 @@ fn draw_online_boards(
 ) {
     if flash.online_boards.is_empty() {
         frame.render_widget(
-            Paragraph::new("no boards found".dim()).block(pane_block(
+            Paragraph::new("no boards found".fg(palette.muted)).block(pane_block(
                 "Boards online",
                 focused,
                 palette,
@@ -179,12 +185,12 @@ fn draw_online_boards(
         .iter()
         .map(|board| {
             ListItem::new(Line::from(vec![
-                Span::raw(format!(" {} ", board.product)),
+                Span::styled(format!(" {} ", board.product), Style::new().fg(palette.fg)),
                 Span::styled(
                     format!("{}  ", board.vendor),
                     Style::new().fg(palette.accent),
                 ),
-                Span::styled(board.id.clone(), Style::new().dim()),
+                Span::styled(board.id.clone(), muted_style(palette)),
             ]))
         })
         .collect();
@@ -193,7 +199,7 @@ fn draw_online_boards(
     frame.render_stateful_widget(
         List::new(items)
             .block(pane_block("Boards online", focused, palette))
-            .highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
+            .highlight_style(selection_style(palette)),
         area,
         &mut state,
     );
@@ -209,7 +215,7 @@ fn draw_online_firmware(
 ) {
     if flash.online_firmware.is_empty() {
         frame.render_widget(
-            Paragraph::new("no flashable firmware found".dim()).block(pane_block(
+            Paragraph::new("no flashable firmware found".fg(palette.muted)).block(pane_block(
                 "Firmware online",
                 focused,
                 palette,
@@ -223,11 +229,14 @@ fn draw_online_firmware(
         .online_firmware
         .iter()
         .map(|file| {
-            let mut spans = vec![Span::raw(format!(" {} ", file.label))];
+            let mut spans = vec![Span::styled(
+                format!(" {} ", file.label),
+                Style::new().fg(palette.fg),
+            )];
             if !file.variant.is_empty() {
                 spans.push(Span::styled(
                     format!("{}  ", file.variant),
-                    Style::new().dim(),
+                    muted_style(palette),
                 ));
             }
             ListItem::new(Line::from(spans))
@@ -238,7 +247,7 @@ fn draw_online_firmware(
     frame.render_stateful_widget(
         List::new(items)
             .block(pane_block("Firmware online", focused, palette))
-            .highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
+            .highlight_style(selection_style(palette)),
         area,
         &mut state,
     );
@@ -254,10 +263,10 @@ fn draw_custom_url(
     palette: Palette,
 ) {
     let lines = vec![
-        Line::from("Paste a direct firmware download URL, then press enter.".dim()),
+        Line::from("Paste a direct firmware download URL, then press enter.".fg(palette.muted)),
         Line::from(""),
         Line::from(vec![
-            Span::styled("url  ", Style::new().dim()),
+            Span::styled("url  ", muted_style(palette)),
             Span::styled(
                 flash.custom_url.as_str(),
                 Style::new().fg(palette.accent).add_modifier(Modifier::BOLD),

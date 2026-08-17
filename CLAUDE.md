@@ -10,8 +10,10 @@ known (registry → `chiptui.toml` → evidence, nearest ancestor first) or ambi
 dashboard; an *empty* one opens it too, so `Overlay::ProjectSetup` can scaffold it; anything else
 (a directory with contents and no project — `$HOME`, `~/Downloads`) opens the **home screen**
 (`src/home.rs`, `src/ui/home.rs`): create row, live search field, then the recorded projects,
-each row tinted with `BackendKind::palette()` (deepened under the cursor, never reversed — a
-painted row cannot also be inverted). Creating a project is folder picker (the workspace pane's
+each row tinted with `BackendKind::palette(theme)` — the backend's semantic color (`success`/
+`info`) blended toward the theme's own background, so the tint follows the active theme —
+deepened under the cursor, never reversed — a painted row cannot also be inverted). Creating a
+project is folder picker (the workspace pane's
 `dir_rows`, starting at `[projects] last_parent`) → name → an empty directory that routes straight
 back into the backend prompt. `del` forgets a registry entry, never the directory. `shift+P` on
 the dashboard returns to the list (`App::request_home_screen` → `Overlay::ConfirmSwitchProject`
@@ -59,11 +61,15 @@ the operation buttons --- a small custom widget (`src/ui/button.rs`: one stacked
 group sharing a rounded border, a centered icon label per row, a `├─┤` divider between each
 pair --- N buttons cost 2N+1 lines, and `draw_dashboard`'s `row2_content_height` sizes row 2
 to that content (the log pane, which scrolls, takes the remainder; the browser row keeps
-60/40); the group's frame stays neutral, label weight is bold/dim only, and the selected row
+60/40); the group's frame is the theme's muted color, labels bold `fg` (muted while disabled), and the selected row
 is `palette.selection`/`palette.fg` (not `Modifier::REVERSED`, which read inconsistently
 across terminals) applied as a `Buffer::set_style` patch over the row's inner cells *after*
 the label is drawn, filling it edge to edge without ever painting over the side rules,
-dividers or outer rules), which stay
+dividers or outer rules --- the same rule every list, picker and checklist row now follows
+through the shared `ui::selection_style`/`ui::muted_style` helpers: selected rows draw on
+`palette.selection`, secondary text (labels, legends, hints, timestamps) in `palette.muted`,
+so the whole UI follows the active theme; the Monitor's fake terminal cursor keeps reverse
+video on purpose, being the terminal's cursor rather than a selection), which stay
 visible but dimmed until their answers exist (`WorkspacePanel::action_enabled`,
 `App::build_action_enabled`) --- Enter on a dimmed row is a no-op; rows carry no trailing
 text (the confirm overlays quote the literal commands, `SPEC.md` §15, not the rows). The

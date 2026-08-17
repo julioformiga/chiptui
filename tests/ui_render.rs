@@ -433,6 +433,47 @@ fn overlays_draw_above_the_dashboard() {
 }
 
 #[test]
+fn selected_rows_carry_the_themes_selection_background() {
+    use ratatui::style::Color;
+
+    // A selected picker row must paint the theme's `selection` background
+    // (with its `fg` on top), not reverse video --- the theme has to own
+    // the highlight, or switching it leaves selections looking unchanged.
+    let mut app = app_with_backend(BackendKind::MicroPython);
+    app.maybe_scan_devices();
+    app.overlay = Some(Overlay::BackendPicker { selected: 0 });
+
+    let mut terminal = Terminal::new(TestBackend::new(100, 30)).expect("test terminal");
+    let palette = app.theme_palette();
+    terminal
+        .draw(|frame| chiptui::ui::draw(frame, &mut app))
+        .expect("draw succeeds");
+    let buffer = terminal.backend().buffer().clone();
+
+    let selection = palette.selection;
+    let mut painted = 0;
+    let mut readable = false;
+    for y in 0..buffer.area.height {
+        for x in 0..buffer.area.width {
+            let cell = &buffer[(x, y)];
+            if cell.bg == selection {
+                painted += 1;
+                readable |= cell.fg == palette.fg;
+            }
+        }
+    }
+    assert!(
+        painted > 0,
+        "the selected row must be filled with palette.selection"
+    );
+    assert!(
+        readable,
+        "the selected row's text must be palette.fg on palette.selection"
+    );
+    assert_ne!(selection, Color::Reset);
+}
+
+#[test]
 fn help_fits_one_line_per_binding_and_scrolls_under_the_cursor() {
     let mut app = app_with_backend(BackendKind::Zephyr);
     let last = help::bindings(app.view, HelpSection::Commands).len() - 1;

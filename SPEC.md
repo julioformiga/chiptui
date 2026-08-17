@@ -751,7 +751,8 @@ one-line contextual shortcut footer:
   answer fails validation) --- before a horizontal separator and the operation buttons they
   gate; the buttons are a
   monochrome custom widget --- a stacked group sharing one rounded border, one centered icon
-  label per row with a divider between them, no colors --- that stays visible but dimmed
+  label per row with a divider between them, the frame in the theme's muted color --- that stays
+  visible but dimmed
   until the answers exist, with
   the selection highlighting only the button's own row. The project panel is buttons only
   (`west update`, `west sdk list`, menuconfig, the lifecycle, flash) over a three-row footer
@@ -805,6 +806,25 @@ A command palette may be added if it improves discoverability.
 
 The UI should use terminal colors by default rather than imposing a
 heavy theme.
+
+### Theming
+
+Every visible color is derived from the active `ratatui-themes` palette
+(default: Tokyo Night, overridable via `[ui] theme` in the user
+config), so switching the theme recolors the whole application:
+
+-   selected rows (lists, pickers, checklists, buttons) use the theme's
+    `selection` background under its `fg` --- never `REVERSED`, which
+    swaps the terminal's own defaults and ignores the theme;
+-   secondary text (field labels, legends, hints, timestamps,
+    placeholders) uses the theme's `muted` color;
+-   state carries meaning through `error`/`warning`/`success`/`info`.
+
+The one deliberate exception is the Monitor pane's fake terminal
+cursor, which mimics the terminal's own reverse-video cursor rather
+than reading as a selection. On the home screen, each backend's row
+tint is its own semantic color (MicroPython `success`, Zephyr `info`)
+blended toward the theme's background, so light themes get light tints.
 
 ## 12. Process Management
 

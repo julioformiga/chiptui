@@ -118,14 +118,13 @@ fn the_search_field_shows_what_was_typed_and_filters_the_frame() {
 
 #[test]
 fn a_project_row_is_tinted_with_its_backend_colour() {
-    use ratatui::style::Color;
-
     let fixture = Fixture::new("tint");
     fixture.record("blinky", BackendKind::Zephyr);
 
     let mut terminal = Terminal::new(TestBackend::new(100, 20)).expect("test terminal");
     let screen = fixture.screen();
     let theme = ratatui_themes::ThemeName::TokyoNight.palette();
+    let zephyr = BackendKind::Zephyr.palette(theme);
     terminal
         .draw(|frame| chiptui::ui::home::draw(frame, &screen, theme))
         .expect("draw succeeds");
@@ -134,17 +133,17 @@ fn a_project_row_is_tinted_with_its_backend_colour() {
     let row = (0..20)
         .find(|y| {
             (0..100).any(|x| buffer[(x, *y)].symbol().contains('b'))
-                && (0..100).any(|x| buffer[(x, *y)].bg == Color::Indexed(17))
-                || (0..100).any(|x| buffer[(x, *y)].bg == Color::Indexed(25))
+                && (0..100).any(|x| {
+                    let bg = buffer[(x, *y)].bg;
+                    bg == zephyr.tint || bg == zephyr.tint_selected
+                })
         })
-        .expect("the Zephyr row should carry a blue tint");
+        .expect("the Zephyr row should carry its theme-derived tint");
 
     let tinted = (0..100)
         .filter(|x| {
-            matches!(
-                buffer[(*x, row)].bg,
-                Color::Indexed(17) | Color::Indexed(25)
-            )
+            let bg = buffer[(*x, row)].bg;
+            bg == zephyr.tint || bg == zephyr.tint_selected
         })
         .count();
     assert!(

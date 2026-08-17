@@ -46,6 +46,23 @@ pub(crate) const SPINNER: [&str; 4] = ["⠋", "⠙", "⠹", "⠸"];
 /// every call site (a single source of truth for the frame being drawn).
 pub(crate) type Palette = ratatui_themes::ThemePalette;
 
+/// The theme's selection colors: `selection` as a background under `fg`
+/// text --- the explicit, deterministic fill [`crate::ui::button`] already
+/// uses, shared by every list and row highlight so a selected row reads the
+/// same wherever the cursor lands. Not `Modifier::REVERSED`, which swaps
+/// the terminal's own defaults and ignores the active theme entirely.
+pub(crate) fn selection_style(palette: Palette) -> Style {
+    Style::new().fg(palette.fg).bg(palette.selection)
+}
+
+/// The theme's muted color --- dimmed text, placeholders, labels, legends
+/// and other secondary information (`palette.muted`'s documented role).
+/// Used instead of a bare `Modifier::DIM`, which keeps the terminal's
+/// default foreground and therefore ignores the active theme.
+pub(crate) fn muted_style(palette: Palette) -> Style {
+    Style::new().fg(palette.muted)
+}
+
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
 
@@ -311,8 +328,8 @@ fn device_status(app: &App, palette: Palette) -> Vec<Span<'static>> {
             Span::styled(device.port.clone(), Style::new().fg(palette.fg)),
         ],
         None => vec![
-            Span::styled("○ ", Style::new().dim()),
-            Span::styled(app.devices.header_status(), Style::new().dim()),
+            Span::styled("○ ", muted_style(palette)),
+            Span::styled(app.devices.header_status(), muted_style(palette)),
         ],
     }
 }
@@ -342,9 +359,9 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
     for (key, label) in hints {
         spans.push(Span::styled(
             format!(" {key} "),
-            Style::new().bg(palette.muted),
+            Style::new().fg(palette.fg).bg(palette.muted),
         ));
-        spans.push(Span::styled(format!(" {label}  "), Style::new().dim()));
+        spans.push(Span::styled(format!(" {label}  "), muted_style(palette)));
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
@@ -409,7 +426,7 @@ fn title_span(title: &str, focused: bool, palette: Palette) -> Line<'static> {
     let title_style = if focused {
         Style::new().fg(palette.accent).add_modifier(Modifier::BOLD)
     } else {
-        Style::new().dim()
+        muted_style(palette)
     };
     Line::from(Span::styled(format!(" {title} "), title_style))
 }

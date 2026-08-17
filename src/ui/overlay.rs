@@ -11,7 +11,7 @@ use crate::app::{App, FileAction, Overlay, PickerOption, ViewerSource, ViewerSta
 use crate::backend::BackendKind;
 use crate::browser::SyncPlan;
 use crate::highlight::{self, TokenKind};
-use crate::ui::Palette;
+use crate::ui::{Palette, muted_style, selection_style};
 
 pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
     let Some(overlay) = app.overlay.clone() else {
@@ -56,8 +56,10 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
             let quoted = shorten_tail(&command, 63);
             let lines = vec![
                 Line::from("Run this in the shared workspace?".fg(palette.warning)),
-                Line::from(quoted),
-                Line::from("It rewrites the checkouts every project in it shares.".dim()),
+                Line::from(quoted).fg(palette.fg),
+                Line::from(
+                    "It rewrites the checkouts every project in it shares.".fg(palette.muted),
+                ),
             ];
             draw_confirm_dialog(frame, area, "Confirm", lines, confirm, (72, 8), palette);
         }
@@ -234,7 +236,7 @@ fn draw_confirm_restart_device(
     let message = vec![
         Line::from("Restart the device now (soft-reset)?".fg(palette.warning)),
         Line::from(""),
-        Line::from(command.to_string().dim()),
+        Line::from(command.to_string().fg(palette.muted)),
     ];
     draw_confirm_dialog(
         frame,
@@ -266,7 +268,7 @@ fn draw_confirm_switch_project(
             )
             .fg(palette.warning),
         ),
-        Line::from("Going back to the project list cancels them.".dim()),
+        Line::from("Going back to the project list cancels them.".fg(palette.muted)),
         Line::from(""),
         Line::from("Leave this project?".fg(palette.fg)),
     ];
@@ -314,10 +316,14 @@ fn draw_confirm_erase_for_micropython(
 fn draw_confirm_interrupt_device(frame: &mut Frame, area: Rect, confirm: bool, palette: Palette) {
     let message = vec![
         Line::from("A script is running on the device.".fg(palette.warning)),
-        Line::from("Every mpremote command interrupts it (Ctrl-C) to use the REPL.".dim()),
+        Line::from(
+            "Every mpremote command interrupts it (Ctrl-C) to use the REPL.".fg(palette.muted),
+        ),
         Line::from(""),
         Line::from("Run the pending device command anyway?".fg(palette.fg)),
-        Line::from("Afterwards you can restart the script from the prompt that follows.".dim()),
+        Line::from(
+            "Afterwards you can restart the script from the prompt that follows.".fg(palette.muted),
+        ),
     ];
     draw_confirm_dialog(
         frame,
@@ -352,8 +358,8 @@ fn draw_restore_device_script(frame: &mut Frame, area: Rect, selected: usize, pa
         .iter()
         .map(|(label, detail)| {
             ListItem::new(Line::from(vec![
-                Span::raw(format!(" {label} ")),
-                Span::styled(format!("— {detail}"), Style::new().dim()),
+                Span::styled(format!(" {label} "), Style::new().fg(palette.fg)),
+                Span::styled(format!("— {detail}"), muted_style(palette)),
             ]))
         })
         .collect();
@@ -368,13 +374,13 @@ fn draw_restore_device_script(frame: &mut Frame, area: Rect, selected: usize, pa
     frame.render_widget(Clear, popup);
     frame.render_widget(block, popup);
     frame.render_widget(
-        Paragraph::new("The script that was interrupted can be brought back:".dim()),
+        Paragraph::new("The script that was interrupted can be brought back:".fg(palette.muted)),
         message,
     );
 
     let mut state = ListState::default().with_selected(Some(selected));
     frame.render_stateful_widget(
-        List::new(items).highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
+        List::new(items).highlight_style(selection_style(palette)),
         list,
         &mut state,
     );
@@ -400,7 +406,7 @@ fn draw_confirm_delete(
     };
     let message = vec![
         Line::from(label.fg(palette.warning)),
-        Line::from(format!("This will remove it {}.", side_str).dim()),
+        Line::from(format!("This will remove it {}.", side_str).fg(palette.muted)),
     ];
     draw_confirm_dialog(
         frame,
@@ -433,7 +439,7 @@ fn draw_dialog_button(
                 .add_modifier(Modifier::BOLD),
         )
     } else {
-        (Style::new().dim(), Style::new().dim())
+        (muted_style(palette), muted_style(palette))
     };
 
     let block = Block::bordered()
@@ -462,7 +468,12 @@ fn draw_file_actions(
 ) {
     let items: Vec<ListItem> = actions
         .iter()
-        .map(|action| ListItem::new(Line::from(format!(" {} ", action.label()))))
+        .map(|action| {
+            ListItem::new(Line::from(Span::styled(
+                format!(" {} ", action.label()),
+                Style::new().fg(palette.fg),
+            )))
+        })
         .collect();
 
     let popup = centered(area, 44, actions.len() as u16 + 2);
@@ -477,7 +488,7 @@ fn draw_file_actions(
     frame.render_stateful_widget(
         List::new(items)
             .block(modal(&title, palette))
-            .highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
+            .highlight_style(selection_style(palette)),
         popup,
         &mut state,
     );
@@ -515,7 +526,7 @@ fn draw_file_viewer(frame: &mut Frame, area: Rect, app: &mut App, palette: Palet
 
     match &viewer.state {
         ViewerState::Loading => {
-            frame.render_widget(Paragraph::new("loading…".dim()), inner);
+            frame.render_widget(Paragraph::new("loading…".fg(palette.muted)), inner);
         }
         ViewerState::Error(message) => {
             frame.render_widget(
@@ -574,7 +585,7 @@ fn shorten_tail(text: &str, max_chars: usize) -> String {
 
 fn token_style(kind: TokenKind, palette: Palette) -> Style {
     match kind {
-        TokenKind::Plain => Style::new(),
+        TokenKind::Plain => Style::new().fg(palette.fg),
         TokenKind::Keyword => Style::new().fg(palette.secondary),
         TokenKind::String => Style::new().fg(palette.success),
         TokenKind::Comment => Style::new().fg(palette.muted).italic(),
@@ -591,7 +602,7 @@ fn diff_line_spans(line: &str, palette: Palette) -> Vec<Span<'_>> {
         Some('+') => Style::new().fg(palette.success),
         Some('-') => Style::new().fg(palette.error),
         Some('@') => Style::new().fg(palette.accent),
-        _ => Style::new(),
+        _ => Style::new().fg(palette.fg),
     };
     vec![Span::styled(line.to_string(), style)]
 }
@@ -609,7 +620,7 @@ fn draw_confirm_download_overwrite(
 ) {
     let message = vec![
         Line::from(format!("{} already exists.", dest.display()).fg(palette.warning)),
-        Line::from(format!("Overwrite it by downloading {url}?")),
+        Line::from(format!("Overwrite it by downloading {url}?").fg(palette.fg)),
     ];
     draw_confirm_dialog(
         frame,
@@ -637,14 +648,16 @@ fn draw_confirm_upload(
                     .fg(palette.warning),
             ),
             Line::from(
-                "This will overwrite any existing files with the same names on the device.".dim(),
+                "This will overwrite any existing files with the same names on the device."
+                    .fg(palette.muted),
             ),
         ]
     } else {
         vec![
             Line::from(format!("Upload '{}' to the device?", name).fg(palette.warning)),
             Line::from(
-                "This will overwrite any existing file with the same name on the device.".dim(),
+                "This will overwrite any existing file with the same name on the device."
+                    .fg(palette.muted),
             ),
         ]
     };
@@ -685,7 +698,7 @@ fn draw_create_entry(
         Layout::vertical([Constraint::Length(1), Constraint::Length(3)]).areas(inner);
 
     frame.render_widget(
-        Paragraph::new("name, or 'name/' for a directory".dim()),
+        Paragraph::new("name, or 'name/' for a directory".fg(palette.muted)),
         hint_area,
     );
 
@@ -696,7 +709,7 @@ fn draw_create_entry(
     frame.render_widget(field, input_area);
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::raw(input),
+            Span::styled(input.to_string(), Style::new().fg(palette.fg)),
             Span::raw("_").fg(palette.accent),
         ])),
         field_inner,
@@ -719,7 +732,7 @@ fn draw_rename_entry(frame: &mut Frame, area: Rect, name: &str, input: &str, pal
         Layout::vertical([Constraint::Length(1), Constraint::Length(3)]).areas(inner);
 
     frame.render_widget(
-        Paragraph::new(format!("current name: {name}").dim()),
+        Paragraph::new(format!("current name: {name}").fg(palette.muted)),
         hint_area,
     );
 
@@ -730,7 +743,7 @@ fn draw_rename_entry(frame: &mut Frame, area: Rect, name: &str, input: &str, pal
     frame.render_widget(field, input_area);
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::raw(input),
+            Span::styled(input.to_string(), Style::new().fg(palette.fg)),
             Span::raw("_").fg(palette.accent),
         ])),
         field_inner,
@@ -752,7 +765,9 @@ fn draw_package_install(frame: &mut Frame, area: Rect, input: &str, palette: Pal
         Layout::vertical([Constraint::Length(1), Constraint::Length(3)]).areas(inner);
 
     frame.render_widget(
-        Paragraph::new("package name, e.g. urequests, or name@version, github:org/repo".dim()),
+        Paragraph::new(
+            "package name, e.g. urequests, or name@version, github:org/repo".fg(palette.muted),
+        ),
         hint_area,
     );
 
@@ -763,7 +778,7 @@ fn draw_package_install(frame: &mut Frame, area: Rect, input: &str, palette: Pal
     frame.render_widget(field, input_area);
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::raw(input),
+            Span::styled(input.to_string(), Style::new().fg(palette.fg)),
             Span::raw("_").fg(palette.accent),
         ])),
         field_inner,
@@ -776,7 +791,12 @@ fn draw_package_install(frame: &mut Frame, area: Rect, input: &str, palette: Pal
 fn draw_project_setup(frame: &mut Frame, area: Rect, selected: usize, palette: Palette) {
     let items: Vec<ListItem> = BackendKind::ALL
         .iter()
-        .map(|kind| ListItem::new(Line::from(format!(" {} ", kind.display_name()))))
+        .map(|kind| {
+            ListItem::new(Line::from(Span::styled(
+                format!(" {} ", kind.display_name()),
+                Style::new().fg(palette.fg),
+            )))
+        })
         .collect();
 
     let popup = centered(area, 60, BackendKind::ALL.len() as u16 + 4);
@@ -794,7 +814,7 @@ fn draw_project_setup(frame: &mut Frame, area: Rect, selected: usize, palette: P
         Paragraph::new(
             "No known project type here --- pick one; ChipTUI will remember this folder."
                 .to_string()
-                .dim(),
+                .fg(palette.muted),
         )
         .wrap(ratatui::widgets::Wrap { trim: false }),
         message,
@@ -802,7 +822,7 @@ fn draw_project_setup(frame: &mut Frame, area: Rect, selected: usize, palette: P
 
     let mut state = ListState::default().with_selected(Some(selected));
     frame.render_stateful_widget(
-        List::new(items).highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
+        List::new(items).highlight_style(selection_style(palette)),
         list,
         &mut state,
     );
@@ -850,8 +870,8 @@ fn draw_dir_picker(
 
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled("dir  ", Style::new().dim()),
-            Span::raw(path.display().to_string()),
+            Span::styled("dir  ", muted_style(palette)),
+            Span::styled(path.display().to_string(), Style::new().fg(palette.fg)),
         ])),
         path_area,
     );
@@ -862,16 +882,19 @@ fn draw_dir_picker(
         .map(|row| match row.kind {
             crate::workspace::DirRowKind::Use => ListItem::new(Line::from(vec![
                 Span::styled("→ ", Style::new().fg(palette.accent)),
-                "use this directory".bold(),
+                "use this directory".fg(palette.fg).bold(),
             ])),
             crate::workspace::DirRowKind::Parent | crate::workspace::DirRowKind::Dir => {
-                ListItem::new(Line::from(Span::raw(format!("  {}", row.name))))
+                ListItem::new(Line::from(Span::styled(
+                    format!("  {}", row.name),
+                    Style::new().fg(palette.fg),
+                )))
             }
         })
         .collect();
     let mut state = ListState::default().with_selected(Some(selected));
     frame.render_stateful_widget(
-        List::new(items).highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
+        List::new(items).highlight_style(selection_style(palette)),
         list_area,
         &mut state,
     );
@@ -880,7 +903,8 @@ fn draw_dir_picker(
         (Some(error), _) => Line::from(error.to_string().fg(palette.error)),
         (None, Some(read)) => Line::from(read.fg(palette.warning)),
         (None, None) => Line::from(
-            "enter: open / accept · ←: up · esc: cancel — the choice is saved to the config".dim(),
+            "enter: open / accept · ←: up · esc: cancel — the choice is saved to the config"
+                .fg(palette.muted),
         ),
     };
     frame.render_widget(
@@ -930,8 +954,8 @@ fn draw_project_picker(
 
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled("in   ", Style::new().dim()),
-            Span::raw(dir.display().to_string()),
+            Span::styled("in   ", muted_style(palette)),
+            Span::styled(dir.display().to_string(), Style::new().fg(palette.fg)),
         ])),
         dir_area,
     );
@@ -943,23 +967,23 @@ fn draw_project_picker(
             if row.buildable {
                 ListItem::new(Line::from(vec![
                     Span::raw("  "),
-                    row.name.clone().bold(),
+                    row.name.clone().fg(palette.fg).bold(),
                     Span::raw("  "),
                     Span::styled("✓ CMakeLists.txt", Style::new().fg(palette.success)),
                 ]))
             } else {
                 ListItem::new(Line::from(vec![
                     Span::raw("  "),
-                    Span::raw(row.name.clone()),
+                    Span::styled(row.name.clone(), Style::new().fg(palette.fg)),
                     Span::raw("  "),
-                    Span::styled("no CMakeLists.txt", Style::new().dim()),
+                    Span::styled("no CMakeLists.txt", muted_style(palette)),
                 ]))
             }
         })
         .collect();
     let mut state = ListState::default().with_selected(Some(selected));
     frame.render_stateful_widget(
-        List::new(items).highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
+        List::new(items).highlight_style(selection_style(palette)),
         list_area,
         &mut state,
     );
@@ -974,7 +998,9 @@ fn draw_project_picker(
                 .fg(palette.warning),
         )
     } else {
-        Line::from("enter: build this one · esc: cancel — the choice is session-only".dim())
+        Line::from(
+            "enter: build this one · esc: cancel — the choice is session-only".fg(palette.muted),
+        )
     };
     frame.render_widget(
         Paragraph::new(footer).wrap(ratatui::widgets::Wrap { trim: false }),
@@ -1012,8 +1038,8 @@ fn draw_build_dir_picker(
 
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled("name  ", Style::new().dim()),
-            Span::raw(input.to_string()),
+            Span::styled("name  ", muted_style(palette)),
+            Span::styled(input.to_string(), Style::new().fg(palette.fg)),
             Span::styled("▏", Style::new().fg(palette.accent)),
         ])),
         filter_area,
@@ -1028,7 +1054,7 @@ fn draw_build_dir_picker(
         format!("{} of {} directories", dirs.len(), dirs.len())
     };
     frame.render_widget(
-        Paragraph::new(vec![Line::from(hint.dim()), Line::from("")]),
+        Paragraph::new(vec![Line::from(hint.fg(palette.muted)), Line::from("")]),
         hint_area,
     );
 
@@ -1036,21 +1062,21 @@ fn draw_build_dir_picker(
         .iter()
         .map(|dir| {
             ListItem::new(Line::from(vec![
-                Span::raw(format!(" {dir} ")),
+                Span::styled(format!(" {dir} "), Style::new().fg(palette.fg)),
                 Span::styled(
                     if *dir == crate::build::DEFAULT_BUILD_DIR {
                         "default"
                     } else {
                         ""
                     },
-                    Style::new().dim(),
+                    muted_style(palette),
                 ),
             ]))
         })
         .collect();
     let mut state = ListState::default().with_selected(Some(selected));
     frame.render_stateful_widget(
-        List::new(items).highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
+        List::new(items).highlight_style(selection_style(palette)),
         list_area,
         &mut state,
     );
@@ -1087,8 +1113,8 @@ fn draw_firmware_picker(
         .iter()
         .map(|entry| {
             ListItem::new(Line::from(vec![
-                Span::raw(format!(" {} ", entry.name)),
-                Span::styled(format!("{} bytes", entry.size), Style::new().dim()),
+                Span::styled(format!(" {} ", entry.name), Style::new().fg(palette.fg)),
+                Span::styled(format!("{} bytes", entry.size), muted_style(palette)),
             ]))
         })
         .collect();
@@ -1100,7 +1126,7 @@ fn draw_firmware_picker(
     frame.render_stateful_widget(
         List::new(items)
             .block(modal("Firmware", palette))
-            .highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
+            .highlight_style(selection_style(palette)),
         popup,
         &mut state,
     );
@@ -1162,8 +1188,8 @@ fn draw_board_picker(
     frame.render_widget(modal(&title, palette), popup);
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled("filter ", Style::new().dim()),
-            Span::raw(input.to_string()),
+            Span::styled("filter ", muted_style(palette)),
+            Span::styled(input.to_string(), Style::new().fg(palette.fg)),
             Span::styled("▏", Style::new().fg(palette.accent)),
         ])),
         filter_area,
@@ -1189,7 +1215,7 @@ fn draw_board_picker(
         }
     };
     frame.render_widget(
-        Paragraph::new(hint.dim()).wrap(ratatui::widgets::Wrap { trim: false }),
+        Paragraph::new(hint.fg(palette.muted)).wrap(ratatui::widgets::Wrap { trim: false }),
         hint_area,
     );
 
@@ -1197,14 +1223,14 @@ fn draw_board_picker(
         .iter()
         .map(|board| {
             ListItem::new(Line::from(vec![
-                Span::raw(format!(" {} ", board.name)),
-                board.description.clone().dim(),
+                Span::styled(format!(" {} ", board.name), Style::new().fg(palette.fg)),
+                board.description.clone().fg(palette.muted),
             ]))
         })
         .collect();
     let mut state = ListState::default().with_selected(Some(selected));
     frame.render_stateful_widget(
-        List::new(items).highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
+        List::new(items).highlight_style(selection_style(palette)),
         list_area,
         &mut state,
     );
@@ -1248,8 +1274,8 @@ fn draw_shield_picker(
     frame.render_widget(modal(&title, palette), popup);
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled("filter ", Style::new().dim()),
-            Span::raw(input.to_string()),
+            Span::styled("filter ", muted_style(palette)),
+            Span::styled(input.to_string(), Style::new().fg(palette.fg)),
             Span::styled("▏", Style::new().fg(palette.accent)),
         ])),
         filter_area,
@@ -1275,25 +1301,25 @@ fn draw_shield_picker(
         }
     };
     frame.render_widget(
-        Paragraph::new(hint.dim()).wrap(ratatui::widgets::Wrap { trim: false }),
+        Paragraph::new(hint.fg(palette.muted)).wrap(ratatui::widgets::Wrap { trim: false }),
         hint_area,
     );
 
     // Row 0 is `(none)`: Enter there builds without a shield, which is the
     // answer the optionality of the whole question exists for.
     let mut items = vec![ListItem::new(Line::from(vec![
-        Span::raw(" (none) "),
-        Span::styled("build without a shield", Style::new().dim()),
+        Span::styled(" (none) ", Style::new().fg(palette.fg)),
+        Span::styled("build without a shield", muted_style(palette)),
     ]))];
     items.extend(shields.iter().map(|shield| {
         ListItem::new(Line::from(vec![
-            Span::raw(format!(" {} ", shield.name)),
-            shield.description.clone().dim(),
+            Span::styled(format!(" {} ", shield.name), Style::new().fg(palette.fg)),
+            shield.description.clone().fg(palette.muted),
         ]))
     }));
     let mut state = ListState::default().with_selected(Some(selected));
     frame.render_stateful_widget(
-        List::new(items).highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
+        List::new(items).highlight_style(selection_style(palette)),
         list_area,
         &mut state,
     );
@@ -1310,7 +1336,7 @@ fn draw_device_picker(frame: &mut Frame, area: Rect, app: &App, selected: usize,
         frame.render_widget(
             Paragraph::new(vec![
                 Line::from("No MicroPython device found.".fg(palette.warning)),
-                Line::from("Connect a board and press 'd' to scan again.".dim()),
+                Line::from("Connect a board and press 'd' to scan again.".fg(palette.muted)),
             ])
             .block(modal("Device", palette)),
             popup,
@@ -1322,9 +1348,12 @@ fn draw_device_picker(frame: &mut Frame, area: Rect, app: &App, selected: usize,
         .iter()
         .enumerate()
         .map(|(index, device)| {
-            let mut spans = vec![Span::raw(format!(" {} ", device.label()))];
+            let mut spans = vec![Span::styled(
+                format!(" {} ", device.label()),
+                Style::new().fg(palette.fg),
+            )];
             if app.devices.selected_index() == Some(index) {
-                spans.push(Span::styled("(active)", Style::new().dim()));
+                spans.push(Span::styled("(active)", muted_style(palette)));
             }
             let vid_pid = match device.vendor() {
                 Some(vendor) => format!("  {} ({vendor})", device.vid_pid),
@@ -1342,7 +1371,7 @@ fn draw_device_picker(frame: &mut Frame, area: Rect, app: &App, selected: usize,
     frame.render_stateful_widget(
         List::new(items)
             .block(modal("Device", palette))
-            .highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
+            .highlight_style(selection_style(palette)),
         popup,
         &mut state,
     );
@@ -1395,7 +1424,10 @@ fn draw_help(
                 format!("  {:<width$}  ", binding.key, width = key_col),
                 Style::new().fg(palette.accent),
             ),
-            Span::raw(fit(binding.description, budget)),
+            Span::styled(
+                fit(binding.description, budget),
+                Style::new().fg(palette.fg),
+            ),
         ])
     };
 
@@ -1424,8 +1456,8 @@ fn draw_help(
     };
 
     let filter_line = Line::from(vec![
-        Span::styled("filter ", Style::new().dim()),
-        Span::raw(filter.to_string()),
+        Span::styled("filter ", muted_style(palette)),
+        Span::styled(filter.to_string(), Style::new().fg(palette.fg)),
         Span::styled(
             if filtering { "▏" } else { " " },
             Style::new().fg(palette.accent),
@@ -1438,7 +1470,7 @@ fn draw_help(
             } else {
                 ""
             },
-            Style::new().dim(),
+            muted_style(palette),
         ),
     ]);
 
@@ -1488,7 +1520,7 @@ fn draw_help(
     let selected = (!commands.is_empty()).then_some(selected.min(commands.len() - 1));
     let mut state = ListState::default().with_selected(selected);
     frame.render_stateful_widget(
-        List::new(items).highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
+        List::new(items).highlight_style(selection_style(palette)),
         areas[next],
         &mut state,
     );
@@ -1517,9 +1549,12 @@ fn draw_picker(frame: &mut Frame, area: Rect, app: &App, selected: usize, palett
                 PickerOption::Automatic => active.is_none(),
                 PickerOption::Backend(kind) => active == Some(*kind),
             };
-            let mut spans = vec![Span::raw(format!(" {} ", option.label()))];
+            let mut spans = vec![Span::styled(
+                format!(" {} ", option.label()),
+                Style::new().fg(palette.fg),
+            )];
             if current {
-                spans.push(Span::styled("(active)", Style::new().dim()));
+                spans.push(Span::styled("(active)", muted_style(palette)));
             }
             // Detection's own opinion, so an override is an informed choice.
             if let PickerOption::Backend(kind) = option
@@ -1541,7 +1576,7 @@ fn draw_picker(frame: &mut Frame, area: Rect, app: &App, selected: usize, palett
     frame.render_stateful_widget(
         List::new(items)
             .block(modal("Backend", palette))
-            .highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
+            .highlight_style(selection_style(palette)),
         popup,
         &mut state,
     );
@@ -1560,10 +1595,13 @@ fn draw_theme_picker(frame: &mut Frame, area: Rect, app: &App, selected: usize, 
             let swatch = theme.palette().accent;
             let mut spans = vec![
                 Span::styled("██ ", Style::new().fg(swatch)),
-                Span::raw(format!("{:<16}", theme.display_name())),
+                Span::styled(
+                    format!("{:<16}", theme.display_name()),
+                    Style::new().fg(palette.fg),
+                ),
             ];
             if *theme == active {
-                spans.push(Span::styled("(active)", Style::new().dim()));
+                spans.push(Span::styled("(active)", muted_style(palette)));
             }
             ListItem::new(Line::from(spans))
         })
@@ -1576,7 +1614,7 @@ fn draw_theme_picker(frame: &mut Frame, area: Rect, app: &App, selected: usize, 
     frame.render_stateful_widget(
         List::new(items)
             .block(modal("Theme", palette))
-            .highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
+            .highlight_style(selection_style(palette)),
         popup,
         &mut state,
     );
@@ -1593,7 +1631,7 @@ fn draw_sync_preview(
 
     if plan.is_empty() {
         lines.push(Line::from(
-            "Nothing to do \u{2014} local and device are in sync.".dim(),
+            "Nothing to do \u{2014} local and device are in sync.".fg(palette.muted),
         ));
         let height = 7u16;
         draw_confirm_dialog(
@@ -1610,14 +1648,16 @@ fn draw_sync_preview(
 
     if !plan.uploads.is_empty() {
         lines.push(Line::from(
-            format!("Upload {} file(s):", plan.uploads.len()).bold(),
+            format!("Upload {} file(s):", plan.uploads.len())
+                .fg(palette.fg)
+                .bold(),
         ));
         for (_, device) in plan.uploads.iter().take(8) {
-            lines.push(Line::from(format!("  \u{2192} {device}")));
+            lines.push(Line::from(format!("  \u{2192} {device}").fg(palette.fg)));
         }
         if plan.uploads.len() > 8 {
             lines.push(Line::from(
-                format!("  ... and {} more", plan.uploads.len() - 8).dim(),
+                format!("  ... and {} more", plan.uploads.len() - 8).fg(palette.muted),
             ));
         }
         lines.push(Line::from(""));
@@ -1630,14 +1670,15 @@ fn draw_sync_preview(
                 plan.mkdirs.len(),
                 if plan.mkdirs.len() == 1 { "y" } else { "ies" }
             )
+            .fg(palette.fg)
             .bold(),
         ));
         for dir in plan.mkdirs.iter().take(8) {
-            lines.push(Line::from(format!("  + {dir}/")));
+            lines.push(Line::from(format!("  + {dir}/").fg(palette.fg)));
         }
         if plan.mkdirs.len() > 8 {
             lines.push(Line::from(
-                format!("  ... and {} more", plan.mkdirs.len() - 8).dim(),
+                format!("  ... and {} more", plan.mkdirs.len() - 8).fg(palette.muted),
             ));
         }
         lines.push(Line::from(""));
@@ -1652,7 +1693,7 @@ fn draw_sync_preview(
         }
         if plan.deletes.len() > 8 {
             lines.push(Line::from(
-                format!("  ... and {} more", plan.deletes.len() - 8).dim(),
+                format!("  ... and {} more", plan.deletes.len() - 8).fg(palette.muted),
             ));
         }
     }

@@ -21,7 +21,9 @@ use crate::backend::Capability;
 use crate::flash::{OptionsField, RunState};
 use crate::logs::wrap_rows;
 use crate::ui::flash::{field_label, field_value};
-use crate::ui::{Palette, content_style, dashboard_focused, draw_scrollbar, pane_border};
+use crate::ui::{
+    Palette, content_style, dashboard_focused, draw_scrollbar, muted_style, pane_border,
+};
 
 /// Chip + offset, always meaningful for `WriteFlash`/`VerifyFlash` on the
 /// recap above the console --- the options screen's full field list
@@ -59,10 +61,10 @@ fn draw_build_output(
         let mut doc: Vec<Line> = panel
             .output
             .iter()
-            .map(|line| Line::from(line.clone()))
+            .map(|line| Line::from(line.clone()).fg(palette.fg))
             .collect();
         if doc.is_empty() {
-            doc.push(Line::from("(no output yet)".dim()));
+            doc.push(Line::from("(no output yet)".fg(palette.muted)));
         }
         doc
     };
@@ -87,7 +89,7 @@ fn draw_device_monitor(
         let mut console: Vec<Line> = app
             .device_monitor_output
             .iter()
-            .map(|line| Line::from(line.clone()))
+            .map(|line| Line::from(line.clone()).fg(palette.fg))
             .collect();
 
         // While the session owns the keyboard, show where typed text will
@@ -100,7 +102,7 @@ fn draw_device_monitor(
         }
 
         if console.is_empty() {
-            console.push(Line::from("(connected)".dim()));
+            console.push(Line::from("(connected)".fg(palette.muted)));
         }
 
         render_console(frame, area, block, layout, &console, app, palette);
@@ -120,7 +122,7 @@ fn draw_device_monitor(
     };
 
     frame.render_widget(
-        Paragraph::new(message.dim())
+        Paragraph::new(message.fg(palette.muted))
             .block(block)
             .style(content_style(focused)),
         area,
@@ -159,19 +161,19 @@ fn draw_flash_output(
             .iter()
             .map(|field| {
                 Line::from(vec![
-                    Span::styled(format!("{:<10}", field_label(*field)), Style::new().dim()),
-                    Span::raw(field_value(flash, *field)),
+                    Span::styled(format!("{:<10}", field_label(*field)), muted_style(palette)),
+                    Span::styled(field_value(flash, *field), Style::new().fg(palette.fg)),
                 ])
             })
             .collect();
         if let Some(firmware) = flash.selected_firmware_path() {
             lines.push(Line::from(vec![
-                Span::styled(format!("{:<10}", "firmware"), Style::new().dim()),
-                Span::raw(firmware.display().to_string()),
+                Span::styled(format!("{:<10}", "firmware"), muted_style(palette)),
+                Span::styled(firmware.display().to_string(), Style::new().fg(palette.fg)),
             ]));
         }
-        lines.push(Line::from(rule.dim()));
-        lines.push(Line::from("console".dim()));
+        lines.push(Line::from(rule.fg(palette.muted)));
+        lines.push(Line::from("console".fg(palette.muted)));
         (block, lines)
     } else {
         (console_block(focused, palette), Vec::new())
@@ -181,7 +183,7 @@ fn draw_flash_output(
     let mut console: Vec<Line> = flash
         .output
         .iter()
-        .map(|line| Line::from(line.clone()))
+        .map(|line| Line::from(line.clone()).fg(palette.fg))
         .collect();
     // The header already reads "(done)"/"(failed)": a banner line here would
     // just be a second, redundant announcement mixed into the command's real
@@ -191,7 +193,7 @@ fn draw_flash_output(
         console.push(Line::from(error.clone().fg(palette.error)));
     }
     if console.is_empty() {
-        console.push(Line::from("(no output yet)".dim()));
+        console.push(Line::from("(no output yet)".fg(palette.muted)));
     }
     doc.extend(console);
 
@@ -215,15 +217,15 @@ fn draw_run_output(frame: &mut Frame, area: Rect, app: &mut App, focused: bool, 
                         entry.timestamp.minute(),
                         entry.timestamp.second()
                     ),
-                    Style::new().dim(),
+                    muted_style(palette),
                 ),
-                Span::raw(entry.text.clone()),
+                Span::styled(entry.text.clone(), Style::new().fg(palette.fg)),
             ])
         })
         .collect();
 
     if lines.is_empty() {
-        lines.push(Line::from("(no output yet)".dim()));
+        lines.push(Line::from("(no output yet)".fg(palette.muted)));
     }
 
     render_console(frame, area, block, layout, &lines, app, palette);

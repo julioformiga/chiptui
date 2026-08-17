@@ -21,6 +21,7 @@ pub mod zephyr;
 use std::fmt;
 
 use ratatui::style::Color;
+use ratatui_themes::ThemePalette;
 
 use crate::project::{DirScan, Signal};
 
@@ -71,26 +72,56 @@ impl BackendKind {
     /// backend conditionals is about *capabilities*; a list that shows two
     /// backends at once still has to tell them apart at a glance, and the
     /// backend is the only place that can say how.
-    pub const fn palette(self) -> Palette {
+    ///
+    /// The colors are derived from the *active theme*: each backend claims
+    /// one of the theme's semantic colors as its mark (MicroPython the green
+    /// `success`, Zephyr the blue `info`), and the row tints are that color
+    /// blended toward the theme's own background, so a theme switch recolors
+    /// the rows too --- a light theme gets light tints --- instead of
+    /// leaving them pinned to fixed 256-color indexes.
+    pub const fn palette(self, theme: ThemePalette) -> Palette {
         match self {
             Self::MicroPython => Palette {
-                accent: Color::Green,
-                tint: Color::Indexed(22),
-                tint_selected: Color::Indexed(28),
+                accent: theme.success,
+                tint: blend(theme.success, theme.bg, 3),
+                tint_selected: blend(theme.success, theme.bg, 6),
             },
             Self::Zephyr => Palette {
-                accent: Color::Blue,
-                tint: Color::Indexed(17),
-                tint_selected: Color::Indexed(25),
+                accent: theme.info,
+                tint: blend(theme.info, theme.bg, 3),
+                tint_selected: blend(theme.info, theme.bg, 6),
             },
         }
     }
 }
 
+/// `color` moved `num`/16 of the way toward `background` (an integer lerp,
+/// so it stays `const`). Non-RGB colors cannot be blended; the theme's
+/// background is returned instead --- an untinted row --- rather than a
+/// guess. Every `ratatui_themes` palette uses RGB values, so this only
+/// guards custom construction.
+const fn blend(color: Color, background: Color, num: u32) -> Color {
+    if let (Color::Rgb(r1, g1, b1), Color::Rgb(r2, g2, b2)) = (color, background) {
+        Color::Rgb(
+            channel(r1, r2, num),
+            channel(g1, g2, num),
+            channel(b1, b2, num),
+        )
+    } else {
+        background
+    }
+}
+
+/// One channel of [`blend`]: `from` shifted `num`/16 toward `toward`.
+const fn channel(toward: u8, from: u8, num: u32) -> u8 {
+    let delta = toward as i32 - from as i32;
+    (from as i32 + delta * num as i32 / 16) as u8
+}
+
 /// A backend's colors: the accent its name and icon are drawn in, and the
-/// two background tints a row of its own uses --- resting and selected.
-/// Both tints come from the 256-color cube's darker end, so the row is
-/// tinted rather than painted and the text on it stays legible.
+/// two background tints a row of its own uses --- resting and selected ---
+/// both derived from the active theme by [`BackendKind::palette`], so the
+/// row is tinted rather than painted and the text on it stays legible.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Palette {
     pub accent: Color,

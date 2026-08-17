@@ -18,13 +18,15 @@ use crate::backend::Capability;
 use crate::browser::{Browser, PaneState};
 use crate::device::{DiscoveryState, ScriptState};
 use crate::files::SyncStatus;
-use crate::ui::{Palette, SPINNER, content_style, dashboard_focused, pane_block};
+use crate::ui::{
+    Palette, SPINNER, content_style, dashboard_focused, muted_style, pane_block, selection_style,
+};
 
 pub fn draw(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
     let Some(browser) = &app.browser else {
         let block = pane_block("Files", false, palette);
         frame.render_widget(
-            Paragraph::new("the file listing has not started yet".dim()).block(block),
+            Paragraph::new("the file listing has not started yet".fg(palette.muted)).block(block),
             area,
         );
         return;
@@ -69,7 +71,7 @@ fn draw_no_device(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
         .map_or("this backend".to_string(), |kind| kind.to_string());
     let block = pane_block("Device", false, palette);
     frame.render_widget(
-        Paragraph::new(format!("{backend}: no device filesystem").dim()).block(block),
+        Paragraph::new(format!("{backend}: no device filesystem").fg(palette.muted)).block(block),
         area,
     );
 }
@@ -117,7 +119,14 @@ fn draw_local(
         })
         .collect();
 
-    render_list(frame, inner, items, Some(browser.local_cursor), focused);
+    render_list(
+        frame,
+        inner,
+        items,
+        Some(browser.local_cursor),
+        focused,
+        palette,
+    );
 }
 
 fn draw_device(
@@ -140,7 +149,7 @@ fn draw_device(
     match &browser.device_state {
         PaneState::Idle => {
             frame.render_widget(
-                Paragraph::new("press 'd' to look for a device".dim()).block(block),
+                Paragraph::new("press 'd' to look for a device".fg(palette.muted)).block(block),
                 area,
             );
             return;
@@ -158,7 +167,7 @@ fn draw_device(
                 format!("listing {}", browser.device_path)
             };
             frame.render_widget(
-                Paragraph::new(format!("{spinner} {what}…").dim()).block(block),
+                Paragraph::new(format!("{spinner} {what}…").fg(palette.muted)).block(block),
                 area,
             );
             return;
@@ -201,6 +210,7 @@ fn draw_device(
         items,
         Some(browser.device_cursor),
         focused,
+        palette,
     );
     draw_device_footer(frame, footer_area, browser, palette);
 }
@@ -239,13 +249,19 @@ fn draw_device_footer(frame: &mut Frame, area: Rect, browser: &Browser, palette:
             );
         }
         Some(Ok(_)) => {
-            frame.render_widget(Paragraph::new("free space: 0".dim()), area);
+            frame.render_widget(Paragraph::new("free space: 0".fg(palette.muted)), area);
         }
         Some(Err(_)) => {
-            frame.render_widget(Paragraph::new("free space unavailable".dim()), area);
+            frame.render_widget(
+                Paragraph::new("free space unavailable".fg(palette.muted)),
+                area,
+            );
         }
         None => {
-            frame.render_widget(Paragraph::new("checking free space…".dim()), area);
+            frame.render_widget(
+                Paragraph::new("checking free space…".fg(palette.muted)),
+                area,
+            );
         }
     }
 }
@@ -260,9 +276,10 @@ pub(super) fn render_list(
     items: Vec<ListItem<'static>>,
     cursor: Option<usize>,
     focused: bool,
+    palette: Palette,
 ) {
     if items.is_empty() {
-        frame.render_widget(Paragraph::new("empty".dim()), area);
+        frame.render_widget(Paragraph::new("empty".fg(palette.muted)), area);
         return;
     }
 
@@ -270,7 +287,7 @@ pub(super) fn render_list(
     frame.render_stateful_widget(
         List::new(items)
             .style(content_style(focused))
-            .highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
+            .highlight_style(selection_style(palette)),
         area,
         &mut state,
     );
@@ -325,7 +342,7 @@ fn row_spans(
     let name_style = if is_dir {
         Style::new().fg(palette.accent).add_modifier(Modifier::BOLD)
     } else {
-        Style::new()
+        Style::new().fg(palette.fg)
     };
 
     let mut spans = Vec::with_capacity(5);
@@ -335,10 +352,13 @@ fn row_spans(
             status_style(status, palette),
         ));
     }
-    spans.push(Span::raw(format!("{} ", icon(name, is_dir))));
+    spans.push(Span::styled(
+        format!("{} ", icon(name, is_dir)),
+        Style::new().fg(palette.fg),
+    ));
     spans.push(Span::styled(display, name_style));
     spans.push(Span::raw(" ".repeat(padding + 1)));
-    spans.push(Span::styled(size_text, Style::new().dim()));
+    spans.push(Span::styled(size_text, muted_style(palette)));
     spans
 }
 
@@ -372,7 +392,7 @@ fn status_style(status: SyncStatus, palette: Palette) -> Style {
         SyncStatus::Differs => Style::new().fg(palette.warning),
         SyncStatus::LocalOnly => Style::new().fg(palette.accent),
         SyncStatus::DeviceOnly => Style::new().fg(palette.secondary),
-        SyncStatus::Directory => Style::new().dim(),
+        SyncStatus::Directory => muted_style(palette),
         SyncStatus::TypeMismatch => Style::new().fg(palette.error),
     }
 }
@@ -392,7 +412,7 @@ fn draw_legend(frame: &mut Frame, area: Rect, palette: Palette) {
             format!(" {} ", status.marker()),
             status_style(status, palette),
         ));
-        spans.push(Span::styled(format!("{label}  "), Style::new().dim()));
+        spans.push(Span::styled(format!("{label}  "), muted_style(palette)));
     }
 
     frame.render_widget(

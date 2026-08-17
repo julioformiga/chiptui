@@ -1,12 +1,12 @@
 //! The row-2 panes' operation buttons, as a custom widget
 //! (`https://ratatui.rs/examples/widgets/custom_widget/`, minus the
 //! example's gradient). The buttons are stacked in one bordered group that
-//! shares its top and bottom rules --- kept neutral/uncolored on purpose,
-//! unlike the rest of the UI (`crate::ui::Palette`), so the group's frame
-//! never competes with a selected row for attention --- one centered label
+//! shares its top and bottom rules --- drawn in the theme's `muted` color,
+//! quiet enough that the frame never competes with a selected row for
+//! attention while still following the active theme --- one centered label
 //! per row: N buttons cost N+2 lines, so a pane full of them still fits
-//! vertically. Each button's icon label is bold while the action can run,
-//! dim while it waits for the checklist's answers.
+//! vertically. Each button's icon label is bold in the theme's `fg` while
+//! the action can run, `muted` while it waits for the checklist's answers.
 //!
 //! The selection highlight is `palette.selection`/`palette.fg` --- an
 //! explicit, deterministic fill instead of `Modifier::REVERSED` (which this
@@ -30,7 +30,7 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Widget;
 
-use crate::ui::Palette;
+use crate::ui::{Palette, muted_style};
 
 #[derive(Debug, Clone)]
 pub struct Button {
@@ -61,14 +61,14 @@ impl Button {
         self
     }
 
-    /// The button's text weight: bold by readiness, dim while it waits.
-    /// The selection highlight is a separate `set_style` patch (see
-    /// [`ButtonStack::render`]), not part of this style.
-    fn row_style(&self) -> Style {
+    /// The button's text color and weight: bold `fg` by readiness, `muted`
+    /// while it waits. The selection highlight is a separate `set_style`
+    /// patch (see [`ButtonStack::render`]), not part of this style.
+    fn row_style(&self, palette: Palette) -> Style {
         if self.enabled {
-            Style::new().bold()
+            Style::new().fg(palette.fg).bold()
         } else {
-            Style::new().dim()
+            muted_style(palette)
         }
     }
 }
@@ -113,7 +113,10 @@ impl Widget for ButtonStack {
                     buf,
                     area,
                     y,
-                    Line::styled(truncate(&button.label, width), button.row_style()),
+                    Line::styled(
+                        truncate(&button.label, width),
+                        button.row_style(self.palette),
+                    ),
                 );
                 let row = Rect {
                     x: area.x,
@@ -127,7 +130,8 @@ impl Widget for ButtonStack {
         }
         let rule = "─".repeat(width - 2);
         let inner = width - 2;
-        put(buf, area, area.y, Line::raw(format!("╭{rule}╮")));
+        let frame = muted_style(self.palette);
+        put(buf, area, area.y, Line::styled(format!("╭{rule}╮"), frame));
         let mut y = area.y + 1;
         let last = self.buttons.len() - 1;
         for (index, button) in self.buttons.iter().enumerate() {
@@ -140,12 +144,12 @@ impl Widget for ButtonStack {
                 area,
                 y,
                 Line::from(vec![
-                    Span::raw("│"),
+                    Span::styled("│", frame),
                     Span::styled(
                         format!("{}{}{}", " ".repeat(left), label, " ".repeat(right)),
-                        button.row_style(),
+                        button.row_style(self.palette),
                     ),
-                    Span::raw("│"),
+                    Span::styled("│", frame),
                 ]),
             );
             // A `set_style` patch over the row's inner cells, done *after*
@@ -161,14 +165,15 @@ impl Widget for ButtonStack {
             highlight_selected(buf, area, inner_row, button.selected, self.palette);
             y += 1;
             // The divider between stacked buttons: never after the last
-            // one, and unstyled like the outer rules --- the selection
-            // highlight stays confined to a button's inner row.
+            // one, and in the same muted frame color as the outer rules ---
+            // the selection highlight stays confined to a button's inner
+            // row.
             if index < last {
-                put(buf, area, y, Line::raw(format!("├{rule}┤")));
+                put(buf, area, y, Line::styled(format!("├{rule}┤"), frame));
                 y += 1;
             }
         }
-        put(buf, area, y, Line::raw(format!("╰{rule}╯")));
+        put(buf, area, y, Line::styled(format!("╰{rule}╯"), frame));
     }
 }
 
@@ -304,10 +309,11 @@ mod tests {
             .unwrap();
         let buf = terminal.backend().buffer();
         let filled = |x: u16, y: u16| buf[(x, y)].bg == palette.selection;
-        // The outer rules and the divider between the buttons stay plain.
+        // The outer rules and the divider between the buttons keep the
+        // frame color, never the selection fill.
         for y in [0, 2, 4] {
             for x in 0..14 {
-                assert!(!filled(x, y), "rule cell ({x},{y}) must stay plain");
+                assert!(!filled(x, y), "rule cell ({x},{y}) must stay unfilled");
             }
         }
         // A selected button is a solid bar between the side rules: every
@@ -322,17 +328,23 @@ mod tests {
         }
     }
 
-    /// The color fill and the label's weight are two independent passes
+    /// The color fill and the label's color are two independent passes
     /// now (`row_style` vs. [`highlight_selected`]) --- a disabled-but-
     /// selected button (waiting on the checklist, cursor parked on it
-    /// anyway) must still get the full theme-colored bar, dim text and all.
+    /// anyway) must still get the full theme-colored bar. The selection
+    /// patch owns the colors on a selected row; what survives from
+    /// readiness is the *weight* --- bold when enabled, plain while it
+    /// waits.
     #[test]
     fn a_disabled_selected_button_still_gets_the_full_fill() {
         use ratatui::style::Modifier;
 
         let palette = palette();
         let stack = ButtonStack {
-            buttons: vec![Button::new("↻ Update Zephyr").enabled(false).selected(true)],
+            buttons: vec![
+                Button::new("▶ Build").selected(true),
+                Button::new("↻ Update Zephyr").enabled(false).selected(true),
+            ],
             palette,
         };
         let height = stack.height();
@@ -342,12 +354,40 @@ mod tests {
             .draw(|frame| frame.render_widget(stack, frame.area()))
             .unwrap();
         let buf = terminal.backend().buffer();
-        for x in 1..19 {
-            assert_eq!(buf[(x, 1)].bg, palette.selection, "cell {x} bg");
-            assert!(
-                buf[(x, 1)].modifier.contains(Modifier::DIM),
-                "cell {x} must keep its dim weight"
-            );
+        for (y, bold) in [(1, true), (3, false)] {
+            for x in 1..19 {
+                assert_eq!(buf[(x, y)].bg, palette.selection, "cell ({x},{y}) bg");
+                assert_eq!(
+                    buf[(x, y)].modifier.contains(Modifier::BOLD),
+                    bold,
+                    "cell ({x},{y}) weight"
+                );
+            }
         }
+    }
+
+    /// An enabled button reads in the theme's `fg`, a disabled one in its
+    /// `muted` --- the weight difference the checklist gates, expressed in
+    /// theme colors rather than the terminal's default dim.
+    #[test]
+    fn button_readiness_is_the_difference_between_fg_and_muted() {
+        let palette = palette();
+        let stack = ButtonStack {
+            buttons: vec![
+                Button::new("▶ Build"),
+                Button::new("↻ Update Zephyr").enabled(false),
+            ],
+            palette,
+        };
+        let height = stack.height();
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(20, height)).unwrap();
+        terminal
+            .draw(|frame| frame.render_widget(stack, frame.area()))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let label_cell = |x: u16, y: u16| &buf[(x, y)];
+        assert_eq!(label_cell(9, 1).fg, palette.fg, "enabled button label");
+        assert_eq!(label_cell(9, 3).fg, palette.muted, "disabled button label");
     }
 }

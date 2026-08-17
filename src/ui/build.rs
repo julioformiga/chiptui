@@ -52,13 +52,16 @@ fn draw_state(
     }
     let line = if let Some(elapsed) = panel.elapsed() {
         Line::from(vec![
-            label("state"),
+            label("state", palette),
             format!("running · {}", BuildPanel::secs(elapsed)).fg(palette.accent),
         ])
     } else if let Some(report) = &panel.last {
         report_line(report, palette)
     } else {
-        Line::from(vec![label("state"), "never built".dim()])
+        Line::from(vec![
+            label("state", palette),
+            "never built".fg(palette.muted),
+        ])
     };
     let rect = Rect {
         y: footer_top + 1,
@@ -85,10 +88,10 @@ fn report_line(report: &BuildReport, palette: Palette) -> Line<'static> {
         format!("{what} failed")
     };
     Line::from(vec![
-        label("last"),
+        label("last", palette),
         Span::styled(format!("{mark} {outcome}"), style),
         Span::raw(" "),
-        format!("{:02}:{:02}", report.at.hour(), report.at.minute()).dim(),
+        format!("{:02}:{:02}", report.at.hour(), report.at.minute()).fg(palette.muted),
     ])
 }
 

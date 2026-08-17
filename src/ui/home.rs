@@ -20,7 +20,7 @@ use ratatui::widgets::{Block, BorderType, Clear, List, ListItem, ListState, Para
 use crate::home::{Flow, HomeScreen, Row};
 use crate::workspace::{DirRowKind, dir_rows};
 
-use super::centered;
+use super::{centered, muted_style, selection_style};
 
 /// Widest the panel gets; beyond this the path column stops being scannable.
 const MAX_WIDTH: u16 = 100;
@@ -64,7 +64,7 @@ pub fn draw(frame: &mut Frame, screen: &HomeScreen, theme: super::Palette) {
     let selected = screen.selected();
 
     let create_style = if selected == 0 {
-        Style::new().add_modifier(Modifier::REVERSED | Modifier::BOLD)
+        selection_style(theme).add_modifier(Modifier::BOLD)
     } else {
         Style::new().add_modifier(Modifier::BOLD)
     };
@@ -76,7 +76,7 @@ pub fn draw(frame: &mut Frame, screen: &HomeScreen, theme: super::Palette) {
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::raw(" 🔍 "),
-            Span::raw(screen.query().to_string()),
+            Span::styled(screen.query().to_string(), Style::new().fg(theme.fg)),
             Span::styled("▏", Style::new().fg(theme.accent)),
         ])),
         search_area,
@@ -89,7 +89,10 @@ pub fn draw(frame: &mut Frame, screen: &HomeScreen, theme: super::Palette) {
         } else {
             "No project matches the search."
         };
-        frame.render_widget(Paragraph::new(Line::from(message.dim())), list_area);
+        frame.render_widget(
+            Paragraph::new(Line::from(message.fg(theme.muted))),
+            list_area,
+        );
     } else {
         let width = list_area.width as usize;
         let items: Vec<ListItem> = rows
@@ -103,7 +106,7 @@ pub fn draw(frame: &mut Frame, screen: &HomeScreen, theme: super::Palette) {
                 // The list widget's own highlight would repaint the whole
                 // row in one style; the tint has to survive selection, so
                 // the row carries its background itself.
-                let palette = entry.backend.palette();
+                let palette = entry.backend.palette(theme);
                 let background = if index + 1 == selected {
                     palette.tint_selected
                 } else {
@@ -115,6 +118,7 @@ pub fn draw(frame: &mut Frame, screen: &HomeScreen, theme: super::Palette) {
                     entry,
                     base,
                     palette.accent,
+                    theme.muted,
                     width,
                 )))
             })
@@ -131,7 +135,7 @@ pub fn draw(frame: &mut Frame, screen: &HomeScreen, theme: super::Palette) {
 
     frame.render_widget(
         Paragraph::new(Line::from(
-            " ↑/↓ move · enter open · del forget · esc clear / quit ".dim(),
+            " ↑/↓ move · enter open · del forget · esc clear / quit ".fg(theme.muted),
         )),
         footer,
     );
@@ -149,6 +153,7 @@ fn project_spans<'a>(
     entry: &'a crate::settings::ProjectEntry,
     base: Style,
     accent: Color,
+    muted: Color,
     width: usize,
 ) -> Vec<Span<'a>> {
     const BACKEND_WIDTH: usize = 12;
@@ -171,7 +176,7 @@ fn project_spans<'a>(
         Span::styled("  ", base),
         // Padded to the pane's width so the tint reaches the right edge:
         // a row that stops at its text would look like a ragged block.
-        Span::styled(format!("{path:<path_width$}"), base.dim()),
+        Span::styled(format!("{path:<path_width$}"), base.fg(muted)),
     ]
 }
 
@@ -244,8 +249,8 @@ fn draw_create_dir(
 
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled("in   ", Style::new().dim()),
-            Span::raw(path.display().to_string()),
+            Span::styled("in   ", muted_style(theme)),
+            Span::styled(path.display().to_string(), Style::new().fg(theme.fg)),
         ])),
         path_area,
     );
@@ -256,16 +261,17 @@ fn draw_create_dir(
         .map(|row| match row.kind {
             DirRowKind::Use => ListItem::new(Line::from(vec![
                 Span::styled("→ ", Style::new().fg(theme.accent)),
-                "put it in this directory".bold(),
+                "put it in this directory".fg(theme.fg).bold(),
             ])),
-            DirRowKind::Parent | DirRowKind::Dir => {
-                ListItem::new(Line::from(Span::raw(format!("  {}", row.name))))
-            }
+            DirRowKind::Parent | DirRowKind::Dir => ListItem::new(Line::from(Span::styled(
+                format!("  {}", row.name),
+                Style::new().fg(theme.fg),
+            ))),
         })
         .collect();
     let mut state = ListState::default().with_selected(Some(selected));
     frame.render_stateful_widget(
-        List::new(items).highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
+        List::new(items).highlight_style(selection_style(theme)),
         list_area,
         &mut state,
     );
@@ -273,7 +279,7 @@ fn draw_create_dir(
     let footer = match (error, read_error.as_deref()) {
         (Some(error), _) => Line::from(error.to_string().fg(theme.error)),
         (None, Some(read)) => Line::from(read.fg(theme.warning)),
-        (None, None) => Line::from("enter: open / accept · ←: up · esc: cancel".dim()),
+        (None, None) => Line::from("enter: open / accept · ←: up · esc: cancel".fg(theme.muted)),
     };
     frame.render_widget(
         Paragraph::new(footer).wrap(ratatui::widgets::Wrap { trim: false }),
@@ -307,15 +313,15 @@ fn draw_create_name(
 
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled("in   ", Style::new().dim()),
-            Span::raw(screen.display_path(parent)),
+            Span::styled("in   ", muted_style(theme)),
+            Span::styled(screen.display_path(parent), Style::new().fg(theme.fg)),
         ])),
         in_area,
     );
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled("name ", Style::new().dim()),
-            Span::raw(input.to_string()),
+            Span::styled("name ", muted_style(theme)),
+            Span::styled(input.to_string(), Style::new().fg(theme.fg)),
             Span::styled("▏", Style::new().fg(theme.accent)),
         ])),
         input_area,
@@ -327,17 +333,17 @@ fn draw_create_name(
     };
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled("→    ", Style::new().dim()),
-            Span::styled(preview, Style::new().dim()),
+            Span::styled("→    ", muted_style(theme)),
+            Span::styled(preview, muted_style(theme)),
         ])),
         preview_area,
     );
 
     let footer = match error {
         Some(error) => Line::from(error.to_string().fg(theme.error)),
-        None => {
-            Line::from("enter: create the folder · esc: back — the backend is asked next".dim())
-        }
+        None => Line::from(
+            "enter: create the folder · esc: back — the backend is asked next".fg(theme.muted),
+        ),
     };
     frame.render_widget(
         Paragraph::new(footer).wrap(ratatui::widgets::Wrap { trim: false }),
@@ -360,11 +366,14 @@ fn draw_forget(
     frame.render_widget(block, popup);
 
     let lines = vec![
-        Line::from(vec![Span::raw(name.to_string()).bold()]),
-        Line::from(Span::styled(screen.display_path(path), Style::new().dim())),
+        Line::from(vec![Span::styled(
+            name.to_string(),
+            Style::new().fg(theme.fg).bold(),
+        )]),
+        Line::from(Span::styled(screen.display_path(path), muted_style(theme))),
         Line::from(""),
-        Line::from("The folder and its files stay exactly where they are.".dim()),
-        Line::from("enter / y: remove · esc / n: keep".dim()),
+        Line::from("The folder and its files stay exactly where they are.".fg(theme.muted)),
+        Line::from("enter / y: remove · esc / n: keep".fg(theme.muted)),
     ];
     frame.render_widget(Paragraph::new(lines), inner);
 }

@@ -12,7 +12,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
 
 use crate::app::{App, Focus};
-use crate::ui::{Palette, dashboard_focused, pane_block, tilde_path};
+use crate::ui::{Palette, dashboard_focused, muted_style, pane_block, selection_style, tilde_path};
 use crate::workspace::{WorkspaceAction, WorkspacePanel};
 
 /// Draws the full second row for a workspace+build backend: the workspace
@@ -69,6 +69,7 @@ fn draw_rows(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
                         palette,
                     ),
                     selected,
+                    palette,
                 );
                 // A broken location's reason sits directly under its row,
                 // wrapped so the install guide link survives. Not part of
@@ -98,6 +99,7 @@ fn draw_rows(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
                         palette,
                     ),
                     selected,
+                    palette,
                 );
             }
             WorkspaceAction::Project => {
@@ -127,6 +129,7 @@ fn draw_rows(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
                         palette,
                     ),
                     selected,
+                    palette,
                 );
             }
             WorkspaceAction::Board => {
@@ -162,6 +165,7 @@ fn draw_rows(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
                         palette,
                     ),
                     selected,
+                    palette,
                 );
             }
             WorkspaceAction::Shield => {
@@ -173,7 +177,7 @@ fn draw_rows(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
                 let shield = app.build.as_ref().and_then(|panel| panel.shield.clone());
                 let value = match shield {
                     Some(name) => answer_value(Some(name), false, area.width, palette),
-                    None => Span::raw("none (optional)").dim(),
+                    None => Span::styled("none (optional)", muted_style(palette)),
                 };
                 let done = app
                     .build
@@ -185,11 +189,12 @@ fn draw_rows(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
                     y,
                     checklist_row(done, false, "Shield", value, palette),
                     selected,
+                    palette,
                 );
             }
         }
     }
-    y = separator(frame, area, y);
+    y = separator(frame, area, y, palette);
     draw_files_section(frame, area, y, app, panel, palette);
 }
 
@@ -236,7 +241,7 @@ fn draw_files_section(
             .fg(palette.fg)
             .add_modifier(Modifier::BOLD),
     );
-    let y = render_row(frame, area, y, header, false);
+    let y = render_row(frame, area, y, header, false, palette);
     if y >= area.bottom() {
         return;
     }
@@ -281,7 +286,7 @@ fn draw_files_section(
         )
     }));
     let cursor = panel.in_files.then_some(panel.files_cursor);
-    super::files::render_list(frame, list_area, items, cursor, focused);
+    super::files::render_list(frame, list_area, items, cursor, focused, palette);
 }
 
 /// One checklist row: `✓` when the answer exists, a dim `□` while the
@@ -301,12 +306,12 @@ pub(super) fn checklist_row(
     } else if done {
         Span::styled("✓", Style::new().fg(palette.success).bold())
     } else {
-        Span::styled("□", Style::new().dim())
+        Span::styled("□", muted_style(palette))
     };
     Line::from(vec![
         mark,
         Span::raw(" "),
-        Span::styled(format!("{label:<15}"), Style::new().bold()),
+        Span::styled(format!("{label:<15}"), Style::new().fg(palette.fg).bold()),
         value,
     ])
 }
@@ -337,20 +342,22 @@ pub(super) fn value_budget(width: u16) -> usize {
     (width as usize).saturating_sub(17).max(8)
 }
 
-/// The dim key a pane's pinned last line labels itself with (`state`,
+/// The muted key a pane's pinned last line labels itself with (`state`,
 /// `last`, `env`), in the same 6 columns across both panes.
-pub(super) fn label(text: &str) -> Span<'static> {
-    Span::styled(format!("{text:<6}"), Style::new().dim())
+pub(super) fn label(text: &str, palette: Palette) -> Span<'static> {
+    Span::styled(format!("{text:<6}"), muted_style(palette))
 }
 
-/// Renders one navigable row, full-width reversed when selected, and
-/// returns the next row's y. Rows past the pane's bottom are dropped.
+/// Renders one navigable row, full-width in the theme's selection colors
+/// when selected, and returns the next row's y. Rows past the pane's bottom
+/// are dropped.
 pub(super) fn render_row(
     frame: &mut Frame,
     area: Rect,
     y: u16,
     line: Line<'static>,
     selected: bool,
+    palette: Palette,
 ) -> u16 {
     if y >= area.bottom() {
         return y;
@@ -362,10 +369,7 @@ pub(super) fn render_row(
         height: 1,
     };
     if selected {
-        frame.render_widget(
-            line.style(Style::new().add_modifier(Modifier::REVERSED)),
-            rect,
-        );
+        frame.render_widget(line.style(selection_style(palette)), rect);
     } else {
         frame.render_widget(line, rect);
     }
@@ -375,7 +379,7 @@ pub(super) fn render_row(
 /// The horizontal rule between the checklist and the buttons: the
 /// prerequisite questions and the operations they unlock are different
 /// kinds of rows, and the line says so at a glance.
-pub(super) fn separator(frame: &mut Frame, area: Rect, y: u16) -> u16 {
+pub(super) fn separator(frame: &mut Frame, area: Rect, y: u16, palette: Palette) -> u16 {
     if y >= area.bottom() {
         return y;
     }
@@ -386,7 +390,7 @@ pub(super) fn separator(frame: &mut Frame, area: Rect, y: u16) -> u16 {
         height: 1,
     };
     frame.render_widget(
-        Paragraph::new(Line::from("─".repeat(area.width as usize)).dim()),
+        Paragraph::new(Line::from("─".repeat(area.width as usize)).fg(palette.muted)),
         rect,
     );
     y + 1
