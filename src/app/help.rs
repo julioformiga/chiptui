@@ -146,7 +146,7 @@ const DASHBOARD_COMMANDS: [HelpBinding; 18] = [
     ),
     action("e", "edit the viewed file with $EDITOR", KeyCode::Char('e')),
     binding("?", "toggle this help"),
-    action("q / esc / ctrl+c", "quit", KeyCode::Char('q')),
+    action("q / ctrl+c", "quit", KeyCode::Char('q')),
 ];
 
 const FLASH_NAVIGATION: [HelpBinding; 3] = [

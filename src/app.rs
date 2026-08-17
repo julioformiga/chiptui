@@ -1639,7 +1639,11 @@ impl App {
 
     fn on_dashboard_key(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => {
+            // `q` only. A reflex `Esc` ("close what is open") must not end
+            // the session: with no overlay open it is a no-op here --- every
+            // overlay handles its own `Esc` before this point, and the Flash
+            // view keeps `Esc` as "back one screen".
+            KeyCode::Char('q') => {
                 self.quit();
                 return;
             }
@@ -2164,15 +2168,20 @@ mod tests {
     }
 
     #[test]
-    fn esc_closes_the_overlay_instead_of_quitting() {
+    fn esc_closes_the_overlay_and_never_quits() {
         let mut app = app();
         app.overlay = Some(Overlay::Help { selected: 0 });
         app.handle(key(KeyCode::Esc));
         assert_eq!(app.overlay, None);
         assert!(!app.should_quit());
 
-        // With no overlay, esc leaves the application.
+        // With no overlay, esc is a no-op: quitting is `q`'s job, so a
+        // reflex esc cannot end the session.
         app.handle(key(KeyCode::Esc));
+        assert_eq!(app.overlay, None);
+        assert!(!app.should_quit());
+
+        app.handle(key(KeyCode::Char('q')));
         assert!(app.should_quit());
     }
 

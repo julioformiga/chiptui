@@ -883,8 +883,9 @@ fn the_browser_state_survives_a_focus_change_but_q_quits_outright() {
     app.focus = Focus::FilesLocal;
     assert!(app.browser.is_some());
 
-    // q/esc quits outright: there is no separate file-browser screen to step
-    // back from (see `View`'s doc comment in app.rs).
+    // q quits outright: there is no separate file-browser screen to step
+    // back from (see `View`'s doc comment in app.rs). Esc is a no-op ---
+    // quitting is q's job.
     app.handle(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('q'),
         KeyModifiers::NONE,

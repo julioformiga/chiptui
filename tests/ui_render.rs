@@ -350,7 +350,7 @@ fn help_fits_one_line_per_binding_and_scrolls_under_the_cursor() {
     // screen by scrolling the list.
     let short = render(&mut app, 100, 20);
     assert!(
-        short.contains("q / esc / ctrl+c"),
+        short.contains("q / ctrl+c"),
         "the last binding was cut off vertically:\n{short}"
     );
 }
