@@ -274,12 +274,14 @@ pub(crate) fn wrap_rows(text: &str, width: usize) -> usize {
 }
 
 /// Greedy word wrap of `text` to `width` columns, counted in characters.
+/// Shared with the help overlay, whose descriptions wrap the same way the
+/// log pane's messages do.
 ///
 /// Breaks at spaces; runs of spaces inside a line are preserved (build output
 /// aligns with them) while spaces at a break are dropped. A word longer than
 /// `width` (a path, a URL) is hard-broken rather than left to overflow.
 /// Always returns at least one line. `width` must be greater than zero.
-fn wrap_text(text: &str, width: usize) -> Vec<String> {
+pub(crate) fn wrap_text(text: &str, width: usize) -> Vec<String> {
     debug_assert!(width > 0, "wrap_text requires a positive width");
 
     let mut lines = Vec::new();

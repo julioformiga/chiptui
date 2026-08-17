@@ -9,7 +9,8 @@ use crate::backend::BackendKind;
 use crate::build::BuildAction;
 use crate::device::ScriptState;
 
-use super::{App, FileAction, Overlay, PendingEdit, PickerOption, ViewerSource};
+use super::help::{self, HelpSection};
+use super::{App, FileAction, Overlay, PendingEdit, PickerOption, View, ViewerSource};
 
 impl App {
     /// Shared key handling for every Yes/No confirm overlay
@@ -60,12 +61,50 @@ impl App {
             return;
         };
         match overlay {
-            Overlay::Help => {
-                if matches!(
-                    key.code,
-                    KeyCode::Esc | KeyCode::Enter | KeyCode::Char('?' | 'q')
-                ) {
-                    self.overlay = None;
+            Overlay::Help { selected } => {
+                let count = help::bindings(self.view, HelpSection::Commands)
+                    .len()
+                    .max(1);
+                match key.code {
+                    // `?` and `q` mirror how the overlay is opened.
+                    KeyCode::Esc | KeyCode::Char('?' | 'q') => self.overlay = None,
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        self.overlay = Some(Overlay::Help {
+                            selected: (selected + count - 1) % count,
+                        });
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        self.overlay = Some(Overlay::Help {
+                            selected: (selected + 1) % count,
+                        });
+                    }
+                    KeyCode::Home => {
+                        self.overlay = Some(Overlay::Help { selected: 0 });
+                    }
+                    KeyCode::End => {
+                        self.overlay = Some(Overlay::Help {
+                            selected: count - 1,
+                        });
+                    }
+                    // Activate the row: close the help, then replay the
+                    // row's key through the screen's own handler --- exactly
+                    // the event pressing that key outside the help would
+                    // send. Rows without an event (the toggle itself, plain
+                    // typing) just close.
+                    KeyCode::Enter => {
+                        let binding = help::bindings(self.view, HelpSection::Commands)
+                            .get(selected)
+                            .copied();
+                        self.overlay = None;
+                        if let Some((code, modifiers)) = binding.and_then(|row| row.event) {
+                            let event = KeyEvent::new(code, modifiers);
+                            match self.view {
+                                View::Dashboard => self.on_dashboard_key(event),
+                                View::Flash => self.on_flash_key(event),
+                            }
+                        }
+                    }
+                    _ => {}
                 }
             }
             Overlay::BackendPicker { selected } => match key.code {

@@ -40,6 +40,7 @@ pub mod build_view;
 pub mod devices;
 pub mod file_browser;
 pub mod flash_view;
+pub mod help;
 pub mod overlay;
 pub mod probe;
 pub mod workspace_view;
@@ -137,42 +138,33 @@ pub struct MonitorView {
 /// A modal layer drawn above the panes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Overlay {
-    Help,
+    /// The help overlay (`?` / F1): one window with both divisions of
+    /// [`crate::app::help`] --- Navigation as plain rows, Commands as the
+    /// select. `selected` is the cursor among the command rows; `Enter`
+    /// activates the row by replaying its key after the help closes.
+    Help { selected: usize },
     /// Manual backend selection (`AGENTS.md` §4: detection must be overridable).
-    BackendPicker {
-        selected: usize,
-    },
+    BackendPicker { selected: usize },
     /// Serial device selection (`SPEC.md` §8: never guess which board).
-    DevicePicker {
-        selected: usize,
-    },
+    DevicePicker { selected: usize },
     /// The color theme picker (`t`): every `ratatui_themes::ThemeName`,
     /// cursor starting on whichever is active. Picking one applies
     /// immediately and persists to the user config's `[ui] theme`
     /// (`App::apply_theme_picker`) --- unlike the backend override, there is
     /// no "Automatic" row, since the theme has no detection to fall back to.
-    ThemePicker {
-        selected: usize,
-    },
+    ThemePicker { selected: usize },
     /// A destructive esptool action awaiting explicit confirmation
     /// (`SPEC.md` §15). `message` is the literal command about to run, never
     /// a paraphrase.
-    Confirm {
-        message: String,
-        confirm: bool,
-    },
+    Confirm { message: String, confirm: bool },
     /// Firmware file selection when more than one `.bin`/`.elf` was found in
     /// `firmware/`.
-    FirmwarePicker {
-        selected: usize,
-    },
+    FirmwarePicker { selected: usize },
     /// Empty or unrecognized project: asks which backend this directory is
     /// (`SPEC.md` §7). Unlike [`Overlay::BackendPicker`] this fires
     /// automatically, offers no "Automatic" row (detection already failed to
     /// conclude one), and persists the choice to `chiptui.toml`.
-    ProjectSetup {
-        selected: usize,
-    },
+    ProjectSetup { selected: usize },
     /// A firmware download would overwrite a file already in `firmware/`;
     /// needs explicit confirmation before running (`SPEC.md` §15 applied to
     /// a filesystem write rather than a device operation).
@@ -203,19 +195,13 @@ pub enum Overlay {
     /// viewer's content lives in `App::viewer` --- an overlay holds only
     /// what a keypress changes, so rebuilding it per key never re-clones
     /// the list. `input` is the filter text.
-    BoardPicker {
-        input: String,
-        selected: usize,
-    },
+    BoardPicker { input: String, selected: usize },
     /// The shield picker: the same filterable list grammar over `west
     /// shields`, with a leading `(none)` row --- the shield is optional, and
     /// that row is how an existing pick gets cleared. The list itself lives
     /// in [`App::build`] ([`crate::build::BuildPanel::shields`]) like the
     /// boards do. `input` is the filter text.
-    ShieldPicker {
-        input: String,
-        selected: usize,
-    },
+    ShieldPicker { input: String, selected: usize },
     /// The installation-directory picker: a real filesystem browser (no
     /// discovery guesses --- the user knows where their Zephyr lives).
     /// `error` holds the validation message when an accepted directory
@@ -240,10 +226,7 @@ pub enum Overlay {
     },
     /// The build-directory picker: the project's configured `build*`
     /// directories plus a typed new name (`west build -d`).
-    BuildDirPicker {
-        input: String,
-        selected: usize,
-    },
+    BuildDirPicker { input: String, selected: usize },
     /// The entry under the cursor in the file browser (`enter`): a small
     /// menu of what to do with it. Which actions show up depends on the pane,
     /// on whether it is a directory, and --- for a file --- whether
@@ -274,13 +257,9 @@ pub enum Overlay {
     /// on `false` (No), unlike every other confirm overlay here, since
     /// restarting interrupts whatever the board is currently doing and
     /// should never happen from a reflex `Enter`.
-    ConfirmRestartDevice {
-        confirm: bool,
-    },
+    ConfirmRestartDevice { confirm: bool },
     /// Ask to flash MicroPython if device is unresponsive.
-    ConfirmEraseForMicroPython {
-        confirm: bool,
-    },
+    ConfirmEraseForMicroPython { confirm: bool },
     /// Ask for confirmation before deleting a file or directory.
     ConfirmDelete {
         side: Side,
@@ -292,17 +271,12 @@ pub enum Overlay {
     /// directory (`a`). A trailing `/` on the typed name means "create a
     /// directory" (`SPEC.md` §9's "create directory" action); otherwise an
     /// empty file.
-    CreateEntry {
-        side: Side,
-        input: String,
-    },
+    CreateEntry { side: Side, input: String },
     /// Inline text entry for `mip install` (`i` on the device pane). Unlike
     /// [`Overlay::CreateEntry`] this is not tied to `side` or a selected
     /// entry --- it acts on the device as a whole, not the file under the
     /// cursor.
-    PackageInstall {
-        input: String,
-    },
+    PackageInstall { input: String },
     /// A sync plan produced by [`Browser::request_sync`], awaiting the
     /// user's review before execution (`S` in the file browser). Default
     /// is No when the plan includes device-only file deletions, since
@@ -317,22 +291,16 @@ pub enum Overlay {
     /// for. Default is No, like every interruption-confirm here. Accepting
     /// resumes the held queue and arms the restore question for when it
     /// drains; declining drops the queue.
-    ConfirmInterruptDevice {
-        confirm: bool,
-    },
+    ConfirmInterruptDevice { confirm: bool },
     /// Leaving this project for the home screen while commands are still
     /// running: they are cancelled with the session, so the count is named
     /// and the default is No, like every other confirm that loses work.
-    ConfirmSwitchProject {
-        confirm: bool,
-    },
+    ConfirmSwitchProject { confirm: bool },
     /// An interruption the user accepted has finished: how (or whether) to
     /// bring the stopped script back. A three-row picker rather than a
     /// Yes/No, because "restart" has two honest flavors with different
     /// tradeoffs (see [`Self::apply_restore_device_script`]).
-    RestoreDeviceScript {
-        selected: usize,
-    },
+    RestoreDeviceScript { selected: usize },
 }
 
 /// One action offered by [`Overlay::FileActions`] for the entry under the
@@ -1695,7 +1663,7 @@ impl App {
                 return;
             }
             KeyCode::Char('?') | KeyCode::F(1) => {
-                self.overlay = Some(Overlay::Help);
+                self.overlay = Some(Overlay::Help { selected: 0 });
                 return;
             }
             KeyCode::Char('d') => {
@@ -1848,7 +1816,9 @@ impl App {
             return vec![("ctrl+]", "exit REPL/monitor"), ("type", "send to device")];
         }
         match self.overlay {
-            Some(Overlay::Help) => vec![("esc", "close")],
+            Some(Overlay::Help { .. }) => {
+                vec![("↑/↓", "select"), ("enter", "activate"), ("esc", "close")]
+            }
             Some(Overlay::FileViewer) => vec![
                 ("↑/↓", "scroll"),
                 ("pgup/pgdn", "page"),
@@ -2057,6 +2027,7 @@ fn key_to_bytes(key: KeyEvent) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use help::HelpSection;
 
     fn key(code: KeyCode) -> AppEvent {
         AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE))
@@ -2170,7 +2141,7 @@ mod tests {
     fn ctrl_c_quits_from_any_context() {
         for overlay in [
             None,
-            Some(Overlay::Help),
+            Some(Overlay::Help { selected: 0 }),
             Some(Overlay::BackendPicker { selected: 0 }),
         ] {
             let mut app = app();
@@ -2186,7 +2157,7 @@ mod tests {
     #[test]
     fn esc_closes_the_overlay_instead_of_quitting() {
         let mut app = app();
-        app.overlay = Some(Overlay::Help);
+        app.overlay = Some(Overlay::Help { selected: 0 });
         app.handle(key(KeyCode::Esc));
         assert_eq!(app.overlay, None);
         assert!(!app.should_quit());
@@ -2194,6 +2165,43 @@ mod tests {
         // With no overlay, esc leaves the application.
         app.handle(key(KeyCode::Esc));
         assert!(app.should_quit());
+    }
+
+    #[test]
+    fn help_walks_the_command_select_and_activates_rows() {
+        let mut app = app();
+        app.overlay = Some(Overlay::Help { selected: 0 });
+
+        // The cursor walks the command rows, wrapping at both ends.
+        let count = help::bindings(app.view, HelpSection::Commands).len();
+        app.handle(key(KeyCode::Up));
+        assert_eq!(
+            app.overlay,
+            Some(Overlay::Help {
+                selected: count - 1
+            })
+        );
+        app.handle(key(KeyCode::Down));
+        assert_eq!(app.overlay, Some(Overlay::Help { selected: 0 }));
+
+        // Enter activates the row: the `t` row replays its key, which opens
+        // the theme picker.
+        let theme = help::bindings(app.view, HelpSection::Commands)
+            .iter()
+            .position(|row| row.key == "t")
+            .unwrap();
+        app.overlay = Some(Overlay::Help { selected: theme });
+        app.handle(key(KeyCode::Enter));
+        assert!(matches!(app.overlay, Some(Overlay::ThemePicker { .. })));
+
+        // A row with no replay event (the `?` toggle) just closes.
+        let toggle = help::bindings(app.view, HelpSection::Commands)
+            .iter()
+            .position(|row| row.key == "?")
+            .unwrap();
+        app.overlay = Some(Overlay::Help { selected: toggle });
+        app.handle(key(KeyCode::Enter));
+        assert_eq!(app.overlay, None);
     }
 
     #[test]

@@ -6,7 +6,8 @@ use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, List, ListItem, ListState, Paragraph};
 
-use crate::app::{App, FileAction, Overlay, PickerOption, View, ViewerSource, ViewerState};
+use crate::app::help::{self, HelpSection};
+use crate::app::{App, FileAction, Overlay, PickerOption, ViewerSource, ViewerState};
 use crate::backend::BackendKind;
 use crate::browser::SyncPlan;
 use crate::highlight::{self, TokenKind};
@@ -17,7 +18,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
         return;
     };
     match overlay {
-        Overlay::Help => draw_help(frame, area, app, palette),
+        Overlay::Help { selected } => draw_help(frame, area, app, selected, palette),
         Overlay::BackendPicker { selected } => draw_picker(frame, area, app, selected, palette),
         Overlay::DevicePicker { selected } => {
             draw_device_picker(frame, area, app, selected, palette)
@@ -1306,95 +1307,108 @@ fn draw_device_picker(frame: &mut Frame, area: Rect, app: &App, selected: usize,
     );
 }
 
-fn draw_help(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
-    // Help follows the screen: listing dashboard keys while browsing files
-    // would describe bindings that do nothing.
-    let bindings: &[(&str, &str)] = match app.view {
-        View::Dashboard => &[
-            ("tab / shift+tab", "move focus between panes"),
-            ("↑ ↓ / k j", "navigate inside the focused pane"),
-            ("page up/down", "scroll the log by one screen"),
-            ("home / end", "jump to start / end"),
-            (
-                "r",
-                "re-run project detection, or reload the focused file browser pane",
+/// The help overlay: one window, two titled divisions. Navigation is plain
+/// rows (its keys move the cursor itself); Commands is the select --- the
+/// cursor lands there and `Enter` activates a row. One binding per line, no
+/// wrapping: the popup is as wide as the table needs and the descriptions
+/// are written to fit it (see `app::help`), truncating with an ellipsis
+/// only on terminals narrower than the table. The command list scrolls
+/// under its cursor when the terminal is too short for the whole window.
+fn draw_help(frame: &mut Frame, area: Rect, app: &App, selected: usize, palette: Palette) {
+    let navigation = help::bindings(app.view, HelpSection::Navigation);
+    let commands = help::bindings(app.view, HelpSection::Commands);
+
+    let key_col = navigation
+        .iter()
+        .chain(commands)
+        .map(|binding| binding.key.chars().count())
+        .max()
+        .unwrap_or(0);
+    let indent = 2 + key_col + 2;
+    let widest = navigation
+        .iter()
+        .chain(commands)
+        .map(
+            |binding| indent + binding.description.chars().count() + 2, /* borders */
+        )
+        .max()
+        .unwrap_or(indent + 2);
+    let width = widest.min(area.width.into()) as u16;
+    let budget = (width as usize).saturating_sub(2 /* borders */ + indent);
+
+    let row = |binding: &crate::app::help::HelpBinding| {
+        Line::from(vec![
+            Span::styled(
+                format!("  {:<width$}  ", binding.key, width = key_col),
+                Style::new().fg(palette.accent),
             ),
-            ("o", "override the detected backend"),
-            ("t", "pick a color theme"),
-            (
-                "enter (files)",
-                "browser: open the entry menu; workspace files: enter a directory or edit a text file",
-            ),
-            ("v (workspace files)", "view a text file in the viewer"),
-            (
-                "del (workspace files)",
-                "delete the selected entry, after confirmation",
-            ),
-            ("→", "descend into the selected directory directly"),
-            (
-                "backspace / ←",
-                "go to the parent directory in the file browser",
-            ),
-            (
-                "a",
-                "create a file, or a directory if the name ends with '/'",
-            ),
-            ("c", "compare the selected file by sha256"),
-            (
-                "shift+s",
-                "sync local files to the device (upload missing/changed)",
-            ),
-            ("h", "show or hide dot-files in the file browser"),
-            (
-                "enter (build pane)",
-                "run the selected build action; stop heads the list while one runs",
-            ),
-            (
-                "d",
-                "scan for devices (mpremote, or USB serial ports for a monitor-only backend)",
-            ),
-            (
-                "i",
-                "on the device pane: install a package via mip (when the backend supports it)",
-            ),
-            (
-                "m",
-                "open the device monitor/REPL (when the backend supports it); ctrl+] exits it",
-            ),
-            (
-                "shift+r",
-                "restart the device with a soft-reset (when the backend supports it)",
-            ),
-            ("e", "in the file viewer: edit with $EDITOR"),
-            (
-                "shift+p",
-                "back to the project list, to open or create another project",
-            ),
-            ("?", "toggle this help"),
-            ("q / esc / ctrl+c", "quit"),
-        ],
-        View::Flash => &[
-            ("↑ ↓ / k j", "move the menu cursor"),
-            ("enter", "run the selected action"),
-            ("tab", "move between option fields"),
-            ("← →", "cycle an option's value"),
-            ("type / backspace", "edit offset or extra flags"),
-            ("q / esc", "back one screen, then to the dashboard"),
-            ("ctrl+c", "quit"),
-        ],
+            Span::raw(fit(binding.description, budget)),
+        ])
     };
 
-    let mut lines = vec![Line::from("Keyboard".bold()), Line::from("")];
-    lines.extend(bindings.iter().map(|(key, description)| {
-        Line::from(vec![
-            Span::styled(format!("  {key:<18}"), Style::new().fg(palette.accent)),
-            Span::raw(*description),
-        ])
-    }));
-
-    let popup = centered(area, 56, lines.len() as u16 + 2);
+    let fixed = 2 /* section titles */ + 2 /* borders */;
+    let height = (fixed + navigation.len() + commands.len()) as u16;
+    let height = height.min(area.height);
+    let popup = centered(area, width, height);
     frame.render_widget(Clear, popup);
-    frame.render_widget(Paragraph::new(lines).block(modal("Help", palette)), popup);
+    let block = modal("Help", palette);
+    frame.render_widget(block.clone(), popup);
+    let inner = block.inner(popup);
+
+    let inner_width = inner.width as usize;
+    let title = |text: &str| {
+        Line::from(Span::styled(
+            format!(" {text:<width$}", width = inner_width.saturating_sub(1)),
+            Style::new()
+                .bg(palette.selection)
+                .fg(palette.fg)
+                .add_modifier(Modifier::BOLD),
+        ))
+    };
+
+    let [nav_title, nav_rows, cmd_title, cmd_rows] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(navigation.len() as u16),
+        Constraint::Length(1),
+        Constraint::Min(0),
+    ])
+    .areas(inner);
+
+    frame.render_widget(
+        Paragraph::new(title(HelpSection::Navigation.title())),
+        nav_title,
+    );
+    frame.render_widget(
+        Paragraph::new(navigation.iter().map(&row).collect::<Vec<_>>()),
+        nav_rows,
+    );
+    frame.render_widget(
+        Paragraph::new(title(HelpSection::Commands.title())),
+        cmd_title,
+    );
+
+    let items: Vec<ListItem> = commands
+        .iter()
+        .map(|binding| ListItem::new(row(binding)))
+        .collect();
+    let mut state = ListState::default().with_selected(Some(selected));
+    frame.render_stateful_widget(
+        List::new(items).highlight_style(Style::new().add_modifier(Modifier::REVERSED)),
+        cmd_rows,
+        &mut state,
+    );
+}
+
+/// `text` shortened to `budget` columns with a trailing ellipsis, so a
+/// terminal narrower than the help table degrades to a shorter line rather
+/// than a wrapped or clipped one.
+fn fit(text: &str, budget: usize) -> String {
+    if budget == 0 || text.chars().count() <= budget {
+        return text.to_string();
+    }
+    let mut shortened: String = text.chars().take(budget - 1).collect();
+    shortened.push('…');
+    shortened
 }
 
 fn draw_picker(frame: &mut Frame, area: Rect, app: &App, selected: usize, palette: Palette) {

@@ -10,6 +10,7 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::KeyCode;
 
+use chiptui::app::help::{self, HelpSection};
 use chiptui::app::{App, Focus, LogTab, Overlay};
 use chiptui::backend::BackendKind;
 use chiptui::backend::micropython::esptool::{ChipFamily, DeviceDetails};
@@ -284,11 +285,18 @@ fn rendering_survives_a_wide_range_of_sizes() {
 fn overlays_draw_above_the_dashboard() {
     let mut app = app_with_backend(BackendKind::Zephyr);
 
-    app.overlay = Some(Overlay::Help);
+    app.overlay = Some(Overlay::Help { selected: 0 });
     let help = render(&mut app, 100, 30);
-    assert!(help.contains("Keyboard"), "help overlay missing:\n{help}");
     assert!(
-        help.contains("re-run project detection"),
+        help.contains("Navigation"),
+        "navigation division missing:\n{help}"
+    );
+    assert!(
+        help.contains("Commands"),
+        "commands division missing:\n{help}"
+    );
+    assert!(
+        help.contains("re-run detection, or reload the file pane"),
         "help body missing:\n{help}"
     );
 
@@ -313,6 +321,37 @@ fn overlays_draw_above_the_dashboard() {
     assert!(
         !setup.contains("Automatic"),
         "detection already failed to conclude one, so there is nothing to fall back to:\n{setup}"
+    );
+}
+
+#[test]
+fn help_fits_one_line_per_binding_and_scrolls_under_the_cursor() {
+    let mut app = app_with_backend(BackendKind::Zephyr);
+    let last = help::bindings(app.view, HelpSection::Commands).len() - 1;
+    app.overlay = Some(Overlay::Help { selected: last });
+
+    // Wide enough for the whole table: every binding stays on one line ---
+    // a description leaking onto a second line means the text outgrew the
+    // single-window budget.
+    let wide = render(&mut app, 100, 30);
+    assert!(
+        wide.contains("scan for devices (mpremote or USB serial)"),
+        "the full description is not on one line:\n{wide}"
+    );
+    assert_eq!(
+        wide.lines()
+            .filter(|line| line.contains("scan for devices"))
+            .count(),
+        1,
+        "the description wrapped:\n{wide}"
+    );
+
+    // Too short for the whole table: the cursor keeps the last command on
+    // screen by scrolling the list.
+    let short = render(&mut app, 100, 20);
+    assert!(
+        short.contains("q / esc / ctrl+c"),
+        "the last binding was cut off vertically:\n{short}"
     );
 }
 

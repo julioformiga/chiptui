@@ -466,7 +466,7 @@ fn help_in_the_flash_view_describes_flash_keys() {
     let shortcuts: Vec<&str> = app.shortcuts().iter().map(|(key, _)| *key).collect();
     assert!(shortcuts.contains(&"enter"));
 
-    app.overlay = Some(Overlay::Help);
+    app.overlay = Some(Overlay::Help { selected: 0 });
     let frame = render(&mut app, 110, 24);
     assert!(frame.contains("move the menu cursor"), "{frame}");
 }
