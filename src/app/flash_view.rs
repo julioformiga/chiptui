@@ -103,7 +103,10 @@ impl App {
 
     /// Searches micropython.org/download/ for the currently known chip
     /// (`SPEC.md` §9), narrowed by the selected device's board vendor when
-    /// its vid:pid identifies one (`DeviceInfo::board_vendor`).
+    /// its vid:pid identifies one (`DeviceInfo::board_vendor`). Local
+    /// candidates are re-discovered first so the search window's
+    /// local-folder note starts truthful, and the source URL is logged so
+    /// the feed's origin is on record outside the window too.
     pub(super) fn search_online(&mut self) {
         let Some(mut flash) = self.flash.take() else {
             return;
@@ -122,10 +125,26 @@ impl App {
             .devices
             .selected()
             .and_then(|device| device.board_vendor());
-        let notices = flash.search_online(mcu, vendor, &mut self.processes);
+        // Refresh the local candidates so the search window's local-folder
+        // note starts truthful (the `s` key can arrive before any discovery
+        // ever ran). Silent by design: every other path here (write/flash,
+        // flash-info) has just logged its own discovery notice, and the
+        // window itself states the folder's state --- only a genuinely
+        // unreadable directory is worth a second log line.
+        let mut notices = flash
+            .discover_firmware()
+            .into_iter()
+            .filter(|(level, _)| *level == crate::logs::Level::Error)
+            .collect::<Vec<_>>();
+        notices.extend(flash.search_online(mcu, vendor, &mut self.processes));
+        let source = flash.online_source.clone();
         self.flash = Some(flash);
         for (level, message) in notices {
             self.logs.push(level, message);
+        }
+        if let Some(url) = source {
+            self.logs
+                .info(format!("searching {url} for {mcu} firmware"));
         }
     }
 
@@ -137,6 +156,10 @@ impl App {
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => flash.move_online_cursor(-1, count),
             KeyCode::Down | KeyCode::Char('j') => flash.move_online_cursor(1, count),
+            KeyCode::Char('u') => {
+                flash.custom_url.clear();
+                flash.screen = FlashScreen::CustomUrl;
+            }
             KeyCode::Enter => {
                 let Some(board_id) = flash
                     .online_boards
@@ -163,6 +186,10 @@ impl App {
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => flash.move_online_cursor(-1, count),
             KeyCode::Down | KeyCode::Char('j') => flash.move_online_cursor(1, count),
+            KeyCode::Char('u') => {
+                flash.custom_url.clear();
+                flash.screen = FlashScreen::CustomUrl;
+            }
             KeyCode::Enter => {
                 let url = flash
                     .online_firmware
@@ -303,14 +330,28 @@ impl App {
                 self.logs.push(level, message);
             }
             match flash.firmware.len() {
-                0 => {}
+                // Nothing local to flash: rather than dead-ending with a
+                // warning, write/flash opens the online search window for
+                // the detected chip --- the source it is querying and the
+                // fact that a file dropped into firmware/ outranks it are
+                // both on that window (`SPEC.md` §9).
+                0 if action == FlashAction::WriteFlash => {
+                    self.flash = Some(flash);
+                    self.search_online();
+                }
+                0 => {
+                    self.flash = Some(flash);
+                }
                 1 => {
                     flash.screen = FlashScreen::Options;
                     flash.options_focus = OptionsField::Chip;
+                    self.flash = Some(flash);
                 }
-                _ => self.overlay = Some(Overlay::FirmwarePicker { selected: 0 }),
+                _ => {
+                    self.overlay = Some(Overlay::FirmwarePicker { selected: 0 });
+                    self.flash = Some(flash);
+                }
             }
-            self.flash = Some(flash);
             return;
         }
 

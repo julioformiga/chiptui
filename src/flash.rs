@@ -216,6 +216,10 @@ pub struct FlashPanel {
     pub online_boards: Vec<BoardCandidate>,
     /// Firmware builds found for the board picked from [`Self::online_boards`].
     pub online_firmware: Vec<FirmwareFile>,
+    /// The URL the currently shown online list came from (or is being
+    /// fetched from) --- rendered by the flash view so the source of a
+    /// search is always visible, never a mystery feed (`SPEC.md` §9).
+    pub online_source: Option<String>,
     /// Cursor shared by [`Self::online_boards`]/[`Self::online_firmware`] ---
     /// only one of the two is ever on screen at a time.
     pub online_cursor: usize,
@@ -305,6 +309,7 @@ impl FlashPanel {
             tool_path: None,
             online_boards: Vec::new(),
             online_firmware: Vec::new(),
+            online_source: None,
             online_cursor: 0,
             custom_url: String::new(),
             in_flight_fetch: None,
@@ -803,8 +808,32 @@ impl FlashPanel {
         }
     }
 
+    /// Whether a board-list search is in flight ([`Self::search_online`]).
+    pub fn searching_boards(&self) -> bool {
+        matches!(self.fetch_kind(), Some(FetchKind::Boards))
+    }
+
+    /// Whether a board's firmware page is being fetched
+    /// ([`Self::fetch_board_page`]).
+    pub fn fetching_firmware_list(&self) -> bool {
+        matches!(self.fetch_kind(), Some(FetchKind::Firmware { .. }))
+    }
+
+    /// Whether a firmware download is in flight ([`Self::download`]).
+    pub fn downloading_firmware(&self) -> bool {
+        matches!(self.fetch_kind(), Some(FetchKind::Download { .. }))
+    }
+
+    fn fetch_kind(&self) -> Option<&FetchKind> {
+        self.in_flight_fetch.as_ref().map(|fetch| &fetch.kind)
+    }
+
     /// Searches micropython.org/download/ for boards matching `mcu` and,
     /// optionally, `vendor` (`SPEC.md` §9).
+    ///
+    /// Moves to [`FlashScreen::OnlineBoards`] right away so the search is
+    /// visible as a window --- its own source line and a searching status ---
+    /// rather than a silent wait on the menu for results that may never come.
     pub fn search_online(
         &mut self,
         mcu: &str,
@@ -830,10 +859,15 @@ impl FlashPanel {
             stdout: String::new(),
         });
         self.online_boards.clear();
+        self.online_source = Some(url);
+        self.screen = FlashScreen::OnlineBoards;
         Vec::new()
     }
 
     /// Fetches `board_id`'s firmware page, listing its downloadable files.
+    /// Like [`Self::search_online`], moves to the results screen
+    /// ([`FlashScreen::OnlineFirmware`]) immediately so the wait is visible
+    /// on the window that will show the answer.
     pub fn fetch_board_page(
         &mut self,
         board_id: &str,
@@ -860,6 +894,8 @@ impl FlashPanel {
             stdout: String::new(),
         });
         self.online_firmware.clear();
+        self.online_source = Some(url);
+        self.screen = FlashScreen::OnlineFirmware;
         Vec::new()
     }
 
@@ -1560,7 +1596,54 @@ mod tests {
     }
 
     #[test]
-    fn searching_online_with_no_matches_stays_on_the_menu() {
+    fn searching_online_moves_to_the_boards_window_immediately() {
+        let fixture = Fixture::new("search-immediate");
+        let mut panel = FlashPanel::new(&fixture.root);
+        panel.set_curl_tool_path(fake_curl());
+        let mut processes = ProcessManager::new();
+
+        let notices = panel.search_online("esp32", None, &mut processes);
+        assert!(
+            notices.is_empty(),
+            "a started search has nothing to say yet"
+        );
+        assert!(panel.is_busy());
+        assert_eq!(
+            panel.screen,
+            FlashScreen::OnlineBoards,
+            "the search must be visible as a window while it runs"
+        );
+        assert!(panel.searching_boards());
+        assert_eq!(
+            panel.online_source.as_deref(),
+            Some("https://micropython.org/download/?mcu=esp32"),
+            "the window must be able to name where the results come from"
+        );
+
+        settle_fetch(&mut panel, &mut processes);
+        assert_eq!(panel.online_boards.len(), 2);
+        assert!(!panel.searching_boards());
+    }
+
+    #[test]
+    fn a_refused_search_leaves_the_screen_alone() {
+        // A curl path that exists but is not executable: the search cannot
+        // start (deterministic on any machine), so it must not navigate
+        // anywhere either.
+        let fixture = Fixture::new("search-refused");
+        std::fs::write(fixture.root.join("not-curl"), b"x").unwrap();
+        let mut panel = FlashPanel::new(&fixture.root);
+        panel.set_curl_tool_path(fixture.root.join("not-curl").display().to_string());
+        let mut processes = ProcessManager::new();
+
+        let notices = panel.search_online("esp32", None, &mut processes);
+        assert_eq!(panel.screen, FlashScreen::Menu);
+        assert!(panel.online_source.is_none());
+        assert!(notices.iter().any(|(_, m)| m.contains("curl")));
+    }
+
+    #[test]
+    fn searching_online_with_no_matches_keeps_the_window_with_the_reason() {
         let fixture = Fixture::new("search-empty");
         let mut panel = FlashPanel::new(&fixture.root);
         panel.set_curl_tool_path(fake_curl());
@@ -1569,7 +1652,11 @@ mod tests {
         panel.search_online("esp32c3", None, &mut processes);
         let update = settle_fetch(&mut panel, &mut processes);
 
-        assert_eq!(panel.screen, FlashScreen::Menu);
+        assert_eq!(
+            panel.screen,
+            FlashScreen::OnlineBoards,
+            "the window stays open showing the no-match reason, not the menu"
+        );
         assert!(panel.online_boards.is_empty());
         assert!(
             update
@@ -1577,6 +1664,26 @@ mod tests {
                 .iter()
                 .any(|(_, m)| m.contains("no boards found"))
         );
+    }
+
+    #[test]
+    fn fetching_a_board_page_moves_to_the_firmware_window_immediately() {
+        let fixture = Fixture::new("board-page-immediate");
+        let mut panel = FlashPanel::new(&fixture.root);
+        panel.set_curl_tool_path(fake_curl());
+        let mut processes = ProcessManager::new();
+
+        panel.fetch_board_page("ESP32_GENERIC", &mut processes);
+        assert!(panel.is_busy());
+        assert_eq!(panel.screen, FlashScreen::OnlineFirmware);
+        assert!(panel.fetching_firmware_list());
+        assert_eq!(
+            panel.online_source.as_deref(),
+            Some("https://micropython.org/download/ESP32_GENERIC/")
+        );
+
+        settle_fetch(&mut panel, &mut processes);
+        assert!(!panel.fetching_firmware_list());
     }
 
     #[test]

@@ -262,7 +262,9 @@ fn write_flash_end_to_end_succeeds_and_detects_the_chip() {
 }
 
 #[test]
-fn write_flash_without_a_firmware_file_stays_on_the_menu() {
+fn write_flash_without_a_firmware_file_or_chip_stays_on_the_menu() {
+    // No chip is known either, so there is nothing to search for: the
+    // action dead-ends with the reason instead of opening anything.
     let project = Project::new("no-firmware");
     let mut app = app_with_flash(&project);
 
@@ -274,6 +276,71 @@ fn write_flash_without_a_firmware_file_stays_on_the_menu() {
     let flash = app.flash.as_ref().unwrap();
     assert_eq!(flash.screen, FlashScreen::Menu, "nothing to configure yet");
     assert_eq!(app.overlay, None);
+    assert!(
+        app.logs
+            .visible(10)
+            .any(|entry| entry.message.contains("no chip known yet")),
+        "the reason must be logged"
+    );
+}
+
+#[test]
+fn write_flash_with_an_empty_folder_opens_the_online_search_window() {
+    // The chip is already known, firmware/ is empty: selecting
+    // write / flash must open the online search (the window states its
+    // source and that a local file would outrank it) rather than
+    // dead-ending on a warning.
+    let project = Project::new("no-firmware-search");
+    let mut app = app_with_online_search(&project);
+
+    for _ in 0..3 {
+        app.handle(key(KeyCode::Down));
+    }
+    app.handle(key(KeyCode::Enter));
+
+    let flash = app.flash.as_ref().unwrap();
+    assert_eq!(flash.screen, FlashScreen::OnlineBoards);
+    assert!(flash.is_busy(), "the board search is already running");
+    assert_eq!(
+        flash.online_source.as_deref(),
+        Some("https://micropython.org/download/?mcu=esp32")
+    );
+    assert_eq!(app.view, View::Flash);
+
+    settle(&mut app);
+    assert_eq!(app.flash.as_ref().unwrap().online_boards.len(), 2);
+}
+
+#[test]
+fn the_online_search_window_names_its_source_and_the_local_folder_priority() {
+    let project = Project::new("no-firmware-render");
+    let mut app = app_with_online_search(&project);
+
+    for _ in 0..3 {
+        app.handle(key(KeyCode::Down));
+    }
+    app.handle(key(KeyCode::Enter));
+    let frame = render(&mut app, 110, 24);
+
+    assert!(
+        frame.contains("micropython.org/download/?mcu=esp32"),
+        "the source being queried must be visible, not implied:\n{frame}"
+    );
+    assert!(
+        frame.contains("no .bin/.elf in firmware/ yet"),
+        "the window must say the local folder is empty:\n{frame}"
+    );
+    assert!(
+        frame.contains("picked first"),
+        "a firmware added to the folder must be said to come first:\n{frame}"
+    );
+
+    settle(&mut app);
+    let frame = render(&mut app, 110, 24);
+    assert!(
+        frame.contains("2 boards for this query"),
+        "results carry a status line:\n{frame}"
+    );
 }
 
 #[test]
@@ -620,7 +687,7 @@ fn re_downloading_the_same_file_asks_before_overwriting() {
 }
 
 #[test]
-fn a_query_with_no_matching_boards_stays_on_the_menu() {
+fn a_query_with_no_matching_boards_keeps_the_search_window_open() {
     let project = Project::new("online-empty");
     let mut app = app_with_flash(&project);
     let flash = app.flash.as_mut().unwrap();
@@ -632,10 +699,15 @@ fn a_query_with_no_matching_boards_stays_on_the_menu() {
     flash.cycle_chip(true); // ...Esp32C3: the fake curl fixture returns nothing for it.
 
     app.handle(key(KeyCode::Char('s')));
+    assert_eq!(
+        app.flash.as_ref().unwrap().screen,
+        FlashScreen::OnlineBoards,
+        "the search window opens immediately, before any result"
+    );
     settle(&mut app);
 
     let flash = app.flash.as_ref().unwrap();
-    assert_eq!(flash.screen, FlashScreen::Menu);
+    assert_eq!(flash.screen, FlashScreen::OnlineBoards);
     assert!(flash.online_boards.is_empty());
     assert!(
         app.logs
@@ -778,4 +850,22 @@ fn picking_a_device_defers_the_esptool_query_until_mpremote_releases_the_port() 
         Some(ChipFamily::Esp32),
         "the deferred query must still have reached esptool and parsed its reply"
     );
+}
+
+#[test]
+fn a_direct_url_can_be_pasted_from_the_boards_window() {
+    // The window's own hint points at 'u'; it must work there, not only
+    // from the menu.
+    let project = Project::new("url-from-boards");
+    let mut app = app_with_online_search(&project);
+
+    app.handle(key(KeyCode::Char('s')));
+    settle(&mut app);
+    assert_eq!(
+        app.flash.as_ref().unwrap().screen,
+        FlashScreen::OnlineBoards
+    );
+
+    app.handle(key(KeyCode::Char('u')));
+    assert_eq!(app.flash.as_ref().unwrap().screen, FlashScreen::CustomUrl);
 }

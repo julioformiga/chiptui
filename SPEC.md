@@ -489,7 +489,13 @@ firmware builds:
 -   results are presented as a list of candidate boards, and then a list of
     firmware builds for the chosen board (version, date, variant);
 -   the user may paste a specific download URL directly instead of
-    searching.
+    searching;
+-   the search view names its source (the exact URL being queried) and
+    states that a `.bin`/`.elf` added to the project's `firmware/`
+    directory is picked from there first --- the online list is the
+    fallback for an empty folder, never the silent winner over a local
+    image. Selecting write/flash with no local firmware file opens this
+    search straight away instead of dead-ending on a warning.
 
 The chosen file is downloaded into the project's `firmware/` directory so it
 becomes an ordinary local firmware candidate for the existing flash

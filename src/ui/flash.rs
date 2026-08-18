@@ -7,14 +7,14 @@
 //! that esptool operations are presented separately from the filesystem.
 
 use ratatui::Frame;
-use ratatui::layout::Rect;
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{List, ListItem, ListState, Paragraph, Wrap};
 
 use crate::app::App;
 use crate::flash::{ChipGuess, FlashAction, FlashPanel, FlashScreen, OptionsField};
-use crate::ui::{Palette, muted_style, pane_block, selection_style};
+use crate::ui::{Palette, SPINNER, muted_style, pane_block, selection_style};
 
 /// The dialog's width×height for `flash.screen`, sized to its content like
 /// every other modal in `ui::overlay` rather than a fraction of the screen.
@@ -26,8 +26,10 @@ pub fn dialog_size(flash: &FlashPanel) -> (u16, u16) {
             let firmware_line = u16::from(flash.selected_firmware_path().is_some());
             (66, fields + firmware_line + 4)
         }
-        FlashScreen::OnlineBoards => (64, flash.online_boards.len().max(2) as u16 + 2),
-        FlashScreen::OnlineFirmware => (64, flash.online_firmware.len().max(2) as u16 + 2),
+        // The online screens carry a source line and a local-folder note
+        // around the list itself (`+ 4` content rows).
+        FlashScreen::OnlineBoards => (72, flash.online_boards.len().max(2) as u16 + 6),
+        FlashScreen::OnlineFirmware => (72, flash.online_firmware.len().max(2) as u16 + 6),
         FlashScreen::CustomUrl => (70, 6),
     }
 }
@@ -42,11 +44,16 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
     };
 
     let focused = app.overlay.is_none();
+    let ticks = app.ticks;
     match flash.screen {
         FlashScreen::Menu => draw_menu(frame, area, flash, focused, palette),
         FlashScreen::Options => draw_options(frame, area, flash, focused, palette),
-        FlashScreen::OnlineBoards => draw_online_boards(frame, area, flash, focused, palette),
-        FlashScreen::OnlineFirmware => draw_online_firmware(frame, area, flash, focused, palette),
+        FlashScreen::OnlineBoards => {
+            draw_online_boards(frame, area, flash, ticks, focused, palette)
+        }
+        FlashScreen::OnlineFirmware => {
+            draw_online_firmware(frame, area, flash, ticks, focused, palette)
+        }
         FlashScreen::CustomUrl => draw_custom_url(frame, area, flash, focused, palette),
     }
 }
@@ -160,49 +167,146 @@ pub(super) fn field_value(flash: &FlashPanel, field: OptionsField) -> String {
     }
 }
 
-/// Boards found by [`crate::flash::FlashPanel::search_online`].
-fn draw_online_boards(
+/// The shared frame of the two online screens: the source the list is being
+/// fetched from (or was), a live status line, the list itself, and the note
+/// that keeps the local `firmware/` folder's priority explicit --- the online
+/// search is the fallback, never the silent winner over a local image
+/// (`SPEC.md` §9).
+struct OnlineFrame {
+    /// Spinner phase for the fetching status line ([`crate::ui::SPINNER`]).
+    ticks: u64,
+    title: &'static str,
+    /// The status line under the source while the list is being fetched.
+    fetching: Option<&'static str>,
+    /// The status line once the list has content.
+    settled: String,
+    /// The status line when the fetch finished and nothing arrived.
+    empty: &'static str,
+    /// The list rows; empty means there is nothing to pick (yet).
+    items: Vec<ListItem<'static>>,
+}
+
+/// The last path segment of [`FlashPanel::firmware_dir`] — enough to name
+/// the folder inside the dialog; the full path is in the log notices.
+fn firmware_dir_name(flash: &FlashPanel) -> String {
+    flash.firmware_dir.file_name().map_or_else(
+        || flash.firmware_dir.display().to_string(),
+        |name| name.to_string_lossy().into_owned(),
+    )
+}
+
+fn draw_online_frame(
     frame: &mut Frame,
     area: Rect,
     flash: &FlashPanel,
     focused: bool,
     palette: Palette,
+    online: OnlineFrame,
 ) {
-    if flash.online_boards.is_empty() {
-        frame.render_widget(
-            Paragraph::new("no boards found".fg(palette.muted)).block(pane_block(
-                "Boards online",
-                focused,
-                palette,
-            )),
-            area,
+    let block = pane_block(online.title, focused, palette);
+    let inner = block.inner(area);
+    let [head, list_area, foot] = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Min(0),
+        Constraint::Length(2),
+    ])
+    .areas(inner);
+
+    let source = Line::from(vec![
+        Span::styled("source  ", muted_style(palette)),
+        Span::styled(
+            flash
+                .online_source
+                .as_deref()
+                .unwrap_or("micropython.org/download")
+                .trim_start_matches("https://"),
+            Style::new().fg(palette.fg),
+        ),
+    ]);
+    let status = match online.fetching {
+        Some(what) => Line::from(vec![
+            Span::styled(
+                SPINNER[(online.ticks as usize) % SPINNER.len()],
+                Style::new().fg(palette.accent),
+            ),
+            Span::styled(format!(" {what}"), Style::new().fg(palette.accent)),
+        ]),
+        None if online.items.is_empty() => Line::from(vec![
+            Span::styled(online.empty, Style::new().fg(palette.warning)),
+            Span::styled("  (u pastes a direct URL)", muted_style(palette)),
+        ]),
+        None => Line::from(Span::styled(online.settled, muted_style(palette))),
+    };
+    frame.render_widget(
+        Paragraph::new(vec![source, status]).wrap(Wrap { trim: false }),
+        head,
+    );
+
+    if !online.items.is_empty() {
+        let mut state = ListState::default().with_selected(Some(flash.online_cursor));
+        frame.render_stateful_widget(
+            List::new(online.items).highlight_style(selection_style(palette)),
+            list_area,
+            &mut state,
         );
-        return;
     }
 
-    let items: Vec<ListItem> = flash
-        .online_boards
-        .iter()
-        .map(|board| {
-            ListItem::new(Line::from(vec![
-                Span::styled(format!(" {} ", board.product), Style::new().fg(palette.fg)),
-                Span::styled(
-                    format!("{}  ", board.vendor),
-                    Style::new().fg(palette.accent),
-                ),
-                Span::styled(board.id.clone(), muted_style(palette)),
-            ]))
-        })
-        .collect();
-
-    let mut state = ListState::default().with_selected(Some(flash.online_cursor));
-    frame.render_stateful_widget(
-        List::new(items)
-            .block(pane_block("Boards online", focused, palette))
-            .highlight_style(selection_style(palette)),
-        area,
-        &mut state,
+    let dir = firmware_dir_name(flash);
+    let hint = if flash.firmware.is_empty() {
+        format!("no .bin/.elf in {dir}/ yet — one added there is picked first")
+    } else {
+        format!(
+            "{} local image{} in {dir}/ — local files come first",
+            flash.firmware.len(),
+            if flash.firmware.len() == 1 { "" } else { "s" }
+        )
+    };
+    frame.render_widget(
+        Paragraph::new(vec![Line::from(""), Line::from(hint)]).wrap(Wrap { trim: false }),
+        foot,
     );
+    frame.render_widget(block, area);
+}
+
+/// Boards found by [`crate::flash::FlashPanel::search_online`].
+fn draw_online_boards(
+    frame: &mut Frame,
+    area: Rect,
+    flash: &FlashPanel,
+    ticks: u64,
+    focused: bool,
+    palette: Palette,
+) {
+    let online = OnlineFrame {
+        ticks,
+        title: "Firmware online",
+        fetching: flash.searching_boards().then_some("searching for boards…"),
+        settled: format!(
+            "{} board{} for this query — enter lists its firmware",
+            flash.online_boards.len(),
+            if flash.online_boards.len() == 1 {
+                ""
+            } else {
+                "s"
+            }
+        ),
+        empty: "no boards found for this chip",
+        items: flash
+            .online_boards
+            .iter()
+            .map(|board| {
+                ListItem::new(Line::from(vec![
+                    Span::styled(format!(" {} ", board.product), Style::new().fg(palette.fg)),
+                    Span::styled(
+                        format!("{}  ", board.vendor),
+                        Style::new().fg(palette.accent),
+                    ),
+                    Span::styled(board.id.clone(), muted_style(palette)),
+                ]))
+            })
+            .collect(),
+    };
+    draw_online_frame(frame, area, flash, focused, palette, online)
 }
 
 /// Firmware builds found for the board picked from [`draw_online_boards`].
@@ -210,47 +314,51 @@ fn draw_online_firmware(
     frame: &mut Frame,
     area: Rect,
     flash: &FlashPanel,
+    ticks: u64,
     focused: bool,
     palette: Palette,
 ) {
-    if flash.online_firmware.is_empty() {
-        frame.render_widget(
-            Paragraph::new("no flashable firmware found".fg(palette.muted)).block(pane_block(
-                "Firmware online",
-                focused,
-                palette,
-            )),
-            area,
-        );
-        return;
-    }
-
-    let items: Vec<ListItem> = flash
-        .online_firmware
-        .iter()
-        .map(|file| {
-            let mut spans = vec![Span::styled(
-                format!(" {} ", file.label),
-                Style::new().fg(palette.fg),
-            )];
-            if !file.variant.is_empty() {
-                spans.push(Span::styled(
-                    format!("{}  ", file.variant),
-                    muted_style(palette),
-                ));
-            }
-            ListItem::new(Line::from(spans))
-        })
-        .collect();
-
-    let mut state = ListState::default().with_selected(Some(flash.online_cursor));
-    frame.render_stateful_widget(
-        List::new(items)
-            .block(pane_block("Firmware online", focused, palette))
-            .highlight_style(selection_style(palette)),
-        area,
-        &mut state,
-    );
+    let fetching = if flash.downloading_firmware() {
+        Some("downloading…")
+    } else if flash.fetching_firmware_list() {
+        Some("fetching the board's firmware page…")
+    } else {
+        None
+    };
+    let online = OnlineFrame {
+        ticks,
+        title: "Firmware online",
+        fetching,
+        settled: format!(
+            "{} build{} — enter downloads it into {}",
+            flash.online_firmware.len(),
+            if flash.online_firmware.len() == 1 {
+                ""
+            } else {
+                "s"
+            },
+            firmware_dir_name(flash)
+        ),
+        empty: "no flashable .bin firmware for this board",
+        items: flash
+            .online_firmware
+            .iter()
+            .map(|file| {
+                let mut spans = vec![Span::styled(
+                    format!(" {} ", file.label),
+                    Style::new().fg(palette.fg),
+                )];
+                if !file.variant.is_empty() {
+                    spans.push(Span::styled(
+                        format!("{}  ", file.variant),
+                        muted_style(palette),
+                    ));
+                }
+                ListItem::new(Line::from(spans))
+            })
+            .collect(),
+    };
+    draw_online_frame(frame, area, flash, focused, palette, online)
 }
 
 /// Free-text entry for a direct firmware download URL (`SPEC.md` §9: the

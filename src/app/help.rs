@@ -691,14 +691,32 @@ const FLASH_COMMANDS: [HelpBinding; 6] = [
         "u",
         "flash firmware from a URL",
         KeyCode::Char('u'),
-        &[site(
-            "u",
-            "paste URL",
-            13,
-            ANY_FOCUS,
-            &[],
-            When::Screen(Some(FlashScreen::Menu)),
-        )],
+        &[
+            site(
+                "u",
+                "paste URL",
+                13,
+                ANY_FOCUS,
+                &[],
+                When::Screen(Some(FlashScreen::Menu)),
+            ),
+            site(
+                "u",
+                "paste URL",
+                13,
+                ANY_FOCUS,
+                &[],
+                When::Screen(Some(FlashScreen::OnlineBoards)),
+            ),
+            site(
+                "u",
+                "paste URL",
+                13,
+                ANY_FOCUS,
+                &[],
+                When::Screen(Some(FlashScreen::OnlineFirmware)),
+            ),
+        ],
     ),
 ];
 
@@ -972,11 +990,21 @@ mod tests {
             ),
             (
                 Some(FlashScreen::OnlineBoards),
-                vec![("↑/↓", "select"), ("enter", "choose"), ("q", "menu")],
+                vec![
+                    ("↑/↓", "select"),
+                    ("enter", "choose"),
+                    ("q", "menu"),
+                    ("u", "paste URL"),
+                ],
             ),
             (
                 Some(FlashScreen::OnlineFirmware),
-                vec![("↑/↓", "select"), ("enter", "choose"), ("q", "menu")],
+                vec![
+                    ("↑/↓", "select"),
+                    ("enter", "choose"),
+                    ("q", "menu"),
+                    ("u", "paste URL"),
+                ],
             ),
             (
                 Some(FlashScreen::CustomUrl),
