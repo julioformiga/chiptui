@@ -43,6 +43,7 @@ pub mod flash_view;
 pub mod help;
 pub mod overlay;
 pub mod probe;
+pub mod project_view;
 pub mod workspace_view;
 
 /// Which screen is showing.
@@ -60,20 +61,52 @@ pub enum View {
 
 /// Which pane receives navigation keys.
 ///
-/// The Project/Device info row is informational only and never holds focus
-/// --- `Tab` walks just the interactive panes. `FilesLocal`/`FilesDevice` are
-/// the dashboard's two file-browser columns; each is its own stop so `Tab`
-/// walks all columns in one consistent tour instead of a separate sub-focus
-/// inside the files row. `Build` is the build panel a backend without a
-/// device filesystem shows (`SPEC.md` §10), and `Workspace` the environment
-/// pane beside it (the backend's shared workspace, not the project).
+/// The Project pane (row 1) holds the checklist the environment questions
+/// moved into, so it *is* navigable --- but it deliberately stays off the
+/// `Tab` tour (the tour walks the working panes; the questions are a
+/// detour): `ctrl+p` enters it (and toggles back out to wherever focus
+/// was), `Tab` leaves it onto the tour's first stop. `FilesLocal`/
+/// `FilesDevice` are the dashboard's two file-browser columns; each is its
+/// own stop so `Tab` walks all columns in one consistent tour instead of a
+/// separate sub-focus inside the files row. `Build` is the build panel a
+/// backend without a device filesystem shows (`SPEC.md` §10), and
+/// `Workspace` the project-files pane beside it (the backend's shared
+/// workspace, not the project).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
+    Project,
     FilesLocal,
     FilesDevice,
     Workspace,
     Build,
     Logs,
+}
+
+/// One navigable row of the Project pane (row 1): whichever environment
+/// question the selected backend asks there. The Zephyr rows mirror
+/// [`crate::workspace::WorkspaceAction`] one-to-one (they run through it);
+/// the MicroPython rows are their own state ([`App::mpy_projects`] and
+/// friends), the last two plain reports no key answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectRow {
+    /// "Where is the Zephyr installation?" (the picker validates and
+    /// persists it).
+    ZephyrPath,
+    /// "Where are your Zephyr projects?"
+    ProjectsBase,
+    /// "What am I building?" (the build panel's root, session-only).
+    ProjectPath,
+    /// "For which target?" --- the board with its optional shield riding
+    /// on the same line; `←`/`→` pick which half `Enter` acts on.
+    BoardShield,
+    /// "Where are your MicroPython projects?" (`[micropython] projects`).
+    MpyProjectsBase,
+    /// "Which project to browse?" (re-roots the local pane, session-only).
+    MpyProjectPath,
+    /// The entry points in the project root (`main.py`/`boot.py`).
+    MpyEntry,
+    /// The board's MicroPython version, off the REPL banner.
+    MpyVersion,
 }
 
 /// Which tab row 3 is showing. `Left`/`Right` switch between them while
@@ -224,12 +257,16 @@ pub enum Overlay {
         selected: usize,
         error: Option<String>,
     },
-    /// The project picker: the configured projects folder's subdirectories,
-    /// each marked with whether it holds build elements. Accepting a
-    /// non-buildable directory keeps the picker open with the reason
-    /// (`error`) --- a project without a `CMakeLists.txt` is never built
-    /// silently. The choice itself is session-only (`SPEC.md` §10).
+    /// The project picker: the configured projects folder's subdirectories.
+    /// For Zephyr (`mpy: false`) each row carries whether it holds build
+    /// elements, and accepting a non-buildable directory keeps the picker
+    /// open with the reason (`error`) --- a project without a
+    /// `CMakeLists.txt` is never built silently. For MicroPython (`mpy:`
+    /// `true`) every subdirectory is a project (no build step), so nothing
+    /// is marked and nothing is refused. The choice itself is session-only
+    /// (`SPEC.md` §10) either way.
     ProjectPicker {
+        mpy: bool,
         selected: usize,
         error: Option<String>,
     },
@@ -630,6 +667,34 @@ pub struct App {
     /// WorkspaceSync`]): which west workspace/venv/SDK the commands run
     /// against, plus `west update` and `west sdk list`.
     pub workspace: Option<crate::workspace::WorkspacePanel>,
+    /// The Project pane's cursor, over its checklist rows (the environment
+    /// questions that moved out of the workspace pane into row 1).
+    pub project_cursor: usize,
+    /// Which half of the merged `Board · Shield` row the keys act on:
+    /// `true` the board (the left, required half), `false` the shield.
+    /// Switched by `←`/`→` while the row is selected.
+    pub board_segment: bool,
+    /// Where `ctrl+p` returns to when it toggles the Project pane's focus
+    /// away --- the pane is a detour off the `Tab` tour, and the way back
+    /// is where the detour started.
+    focus_before_project: Option<Focus>,
+    /// The MicroPython projects folder (`[micropython] projects`, user
+    /// config) --- the same question Zephyr's `[zephyr] projects` answers,
+    /// resolved once per session.
+    pub mpy_projects: Option<PathBuf>,
+    /// Why a configured MicroPython projects folder failed validation.
+    pub mpy_projects_invalid: Option<String>,
+    /// The picked MicroPython project: session-only, re-rooting the file
+    /// browser's local pane (nothing written --- the folder is the persisted
+    /// half of the answer, the project is not).
+    pub mpy_root: Option<PathBuf>,
+    /// Whether `[micropython] projects` was read this session (the answer
+    /// is refreshed by the pickers, not re-read per frame).
+    mpy_projects_loaded: bool,
+    /// The connected board's MicroPython version, read off the REPL banner
+    /// the probe (or the monitor) already sees, and dropped with the board
+    /// when it disconnects.
+    pub mpy_version: Option<String>,
     /// Set by the build panel's `menuconfig` action; consumed by the binary's
     /// event loop, which owns the terminal handle needed to suspend the
     /// alternate screen for the interactive child --- the same hand-off as
@@ -770,6 +835,14 @@ impl App {
             flash: None,
             build: None,
             workspace: None,
+            project_cursor: 0,
+            board_segment: true,
+            focus_before_project: None,
+            mpy_projects: None,
+            mpy_projects_invalid: None,
+            mpy_root: None,
+            mpy_projects_loaded: false,
+            mpy_version: None,
             pending_command: None,
             viewer: None,
             viewer_viewport: 1,
@@ -1553,28 +1626,34 @@ impl App {
     }
 
     /// The header's `project` field. A backend that makes the project a
-    /// question ([`Capability::ProjectSelect`]) answers it with the build
-    /// panel's root --- and only once that root is a buildable application:
-    /// picked in the panel, or a launch directory that already is one;
-    /// `header_project` then names the picked folder. Until then the field
-    /// stays empty, because the cwd is not a project just because ChipTUI
-    /// was started in it. Other backends keep the detection root's
-    /// directory name as before.
+    /// question ([`Capability::ProjectSelect`]) answers it with the picked
+    /// root --- the build panel's for Zephyr (and only once that root is a
+    /// buildable application: picked in the panel, or a launch directory
+    /// that already is one), the session's MicroPython pick otherwise.
+    /// Until then the field stays empty, because the cwd is not a project
+    /// just because ChipTUI was started in it. Other backends keep the
+    /// detection root's directory name as before.
     pub fn header_project(&self) -> String {
         if self
             .manager
             .capabilities()
             .contains(Capability::ProjectSelect)
-            && let Some(panel) = &self.build
         {
-            return if self.project_gate_ok() {
-                panel
-                    .root
+            if let Some(panel) = &self.build {
+                return if self.project_gate_ok() {
+                    panel
+                        .root
+                        .file_name()
+                        .map_or_else(String::new, |name| name.to_string_lossy().into_owned())
+                } else {
+                    String::new()
+                };
+            }
+            if let Some(picked) = &self.mpy_root {
+                return picked
                     .file_name()
-                    .map_or_else(String::new, |name| name.to_string_lossy().into_owned())
-            } else {
-                String::new()
-            };
+                    .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
+            }
         }
         self.manager.name().unwrap_or("--").to_string()
     }
@@ -1647,13 +1726,50 @@ impl App {
     fn step_focus(&mut self, forward: bool) {
         let order = self.focus_order();
         let len = order.len();
-        let index = order.iter().position(|f| *f == self.focus).unwrap_or(0);
-        let next = if forward {
-            (index + 1) % len
-        } else {
-            (index + len - 1) % len
+        if len == 0 {
+            return;
+        }
+        let next = match order.iter().position(|f| *f == self.focus) {
+            // The Project pane is off the tour: leaving it forward enters
+            // the tour at its first stop, backward at its last --- the
+            // detour ends at the tour's ends, whichever way it is left.
+            None if forward => 0,
+            None => len - 1,
+            Some(index) => {
+                if forward {
+                    (index + 1) % len
+                } else {
+                    (index + len - 1) % len
+                }
+            }
         };
+        if self.focus == Focus::Project {
+            self.focus_before_project = None;
+        }
         self.focus = order[next];
+    }
+
+    /// `ctrl+p`: the Project pane's own way in (and back out). Entering
+    /// saves where focus was (the toggle's way back) and lands the cursor
+    /// on the first question still open --- the pane exists to answer what
+    /// is missing, so that is where the user is put. A pane with no rows
+    /// (no backend selected) is not entered at all: there is nothing to
+    /// walk.
+    pub fn toggle_project_focus(&mut self) {
+        if self.focus == Focus::Project {
+            let back = self
+                .focus_before_project
+                .take()
+                .unwrap_or_else(|| self.fallback_pane());
+            self.focus = back;
+            return;
+        }
+        if self.project_rows().is_empty() {
+            return;
+        }
+        self.focus_before_project = Some(self.focus);
+        self.focus = Focus::Project;
+        self.project_cursor = self.first_open_project_row();
     }
 
     /// The first pane that still exists after the focused one disappeared:
@@ -1679,6 +1795,7 @@ impl App {
     fn clamp_focus(&mut self) {
         let browser_row = !self.build_pane_visible_precondition();
         let needs_clamp = match self.focus {
+            Focus::Project => self.project_rows().is_empty(),
             Focus::FilesDevice => {
                 !browser_row || !self.manager.capabilities().contains(Capability::Filesystem)
             }
@@ -1708,6 +1825,13 @@ impl App {
             }
             KeyCode::BackTab => {
                 self.step_focus(false);
+                return;
+            }
+            // The Project pane's way in, visible in the footer beside the
+            // tab tour it deliberately stands outside of. Crossterm labels
+            // the byte 0x10 this way, like every Ctrl+letter.
+            KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.toggle_project_focus();
                 return;
             }
             KeyCode::Char('o') => {
@@ -1761,6 +1885,11 @@ impl App {
             && !self.build_pane_visible_precondition()
         {
             self.on_files_key(key);
+            return;
+        }
+
+        if self.focus == Focus::Project {
+            self.on_project_key(key);
             return;
         }
 
@@ -1828,13 +1957,10 @@ impl App {
                     self.monitor_scroll_down(delta as usize);
                 }
             }
-            // FilesLocal/FilesDevice/Workspace/Build never reach here:
-            // on_dashboard_key routes them to their own key handlers first.
-            Focus::FilesLocal
-            | Focus::FilesDevice
-            | Focus::Workspace
-            | Focus::Build
-            | Focus::Logs => {}
+            // FilesLocal/FilesDevice/Workspace/Build/Project never reach
+            // here: on_dashboard_key routes them to their own key handlers
+            // first.
+            _ => {}
         }
     }
 
@@ -1847,11 +1973,7 @@ impl App {
                 self.monitor_scroll.following = false;
                 self.monitor_scroll.offset = 0;
             }
-            Focus::FilesLocal
-            | Focus::FilesDevice
-            | Focus::Workspace
-            | Focus::Build
-            | Focus::Logs => {}
+            _ => {}
         }
     }
 
@@ -1861,11 +1983,7 @@ impl App {
             Focus::Logs if self.log_tab == LogTab::Monitor => {
                 self.monitor_scroll = MonitorScroll::default();
             }
-            Focus::FilesLocal
-            | Focus::FilesDevice
-            | Focus::Workspace
-            | Focus::Build
-            | Focus::Logs => {}
+            _ => {}
         }
     }
 
@@ -1984,7 +2102,6 @@ impl App {
                 &help::Context {
                     focus: self.focus,
                     caps: self.manager.capabilities(),
-                    workspace_files: self.workspace.as_ref().is_some_and(|panel| panel.in_files),
                     run_active: self.is_run_active(),
                     run_view: self.is_run_view(),
                     log_tab: self.log_tab,

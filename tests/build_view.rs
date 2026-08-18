@@ -21,6 +21,14 @@ fn key(code: KeyCode) -> AppEvent {
     AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE))
 }
 
+fn ctrl(c: char) -> KeyCode {
+    KeyCode::Char(c)
+}
+
+fn key_event(code: KeyCode, modifiers: KeyModifiers) -> AppEvent {
+    AppEvent::Key(KeyEvent::new(code, modifiers))
+}
+
 /// A Zephyr app in a temp directory: a real project layout so the panel has
 /// a root, with a CMakeCache claiming a board when the test wants one.
 fn zephyr_app(tag: &str, board: Option<&str>) -> (App, std::path::PathBuf) {
@@ -114,8 +122,10 @@ fn the_panel_appears_and_is_a_focus_stop_for_a_build_backend() {
     assert_eq!(app.focus, Focus::Logs);
 
     // And it renders: the checklist with its answers, the buttons below.
+    // (140 columns: the merged Board · Shield row shows both names in
+    // full --- at 100 the shared value column tail-truncates one of them.)
     app.focus = Focus::Build;
-    let frame = render(&mut app, 100, 30);
+    let frame = render(&mut app, 140, 30);
     assert!(frame.contains("Build"), "missing panel:\n{frame}");
     assert!(
         frame.contains("nrf52840dk/nrf52840"),
@@ -462,9 +472,9 @@ fn the_board_picker_fetches_filters_and_picks_for_the_session() {
     app.build.as_mut().unwrap().set_tool_path(fake("west"));
     app.focus = Focus::Build;
 
-    // The Board checklist row lives in the workspace pane now, below the
-    // other three questions.
-    app.focus = Focus::Workspace;
+    // The Board row lives in the Project pane (ctrl+p's checklist), below
+    // the other three questions.
+    app.handle(key_event(ctrl('p'), KeyModifiers::CONTROL));
     for _ in 0..3 {
         app.handle(key(KeyCode::Down));
     }
@@ -530,10 +540,10 @@ fn the_board_picker_fetches_filters_and_picks_for_the_session() {
         "a pick must not write project configuration"
     );
 
-    let frame = render(&mut app, 100, 30);
+    let frame = render(&mut app, 140, 30);
     assert!(
         frame.contains("picked"),
-        "the header must say the board's origin:\n{frame}"
+        "the row must say the board's origin:\n{frame}"
     );
     let backend = app.manager.backend().unwrap();
     let build = app
@@ -555,20 +565,21 @@ fn the_shield_picker_lists_picks_and_clears_for_the_session() {
     // configuration flag the answers produce.
     let (mut app, root) = zephyr_app("shield", None);
     app.build.as_mut().unwrap().set_tool_path(fake("west"));
-    app.focus = Focus::Workspace;
+    app.handle(key_event(ctrl('p'), KeyModifiers::CONTROL));
 
-    // The Shield checklist row sits right under the Board one: four downs
-    // from the cursor's start on Zephyr Base.
-    for _ in 0..4 {
+    // The Board · Shield row is the fourth question; `→` switches the row's
+    // segment to the shield half, which Enter then acts on.
+    for _ in 0..3 {
         app.handle(key(KeyCode::Down));
     }
+    app.handle(key(KeyCode::Right));
     let frame = render(&mut app, 100, 30);
     assert!(
         frame.contains("Shield"),
-        "the shield checklist row must show:\n{frame}"
+        "the target row must show:\n{frame}"
     );
     assert!(
-        frame.contains("none (optional)"),
+        frame.contains("none"),
         "an unset shield states itself as none, not as an open question:\n{frame}"
     );
     app.handle(key(KeyCode::Enter));
@@ -629,14 +640,14 @@ fn the_shield_picker_lists_picks_and_clears_for_the_session() {
         "the picked shield must reach the first build: {build}"
     );
 
-    // The checklist row shows the answer, and the (none) row clears it.
-    // (The workspace cursor never moved: it still sits on the Shield row.)
+    // The row shows the answer, and the (none) row clears it. (Focus never
+    // left the Project pane's target row, and its segment is still the
+    // shield half --- ctrl+p is a toggle, and a second press would leave.)
     let frame = render(&mut app, 100, 30);
     assert!(
         frame.contains("nrf7002ek"),
         "the answer must show:\n{frame}"
     );
-    app.focus = Focus::Workspace;
     app.handle(key(KeyCode::Enter));
     app.handle(key(KeyCode::Enter));
     assert_eq!(
@@ -665,8 +676,8 @@ fn board_and_shield_picks_are_saved_and_reloaded_with_the_project() {
     app.build.as_mut().unwrap().set_tool_path(fake("west"));
     let config = root.join("home/.config/chiptui/config.toml");
 
-    // Pick a board through the picker (three downs to the Board row).
-    app.focus = Focus::Workspace;
+    // Pick a board through the picker (three downs to the target row).
+    app.handle(key_event(ctrl('p'), KeyModifiers::CONTROL));
     for _ in 0..3 {
         app.handle(key(KeyCode::Down));
     }
@@ -691,8 +702,8 @@ fn board_and_shield_picks_are_saved_and_reloaded_with_the_project() {
         "the pick must be saved in the registry entry:\n{written}"
     );
 
-    // Pick a shield on the row right under it.
-    app.handle(key(KeyCode::Down));
+    // Pick a shield on the same row's right half.
+    app.handle(key(KeyCode::Right));
     app.handle(key(KeyCode::Enter));
     assert!(pump_until(
         &mut app,
@@ -716,8 +727,8 @@ fn board_and_shield_picks_are_saved_and_reloaded_with_the_project() {
     );
 
     // Clearing the shield persists the clearing: the saved answer is the
-    // source of truth, not just the session state. (The cursor still sits
-    // on the Shield row, and the picker starts on the (none) row.)
+    // source of truth, not just the session state. (The cursor and its
+    // shield segment never moved, and the picker starts on the (none) row.)
     app.handle(key(KeyCode::Enter));
     app.handle(key(KeyCode::Enter));
     let written = std::fs::read_to_string(&config).unwrap();
@@ -772,14 +783,13 @@ fn enter_in_the_workspace_file_section_descends_directly() {
     app.workspace.as_mut().unwrap().reload_files();
     app.focus = Focus::Workspace;
 
-    // Downs from the checklist's first row (Zephyr Base) walk off its last
-    // row (Shield) into the file section, where `src` sits third --- behind
-    // the fixture's `dev`/`home` seam directories, which sort ahead of it
+    // The pane is all file list now (the checklist moved to the Project
+    // pane): downs walk the entries, where `src` sits third --- behind the
+    // fixture's `dev`/`home` seam directories, which sort ahead of it
     // (directories first, then alphabetically).
-    for _ in 0..7 {
+    for _ in 0..2 {
         app.handle(key(KeyCode::Down));
     }
-    assert!(app.workspace.as_ref().unwrap().in_files);
     assert_eq!(
         app.workspace
             .as_ref()
@@ -807,14 +817,13 @@ fn enter_in_the_workspace_file_section_descends_directly() {
     assert_eq!(panel.files_selected().unwrap().name, "src");
 }
 
-/// Walks the workspace cursor from the checklist's first row onto the file
-/// list entry named `name` (assumed to exist), asserting it landed there.
-/// Only walks down; to reach an entry above the cursor, close what is open
-/// and walk up instead.
+/// Walks the workspace pane's file cursor onto the entry named `name`
+/// (assumed to exist), asserting it landed there. Only walks down; to reach
+/// an entry above the cursor, close what is open and walk up instead.
 fn workspace_cursor_on(app: &mut App, name: &str) {
     for _ in 0..32 {
         let panel = app.workspace.as_ref().unwrap();
-        if panel.in_files && panel.files_selected().is_some_and(|e| e.name == name) {
+        if panel.files_selected().is_some_and(|e| e.name == name) {
             return;
         }
         app.handle(key(KeyCode::Down));
@@ -829,9 +838,11 @@ fn the_workspace_file_section_titles_with_the_project_and_offers_the_parent_row(
     app.workspace.as_mut().unwrap().reload_files();
     app.focus = Focus::Workspace;
 
-    // At the root the title bar carries the project's own name…
+    // At the root the pane's title carries the project's own name… (140
+    // columns: the fixture's generated name is long, and the
+    // "Project files: " prefix eats 15 of them.)
     let project = root.file_name().unwrap().to_string_lossy().into_owned();
-    let frame = render(&mut app, 100, 30);
+    let frame = render(&mut app, 140, 30);
     assert!(
         frame.contains(&format!("{project}/")),
         "the title bar must name the project:\n{frame}"
@@ -845,10 +856,10 @@ fn the_workspace_file_section_titles_with_the_project_and_offers_the_parent_row(
     // that leads with `[..]`.
     workspace_cursor_on(&mut app, "src");
     app.handle(key(KeyCode::Enter));
-    let frame = render(&mut app, 100, 30);
+    let frame = render(&mut app, 140, 30);
     assert!(
         frame.contains(&format!("{project}/src/")),
-        "the title bar must concatenate the descent:\n{frame}"
+        "the title must concatenate the descent:\n{frame}"
     );
     assert!(frame.contains("[..]"), "the parent row must lead:\n{frame}");
 }
@@ -857,7 +868,7 @@ fn the_workspace_file_section_titles_with_the_project_and_offers_the_parent_row(
 fn workspace_cursor_up_to(app: &mut App, name: &str) {
     for _ in 0..32 {
         let panel = app.workspace.as_ref().unwrap();
-        if panel.in_files && panel.files_selected().is_some_and(|e| e.name == name) {
+        if panel.files_selected().is_some_and(|e| e.name == name) {
             return;
         }
         app.handle(key(KeyCode::Up));
@@ -1138,11 +1149,11 @@ fn del_on_a_workspace_directory_asks_before_removing_it_recursively() {
 fn a_boardless_filter_match_enter_picks_nothing_and_esc_changes_nothing() {
     let (mut app, _root) = zephyr_app("picker-esc", Some("nrf52840dk/nrf52840"));
     app.build.as_mut().unwrap().set_tool_path(fake("west"));
-    app.focus = Focus::Workspace;
+    app.handle(key_event(ctrl('p'), KeyModifiers::CONTROL));
 
     for _ in 0..3 {
         app.handle(key(KeyCode::Down));
-    } // the Board checklist row
+    } // the Board · Shield row
     app.handle(key(KeyCode::Enter));
     assert!(pump_until(
         &mut app,
@@ -1169,8 +1180,8 @@ fn a_boardless_filter_match_enter_picks_nothing_and_esc_changes_nothing() {
         chiptui::build::BoardOrigin::Cache
     );
 
-    // …and Esc leaves the cache answer untouched either way.
-    app.focus = Focus::Workspace;
+    // …and Esc leaves the cache answer untouched either way. (Focus never
+    // left the Project pane: a second ctrl+p would toggle away.)
     for _ in 0..3 {
         app.handle(key(KeyCode::Down));
     }
@@ -1191,11 +1202,11 @@ fn a_missing_west_explains_itself_in_the_picker() {
         .as_mut()
         .unwrap()
         .set_tool_path("/nonexistent/west");
-    app.focus = Focus::Workspace;
+    app.handle(key_event(ctrl('p'), KeyModifiers::CONTROL));
 
     for _ in 0..3 {
         app.handle(key(KeyCode::Down));
-    } // the Board checklist row
+    } // the Board · Shield row
     app.handle(key(KeyCode::Enter));
 
     let failed = pump_until(
@@ -1320,13 +1331,13 @@ fn workspace_under(home: &std::path::Path, name: &str) -> std::path::PathBuf {
 fn the_workspace_pane_resolves_from_project_config_and_runs_update() {
     let (mut app, root) = zephyr_app("ws", None);
     // Where row 2 starts before the workspace resolves: resolving adds the
-    // Project pane's versions line, which must not move anything (row 1 is
+    // Project pane's versions badge, which must not move anything (row 1 is
     // a fixed four content rows).
     let unresolved = render(&mut app, 100, 30);
     let row2 = unresolved
         .lines()
-        .position(|l| l.contains("Workspace"))
-        .expect("the workspace pane renders before resolution");
+        .position(|l| l.contains("Project files"))
+        .expect("the project-files pane renders before resolution");
 
     let home = root.join("home");
     let ws = workspace_under(&home, "zephyrproject");
@@ -1368,20 +1379,23 @@ fn the_workspace_pane_resolves_from_project_config_and_runs_update() {
     );
 
     let frame = render(&mut app, 100, 30);
-    assert!(frame.contains("Workspace"), "the pane renders:\n{frame}");
+    assert!(
+        frame.contains("Project files"),
+        "the pane renders:\n{frame}"
+    );
     assert!(frame.contains("zephyrproject"), "the path shows:\n{frame}");
     assert!(
         frame.contains("zephyr 4.1"),
-        "the Project pane's versions field must report the environment:\n{frame}"
+        "the versions badge must report the environment:\n{frame}"
     );
     assert!(
-        frame.contains("versions:"),
-        "the versions field must be named:\n{frame}"
+        !frame.contains("versions:"),
+        "the badge carries no label --- the values name themselves:\n{frame}"
     );
     assert_eq!(
-        frame.lines().position(|l| l.contains("Workspace")),
+        frame.lines().position(|l| l.contains("Project files")),
         Some(row2),
-        "the versions line must not shift row 2:\n{frame}"
+        "the versions badge must not shift row 2:\n{frame}"
     );
     assert!(
         !frame.contains("source:"),
@@ -1483,8 +1497,7 @@ fn an_unconfigured_pane_shows_the_open_checklist_and_dim_buttons() {
             chiptui::workspace::WorkspaceAction::Choose,
             chiptui::workspace::WorkspaceAction::Projects,
             chiptui::workspace::WorkspaceAction::Project,
-            chiptui::workspace::WorkspaceAction::Board,
-            chiptui::workspace::WorkspaceAction::Shield,
+            chiptui::workspace::WorkspaceAction::BoardShield,
         ],
         "the checklist is the pane's whole action list now"
     );
@@ -1497,11 +1510,11 @@ fn an_unconfigured_pane_shows_the_open_checklist_and_dim_buttons() {
     // explains itself without a separate guidance block.
     let frame = render(&mut app, 100, 30);
     assert!(
-        frame.contains("□ Zephyr Base"),
+        frame.contains("□ Zephyr path"),
         "the open question must show:\n{frame}"
     );
     assert!(
-        frame.contains("Projects Base"),
+        frame.contains("Projects base"),
         "the second question must show:\n{frame}"
     );
     assert!(
@@ -1627,14 +1640,15 @@ fn a_configured_but_broken_location_reports_the_guide_and_still_lets_you_choose(
     let frame = render(&mut app, 100, 30);
     assert!(
         frame.contains("docs.zephyrproject.org"),
-        "the guide must show:\n{frame}"
+        "the guide must show (in the log, the pane's rows are fixed):\n{frame}"
     );
     // …and does not auto-open the picker: the error is the answer's
     // context, the chooser is one Enter away.
     assert!(app.overlay.is_none());
 
-    // Enter opens the directory picker from the pane.
-    app.focus = Focus::Workspace;
+    // Enter opens the directory picker from the pane (ctrl+p lands on the
+    // first open question, which an invalid location still is).
+    app.handle(key_event(ctrl('p'), KeyModifiers::CONTROL));
     app.handle(key(KeyCode::Enter));
     assert!(matches!(app.overlay, Some(Overlay::DirPicker { .. })));
 }

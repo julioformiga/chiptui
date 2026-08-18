@@ -232,6 +232,11 @@ struct Output {
 }
 
 pub struct Browser {
+    /// The project root the local pane was opened (or re-rooted) on: the
+    /// anchor of the `Project files: name/path` title. The browsed
+    /// [`Self::local_path`] may sit below it (or, because the pane may
+    /// ascend, above it) --- only the root names the project.
+    pub local_root: PathBuf,
     pub local_path: PathBuf,
     pub local_entries: Vec<LocalEntry>,
     pub local_error: Option<String>,
@@ -281,8 +286,10 @@ pub struct Browser {
 
 impl Browser {
     pub fn new(local_path: impl Into<PathBuf>) -> Self {
+        let local_path = local_path.into();
         let mut browser = Self {
-            local_path: local_path.into(),
+            local_root: local_path.clone(),
+            local_path,
             local_entries: Vec::new(),
             local_error: None,
             local_cursor: 0,
@@ -321,6 +328,18 @@ impl Browser {
     }
 
     // ---- local pane -----------------------------------------------------
+
+    /// Re-roots the local pane on `dir` (a picked MicroPython project):
+    /// both the root the title names and the browsed path move, the cursor
+    /// resets --- a re-root is a fresh start, the same rule the Zephyr
+    /// panes' own re-rooting follows.
+    pub fn set_local_root(&mut self, dir: impl Into<PathBuf>) {
+        let dir = dir.into();
+        self.local_root = dir.clone();
+        self.local_path = dir;
+        self.local_cursor = 0;
+        self.reload_local();
+    }
 
     pub fn reload_local(&mut self) {
         match files::read_dir(&self.local_path) {

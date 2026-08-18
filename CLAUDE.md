@@ -37,7 +37,15 @@ when the comparison verdict marks the file as differing or same-size-unchecked.
 menu: it descends into a directory directly (a no-op on a file), mirroring `←`/Backspace going back up
 — only `Enter` opens the menu. `a` creates a new
 entry in the focused pane inline — a trailing `/` on the typed name makes it a directory
-(`Browser::request_mkdir`/`request_touch`). Editing a device file downloads it to a scratch temp file
+(`Browser::request_mkdir`/`request_touch`). The local pane is titled `Project files: name/path`
+(`Browser::local_root`, re-rooted by `set_local_root`): MicroPython makes the project a
+question too (`Capability::ProjectSelect`) --- `[micropython] projects` in the user config
+(`settings::mpy_projects_raw`/`save_mpy_projects`) answers the Projects base row, a pick
+from its subdirectories (`Overlay::ProjectPicker { mpy: true }`, any subdirectory qualifies)
+re-roots the local pane session-only (`App::set_mpy_project`), and the pane's other two rows
+report `Entry` (main.py/boot.py in the root) and `MPy` (the board's version, parsed off the
+REPL banner by `device::micropython_version` --- fed by the probe and the monitor, dropped
+with the board on disconnect/switch). Editing a device file downloads it to a scratch temp file
 (`browser::edit_download_path`), never the project tree — the point is to prove a change on the
 device first; `Download` is the separate, explicit step for landing a confirmed-good result in the
 project. On a clean `$EDITOR` exit it re-uploads to the same device path and then offers a
@@ -48,16 +56,19 @@ script runs (`Overlay::ConfirmInterruptDevice`), and an accepted interruption en
 restore prompt (`Overlay::RestoreDeviceScript`: hard reset, `import main`, or leave stopped).
 
 Row 2 is capability-driven now: a backend that can build without a device filesystem (Zephyr)
-claims the *whole* row with a **Workspace | Project** pair (`maybe_scan_devices`/
+claims the *whole* row with a **Project files | Project actions** pair (`maybe_scan_devices`/
 `ensure_browser_scanning` skip the browser entirely for such a backend — listing/editing the
 project's own sources is the user's editor's job; MicroPython's dual-pane browser and its
-capability-gated `FileAction::for_entry` menu are unchanged). The **workspace pane** owns
-*every* prerequisite as one checklist: the open questions lead, marked `□` while open (the
-icon that says *this needs defining*), `✓` once answered, a red `✗` when a configured
-answer fails validation --- `Zephyr Base`, `Projects Base`, `Project path`, `Board` (the
-last two answered by the build panel but asked here, under `ProjectSelect`/`BoardSelect`:
-`WorkspaceAction::Project`/`Board` open the same flows) --- over a horizontal separator and
-the operation buttons --- a small custom widget (`src/ui/button.rs`: one stacked
+capability-gated `FileAction::for_entry` menu are unchanged). The environment's
+prerequisites moved *up* into row 1's **Project pane**, which is the checklist now:
+`Zephyr path`, `Projects base`, `Project path`, `Board · Shield` (the last two answered by
+the build panel but asked here; `←`/`→` on the merged target row switch which half `Enter`
+acts on --- `App::board_segment`) for Zephyr, `Projects base`/`Project path`/`Entry`/
+`MPy` for MicroPython (`src/app/project_view.rs`, `App::project_rows`). The pane is
+navigable but deliberately off the `Tab` tour: `ctrl+p` enters it (toggle: a second press
+returns to wherever focus was; the cursor lands on the first question still open), `Tab`
+re-enters the tour at its first stop. The operation buttons they gate live in the **Project
+actions** pane --- a small custom widget (`src/ui/button.rs`: one stacked
 group sharing a rounded border, a centered icon label per row, a `├─┤` divider between each
 pair --- N buttons cost 2N+1 lines, and `draw_dashboard`'s `row2_content_height` sizes row 2
 to that content (the log pane, which scrolls, takes the remainder; the browser row keeps
@@ -74,13 +85,16 @@ visible but dimmed until their answers exist (`WorkspacePanel::action_enabled`,
 `App::build_action_enabled`) --- Enter on a dimmed row is a no-op; rows carry no trailing
 text (the confirm overlays quote the literal commands, `SPEC.md` §15, not the rows). The
 header's `project` field is the project question's other half (`App::header_project`):
-empty while the root is not a buildable application, then the picked project's folder name;
-row 1's Project pane follows the same answer (`root:` comes from the build panel under
-`ProjectSelect`) and reports the environment's `versions:` (Zephyr + venv Python, read from
-files) in place of the old detection-`source:` line. Row 1 itself is a fixed height: both
-panes pad their content to four rows (`ui::panels::INFO_ROWS`) in every backend and state,
-and the cwd note rides `root:`'s own line as a muted suffix instead of taking a row, so the
-rows below never shift when a workspace resolves or device details accumulate.
+empty while the root is not a buildable application, then the picked project's folder name
+(the MicroPython pick answers it too). Row 1 itself is a fixed height: both
+panes pad their content to four rows (`ui::panels::INFO_ROWS`) in every backend and state
+(and the MicroPython cwd note rides `Project path`'s own line as a muted suffix), so the
+rows below never shift when a workspace resolves or device details accumulate. The
+environment's `versions` (Zephyr + venv Python, read from files) ride the pane's *bottom
+border* right edge (`draw_versions_badge`, the same place the Log tab strip rides its top
+border) once a workspace resolves; missing tools show as a red `⚠ N` count beside the
+backend name in the header (`missing_tools`, over the same `App::tool_status` the startup
+warning logs).
 The **workspace pane**
 (`src/workspace.rs`, `src/ui/workspace.rs`, `src/app/workspace_view.rs`) is the environment
 half: it resolves the Zephyr *installation* (`src/backend/zephyr/workspace.rs`) from
@@ -96,15 +110,15 @@ the reflex `Enter` accepts the folder just entered. The accepted directory is va
 the *same* `install_check` the config goes through (`.west/` present, the manifest's
 checkout present) --- a failure keeps the picker open with the reason plus the
 getting-started link (`workspace::GETTING_STARTED`), and a configured-but-broken location
-turns the pane red with the same message (wrapped under the row --- the pane's info lines
-are not navigable). A validated pick is persisted
+marks the pane's row `✗ !` with the same message in the log (the pane is a fixed four
+rows --- the reason does not get one). A validated pick is persisted
 (`settings::save_workspace`, a line-level merge that preserves every other key/section) to
 the user config, or to `chiptui.toml` when the project pins its own location --- so the
 config stays the single source of truth and later starts never re-ask. Tool reporting
 honors the same answer: every `App::report_tools` call site resolves the workspace first
 (creating the panel early is what keeps startup from warning about a `west` that was never
 on `PATH` because it lives in the workspace venv) and `App::tool_status` is the one
-availability definition shared by that warning and the Project pane's `tools:` row. It
+availability definition shared by that warning and the header's `⚠ N` badge. It
 names no tool: a resolved workspace declares the tools whose *location* it owns
 (`Workspace::tool_locations`, empty when resolution fell through to the bare program name)
 and `BackendRegistry::tool_status(kind, located)` judges those files with
@@ -112,21 +126,20 @@ and `BackendRegistry::tool_status(kind, located)` judges those files with
 execute bit) a `PATH` lookup uses --- while every unlocated tool keeps the `PATH` answer.
 `PATH` lookups skip empty entries, which mean the cwd; that makes the *report* stricter
 than `execvp`, never the reverse.
-Below the separator
-it offers
 `west update` (confirm-gated --- it rewrites the shared workspace,
-through `Overlay::ConfirmWorkspace`) and `west sdk list` as buttons enabled once the
+through `Overlay::ConfirmWorkspace`) and `west sdk list` live as buttons in the Project
+actions pane, enabled once the
 installation resolves, under `Capability::WorkspaceSync`; both
-run through the build panel's one process slot into the Monitor tab. The same separator
-carries the pane's embedded **project file list** --- no action menu: `Enter` descends into a
+run through the build panel's one process slot into the Monitor tab. The **Project files**
+pane (the old workspace pane, `src/ui/workspace.rs`) is the project's own listing, whole:
+its title carries the walked path (`Project files: proj/src/`, never truncating the
+prefix), and the body is the list --- no action menu: `Enter` descends into a
 directory and opens a text file straight in `$EDITOR`, `v` views one in the viewer, `Del`
 asks through `Overlay::ConfirmDelete` (default No), and a binary/unknown entry ignores both
 keys (all through `App::run_file_action`, `Side::Local`); `r` renames the entry under the
 cursor --- any kind, via `Overlay::RenameEntry` pre-filled with the current name and a local
 `fs::rename` on confirm (`App::rename_entry`; a `/` in the typed name is refused, since a
-rename must not silently become a move); the section's title bar names the
-project with the walked path concatenated per descent (`proj/`, `proj/src/`) on a
-`palette.selection` background, and a below-root listing leads with a `[..]` parent row
+rename must not silently become a move), and a below-root listing leads with a `[..]` parent row
 (`WorkspacePanel::parent_row`), selected after every descent, `Enter`/`→` on it stepping back
 up. The pane also owns the
 environment's second persisted fact: the **projects folder** (`[zephyr] projects`, resolved by
@@ -394,13 +407,15 @@ These are the decisions that shape most code, and getting them wrong causes wide
   case-insensitive banner strings — MicroPython-on-Zephyr reads as Zephyr, the structural
   truth — then the `esp_app_desc_t` magic `0xABCD5432` scanned in the *app* region names a
   plain ESP-IDF app; bootloader bytes never classify anything, since the ESP-IDF bootloader
-  is shared by all three firmwares), and the answer lands on the MAC row of the Device info
-  pane as `Firmware: MicroPython|Zephyr|ESP-IDF` (`DeviceDetails::firmware`), `undefined`
+  is shared by all three firmwares), and the answer lands on its own row of the Device info
+  pane, directly under the MAC, as `Firmware: MicroPython|Zephyr|ESP-IDF`
+  (`DeviceDetails::firmware`), `undefined`
   when declined, failed or unrecognized. The read itself waits for a free port like the chip query
   (`maybe_run_deferred_firmware_probe`) — but not for a script believed running: stopping the
   firmware is exactly what was consented to. Switching devices clears the old board's answer
-  and re-arms the question; the features row is truncated to one line so the MAC+Firmware row
-  keeps its fixed place in the pane's four rows.
+  and re-arms the question; the features row is truncated to one line and the crystal rides
+  the chip's own row, so the MAC and Firmware rows keep their fixed place in the pane's
+  four rows.
 
 ## Testing
 

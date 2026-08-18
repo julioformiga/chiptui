@@ -276,6 +276,7 @@ impl App {
     /// every other overlay's derived state.
     pub(super) fn open_project_picker(&mut self) {
         self.overlay = Some(Overlay::ProjectPicker {
+            mpy: false,
             selected: 0,
             error: None,
         });
@@ -299,6 +300,7 @@ impl App {
         let Some(row) = rows.get(selected) else {
             let reason = read_error.unwrap_or_else(|| "nothing to pick".to_string());
             self.overlay = Some(Overlay::ProjectPicker {
+                mpy: false,
                 selected,
                 error: Some(reason),
             });
@@ -306,6 +308,7 @@ impl App {
         };
         if !row.buildable {
             self.overlay = Some(Overlay::ProjectPicker {
+                mpy: false,
                 selected,
                 error: Some(format!(
                     "{} has no CMakeLists.txt — west build cannot run there",

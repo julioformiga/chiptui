@@ -188,20 +188,14 @@ fn draw_dashboard(frame: &mut Frame, body: Rect, app: &mut App, palette: Palette
 /// (the log/monitor pane), the same trade-off row 2 already makes today.
 const MIN_FILES_ROWS: u16 = 6;
 
-/// The taller row-2 pane's inner content height: the workspace pane's
-/// checklist rows (plus an invalid location's wrapped reason), a separator,
-/// the file-list header and its minimum rows on one side; the project
-/// pane's stacked button group --- one row per button, one rule at each
-/// edge and one divider between each pair --- on the other.
+/// The taller row-2 pane's inner content height: the project-files pane's
+/// minimum listing rows on one side (the walked path lives on its border
+/// now, so the listing is the whole content); the project pane's stacked
+/// button group --- one row per button, one rule at each edge and one
+/// divider between each pair --- on the other.
 fn row2_content_height(app: &App) -> u16 {
     let caps = app.manager.capabilities();
-    let workspace = app.workspace.as_ref().map_or(0, |panel| {
-        let checklist = panel.actions(&caps).len() as u16;
-        let invalid = if panel.invalid.is_some() { 4 } else { 0 };
-        let separator = 1;
-        let files_header = 1;
-        checklist + invalid + separator + files_header + MIN_FILES_ROWS
-    });
+    let workspace = app.workspace.as_ref().map_or(0, |_| MIN_FILES_ROWS);
     let build = app.build.as_ref().map_or(0, |panel| {
         // The stacked group plus a three-row footer, reserved whether or
         // not the `Stop` box is showing (`Stop` is appended to the list,
@@ -288,7 +282,29 @@ fn backend_spans(app: &App, palette: Palette) -> Vec<Span<'static>> {
         Span::styled(icon, Style::new().fg(palette.accent)),
         Span::raw(" "),
         Span::styled(backend, Style::new().fg(palette.fg).bold()),
+        missing_tools(app, palette),
     ]
+}
+
+/// The header's missing-tools badge: a red `⚠ N` beside the backend name,
+/// counting the selected backend's required tools that are not runnable
+/// (`App::tool_status`, the same definition the startup warning logs).
+/// Shown only when something is missing --- an all-present toolchain is
+/// the silent norm, and the names stay in the log warning where they fit.
+fn missing_tools(app: &App, palette: Palette) -> Span<'static> {
+    let missing = app
+        .tool_status()
+        .iter()
+        .filter(|(_, available)| !available)
+        .count();
+    if missing == 0 {
+        Span::raw("")
+    } else {
+        Span::styled(
+            format!("  ⚠ {missing}"),
+            Style::new().fg(palette.error).bold(),
+        )
+    }
 }
 
 /// The header's center: the project question's answer. `None` while the

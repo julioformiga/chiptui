@@ -76,12 +76,15 @@ fn app_dir(parent: &std::path::Path, name: &str, with_cmake: bool) -> std::path:
     dir
 }
 
-/// The checklist's `Project path` row --- it lives in the workspace pane
-/// now, two rows below the folder question: Enter opens the project flow
-/// (the projects-folder question when nothing is configured, the project
-/// picker when one is).
+/// The checklist's `Project path` row --- it lives in the Project pane
+/// (ctrl+p's checklist), two rows below the folder question: Enter opens
+/// the project flow (the projects-folder question when nothing is
+/// configured, the project picker when one is).
 fn press_project_row(app: &mut App) {
-    app.focus = Focus::Workspace;
+    app.handle(AppEvent::Key(ratatui::crossterm::event::KeyEvent::new(
+        KeyCode::Char('p'),
+        ratatui::crossterm::event::KeyModifiers::CONTROL,
+    )));
     app.handle(key(KeyCode::Down));
     app.handle(key(KeyCode::Down));
     app.handle(key(KeyCode::Enter));
@@ -235,16 +238,16 @@ fn picking_a_buildable_project_reroots_and_builds() {
         "the header names the picked project's folder"
     );
 
-    // The Project pane's root field follows the pick too (it would still
+    // The Project pane's path row follows the pick too (it would still
     // name the bare cwd otherwise).
     let frame = render(&mut app, 100, 30);
-    let root_line = frame
+    let path_line = frame
         .lines()
-        .find(|line| line.contains("root:"))
-        .expect("the root field must render");
+        .find(|line| line.contains("Project path"))
+        .expect("the path row must render");
     assert!(
-        root_line.contains("blinky"),
-        "the root field must name the picked project, got: {root_line}"
+        path_line.contains("blinky"),
+        "the path row must name the picked project, got: {path_line}"
     );
 
     // The gate is satisfied by the pick (and its cached board): Build
@@ -265,9 +268,13 @@ fn choosing_the_folder_in_the_picker_persists_it_and_chains_to_the_project() {
     let apps = root.join("apps");
     app_dir(&apps, "blinky", true);
 
-    // Workspace pane, unresolved: [Choose, Projects] --- one Down reaches
-    // the projects-folder chooser.
-    app.focus = Focus::Workspace;
+    // Project pane, unresolved: [Zephyr path, Projects base, ...] --- one
+    // Down reaches the projects-folder row (ctrl+p lands on the first open
+    // question, which the installation is).
+    app.handle(AppEvent::Key(ratatui::crossterm::event::KeyEvent::new(
+        KeyCode::Char('p'),
+        ratatui::crossterm::event::KeyModifiers::CONTROL,
+    )));
     app.handle(key(KeyCode::Down));
     app.handle(key(KeyCode::Enter));
     assert!(matches!(
@@ -378,10 +385,9 @@ fn a_project_switch_applies_the_new_projects_saved_board_and_shield() {
     assert_eq!(app.build.as_ref().unwrap().board_name(), None);
 
     // Switch to beta: its saved answers apply, cache-independent. (The
-    // checklist cursor still sits on the Project row from the first pick,
-    // so it walks home first.)
-    app.workspace.as_mut().unwrap().cursor = 0;
-    press_project_row(&mut app);
+    // pane's cursor never left the Project path row, and ctrl+p is a
+    // toggle --- a second press would leave the pane.)
+    app.handle(key(KeyCode::Enter)); // reopen the picker
     app.handle(key(KeyCode::Down)); // alpha -> beta
     app.handle(key(KeyCode::Enter));
     let panel = app.build.as_ref().unwrap();

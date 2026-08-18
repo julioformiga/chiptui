@@ -19,128 +19,87 @@ use crate::workspace::{DirPurpose, WorkspaceAction};
 use super::{App, FileAction, Focus, LogTab, MonitorSource, Overlay};
 
 impl App {
-    /// Handles a key while [`Focus::Workspace`] holds focus: one cursor over
-    /// two regions of the same pane. While [`crate::workspace::WorkspacePanel::in_files`]
-    /// is `false` it walks the checklist with the usual list-navigation
-    /// grammar (`j`/`k`, arrows, page, home/end), `Enter` running the action
-    /// under the cursor; `Down` past the last checklist row crosses into the
-    /// embedded file list instead of wrapping. Once inside the file list,
-    /// `Up` at the first entry crosses back; `→`/`←`/Backspace descend/ascend
-    /// directories (pure navigation, mirroring the file browser's own
-    /// contract). This pane has no action menu: `Enter` descends into a
-    /// directory and opens a text file straight in `$EDITOR` (a binary or a
-    /// directory-less extension does nothing --- there is nothing to open);
-    /// `v` views a text file in the viewer; `Del` asks before deleting
-    /// anything (default No, [`Overlay::ConfirmDelete`]); `a` creates an
-    /// entry; `r` renames the one under the cursor (files and directories
-    /// alike, via a pre-filled [`Overlay::RenameEntry`]).
+    /// Handles a key while [`Focus::Workspace`] holds focus: the project
+    /// files list, the whole pane now that the checklist moved up to the
+    /// Project pane. The usual list grammar (`j`/`k`, arrows, page,
+    /// home/end), `→`/`←`/Backspace descend/ascend directories (pure
+    /// navigation, mirroring the file browser's own contract). This pane
+    /// has no action menu: `Enter` descends into a directory and opens a
+    /// text file straight in `$EDITOR` (a binary or a directory-less
+    /// extension does nothing --- there is nothing to open); `v` views a
+    /// text file in the viewer; `Del` asks before deleting anything
+    /// (default No, [`Overlay::ConfirmDelete`]); `a` creates an entry; `r`
+    /// renames the one under the cursor (files and directories alike, via
+    /// a pre-filled [`Overlay::RenameEntry`]).
     pub(super) fn on_workspace_key(&mut self, key: KeyEvent) {
-        let caps = self.manager.capabilities();
-        let mut action = None;
-        // (name, is_dir, action) for the entry under the file-list cursor,
-        // resolved to a direct [`FileAction`] --- this pane has no menu, so
-        // `Enter`/`v`/`Del` map straight onto edit/view/delete and run
-        // through the same `run_file_action` path the menu uses.
         let mut file_action: Option<(String, bool, FileAction)> = None;
         let mut open_create = false;
         let mut open_rename: Option<String> = None;
 
         if let Some(panel) = self.workspace.as_mut() {
-            let checklist_len = panel.actions(&caps).len().max(1);
-            if !panel.in_files {
-                match key.code {
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        panel.cursor = panel.cursor.saturating_sub(1);
-                    }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        if panel.cursor + 1 >= checklist_len {
-                            panel.in_files = true;
-                            panel.files_cursor = 0;
-                        } else {
-                            panel.cursor += 1;
-                        }
-                    }
-                    KeyCode::PageUp => panel.cursor = panel.cursor.saturating_sub(5),
-                    KeyCode::PageDown => panel.cursor = (panel.cursor + 5).min(checklist_len - 1),
-                    KeyCode::Home => panel.cursor = 0,
-                    KeyCode::End => panel.cursor = checklist_len - 1,
-                    KeyCode::Enter => action = panel.action_at(&caps, panel.cursor),
-                    _ => {}
+            let files_len = panel.files_row_count();
+            match key.code {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    panel.files_cursor = panel.files_cursor.saturating_sub(1);
                 }
-            } else {
-                let files_len = panel.files_row_count();
-                match key.code {
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        if panel.files_cursor == 0 {
-                            panel.in_files = false;
-                            panel.cursor = checklist_len - 1;
-                        } else {
-                            panel.files_cursor -= 1;
-                        }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if files_len > 0 {
+                        panel.files_cursor = (panel.files_cursor + 1).min(files_len - 1);
                     }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        if files_len > 0 {
-                            panel.files_cursor = (panel.files_cursor + 1).min(files_len - 1);
-                        }
-                    }
-                    KeyCode::PageUp => panel.files_cursor = panel.files_cursor.saturating_sub(5),
-                    KeyCode::PageDown => {
-                        if files_len > 0 {
-                            panel.files_cursor = (panel.files_cursor + 5).min(files_len - 1);
-                        }
-                    }
-                    KeyCode::Home => panel.files_cursor = 0,
-                    KeyCode::End => panel.files_cursor = files_len.saturating_sub(1),
-                    KeyCode::Right => panel.enter_files(),
-                    KeyCode::Left | KeyCode::Backspace => panel.ascend_files(),
-                    KeyCode::Enter => {
-                        if panel.on_parent_row() {
-                            // The `[..]` row: Enter steps back up.
-                            panel.ascend_files();
-                        } else if let Some(entry) = panel.files_selected() {
-                            if entry.is_dir {
-                                panel.enter_files();
-                            } else if files::is_text_like(&entry.name) {
-                                file_action = Some((entry.name.clone(), false, FileAction::Edit));
-                            }
-                            // A binary or otherwise non-editable file does
-                            // nothing: there is no menu to fall back on, and
-                            // guessing an action would hide that.
-                        }
-                    }
-                    KeyCode::Char('v') => {
-                        if let Some(entry) = panel.files_selected()
-                            && !entry.is_dir
-                            && files::is_text_like(&entry.name)
-                        {
-                            file_action = Some((entry.name.clone(), false, FileAction::View));
-                        }
-                    }
-                    KeyCode::Delete => {
-                        if let Some(entry) = panel.files_selected() {
-                            file_action =
-                                Some((entry.name.clone(), entry.is_dir, FileAction::Delete));
-                        }
-                    }
-                    KeyCode::Char('a') => open_create = true,
-                    // Renaming is a *name* change in the listed directory,
-                    // offered for every entry kind --- a binary's name can
-                    // change just as well as a text file's or a directory's.
-                    // The `[..]` parent row is not an entry (`files_selected`
-                    // returns `None`), so `r` there is a no-op.
-                    KeyCode::Char('r') => {
-                        if let Some(entry) = panel.files_selected() {
-                            open_rename = Some(entry.name.clone());
-                        }
-                    }
-                    _ => {}
                 }
+                KeyCode::PageUp => panel.files_cursor = panel.files_cursor.saturating_sub(5),
+                KeyCode::PageDown => {
+                    if files_len > 0 {
+                        panel.files_cursor = (panel.files_cursor + 5).min(files_len - 1);
+                    }
+                }
+                KeyCode::Home => panel.files_cursor = 0,
+                KeyCode::End => panel.files_cursor = files_len.saturating_sub(1),
+                KeyCode::Right => panel.enter_files(),
+                KeyCode::Left | KeyCode::Backspace => panel.ascend_files(),
+                KeyCode::Enter => {
+                    if panel.on_parent_row() {
+                        // The `[..]` row: Enter steps back up.
+                        panel.ascend_files();
+                    } else if let Some(entry) = panel.files_selected() {
+                        if entry.is_dir {
+                            panel.enter_files();
+                        } else if files::is_text_like(&entry.name) {
+                            file_action = Some((entry.name.clone(), false, FileAction::Edit));
+                        }
+                        // A binary or otherwise non-editable file does
+                        // nothing: there is no menu to fall back on, and
+                        // guessing an action would hide that.
+                    }
+                }
+                KeyCode::Char('v') => {
+                    if let Some(entry) = panel.files_selected()
+                        && !entry.is_dir
+                        && files::is_text_like(&entry.name)
+                    {
+                        file_action = Some((entry.name.clone(), false, FileAction::View));
+                    }
+                }
+                KeyCode::Delete => {
+                    if let Some(entry) = panel.files_selected() {
+                        file_action = Some((entry.name.clone(), entry.is_dir, FileAction::Delete));
+                    }
+                }
+                KeyCode::Char('a') => open_create = true,
+                // Renaming is a *name* change in the listed directory,
+                // offered for every entry kind --- a binary's name can
+                // change just as well as a text file's or a directory's.
+                // The `[..]` parent row is not an entry (`files_selected`
+                // returns `None`), so `r` there is a no-op.
+                KeyCode::Char('r') => {
+                    if let Some(entry) = panel.files_selected() {
+                        open_rename = Some(entry.name.clone());
+                    }
+                }
+                _ => {}
             }
         }
 
-        if let Some(action) = action {
-            self.run_workspace_action(action);
-        }
         if let Some((name, is_dir, file)) = file_action {
             self.run_file_action(Side::Local, &name, is_dir, file);
         }
@@ -158,11 +117,12 @@ impl App {
         }
     }
 
-    /// Runs a checklist action: every row is always answerable, so unlike
-    /// the build panel's lifecycle there is no disabled case to guard
-    /// against here --- `Choose`/`Projects`/`Board`/`Shield` open their
-    /// picker, `Project` opens the project flow (warning first when the
-    /// current root is not buildable).
+    /// Runs a Project-pane checklist action (the Zephyr rows): every row is
+    /// always answerable, so unlike the build panel's lifecycle there is no
+    /// disabled case to guard against here --- `Choose`/`Projects` open
+    /// their picker, `Project` opens the project flow (warning first when
+    /// the current root is not buildable), `BoardShield` opens whichever
+    /// half the segment cursor sits on ([`App::board_segment`]).
     pub(super) fn run_workspace_action(&mut self, action: WorkspaceAction) {
         match action {
             WorkspaceAction::Choose => self.open_dir_picker(),
@@ -181,8 +141,13 @@ impl App {
                 }
                 self.open_project_flow();
             }
-            WorkspaceAction::Board => self.open_board_picker(),
-            WorkspaceAction::Shield => self.open_shield_picker(),
+            WorkspaceAction::BoardShield => {
+                if self.board_segment {
+                    self.open_board_picker();
+                } else {
+                    self.open_shield_picker();
+                }
+            }
         }
     }
 
@@ -218,7 +183,7 @@ impl App {
         self.open_purpose_picker(DirPurpose::Projects);
     }
 
-    fn open_purpose_picker(&mut self, purpose: DirPurpose) {
+    pub(super) fn open_purpose_picker(&mut self, purpose: DirPurpose) {
         let start = if self.home_dir.is_dir() {
             self.home_dir.clone()
         } else {
@@ -281,6 +246,7 @@ impl App {
                 Some(crate::workspace::DirRowKind::Use) => match purpose {
                     DirPurpose::Installation => self.accept_workspace_dir(path),
                     DirPurpose::Projects => self.accept_projects_dir(path),
+                    DirPurpose::MpyProjects => self.accept_mpy_projects_dir(path),
                 },
                 Some(crate::workspace::DirRowKind::Parent) => {
                     let Some(parent) = path.parent().map(Path::to_path_buf) else {

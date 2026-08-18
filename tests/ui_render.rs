@@ -154,7 +154,7 @@ fn a_narrow_header_ellipsizes_the_project_and_never_the_device() {
         "the backend section keeps its shape:\n{header}"
     );
     assert!(
-        header.contains("Project esp32c3_o…"),
+        header.contains("Project esp3"),
         "the project name ellipsizes, label kept:\n{header}"
     );
     assert!(
@@ -203,11 +203,11 @@ fn zephyr_shows_the_workspace_and_build_panes_in_row_two() {
     let frame = render(&mut app, 100, 30);
 
     assert!(
-        frame.contains("Workspace"),
-        "missing the workspace pane:\n{frame}"
+        frame.contains("Project files:"),
+        "missing the project-files pane:\n{frame}"
     );
     assert!(
-        frame.contains("□ Zephyr Base"),
+        frame.contains("□ Zephyr path"),
         "the checklist must ask for the installation:\n{frame}"
     );
     assert!(
@@ -227,8 +227,8 @@ fn zephyr_shows_the_workspace_and_build_panes_in_row_two() {
         "the separator must divide checklist from buttons:\n{frame}"
     );
     assert!(
-        !frame.contains("Local files:"),
-        "the dual-pane browser's own title must not render for a build backend:\n{frame}"
+        !frame.contains("Device files:"),
+        "the dual-pane browser's device title must not render for a build backend:\n{frame}"
     );
     assert!(
         !frame.contains("Device files:"),
@@ -253,7 +253,7 @@ fn dashboard_shows_the_file_browser_in_row_two_for_a_filesystem_backend() {
     let frame = render(&mut app, 100, 30);
 
     assert!(
-        frame.contains("Local"),
+        frame.contains("Project files:"),
         "missing the local file pane:\n{frame}"
     );
     assert!(
@@ -298,7 +298,10 @@ fn dashboard_shows_the_working_directory_and_backend() {
     let mut app = app_with_backend(BackendKind::MicroPython);
     let frame = render(&mut app, 120, 30);
 
-    assert!(frame.contains("root:"), "missing root field:\n{frame}");
+    assert!(
+        frame.contains("Projects base"),
+        "the project questions must render:\n{frame}"
+    );
     assert!(frame.contains("MicroPython"), "missing backend:\n{frame}");
     assert!(
         !frame.contains("source:"),

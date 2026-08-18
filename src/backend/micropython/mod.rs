@@ -11,6 +11,7 @@ pub mod curl;
 pub mod esptool;
 pub mod firmware;
 pub mod parse;
+pub mod projects;
 
 use crate::backend::{Backend, BackendKind, Capabilities, Capability};
 use crate::project::{DirScan, Signal};
@@ -93,6 +94,10 @@ impl Backend for MicroPythonBackend {
 
     fn capabilities(&self) -> Capabilities {
         // SPEC.md §6: no build step --- MicroPython runs source directly.
+        // `ProjectSelect` here means the same as for Zephyr: the projects
+        // live in a user-chosen folder (`[micropython] projects`), so the
+        // Project pane asks where and which one, and a pick re-roots the
+        // file browser's local side (session-only).
         Capabilities::from_slice(&[
             Capability::Upload,
             Capability::Download,
@@ -105,6 +110,7 @@ impl Backend for MicroPythonBackend {
             Capability::PackageInstall,
             Capability::Flash,
             Capability::EraseFlash,
+            Capability::ProjectSelect,
         ])
     }
 

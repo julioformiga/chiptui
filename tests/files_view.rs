@@ -923,10 +923,12 @@ fn app_in_browser(project: &Project) -> App {
 fn the_browser_renders_both_panes_with_comparison_markers() {
     let project = Project::new("render");
     let mut app = app_in_browser(&project);
-    let frame = render(&mut app, 110, 24);
+    // 132 columns: the footer's middle-dropping fits every hint including
+    // the new ctrl+p row at smaller widths.
+    let frame = render(&mut app, 132, 24);
 
     assert!(
-        frame.contains("Local files:"),
+        frame.contains("Project files:"),
         "missing local pane:\n{frame}"
     );
     assert!(

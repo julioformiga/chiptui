@@ -392,6 +392,26 @@ pub fn save_projects(config: &Path, dir: &Path) -> std::io::Result<()> {
     save_zephyr_key(config, "projects", &dir.display().to_string())
 }
 
+/// Reads `[micropython] projects` from the user config, raw --- `~` is left
+/// for the caller to expand against a home it may have redirected. User
+/// config only: a MicroPython project pins no environment of its own, so
+/// there is no project-level half to honor (unlike `[zephyr]`).
+pub fn mpy_projects_raw(config_dir: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(user_config_path(config_dir)).ok()?;
+    section_value(&text, "micropython", "projects")
+}
+
+/// Persists `projects = dir` into the `[micropython]` section, the same
+/// one-line replace-or-insert shape as [`save_projects`].
+pub fn save_mpy_projects(config: &Path, dir: &Path) -> std::io::Result<()> {
+    save_key(
+        config,
+        "micropython",
+        "projects",
+        &dir.display().to_string(),
+    )
+}
+
 fn save_zephyr_key(config: &Path, key: &str, value: &str) -> std::io::Result<()> {
     save_key(config, "zephyr", key, value)
 }
@@ -999,5 +1019,27 @@ mod tests {
             updated,
             "[zephyr]\nworkspace = \"/ws\"\nprojects = \"/opt/apps\"\n"
         );
+    }
+
+    #[test]
+    fn micropython_projects_round_trip_without_disturbing_zephyr() {
+        let dir = std::env::temp_dir().join(format!("chiptui-mpycfg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = user_config_path(&dir);
+        std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+        std::fs::write(&config, "[zephyr]\nprojects = \"/ws-apps\"\n").unwrap();
+
+        save_mpy_projects(&config, Path::new("/opt/mpy-apps")).unwrap();
+        let text = std::fs::read_to_string(&config).unwrap();
+        assert_eq!(
+            text,
+            "[zephyr]\nprojects = \"/ws-apps\"\n\n[micropython]\nprojects = \"/opt/mpy-apps\"\n",
+            "the Zephyr section survives untouched:\n{text}"
+        );
+
+        let raw = mpy_projects_raw(&dir);
+        assert_eq!(raw.as_deref(), Some("/opt/mpy-apps"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

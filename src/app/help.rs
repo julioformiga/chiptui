@@ -88,10 +88,6 @@ pub struct Site {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum When {
     Always,
-    /// The workspace pane's embedded file list (vs the checklist above it).
-    WorkspaceFiles,
-    /// The workspace pane's checklist (vs the file list below it).
-    WorkspaceChecklist,
     /// A script is running on the device (`ctrl+c` interrupts it instead
     /// of quitting).
     RunActive,
@@ -112,7 +108,6 @@ pub enum When {
 pub struct Context {
     pub focus: Focus,
     pub caps: Capabilities,
-    pub workspace_files: bool,
     pub run_active: bool,
     pub run_view: bool,
     pub log_tab: LogTab,
@@ -132,8 +127,6 @@ impl When {
     fn matches(self, ctx: &Context) -> bool {
         match self {
             When::Always => true,
-            When::WorkspaceFiles => ctx.workspace_files,
-            When::WorkspaceChecklist => !ctx.workspace_files,
             When::RunActive => ctx.run_active,
             When::RunView => ctx.run_view,
             When::LogTab => ctx.log_tab == LogTab::Log,
@@ -219,11 +212,16 @@ const FILES: &[Focus] = &[Focus::FilesLocal, Focus::FilesDevice];
 /// rows, 50..=59 the dashboard-wide commands, 60..=69 the Logs extras,
 /// 70..=72 the tail every context keeps. Flash screens reuse the same
 /// bands per screen (their sites never co-match).
-const DASHBOARD_NAVIGATION: [HelpBinding; 8] = [
+const DASHBOARD_NAVIGATION: [HelpBinding; 9] = [
     sited(
         "tab / shift+tab",
         "move focus between panes",
         &[site("tab", "focus", 0, ANY_FOCUS, &[], When::Always)],
+    ),
+    sited(
+        "ctrl+p",
+        "focus the Project pane (off the tab tour)",
+        &[site("ctrl+p", "project", 1, ANY_FOCUS, &[], When::Always)],
     ),
     sited(
         "↑ ↓ / k j",
@@ -233,7 +231,7 @@ const DASHBOARD_NAVIGATION: [HelpBinding; 8] = [
                 "↑/↓",
                 "select",
                 10,
-                &[Focus::Workspace, Focus::Build],
+                &[Focus::Project, Focus::Workspace, Focus::Build],
                 &[],
                 When::Always,
             ),
@@ -285,14 +283,7 @@ const DASHBOARD_COMMANDS: [HelpBinding; 20] = [
         KeyCode::Char('r'),
         &[
             site("r", "reload", 13, FILES, &[], When::Always),
-            site(
-                "r",
-                "rename",
-                15,
-                &[Focus::Workspace],
-                &[],
-                When::WorkspaceFiles,
-            ),
+            site("r", "rename", 15, &[Focus::Workspace], &[], When::Always),
             site("r", "re-detect", 10, &[Focus::Logs], &[], When::Always),
         ],
     ),
@@ -333,16 +324,9 @@ const DASHBOARD_COMMANDS: [HelpBinding; 20] = [
                 11,
                 &[Focus::Workspace],
                 &[],
-                When::WorkspaceFiles,
+                When::Always,
             ),
-            site(
-                "enter",
-                "answer",
-                11,
-                &[Focus::Workspace],
-                &[],
-                When::WorkspaceChecklist,
-            ),
+            site("enter", "answer", 11, &[Focus::Project], &[], When::Always),
         ],
     ),
     action(
@@ -355,7 +339,7 @@ const DASHBOARD_COMMANDS: [HelpBinding; 20] = [
             12,
             &[Focus::Workspace],
             &[],
-            When::WorkspaceFiles,
+            When::Always,
         )],
     ),
     action(
@@ -368,7 +352,7 @@ const DASHBOARD_COMMANDS: [HelpBinding; 20] = [
             13,
             &[Focus::Workspace],
             &[],
-            When::WorkspaceFiles,
+            When::Always,
         )],
     ),
     action(
@@ -377,14 +361,7 @@ const DASHBOARD_COMMANDS: [HelpBinding; 20] = [
         KeyCode::Char('a'),
         &[
             site("a", "new", 14, FILES, &[], When::Always),
-            site(
-                "a",
-                "new",
-                14,
-                &[Focus::Workspace],
-                &[],
-                When::WorkspaceFiles,
-            ),
+            site("a", "new", 14, &[Focus::Workspace], &[], When::Always),
         ],
     ),
     action(
@@ -856,6 +833,7 @@ mod tests {
             Capability::EraseFlash,
             Capability::DeviceInfo,
             Capability::PackageInstall,
+            Capability::ProjectSelect,
         ])
     }
 
@@ -878,7 +856,6 @@ mod tests {
         Context {
             focus,
             caps,
-            workspace_files: false,
             run_active: false,
             run_view: false,
             log_tab: LogTab::Log,
@@ -899,6 +876,7 @@ mod tests {
             files,
             vec![
                 ("tab", "focus"),
+                ("ctrl+p", "project"),
                 ("enter", "menu"),
                 ("→", "descend"),
                 ("←/bksp", "up"),
@@ -931,8 +909,8 @@ mod tests {
         assert_eq!(
             footer_keys(View::Dashboard, &logs),
             vec![
-                "tab", "r", "d", "o", "t", "x", "m", "shift+r", "←/→", "ctrl+c", "s", "↑/↓",
-                "shift+p", "?", "q",
+                "tab", "ctrl+p", "r", "d", "o", "t", "x", "m", "shift+r", "←/→", "ctrl+c", "s",
+                "↑/↓", "shift+p", "?", "q",
             ]
         );
 
@@ -946,24 +924,25 @@ mod tests {
         assert_eq!(
             footer_keys(View::Dashboard, &ctx(zephyr(), Focus::Build)),
             vec![
-                "tab", "↑/↓", "enter", "d", "o", "t", "x", "m", "shift+p", "?", "q",
+                "tab", "ctrl+p", "↑/↓", "enter", "d", "o", "t", "x", "m", "shift+p", "?", "q",
             ]
         );
 
-        // The workspace pane's two regions.
-        let mut checklist = ctx(zephyr(), Focus::Workspace);
+        // The project-files pane (all of it, now that the checklist moved
+        // to the Project pane).
         assert_eq!(
-            footer_keys(View::Dashboard, &checklist),
+            footer_keys(View::Dashboard, &ctx(zephyr(), Focus::Workspace)),
             vec![
-                "tab", "↑/↓", "enter", "d", "o", "t", "x", "m", "shift+p", "?", "q",
+                "tab", "ctrl+p", "↑/↓", "enter", "v", "del", "a", "r", "d", "o", "t", "x", "m",
+                "shift+p", "?", "q",
             ]
         );
-        checklist.workspace_files = true;
+
+        // The Project pane: the questions' own grammar.
         assert_eq!(
-            footer_keys(View::Dashboard, &checklist),
+            footer_keys(View::Dashboard, &ctx(zephyr(), Focus::Project)),
             vec![
-                "tab", "↑/↓", "enter", "v", "del", "a", "r", "d", "o", "t", "x", "m", "shift+p",
-                "?", "q",
+                "tab", "ctrl+p", "↑/↓", "enter", "d", "o", "t", "x", "m", "shift+p", "?", "q",
             ]
         );
     }
@@ -1020,31 +999,29 @@ mod tests {
         // render the same key twice. Walk every context shape.
         for caps in [micropython(), zephyr(), Capabilities::empty()] {
             for focus in [
+                Focus::Project,
                 Focus::FilesLocal,
                 Focus::FilesDevice,
                 Focus::Workspace,
                 Focus::Build,
                 Focus::Logs,
             ] {
-                for workspace_files in [false, true] {
-                    for run_active in [false, true] {
-                        for run_view in [false, true] {
-                            for log_tab in [LogTab::Log, LogTab::Monitor] {
-                                let mut context = ctx(caps, focus);
-                                context.workspace_files = workspace_files;
-                                context.run_active = run_active;
-                                context.run_view = run_view;
-                                context.log_tab = log_tab;
-                                let keys = footer_keys(View::Dashboard, &context);
-                                let mut sorted = keys.clone();
-                                sorted.sort_unstable();
-                                sorted.dedup();
-                                assert_eq!(
-                                    keys.len(),
-                                    sorted.len(),
-                                    "duplicate label: {keys:?} (focus {focus:?}, files {workspace_files})"
-                                );
-                            }
+                for run_active in [false, true] {
+                    for run_view in [false, true] {
+                        for log_tab in [LogTab::Log, LogTab::Monitor] {
+                            let mut context = ctx(caps, focus);
+                            context.run_active = run_active;
+                            context.run_view = run_view;
+                            context.log_tab = log_tab;
+                            let keys = footer_keys(View::Dashboard, &context);
+                            let mut sorted = keys.clone();
+                            sorted.sort_unstable();
+                            sorted.dedup();
+                            assert_eq!(
+                                keys.len(),
+                                sorted.len(),
+                                "duplicate label: {keys:?} (focus {focus:?})"
+                            );
                         }
                     }
                 }

@@ -376,6 +376,17 @@ interaction.
 The TUI should avoid reimplementing the MicroPython serial protocol in
 the MVP.
 
+### Projects folder and project selection
+
+MicroPython makes the project a question the same way Zephyr does (under
+`ProjectSelect`, §6): a **projects folder** (`[micropython] projects`, user
+config only --- a MicroPython project pins no environment of its own) and a
+**project** picked from its immediate subdirectories. MicroPython runs
+source directly, so any subdirectory is a project: the picker marks none
+and refuses none. The pick is session-only and re-roots the file browser's
+local pane (§9's `src/` convention applies inside the picked project);
+nothing is written.
+
 ### Filesystem
 
 The local side of the dual-pane browser (§11) opens on the project's `src/`
@@ -558,7 +569,7 @@ one is being built is never guessed:
 
 1.  the **projects folder** (`[zephyr] projects`) holds the user's
     applications --- any directory, resolved from the same two config
-    levels as `workspace`. Unset, the workspace pane's chooser (a
+    levels as `workspace`. Unset, the Project pane's chooser (a
     directory picker, validated by existence only) answers it and saves
     the pick the same way;
 2.  the **project** is an immediate subdirectory of that folder, chosen in
@@ -579,8 +590,8 @@ one is being built is never guessed:
     hand-picked board survives the re-root, and the new project's own
     saved answers (below) are re-applied. The lifecycle buttons stay
     dimmed in the project panel until both answers exist --- the questions
-    themselves are asked in the workspace pane's checklist, below
-    `Projects Base`.
+    themselves are asked in row 1's Project pane checklist, below
+    `Projects base`.
 
 The optional keys, shared by both config levels:
 
@@ -640,8 +651,10 @@ A shield (an add-on board) is optional: the target builds without one.
 When chosen, the shield enters the build's first configuration as
 `--shield`; a pick must not silently modify project configuration.
 
-> **Status**: implemented. The workspace pane's `Shield` row (right under
-> the board) opens the same filterable picker over a background `west
+> **Status**: implemented. The Project pane's target row --- the board
+> with the shield riding on the same line, `←`/`→` switching which half
+> `Enter` acts on --- opens the same filterable picker over a background
+> `west
 > shields` fetch, with a leading `(none)` row --- that is how a pick
 > clears. The answer is saved beside the board in the registry entry and
 > reloads with it (clearing persists too), and `west build` /
@@ -739,33 +752,35 @@ one-line contextual shortcut footer:
 
 - **Row 1** --- Project and Device, side by side, both a fixed four content rows (shorter
   content is padded with blanks) so the rows below never shift when a workspace resolves or
-  device details accumulate. The Project pane reports the state being
-  built against: `root` (following the project picker's answer for a backend that makes the
-  project a question; a working directory the search climbed from rides the same line as a
-  muted suffix), `type`, the environment `versions` (Zephyr and venv Python, read from
-  files once a workspace resolves) and `tools` availability.
+  device details accumulate. The Project pane is the checklist the environment's questions
+  live in --- navigable through `ctrl+p` (a deliberate detour off the `Tab` tour: the pane
+  holds questions, not work; `Tab` leaves it back onto the tour, a second `ctrl+p` returns
+  to wherever focus was, and the cursor lands on the first question still open). Zephyr asks
+  `Zephyr path`, `Projects base`, `Project path`, then `Board` with its optional `Shield`
+  riding the same line (`←`/`→` switch which half `Enter` acts on); MicroPython (under
+  `ProjectSelect`) asks `Projects base` (`[micropython] projects`) and `Project path` (a
+  session-only pick that re-roots the file browser's local pane), then reports `Entry`
+  (`main.py`/`boot.py` presence) and `MPy` (the board's version, read off the REPL banner
+  the probe/monitor already sees). Every row is a `□` while open, a `✓` once answered, a
+  red `✗` when a configured answer fails validation. The environment's `versions` (Zephyr
+  and venv Python, read from files) ride the pane's bottom border's right edge once a
+  workspace resolves --- a late-arriving fact that costs no content row; missing tool
+  availability shows in the header as a red `⚠ N` beside the backend name (names in the
+  log warning).
 - **Row 2** --- the dual-pane local/device file browser, shown whenever the selected backend
   declares `Capability::Filesystem`; for a backend that builds without a device filesystem
-  (today: Zephyr) the whole row is the pair **Workspace | Project actions**: the environment
-  pane (§10's workspace/venv/SDK environment, `west update`, `west sdk list`) beside the
-  project panel (the build lifecycle). The workspace pane is a checklist first --- every
-  prerequisite asked in answering order: `Zephyr Base`, then `Projects Base`, then `Project
-  path`, then `Board` (a `□` while open, a `✓` once answered, a red `✗` when a configured
-  answer fails validation) --- before a horizontal separator and the operation buttons they
-  gate; the buttons are a
-  monochrome custom widget --- a stacked group sharing one rounded border, one centered icon
-  label per row with a divider between them, the frame in the theme's muted color --- that stays
-  visible but dimmed
-  until the answers exist, with
-  the selection highlighting only the button's own row. The project panel is buttons only
+  (today: Zephyr) the whole row is the pair **Project files | Project actions**: the
+  project's own file list (the pane's title carries the walked path,
+  `Project files: name/src/`; no action menu --- `Enter` descends or hands a text file to
+  `$EDITOR`, `v` views, `Del` asks, `a` creates, `r` renames) beside the
+  project panel (the build lifecycle). The project panel is buttons only
   (`west update`, `west sdk list`, menuconfig, the lifecycle, flash) over a three-row footer
   that is always reserved --- the pane's height never changes when a command starts --- and
   splits horizontally while one runs: the build status on the left half, a `Stop` button
-  (same widget, half the pane's width) on the right. A
-  broken location's reason sits directly under its row, outside the navigation. No file
-  listing for such a backend --- editing the project's own sources is
-  the user's editor's job; otherwise a single full-width placeholder while no pane exists
-  yet.
+  (same widget, half the pane's width) on the right. No file
+  listing of the environment itself for such a backend --- editing the project's own
+  sources beyond the list is the user's editor's job; otherwise a single full-width
+  placeholder while no pane exists yet.
 - **Row 3** --- a one-line `Log`/`Monitor` tab strip over the selected tab's body, full width.
   `Left`/`Right` switch tabs while row 3 has focus. `Log` is the rolling status/notice feed
   (unchanged). `Monitor` shows whichever live process output the user last asked for: a
@@ -779,12 +794,9 @@ moves focus to row 3's Monitor tab, where its output streams --- there is no sep
 screen inside the dialog.
 
 > **Status**: implemented. Row 2 is capability-driven: the dual-pane file browser for
-> MicroPython; for Zephyr the full row is Workspace (§10's environment resolution as a
-> checklist --- `Zephyr Base`, `Projects Base`, `Project path`, `Board`, a separator, then
-> `west update`/`west sdk list` as stacked boxed buttons enabled once the installation
-> resolves, behind `Capability::WorkspaceSync`; the resolved versions report in row 1's
-> Project pane)
-> | Project actions (`src/build.rs`: the lifecycle buttons only, gated on both answers,
+> MicroPython; for Zephyr the full row is Project files (the project's own listing, the
+> checklist having moved up to row 1's Project pane) | Project actions (`src/build.rs`: the
+> lifecycle buttons only, gated on both answers,
 > streaming into
 > the Monitor tab; commands are quoted by the confirm overlays, not on the rows). The
 > Monitor tab shows the device serial session (`m`), flash/erase output, and build output.

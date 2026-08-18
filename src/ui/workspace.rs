@@ -1,19 +1,21 @@
-//! Workspace-pane rendering: the environment checklist (`Zephyr Base`,
-//! then `Projects Base`) with a broken location's reason right under its
-//! row --- informational, never navigable --- a horizontal separator,
-//! then the embedded project file list filling the rest of the pane
-//! (`crate::ui::files`' row/list grammar, reused so it looks like
-//! MicroPython's own local pane). Selected rows highlight full-width.
+//! Project-files-pane rendering: the backend's shared environment
+//! (Zephyr) owns its *files* here --- the environment's questions moved up
+//! to the Project pane (`crate::ui::panels`), so the whole pane is the
+//! listing (`crate::ui::files`' row/list grammar, reused so it looks like
+//! MicroPython's own local pane), with the walked path in the pane's own
+//! title. Selected rows highlight full-width. The checklist-row grammar
+//! helpers the Project pane now renders live here too (they grew in this
+//! module and both panes share them).
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style, Stylize};
+use ratatui::style::{Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
 
 use crate::app::{App, Focus};
 use crate::ui::{Palette, dashboard_focused, muted_style, pane_block, selection_style, tilde_path};
-use crate::workspace::{WorkspaceAction, WorkspacePanel};
+use crate::workspace::WorkspacePanel;
 
 /// Draws the full second row for a workspace+build backend: the workspace
 /// pane on the left, the project panel (already its own module) on the right.
@@ -25,237 +27,68 @@ pub fn draw_row(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
 }
 
 pub fn draw(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
-    if app.workspace.is_none() {
-        return;
-    }
-    let focused = dashboard_focused(app, Focus::Workspace);
-    let block = pane_block("Workspace", focused, palette);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    draw_rows(frame, inner, app, palette);
-}
-
-fn draw_rows(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
     let Some(panel) = &app.workspace else {
         return;
     };
-    let caps = app.manager.capabilities();
-    let actions = panel.actions(&caps);
-    let mut y = area.y;
-    for (position, action) in actions.iter().enumerate() {
-        // Frozen at wherever the checklist cursor was left while the user is
-        // down in the file list --- it must not also draw as selected then.
-        let selected = !panel.in_files && panel.cursor == position;
-        match action {
-            WorkspaceAction::Choose => {
-                y = render_row(
-                    frame,
-                    area,
-                    y,
-                    checklist_row(
-                        panel.resolved.is_some(),
-                        panel.invalid.is_some(),
-                        "Zephyr Base",
-                        answer_value(
-                            panel
-                                .resolved
-                                .as_ref()
-                                .map(|workspace| tilde_path(&workspace.dir, app.home_dir())),
-                            panel.invalid.is_some(),
-                            area.width,
-                            palette,
-                        ),
-                        palette,
-                    ),
-                    selected,
-                    palette,
-                );
-                // A broken location's reason sits directly under its row,
-                // wrapped so the install guide link survives. Not part of
-                // the navigation --- the cursor never lands here.
-                if let Some(message) = &panel.invalid {
-                    y = render_info(frame, area, y, message.clone().fg(palette.error), 4);
-                }
-            }
-            WorkspaceAction::Projects => {
-                y = render_row(
-                    frame,
-                    area,
-                    y,
-                    checklist_row(
-                        panel.projects.is_some(),
-                        panel.projects_invalid.is_some(),
-                        "Projects Base",
-                        answer_value(
-                            panel
-                                .projects
-                                .as_ref()
-                                .map(|dir| tilde_path(dir, app.home_dir())),
-                            panel.projects_invalid.is_some(),
-                            area.width,
-                            palette,
-                        ),
-                        palette,
-                    ),
-                    selected,
-                    palette,
-                );
-            }
-            WorkspaceAction::Project => {
-                // The build panel owns the answer; the question is asked
-                // here, beside the other prerequisites.
-                let project_ok = app.project_gate_ok();
-                y = render_row(
-                    frame,
-                    area,
-                    y,
-                    checklist_row(
-                        project_ok,
-                        false,
-                        "Project path",
-                        answer_value(
-                            project_ok.then(|| {
-                                format!(
-                                    "{} · {}",
-                                    tilde_path(&app.build.as_ref().unwrap().root, app.home_dir()),
-                                    app.build.as_ref().unwrap().project_origin.label()
-                                )
-                            }),
-                            false,
-                            area.width,
-                            palette,
-                        ),
-                        palette,
-                    ),
-                    selected,
-                    palette,
-                );
-            }
-            WorkspaceAction::Board => {
-                // The board name is the row's identity: the origin suffix
-                // rides along only when the whole thing fits, never at the
-                // name's expense.
-                let budget = value_budget(area.width);
-                let value = app.build.as_ref().and_then(|panel| {
-                    panel.board.as_ref().map(|choice| {
-                        let origin = match choice.origin {
-                            crate::build::BoardOrigin::Picked => "picked",
-                            crate::build::BoardOrigin::Config => "saved",
-                            crate::build::BoardOrigin::Cache => "from build/",
-                        };
-                        let name = choice.name.clone();
-                        let suffix = format!(" · {origin}");
-                        if name.chars().count() + suffix.chars().count() <= budget {
-                            format!("{name}{suffix}")
-                        } else {
-                            name
-                        }
-                    })
-                });
-                y = render_row(
-                    frame,
-                    area,
-                    y,
-                    checklist_row(
-                        value.is_some(),
-                        false,
-                        "Board",
-                        answer_value(value, false, area.width, palette),
-                        palette,
-                    ),
-                    selected,
-                    palette,
-                );
-            }
-            WorkspaceAction::Shield => {
-                // The optional answer under the board it rides on: a picked
-                // name shows like any other answer, while "none" is stated
-                // as such rather than left as an open question --- the
-                // shield is the one checklist row whose empty answer is
-                // valid.
-                let shield = app.build.as_ref().and_then(|panel| panel.shield.clone());
-                let value = match shield {
-                    Some(name) => answer_value(Some(name), false, area.width, palette),
-                    None => Span::styled("none (optional)", muted_style(palette)),
-                };
-                let done = app
-                    .build
-                    .as_ref()
-                    .is_some_and(|panel| panel.shield.is_some());
-                y = render_row(
-                    frame,
-                    area,
-                    y,
-                    checklist_row(done, false, "Shield", value, palette),
-                    selected,
-                    palette,
-                );
-            }
-        }
-    }
-    y = separator(frame, area, y, palette);
-    draw_files_section(frame, area, y, app, panel, palette);
+    let focused = dashboard_focused(app, Focus::Workspace);
+    // The pane's own title is the walked path the old embedded bar carried
+    // ("blinkety/src/"): with the checklist moved up to the Project pane,
+    // the bar would sit between two borders saying nothing, so the border
+    // says it instead and the listing gets the whole pane. The prefix never
+    // truncates --- only the path shortens, from the left (17 is
+    // "Project files: " plus the title's own padding spaces).
+    let title = format!(
+        "Project files: {}",
+        shorten_start(
+            &files_title(panel, app),
+            area.width.saturating_sub(17) as usize
+        )
+    );
+    let block = pane_block(&title, focused, palette);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    draw_files_section(frame, inner, app, panel, palette);
 }
 
-/// The embedded file list under the checklist: a title bar --- the project's
-/// own name, concatenated with the path walked below it ("blinkety/",
-/// "blinkety/src/"), highlighted with the theme's selection background so it
-/// reads as a bar, distinct from the listing under it --- then entries
-/// filling the rest of the pane, the same `row`/`render_list` grammar
-/// `crate::ui::files` draws for MicroPython's local pane, reused with no
-/// comparison status (`row`'s `None` arm draws no marker column at all ---
-/// this pane has no other side to compare against), so an empty listing, an
-/// overlong name and a directory marker read identically here. A below-root
-/// listing leads with a `[..]` parent row (see
-/// [`WorkspacePanel::parent_row`]).
-fn draw_files_section(
-    frame: &mut Frame,
-    area: Rect,
-    y: u16,
-    app: &App,
-    panel: &WorkspacePanel,
-    palette: Palette,
-) {
-    if y >= area.bottom() {
-        return;
-    }
+/// The pane title's walked path: the project's own name concatenated with
+/// the directories descended below it, always slash-terminated --- the same
+/// shape MicroPython's local pane's title follows now.
+fn files_title(panel: &WorkspacePanel, app: &App) -> String {
     let project = panel
         .files_root
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| tilde_path(&panel.files_root, app.home_dir()));
-    let title = panel
+    panel
         .files_path
         .strip_prefix(&panel.files_root)
         .ok()
         .filter(|relative| !relative.as_os_str().is_empty())
         .map(|relative| format!("{project}/{}/", relative.display()))
-        .unwrap_or(format!("{project}/"));
-    // Padded to the full row so the background fills the bar edge to edge.
-    let text = shorten_start(&title, area.width as usize);
-    let padding = (area.width as usize).saturating_sub(text.chars().count());
-    let header = Line::from(format!("{text}{}", " ".repeat(padding))).style(
-        Style::new()
-            .bg(palette.selection)
-            .fg(palette.fg)
-            .add_modifier(Modifier::BOLD),
-    );
-    let y = render_row(frame, area, y, header, false, palette);
-    if y >= area.bottom() {
-        return;
-    }
+        .unwrap_or(format!("{project}/"))
+}
 
-    let list_area = Rect {
-        x: area.x,
-        y,
-        width: area.width,
-        height: area.bottom() - y,
-    };
+/// The project's files, filling the whole pane now that the checklist
+/// moved up to the Project pane: the same `row`/`render_list` grammar
+/// `crate::ui::files` draws for MicroPython's local pane, reused with no
+/// comparison status (`row`'s `None` arm draws no marker column at all ---
+/// this pane has no other side to compare against), so an empty listing, an
+/// overlong name and a directory marker read identically here. A below-root
+/// listing leads with a `[..]` parent row (see
+/// [`WorkspacePanel::parent_row`]); the walked path lives in the pane's own
+/// title (see [`files_title`]).
+fn draw_files_section(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    panel: &WorkspacePanel,
+    palette: Palette,
+) {
     if let Some(error) = &panel.files_error {
         frame.render_widget(
             Paragraph::new(error.clone().fg(palette.error)).wrap(Wrap { trim: true }),
-            list_area,
+            area,
         );
         return;
     }
@@ -267,12 +100,7 @@ fn draw_files_section(
     let mut items = Vec::with_capacity(panel.files_row_count());
     if panel.parent_row() {
         items.push(super::files::row(
-            "[..]",
-            true,
-            0,
-            None,
-            list_area.width,
-            palette,
+            "[..]", true, 0, None, area.width, palette,
         ));
     }
     items.extend(panel.visible_files().iter().map(|entry| {
@@ -281,24 +109,26 @@ fn draw_files_section(
             entry.is_dir,
             entry.size,
             None,
-            list_area.width,
+            area.width,
             palette,
         )
     }));
-    let cursor = panel.in_files.then_some(panel.files_cursor);
-    super::files::render_list(frame, list_area, items, cursor, focused, palette);
+    let cursor = Some(panel.files_cursor);
+    super::files::render_list(frame, area, items, cursor, focused, palette);
 }
 
 /// One checklist row: `✓` when the answer exists, a dim `□` while the
 /// question is still open (the mark that says *this needs defining*), a
 /// red `✗` when a configured one failed validation --- then the label,
-/// then the answer itself. Shared with the project panel --- one
-/// checklist grammar across the row.
-pub(super) fn checklist_row(
+/// then the answer itself. The value is a whole [`Line`], so a row whose
+/// answer needs several styled spans (the Project pane's target row) uses
+/// the same grammar. Shared with the project panel --- one checklist
+/// grammar across the rows.
+pub(crate) fn checklist_row(
     done: bool,
     broken: bool,
     label: &str,
-    value: Span<'static>,
+    value: Line<'static>,
     palette: Palette,
 ) -> Line<'static> {
     let mark = if broken {
@@ -308,38 +138,44 @@ pub(super) fn checklist_row(
     } else {
         Span::styled("□", muted_style(palette))
     };
-    Line::from(vec![
+    let mut spans = vec![
         mark,
         Span::raw(" "),
-        Span::styled(format!("{label:<15}"), Style::new().fg(palette.fg).bold()),
-        value,
-    ])
+        Span::styled(format!("{label:<13}"), Style::new().fg(palette.fg).bold()),
+        Span::raw(" "),
+    ];
+    spans.extend(value.spans);
+    Line::from(spans)
 }
 
 /// The right-hand side of a checklist row: the answer when there is one,
 /// a red `!` when a configured one failed validation, a yellow `?` while
 /// the question is open.
-pub(super) fn answer_value(
+pub(crate) fn answer_value(
     answer: Option<String>,
     broken: bool,
     width: u16,
     palette: Palette,
-) -> Span<'static> {
+) -> Line<'static> {
     if let Some(answer) = answer {
-        shorten_start(&answer, value_budget(width))
-            .fg(palette.success)
-            .bold()
+        Line::from(
+            shorten_start(&answer, value_budget(width))
+                .fg(palette.success)
+                .bold(),
+        )
     } else if broken {
-        "!".fg(palette.error).bold()
+        Line::from("!".fg(palette.error).bold())
     } else {
-        "?".fg(palette.warning).bold()
+        Line::from("?".fg(palette.warning).bold())
     }
 }
 
-/// Characters a checklist row's value may occupy: the mark, the space and
-/// the 15-column label take 17.
-pub(super) fn value_budget(width: u16) -> usize {
-    (width as usize).saturating_sub(17).max(8)
+/// Characters a checklist row's value may occupy: the mark, the two
+/// spaces and the 13-column label (`Projects base`, the longest) take 16.
+/// The merged Board · Shield row needs the room most: its two names and
+/// their separator share this budget.
+pub(crate) fn value_budget(width: u16) -> usize {
+    (width as usize).saturating_sub(16).max(8)
 }
 
 /// The muted key a pane's pinned last line labels itself with (`state`,
@@ -351,7 +187,7 @@ pub(super) fn label(text: &str, palette: Palette) -> Span<'static> {
 /// Renders one navigable row, full-width in the theme's selection colors
 /// when selected, and returns the next row's y. Rows past the pane's bottom
 /// are dropped.
-pub(super) fn render_row(
+pub(crate) fn render_row(
     frame: &mut Frame,
     area: Rect,
     y: u16,
@@ -374,46 +210,6 @@ pub(super) fn render_row(
         frame.render_widget(line, rect);
     }
     y + 1
-}
-
-/// The horizontal rule between the checklist and the buttons: the
-/// prerequisite questions and the operations they unlock are different
-/// kinds of rows, and the line says so at a glance.
-pub(super) fn separator(frame: &mut Frame, area: Rect, y: u16, palette: Palette) -> u16 {
-    if y >= area.bottom() {
-        return y;
-    }
-    let rect = Rect {
-        x: area.x,
-        y,
-        width: area.width,
-        height: 1,
-    };
-    frame.render_widget(
-        Paragraph::new(Line::from("─".repeat(area.width as usize)).fg(palette.muted)),
-        rect,
-    );
-    y + 1
-}
-
-/// Renders a non-navigable info block (up to `height` wrapped lines)
-/// under a checklist row, returning the next row's y.
-fn render_info(frame: &mut Frame, area: Rect, y: u16, span: Span<'static>, height: u16) -> u16 {
-    let height = height.min(area.bottom().saturating_sub(y));
-    if height == 0 {
-        return y;
-    }
-    let rect = Rect {
-        x: area.x,
-        y,
-        width: area.width,
-        height,
-    };
-    frame.render_widget(
-        Paragraph::new(Line::from(span)).wrap(Wrap { trim: false }),
-        rect,
-    );
-    y + height
 }
 
 /// Shortens from the left: a path's tail (its distinctive part) matters

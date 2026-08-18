@@ -498,6 +498,9 @@ impl App {
         self.firmware_probe_port = None;
         self.firmware_probe_ask_pending = false;
         self.firmware_probe_pending = false;
+        // The version banner is as much the departed board's answer as the
+        // identity above; a replug must re-answer, not inherit.
+        self.mpy_version = None;
         if let Some(flash) = &mut self.flash {
             flash.clear_device_details();
         }

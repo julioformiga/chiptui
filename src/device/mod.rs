@@ -145,6 +145,19 @@ fn is_banner(line: &str) -> bool {
         || line.starts_with("Type \"help()\" for more information")
 }
 
+/// The board's MicroPython version, read off the REPL banner it prints on
+/// connect (`MicroPython v1.28.0 on 2025-…; board` → `v1.28.0`). The version
+/// stops at the first space, so daily builds (`v1.25.0-123.g…`) keep their
+/// full identifier. `None` when no banner was seen --- the honest answer
+/// until the probe or the monitor has connected once.
+pub fn micropython_version(lines: &[String]) -> Option<String> {
+    lines.iter().find_map(|line| {
+        let rest = line.trim().strip_prefix("MicroPython v")?;
+        let version = rest.split_whitespace().next()?;
+        (!version.is_empty()).then(|| format!("v{version}"))
+    })
+}
+
 /// What the device manager currently knows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiscoveryState {
@@ -589,5 +602,27 @@ mod tests {
             ">>> ".into(),
         ];
         assert_eq!(monitor_script_activity(&lines), Some(ScriptState::Stopped));
+    }
+
+    #[test]
+    fn the_version_comes_off_the_banner() {
+        let lines: Vec<String> = vec![
+            "Connected to MicroPython at /dev/ttyACM0".into(),
+            "MicroPython v1.28.0 on 2026-08-14; ESP32 board with ESP32S3".into(),
+            "Type \"help()\" for more information.".into(),
+        ];
+        assert_eq!(micropython_version(&lines).as_deref(), Some("v1.28.0"));
+        // A daily build keeps its full identifier up to the first space.
+        let daily: Vec<String> = vec!["MicroPython v1.25.0-123.gabc on zephyr".into()];
+        assert_eq!(
+            micropython_version(&daily).as_deref(),
+            Some("v1.25.0-123.gabc")
+        );
+        assert_eq!(micropython_version(&[]), None);
+        assert_eq!(
+            micropython_version(&["no banner here".to_string()]),
+            None,
+            "only the version header counts"
+        );
     }
 }

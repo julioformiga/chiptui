@@ -473,19 +473,39 @@ impl App {
                 selected,
                 error,
             } => self.on_dir_picker_key(key, purpose, path, selected, error),
-            Overlay::ProjectPicker { selected, error } => {
+            Overlay::ProjectPicker {
+                mpy,
+                selected,
+                error,
+            } => {
                 // Same grammar as the other pickers: arrows walk the rows,
                 // Enter accepts, Esc leaves. Navigation clears a previous
                 // error --- it described a row that is no longer selected.
-                let count = self
-                    .workspace
-                    .as_ref()
-                    .and_then(|panel| panel.projects.as_ref())
-                    .map(|dir| crate::backend::zephyr::projects::project_rows(dir).0.len())
-                    .unwrap_or(0)
-                    .max(1);
+                // The rows themselves come from whichever projects folder
+                // the flavor reads (Zephyr's marked, MicroPython's plain).
+                let count = if mpy {
+                    self.mpy_projects
+                        .as_ref()
+                        .map(|dir| {
+                            crate::backend::micropython::projects::project_rows(dir)
+                                .0
+                                .len()
+                        })
+                        .unwrap_or(0)
+                } else {
+                    self.workspace
+                        .as_ref()
+                        .and_then(|panel| panel.projects.as_ref())
+                        .map(|dir| crate::backend::zephyr::projects::project_rows(dir).0.len())
+                        .unwrap_or(0)
+                }
+                .max(1);
                 let rebuild = |app: &mut Self, selected: usize, error: Option<String>| {
-                    app.overlay = Some(Overlay::ProjectPicker { selected, error });
+                    app.overlay = Some(Overlay::ProjectPicker {
+                        mpy,
+                        selected,
+                        error,
+                    });
                 };
                 match key.code {
                     KeyCode::Esc | KeyCode::Char('q') => self.overlay = None,
@@ -497,6 +517,7 @@ impl App {
                     }
                     KeyCode::Home => rebuild(self, 0, None),
                     KeyCode::End => rebuild(self, count - 1, None),
+                    KeyCode::Enter if mpy => self.apply_mpy_project_picker(selected),
                     KeyCode::Enter => self.apply_project_picker(selected),
                     _ => rebuild(self, selected, error),
                 }

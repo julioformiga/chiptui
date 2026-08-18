@@ -32,6 +32,7 @@ impl App {
     pub fn maybe_scan_devices(&mut self) {
         self.ensure_browser_scanning();
         self.ensure_build_panel();
+        self.ensure_mpy_projects();
         self.maybe_scan_serial_ports();
     }
 
@@ -380,8 +381,14 @@ impl App {
     /// Applies the monitor heuristic to what the live monitor session has
     /// shown so far. The monitor is passive --- it sends nothing unless the
     /// user types --- so this is the one signal that arrives *while* a script
-    /// runs, rather than before or after touching the device.
+    /// runs, rather than before or after touching the device. The banner it
+    /// inevitably prints also refreshes the board's MicroPython version.
     pub(super) fn update_script_from_monitor(&mut self) {
+        // Computed before the mutable use below: the lines are borrowed
+        // immutably here and `self` mutably by the assignment.
+        if let Some(version) = crate::device::micropython_version(&self.device_monitor_output) {
+            self.mpy_version = Some(version);
+        }
         let Some(state) = crate::device::monitor_script_activity(&self.device_monitor_output)
         else {
             return;
@@ -450,6 +457,9 @@ impl App {
             return;
         };
         self.logs.info(format!("device set to {}", device.label()));
+        // The REPL-banner version belonged to whichever board was selected
+        // before; the new board re-answers it through its own probe/monitor.
+        self.mpy_version = None;
 
         // Everything below is the MicroPython follow-through: an mpremote
         // probe and listing. A backend without a filesystem has neither

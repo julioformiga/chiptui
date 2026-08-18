@@ -154,6 +154,9 @@ impl App {
         let Some(probe) = self.probe.take() else {
             return;
         };
+        // The banner the probe just watched carries the board's MicroPython
+        // version --- the one moment it is readable without another session.
+        self.refresh_mpy_version(&probe.lines);
         match probe.concluded.flatten() {
             Some(ScriptState::Running) => {
                 self.logs.warn(

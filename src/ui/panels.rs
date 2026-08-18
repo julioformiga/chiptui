@@ -7,7 +7,7 @@ use ratatui::symbols;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Tabs, Wrap};
 
-use crate::app::{App, Focus, LogTab, MonitorSource};
+use crate::app::{App, Focus, LogTab, MonitorSource, ProjectRow};
 use crate::backend::Capability;
 use crate::flash::RunState;
 use crate::logs::{Level, PREFIX_WIDTH};
@@ -20,7 +20,9 @@ use crate::ui::{
 /// Row 1's fixed content height: the Project and the Device info panes
 /// both render exactly this many lines --- shorter content is padded with
 /// blanks --- in every backend and state, so the rows below never shift
-/// when a workspace resolves or device details accumulate.
+/// when a workspace resolves or device details accumulate. Four: the
+/// device pane's fullest report (chip+crystal, features, MAC, firmware)
+/// is the ceiling the Project pane's questions pad up to.
 pub(super) const INFO_ROWS: usize = 4;
 
 /// Pads an info pane's lines to [`INFO_ROWS`] blank rows.
@@ -35,55 +37,283 @@ fn pad_info(mut lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
     lines
 }
 
-/// Project identity: where it is, what it is, and how sure we are.
+/// Project identity: the environment's open questions, answered in place.
 ///
-/// This pane is informational only --- it never holds focus, so it always
-/// renders with a neutral (non-dimmed) style regardless of which pane is
-/// active.
+/// For a backend that asks any (Zephyr: installation, projects folder,
+/// project, target; MicroPython: projects folder, project, plus the entry
+/// and version reports), the pane is the checklist those questions moved
+/// into --- navigable through `ctrl+p`, never part of the `Tab` tour. A
+/// backend that asks nothing falls back to plain detection info (root and
+/// type). The environment's versions ride the pane's bottom border (right
+/// edge, like the Log tab's status rides the top), so they never cost a
+/// content row.
 pub fn draw_project(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
-    let block = pane_block("Project", false, palette);
-    let lines = project_content(app, area.width as usize, palette);
-    frame.render_widget(
-        Paragraph::new(lines)
-            .block(block)
+    let focused = dashboard_focused(app, Focus::Project);
+    // The pane's own shortcut rides the title --- it is the one pane off
+    // the `Tab` tour, so its way in must be visible where the pane is.
+    let block = pane_block("Project (ctrl+p)", focused, palette);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let rows = app.project_rows();
+    if rows.is_empty() {
+        // No backend asks anything here yet: plain detection info, padded
+        // to the pane's fixed height like the checklist rows would be.
+        frame.render_widget(
+            Paragraph::new(pad_info(detection_fallback(
+                app,
+                inner.width as usize,
+                palette,
+            )))
+            .style(content_style(focused))
             .wrap(Wrap { trim: false }),
-        area,
-    );
+            inner,
+        );
+    } else {
+        let mut y = inner.y;
+        for (position, row) in rows.iter().enumerate() {
+            let selected = focused && app.project_cursor == position;
+            let line = project_row_line(app, *row, inner.width as usize, palette, selected);
+            y = super::workspace::render_row(frame, inner, y, line, selected, palette);
+        }
+    }
+    draw_versions_badge(frame, area, app, palette);
 }
 
-/// Builds the Project pane's content lines, padded to [`INFO_ROWS`] so the
-/// pane --- and row 1 with it --- keeps one fixed height in every backend
-/// and state.
-fn project_content(app: &App, width: usize, palette: Palette) -> Vec<Line<'static>> {
-    let mut lines = Vec::new();
-    let detection = app.manager.detection();
+/// One checklist row of the Project pane, in the shared `✓/□/✗ + label +
+/// answer` grammar (`crate::ui::workspace::checklist_row`); the target row
+/// and the two MicroPython reports build their own values.
+fn project_row_line(
+    app: &App,
+    row: ProjectRow,
+    width: usize,
+    palette: Palette,
+    selected: bool,
+) -> Line<'static> {
+    match row {
+        ProjectRow::ZephyrPath => {
+            let panel = app.workspace.as_ref();
+            super::workspace::checklist_row(
+                panel.is_some_and(|panel| panel.resolved.is_some()),
+                panel.is_some_and(|panel| panel.invalid.is_some()),
+                "Zephyr path",
+                super::workspace::answer_value(
+                    panel
+                        .and_then(|panel| panel.resolved.as_ref())
+                        .map(|workspace| tilde_path(&workspace.dir, app.home_dir())),
+                    panel.is_some_and(|panel| panel.invalid.is_some()),
+                    width as u16,
+                    palette,
+                ),
+                palette,
+            )
+        }
+        ProjectRow::ProjectsBase => {
+            let panel = app.workspace.as_ref();
+            super::workspace::checklist_row(
+                panel.is_some_and(|panel| panel.projects.is_some()),
+                panel.is_some_and(|panel| panel.projects_invalid.is_some()),
+                "Projects base",
+                super::workspace::answer_value(
+                    panel
+                        .and_then(|panel| panel.projects.as_ref())
+                        .map(|dir| tilde_path(dir, app.home_dir())),
+                    panel.is_some_and(|panel| panel.projects_invalid.is_some()),
+                    width as u16,
+                    palette,
+                ),
+                palette,
+            )
+        }
+        ProjectRow::ProjectPath => {
+            let project_ok = app.project_gate_ok();
+            let answer = project_ok.then(|| {
+                format!(
+                    "{} · {}",
+                    tilde_path(&app.build.as_ref().unwrap().root, app.home_dir()),
+                    app.build.as_ref().unwrap().project_origin.label()
+                )
+            });
+            super::workspace::checklist_row(
+                project_ok,
+                false,
+                "Project path",
+                super::workspace::answer_value(answer, false, width as u16, palette),
+                palette,
+            )
+        }
+        ProjectRow::BoardShield => board_shield_row(app, width as u16, palette, selected),
+        ProjectRow::MpyProjectsBase => super::workspace::checklist_row(
+            app.mpy_projects.is_some(),
+            app.mpy_projects_invalid.is_some(),
+            "Projects base",
+            super::workspace::answer_value(
+                app.mpy_projects
+                    .as_ref()
+                    .map(|dir| tilde_path(dir, app.home_dir())),
+                app.mpy_projects_invalid.is_some(),
+                width as u16,
+                palette,
+            ),
+            palette,
+        ),
+        ProjectRow::MpyProjectPath => {
+            let root = tilde_path(&app.mpy_effective_root(), app.home_dir());
+            // The cwd note rides the row only before a pick re-roots the
+            // project: after one, the pick *is* the answer and the launch
+            // directory is history. Same rule the old root row followed ---
+            // a fixed-height pane owes every field its own row.
+            let shows_cwd = app.mpy_root.is_none()
+                && app
+                    .manager
+                    .root()
+                    .is_some_and(|root| root != app.manager.start_dir());
+            let mut value =
+                super::workspace::answer_value(Some(root), false, width as u16, palette);
+            if shows_cwd {
+                let cwd = tilde_path(app.manager.start_dir(), app.home_dir());
+                let take = (width / 3).saturating_sub(7).min(cwd.chars().count());
+                if take > 0 {
+                    value.spans.push(Span::styled(
+                        format!(" (cwd {})", truncate_start(&cwd, take)),
+                        muted_style(palette),
+                    ));
+                }
+            }
+            super::workspace::checklist_row(true, false, "Project path", value, palette)
+        }
+        ProjectRow::MpyEntry => {
+            let root = app.mpy_effective_root();
+            let entry = |name: &str| root.join(name).is_file();
+            let (main, boot) = (entry("main.py"), entry("boot.py"));
+            let mark = |present: bool| {
+                Span::styled(
+                    if present { "✓" } else { "✗" },
+                    Style::new()
+                        .fg(if present {
+                            palette.success
+                        } else {
+                            palette.error
+                        })
+                        .bold(),
+                )
+            };
+            super::workspace::checklist_row(
+                main || boot,
+                false,
+                "Entry",
+                Line::from(vec![
+                    mark(main),
+                    Span::raw(" main.py   "),
+                    mark(boot),
+                    Span::raw(" boot.py"),
+                ]),
+                palette,
+            )
+        }
+        ProjectRow::MpyVersion => {
+            let value = match &app.mpy_version {
+                Some(version) => Line::from(Span::styled(
+                    format!("MicroPython {version}"),
+                    Style::new().fg(palette.success).bold(),
+                )),
+                None => Line::from(Span::styled(
+                    "waiting for the REPL banner",
+                    muted_style(palette),
+                )),
+            };
+            super::workspace::checklist_row(app.mpy_version.is_some(), false, "MPy", value, palette)
+        }
+    }
+}
 
-    // Deep embedded trees produce long paths; the tail identifies the project,
-    // so they are shortened from the left instead of wrapping over three lines.
-    let path_budget = width.saturating_sub(2 + LABEL_WIDTH);
-    // A backend that makes the project a question (`ProjectSelect`) answers
-    // it with the build panel's root, so a picked project re-roots this
-    // field too; every other backend keeps the detection root. Home
-    // prefixes collapse to `~`.
-    let root = if app
-        .manager
-        .capabilities()
-        .contains(Capability::ProjectSelect)
-        && let Some(panel) = &app.build
-    {
-        tilde_path(&panel.root, app.home_dir())
+/// The target row: the board with its optional shield riding on the same
+/// line (`Board: name · Shield: name`). While the row is selected the half
+/// `Enter` acts on is underlined --- the segment cursor `←`/`→` moves.
+fn board_shield_row(app: &App, width: u16, palette: Palette, selected: bool) -> Line<'static> {
+    let budget = super::workspace::value_budget(width);
+    let board = app
+        .build
+        .as_ref()
+        .and_then(|panel| panel.board.as_ref().map(|choice| choice.name.clone()));
+    let shield = app.build.as_ref().and_then(|panel| panel.shield.clone());
+
+    // The separator (11 columns) plus both names fit the budget together
+    // in the common case; when they do not, the shield (the optional half)
+    // is capped at half the slack and the board keeps the rest --- its
+    // tail is the identity, so it is shortened from the left, like every
+    // other path here.
+    let separator = " · Shield: ";
+    let shield_text = shield.clone().unwrap_or_else(|| "none".to_string());
+    let both_fit = board.as_deref().is_some_and(|name| {
+        name.chars().count() + separator.chars().count() + shield_text.chars().count() <= budget
+    });
+    let shield_budget = if both_fit {
+        shield_text.chars().count()
     } else {
-        app.manager.root().map_or_else(
-            || tilde_path(app.manager.start_dir(), app.home_dir()),
-            |root| tilde_path(root, app.home_dir()),
-        )
+        (budget.saturating_sub(separator.chars().count()) / 2).min(shield_text.chars().count())
     };
-    // Only worth showing when the search climbed out of the working
-    // directory --- and then it rides the root's own line as a muted
-    // suffix: the pane is a fixed [`INFO_ROWS`] tall, so the cwd must not
-    // take a row from the fields every pane owes (type, versions, tools).
-    // The root keeps width priority; the cwd takes what is left (at most a
-    // third of the budget). 7 is " (cwd )".len().
+    let board_budget = budget
+        .saturating_sub(separator.chars().count() + shield_budget)
+        .max(4);
+
+    let segment = |text: String, active: bool, answered: bool| {
+        let mut style = if answered {
+            Style::new().fg(palette.success).bold()
+        } else {
+            muted_style(palette)
+        };
+        if active && selected {
+            style = style.add_modifier(Modifier::UNDERLINED);
+        }
+        Span::styled(text, style)
+    };
+
+    let mut spans = vec![
+        segment(
+            board.as_ref().map_or_else(
+                || "?".to_string(),
+                |name| shorten_start_owned(name, board_budget),
+            ),
+            app.board_segment,
+            board.is_some(),
+        ),
+        Span::styled(separator, muted_style(palette)),
+        segment(
+            shorten_start_owned(&shield_text, shield_budget.max(1)),
+            !app.board_segment,
+            shield.is_some(),
+        ),
+    ];
+    if let Some(choice) = app.build.as_ref().and_then(|panel| panel.board.as_ref()) {
+        let origin = match choice.origin {
+            crate::build::BoardOrigin::Picked => "picked",
+            crate::build::BoardOrigin::Config => "saved",
+            crate::build::BoardOrigin::Cache => "from build/",
+        };
+        // The origin rides along only when the *whole* line fits --- both
+        // segments included, never at their expense.
+        let used: usize = spans.iter().map(|span| span.width()).sum();
+        let suffix = format!("  · {origin}");
+        if used + suffix.chars().count() <= budget {
+            spans.push(Span::styled(suffix, muted_style(palette)));
+        }
+    }
+    super::workspace::checklist_row(board.is_some(), false, "Board", Line::from(spans), palette)
+}
+
+/// The pane's content when the backend asks nothing: where the project is
+/// and what it is (the pre-checklist Project pane, kept for the
+/// no-backend/window-before-detection states).
+fn detection_fallback(app: &App, width: usize, palette: Palette) -> Vec<Line<'static>> {
+    let detection = app.manager.detection();
+    let mut lines = Vec::new();
+
+    let path_budget = width.saturating_sub(2 + LABEL_WIDTH);
+    let root = app.manager.root().map_or_else(
+        || tilde_path(app.manager.start_dir(), app.home_dir()),
+        |root| tilde_path(root, app.home_dir()),
+    );
     let shows_cwd = app
         .manager
         .root()
@@ -144,49 +374,69 @@ fn project_content(app: &App, width: usize, palette: Palette) -> Vec<Line<'stati
         }
         None => lines.push(field("type", "not detected yet".to_string(), palette)),
     }
+    lines
+}
 
-    // The environment's versions, once a workspace resolves: read from
-    // files (`zephyr/VERSION`, the venv's `pyvenv.cfg`), never from a
-    // subprocess. Where the detection answer came from stays in the log
-    // and the picker; this pane reports the state it builds against.
-    if let Some(workspace) = app
+/// The environment's versions, on the pane's bottom border's right edge ---
+/// the same place the Log tab's status sits on its top border, so a fact
+/// that arrives late costs no content row and never moves the rows above.
+/// Drawn only once a Zephyr installation resolves (the user's rule: no
+/// base, no versions).
+fn draw_versions_badge(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
+    let Some(workspace) = app
         .workspace
         .as_ref()
         .and_then(|panel| panel.resolved.as_ref())
-    {
-        let mut versions = format!(
-            "zephyr {}",
-            workspace
-                .zephyr_version()
-                .unwrap_or_else(|| "unknown".to_string())
-        );
-        if let Some(python) = workspace.python_version() {
-            versions.push_str(&format!(" · python {python}"));
-        }
-        lines.push(field("versions", versions, palette));
+    else {
+        return;
+    };
+    // Read from files (`zephyr/VERSION`, the venv's `pyvenv.cfg`), never
+    // from a subprocess --- this pane reports the state it builds against.
+    // No label: the values name themselves (`zephyr 4.1 · python 3.12`),
+    // and the border is the badge's context enough.
+    let mut versions = format!(
+        "zephyr {}",
+        workspace
+            .zephyr_version()
+            .unwrap_or_else(|| "unknown".to_string())
+    );
+    if let Some(python) = workspace.python_version() {
+        versions.push_str(&format!(" · python {python}"));
     }
-
-    // Tool availability, since a capability whose tool is missing is not
-    // usable. `App::tool_status` owns the venv exception: a west that
-    // lives in the resolved workspace's venv is checked against that
-    // absolute path, not `PATH`.
-    if app.manager.selected_kind().is_some() {
-        let mut spans = vec![label_span("tools", palette)];
-        for (tool, available) in app.tool_status() {
-            let style = if available {
-                Style::new().fg(palette.success)
-            } else {
-                Style::new().fg(palette.error)
-            };
-            spans.push(Span::styled(
-                format!("{} {tool}  ", if available { "✓" } else { "✗" }),
-                style,
-            ));
-        }
-        lines.push(Line::from(spans));
+    if area.width < 4 {
+        return;
     }
+    let versions = truncate_end(&versions, (area.width - 2) as usize);
+    let badge = Rect {
+        x: area.x + 1,
+        y: area.bottom().saturating_sub(1),
+        width: area.width - 2,
+        height: 1,
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!(" {versions} "),
+            muted_style(palette),
+        )))
+        .alignment(Alignment::Right),
+        badge,
+    );
+}
 
-    pad_info(lines)
+/// Shortens from the left: a path's tail (its distinctive part) matters
+/// more than its `/tmp` prefix. The workspace pane's own `shorten_start`
+/// returns a `String` for its rows; this is the same rule for borrowed
+/// values.
+fn shorten_start_owned(text: &str, budget: usize) -> String {
+    if text.chars().count() <= budget {
+        return text.to_string();
+    }
+    let mut short: String = text
+        .chars()
+        .skip(text.chars().count() - budget.max(1) + 1)
+        .collect();
+    short.insert(0, '…');
+    short
 }
 
 /// What esptool has reported about the connected board so far: identity
@@ -246,6 +496,15 @@ fn device_content(app: &App, width: usize, palette: Palette) -> Vec<Line<'static
     }
 
     let mut lines = Vec::new();
+    // The crystal rides the chip's own line as a muted suffix (the pane is
+    // a fixed [`INFO_ROWS`] rows and the firmware answer below the MAC now
+    // takes one); a report with a crystal but no chip keeps its own row
+    // rather than losing the fact.
+    if details.family.is_none()
+        && let Some(crystal) = &details.crystal_mhz
+    {
+        lines.push(field("crystal", crystal.clone(), palette));
+    }
     if let Some(family) = details.family {
         let mut spans = vec![
             label_span("chip", palette),
@@ -260,27 +519,29 @@ fn device_content(app: &App, width: usize, palette: Palette) -> Vec<Line<'static
                 Style::new().fg(palette.fg),
             ));
         }
+        if let Some(crystal) = &details.crystal_mhz {
+            spans.push(Span::styled(format!(" · {crystal}"), muted_style(palette)));
+        }
         lines.push(Line::from(spans));
     }
     if let Some(features) = &details.features {
-        // One row, always: a wrapped features line would push the MAC row
-        // (and the firmware answer riding it) past the pane's fixed
-        // [`INFO_ROWS`] height, and the feature list's head --- WiFi, BT,
+        // One row, always: a wrapped features line would push the MAC and
+        // firmware rows below past the pane's fixed [`INFO_ROWS`] height,
+        // and the feature list's head --- WiFi, BT,
         // Dual Core --- is its identity anyway.
         let budget = width.saturating_sub(2 + LABEL_WIDTH);
         lines.push(field("features", truncate_end(features, budget), palette));
     }
-    if let Some(crystal) = &details.crystal_mhz {
-        lines.push(field("crystal", crystal.clone(), palette));
-    }
     if let Some(mac) = &details.mac {
-        // The firmware answer rides the MAC row: the pane is fixed at
-        // [`INFO_ROWS`] lines and the MAC is the identity it belongs
-        // beside. `undefined` is the honest value while (and after) the
-        // identification question goes unanswered --- see
+        lines.push(Line::from(vec![
+            label_span("MAC", palette),
+            Span::styled(mac.clone(), Style::new().fg(palette.fg)),
+        ]));
+        // The firmware answer sits directly under the MAC, the identity it
+        // belongs beside. `undefined` is the honest value while (and after)
+        // the identification question goes unanswered --- see
         // `Overlay::ConfirmFirmwareProbe`.
-        let firmware = details.firmware;
-        let (value, style) = match firmware {
+        let (value, style) = match details.firmware {
             Some(kind) => (
                 kind.label().to_string(),
                 Style::new().fg(palette.success).bold(),
@@ -288,9 +549,6 @@ fn device_content(app: &App, width: usize, palette: Palette) -> Vec<Line<'static
             None => ("undefined".to_string(), muted_style(palette)),
         };
         lines.push(Line::from(vec![
-            label_span("MAC", palette),
-            Span::styled(mac.clone(), Style::new().fg(palette.fg)),
-            Span::raw("  "),
             label_span("Firmware", palette),
             Span::styled(value, style),
         ]));

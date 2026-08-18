@@ -118,9 +118,11 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
         Overlay::BuildDirPicker { input, selected } => {
             draw_build_dir_picker(frame, area, app, &input, selected, palette)
         }
-        Overlay::ProjectPicker { selected, error } => {
-            draw_project_picker(frame, area, app, selected, error.as_deref(), palette)
-        }
+        Overlay::ProjectPicker {
+            mpy,
+            selected,
+            error,
+        } => draw_project_picker(frame, area, app, mpy, selected, error.as_deref(), palette),
         Overlay::FirmwarePicker { selected } => {
             draw_firmware_picker(frame, area, app, selected, palette)
         }
@@ -893,6 +895,7 @@ fn draw_dir_picker(
     let title = match purpose {
         crate::workspace::DirPurpose::Installation => "Where is the Zephyr installation?",
         crate::workspace::DirPurpose::Projects => "Where are your Zephyr projects?",
+        crate::workspace::DirPurpose::MpyProjects => "Where are your MicroPython projects?",
     };
     let height = 18u16;
     let width = 72u16;
@@ -955,13 +958,16 @@ fn draw_dir_picker(
 }
 
 /// Project selection from the configured projects folder: every immediate
-/// subdirectory, the buildable ones carrying the elements `west build`
-/// needs and the rest saying so out loud --- the verification the gate
-/// promises, visible before Enter is ever pressed (`SPEC.md` §14).
+/// subdirectory. For Zephyr the buildable ones carry the elements `west
+/// build` needs and the rest say so out loud --- the verification the gate
+/// promises, visible before Enter is ever pressed (`SPEC.md` §14). For
+/// MicroPython every subdirectory simply is a project (no build step), so
+/// nothing is marked and nothing is refused.
 fn draw_project_picker(
     frame: &mut Frame,
     area: Rect,
     app: &App,
+    mpy: bool,
     selected: usize,
     error: Option<&str>,
     palette: Palette,
@@ -981,10 +987,13 @@ fn draw_project_picker(
     ])
     .areas(inner);
 
-    let dir = app
-        .workspace
-        .as_ref()
-        .and_then(|panel| panel.projects.clone());
+    let dir = if mpy {
+        app.mpy_projects.clone()
+    } else {
+        app.workspace
+            .as_ref()
+            .and_then(|panel| panel.projects.clone())
+    };
     let Some(dir) = dir else {
         frame.render_widget(
             Paragraph::new("no projects folder configured".fg(palette.warning)),
@@ -1001,27 +1010,43 @@ fn draw_project_picker(
         dir_area,
     );
 
-    let (rows, read_error) = crate::backend::zephyr::projects::project_rows(&dir);
-    let items: Vec<ListItem> = rows
-        .iter()
-        .map(|row| {
-            if row.buildable {
+    let (items, read_error): (Vec<ListItem>, Option<String>) = if mpy {
+        let (rows, read_error) = crate::backend::micropython::projects::project_rows(&dir);
+        let items = rows
+            .iter()
+            .map(|row| {
                 ListItem::new(Line::from(vec![
                     Span::raw("  "),
                     row.name.clone().fg(palette.fg).bold(),
-                    Span::raw("  "),
-                    Span::styled("✓ CMakeLists.txt", Style::new().fg(palette.success)),
                 ]))
-            } else {
-                ListItem::new(Line::from(vec![
-                    Span::raw("  "),
-                    Span::styled(row.name.clone(), Style::new().fg(palette.fg)),
-                    Span::raw("  "),
-                    Span::styled("no CMakeLists.txt", muted_style(palette)),
-                ]))
-            }
-        })
-        .collect();
+            })
+            .collect();
+        (items, read_error)
+    } else {
+        let (rows, read_error) = crate::backend::zephyr::projects::project_rows(&dir);
+        let items = rows
+            .iter()
+            .map(|row| {
+                if row.buildable {
+                    ListItem::new(Line::from(vec![
+                        Span::raw("  "),
+                        row.name.clone().fg(palette.fg).bold(),
+                        Span::raw("  "),
+                        Span::styled("✓ CMakeLists.txt", Style::new().fg(palette.success)),
+                    ]))
+                } else {
+                    ListItem::new(Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(row.name.clone(), Style::new().fg(palette.fg)),
+                        Span::raw("  "),
+                        Span::styled("no CMakeLists.txt", muted_style(palette)),
+                    ]))
+                }
+            })
+            .collect();
+        (items, read_error)
+    };
+    let empty = items.is_empty();
     let mut state = ListState::default().with_selected(Some(selected));
     frame.render_stateful_widget(
         List::new(items).highlight_style(selection_style(palette)),
@@ -1033,10 +1058,14 @@ fn draw_project_picker(
         Line::from(error.to_string().fg(palette.error))
     } else if let Some(read) = read_error {
         Line::from(read.fg(palette.warning))
-    } else if rows.is_empty() {
+    } else if empty {
         Line::from(
-            "no subdirectories here — put an application in the folder, or choose another"
+            "no subdirectories here — put a project in the folder, or choose another"
                 .fg(palette.warning),
+        )
+    } else if mpy {
+        Line::from(
+            "enter: open this one · esc: cancel — the choice is session-only".fg(palette.muted),
         )
     } else {
         Line::from(

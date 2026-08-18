@@ -29,7 +29,10 @@ use crate::backend::zephyr::workspace::{Resolution, Workspace};
 use crate::files::LocalEntry;
 use crate::process::Command;
 
-/// One row of the workspace pane's checklist.
+/// One row of the Project pane's checklist (row 1), for a backend that
+/// maintains a shared environment. The environment's state itself lives in
+/// [`WorkspacePanel`]; these rows are its questions, rendered and walked by
+/// the Project pane (`ctrl+p`), executed through [`App::run_workspace_action`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkspaceAction {
     /// Opens the directory picker over the filesystem: the user knows
@@ -45,20 +48,17 @@ pub enum WorkspaceAction {
     /// Chooses which *project* the lifecycle runs in (the build panel's
     /// root): the picker lists the configured projects folder's
     /// subdirectories, and the pick re-roots every command (session-only).
-    /// The build panel's answers are asked here --- beside the other
-    /// prerequisites --- and answered there. Under
+    /// The build panel's answers are asked in the Project pane --- beside
+    /// the other prerequisites --- and answered there. Under
     /// [`crate::backend::Capability::ProjectSelect`].
     Project,
-    /// Opens the board picker (the build panel's board answer, asked
-    /// beside the other prerequisites). The pick is saved in the project's
-    /// registry entry and reloads on every later open. Under
-    /// [`crate::backend::Capability::BoardSelect`].
-    Board,
-    /// Opens the shield picker (the build panel's optional shield answer,
-    /// asked right under the board it rides on). Saved with the board
-    /// answer, and the picker's `(none)` row is how it clears. Under
-    /// [`crate::backend::Capability::ShieldSelect`].
-    Shield,
+    /// The target row: the board with its optional shield riding on the
+    /// same line. `←`/`→` while the row is selected switch which half the
+    /// `Enter` acts on ([`App::board_segment`]); the board picker under
+    /// [`crate::backend::Capability::BoardSelect`], the shield picker
+    /// under [`crate::backend::Capability::ShieldSelect`]. Both answers
+    /// save with the board pick.
+    BoardShield,
 }
 
 pub struct WorkspacePanel {
@@ -74,18 +74,10 @@ pub struct WorkspacePanel {
     pub projects: Option<PathBuf>,
     /// Why a configured projects folder failed validation, when one did.
     pub projects_invalid: Option<String>,
-    pub cursor: usize,
     /// The inherited `PATH` at startup, baked into every derived
     /// [`crate::backend::zephyr::workspace::WestEnv`] (the venv's `bin` is
     /// prepended to it, never replacing it).
     path_env: String,
-    /// Whether the cursor is currently inside the embedded file list rather
-    /// than the checklist above it: while `false`, `cursor` indexes
-    /// [`Self::actions`]; while `true`, `files_cursor` indexes
-    /// [`Self::visible_files`]. One pane, one cursor, two regions --- the
-    /// same shape [`crate::browser::Browser`] already uses for its own two
-    /// navigable sides.
-    pub in_files: bool,
     /// The project root the file list is scoped to. Navigation never rises
     /// above it (see [`Self::ascend_files`]) --- browsing anywhere else is
     /// the `Choose`/`Projects` pickers' job, not this section's. Re-rooted
@@ -110,9 +102,7 @@ impl WorkspacePanel {
             invalid: None,
             projects: None,
             projects_invalid: None,
-            cursor: 0,
             path_env: path_env.into(),
-            in_files: false,
             files_root: PathBuf::new(),
             files_path: PathBuf::new(),
             files_entries: Vec::new(),
@@ -173,12 +163,12 @@ impl WorkspacePanel {
         }
     }
 
-    /// Rows the checklist shows: the installation, the projects folder, the
-    /// project, the board and its optional shield --- the prerequisites in
-    /// the order they are answered. Every row here is always answerable
-    /// (`Enter` on any of them opens its picker, which is also how to
-    /// *change* an answer later), so there is no analog of a disabled row to
-    /// account for.
+    /// Rows the Project pane shows for this environment: the installation,
+    /// the projects folder, the project, and the board (with its optional
+    /// shield on the same line) --- the prerequisites in the order they are
+    /// answered. Every row here is always answerable (`Enter` on any of
+    /// them opens its picker, which is also how to *change* an answer
+    /// later), so there is no analog of a disabled row to account for.
     pub fn actions(&self, caps: &crate::backend::Capabilities) -> Vec<WorkspaceAction> {
         if !caps.contains(Capability::WorkspaceSync) {
             return Vec::new();
@@ -189,11 +179,8 @@ impl WorkspacePanel {
             actions.push(WorkspaceAction::Projects);
             actions.push(WorkspaceAction::Project);
         }
-        if caps.contains(Capability::BoardSelect) {
-            actions.push(WorkspaceAction::Board);
-        }
-        if caps.contains(Capability::ShieldSelect) {
-            actions.push(WorkspaceAction::Shield);
+        if caps.contains(Capability::BoardSelect) || caps.contains(Capability::ShieldSelect) {
+            actions.push(WorkspaceAction::BoardShield);
         }
         actions
     }
@@ -234,16 +221,14 @@ impl WorkspacePanel {
     }
 
     /// Re-roots the embedded file list to `dir` (the build panel's project
-    /// root): resets the browsed path back to it, clears the file cursor and
-    /// returns focus to the checklist --- a re-root is a fresh start, the
-    /// same rule [`crate::build::BuildPanel::set_project`] follows for its
-    /// own cursor.
+    /// root): resets the browsed path back to it and clears the file cursor
+    /// --- a re-root is a fresh start, the same rule
+    /// [`crate::build::BuildPanel::set_project`] follows for its own cursor.
     pub fn set_files_root(&mut self, dir: impl Into<PathBuf>) {
         let dir = dir.into();
         self.files_root = dir.clone();
         self.files_path = dir;
         self.files_cursor = 0;
-        self.in_files = false;
         self.reload_files();
     }
 
@@ -386,6 +371,11 @@ pub enum DirPurpose {
     /// the build-element test belongs to the projects inside it
     /// ([`crate::backend::zephyr::projects`]).
     Projects,
+    /// "Where are your MicroPython projects?" --- existence-only too, and
+    /// answered at the user-config level (`[micropython] projects`): a
+    /// MicroPython project pins no environment of its own, so there is no
+    /// project-level half to honor.
+    MpyProjects,
 }
 
 /// The directory picker's rows for `path`: "use this directory" first (the
@@ -454,7 +444,7 @@ mod tests {
     }
 
     #[test]
-    fn the_checklist_is_the_full_action_list() {
+    fn the_project_rows_are_the_full_action_list() {
         let panel = WorkspacePanel::new(Resolution::Single(workspace("/opt/myzephyr")), "");
         assert_eq!(panel.dir(), Some(&PathBuf::from("/opt/myzephyr")));
         assert_eq!(
@@ -463,15 +453,14 @@ mod tests {
                 WorkspaceAction::Choose,
                 WorkspaceAction::Projects,
                 WorkspaceAction::Project,
-                WorkspaceAction::Board,
-                WorkspaceAction::Shield,
+                WorkspaceAction::BoardShield,
             ],
             "west update/sdk list now live in the build panel's action list"
         );
     }
 
     #[test]
-    fn an_unresolved_pane_still_offers_the_full_checklist() {
+    fn an_unresolved_pane_still_offers_the_full_row_list() {
         let not_configured = WorkspacePanel::new(Resolution::NotConfigured, "");
         assert_eq!(
             not_configured.actions(&zephyr_caps()),
@@ -479,8 +468,7 @@ mod tests {
                 WorkspaceAction::Choose,
                 WorkspaceAction::Projects,
                 WorkspaceAction::Project,
-                WorkspaceAction::Board,
-                WorkspaceAction::Shield,
+                WorkspaceAction::BoardShield,
             ]
         );
 
@@ -548,14 +536,12 @@ mod tests {
     fn set_files_root_lists_the_new_root_and_resets_navigation() {
         let dir = files_fixture("reroot");
         let mut panel = WorkspacePanel::new(Resolution::NotConfigured, "");
-        panel.in_files = true;
         panel.files_cursor = 3;
 
         panel.set_files_root(&dir);
 
         assert_eq!(panel.files_root, dir);
         assert_eq!(panel.files_path, dir);
-        assert!(!panel.in_files, "a re-root returns to the checklist");
         assert_eq!(panel.files_cursor, 0);
         let names: Vec<&str> = panel
             .visible_files()

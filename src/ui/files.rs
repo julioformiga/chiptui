@@ -85,11 +85,34 @@ fn draw_local(
     palette: Palette,
 ) {
     let focused = dashboard_focused(app, Focus::FilesLocal);
-    let title = format!(
-        "Local files: {}",
-        shorten(&browser.local_path.display().to_string(), area.width)
+    // The pane is the project's own files: the title names the project and
+    // the path walked below it ("blinkety/src/"), the same shape the Zephyr
+    // project-files pane's title follows. A walk that rose *above* the
+    // project root (the pane may ascend anywhere) falls back to the full
+    // path --- honest about where the listing actually is.
+    let project = browser
+        .local_root
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| crate::ui::tilde_path(&browser.local_root, app.home_dir()));
+    let walked = browser
+        .local_path
+        .strip_prefix(&browser.local_root)
+        .ok()
+        .filter(|relative| !relative.as_os_str().is_empty())
+        .map(|relative| format!("{project}/{}/", relative.display()))
+        .unwrap_or(format!("{project}/"));
+    let title = if browser.local_path.starts_with(&browser.local_root) {
+        walked
+    } else {
+        crate::ui::tilde_path(&browser.local_path, app.home_dir())
+    };
+    // The prefix never truncates --- only the path shortens, from the left.
+    let block = pane_block(
+        &format!("Project files: {}", shorten(&title, area.width)),
+        focused,
+        palette,
     );
-    let block = pane_block(&title, focused, palette);
 
     if let Some(error) = &browser.local_error {
         frame.render_widget(
@@ -448,9 +471,9 @@ fn truncate(name: &str, max: usize) -> String {
     format!("{kept}…")
 }
 
-/// Shortens a path from the left for a pane title.
+/// Shortens the pane title from the left: 15 is "Project files: ".len().
 fn shorten(path: &str, width: u16) -> String {
-    let budget = (width as usize).saturating_sub(12);
+    let budget = (width as usize).saturating_sub(15);
     let length = path.chars().count();
     if length <= budget {
         return path.to_string();
