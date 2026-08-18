@@ -198,7 +198,7 @@ fn project_content(app: &App, width: usize, palette: Palette) -> Vec<Line<'stati
 /// never holds focus.
 pub fn draw_detection(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
     let block = pane_block("Device info", false, palette);
-    let lines = device_content(app, palette);
+    let lines = device_content(app, area.width as usize, palette);
     frame.render_widget(
         Paragraph::new(lines)
             .block(block)
@@ -209,7 +209,7 @@ pub fn draw_detection(frame: &mut Frame, area: Rect, app: &App, palette: Palette
 
 /// Builds the Device info pane's content lines (placeholder or details),
 /// padded to [`INFO_ROWS`]; see [`project_content`] for why.
-fn device_content(app: &App, palette: Palette) -> Vec<Line<'static>> {
+fn device_content(app: &App, width: usize, palette: Palette) -> Vec<Line<'static>> {
     let caps = app.manager.capabilities();
     let muted = muted_style(palette);
 
@@ -263,13 +263,37 @@ fn device_content(app: &App, palette: Palette) -> Vec<Line<'static>> {
         lines.push(Line::from(spans));
     }
     if let Some(features) = &details.features {
-        lines.push(field("features", features.clone(), palette));
+        // One row, always: a wrapped features line would push the MAC row
+        // (and the firmware answer riding it) past the pane's fixed
+        // [`INFO_ROWS`] height, and the feature list's head --- WiFi, BT,
+        // Dual Core --- is its identity anyway.
+        let budget = width.saturating_sub(2 + LABEL_WIDTH);
+        lines.push(field("features", truncate_end(features, budget), palette));
     }
     if let Some(crystal) = &details.crystal_mhz {
         lines.push(field("crystal", crystal.clone(), palette));
     }
     if let Some(mac) = &details.mac {
-        lines.push(field("MAC", mac.clone(), palette));
+        // The firmware answer rides the MAC row: the pane is fixed at
+        // [`INFO_ROWS`] lines and the MAC is the identity it belongs
+        // beside. `undefined` is the honest value while (and after) the
+        // identification question goes unanswered --- see
+        // `Overlay::ConfirmFirmwareProbe`.
+        let firmware = details.firmware;
+        let (value, style) = match firmware {
+            Some(kind) => (
+                kind.label().to_string(),
+                Style::new().fg(palette.success).bold(),
+            ),
+            None => ("undefined".to_string(), muted_style(palette)),
+        };
+        lines.push(Line::from(vec![
+            label_span("MAC", palette),
+            Span::styled(mac.clone(), Style::new().fg(palette.fg)),
+            Span::raw("  "),
+            label_span("Firmware", palette),
+            Span::styled(value, style),
+        ]));
     }
 
     pad_info(lines)
@@ -587,6 +611,20 @@ pub(super) fn truncate_start(text: &str, max: usize) -> String {
     }
     let tail: String = text.chars().skip(length - (max - 1)).collect();
     format!("…{tail}")
+}
+
+/// Shortens `text` from the right, keeping the head --- the sibling of
+/// [`truncate_start`] for lists whose first items are the identity.
+fn truncate_end(text: &str, max: usize) -> String {
+    let length = text.chars().count();
+    if length <= max {
+        return text.to_string();
+    }
+    if max <= 1 {
+        return "…".to_string();
+    }
+    let head: String = text.chars().take(max - 1).collect();
+    format!("{head}…")
 }
 
 fn field(label: &str, value: String, palette: Palette) -> Line<'static> {

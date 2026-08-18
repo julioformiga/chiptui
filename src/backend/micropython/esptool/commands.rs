@@ -34,6 +34,17 @@ pub fn reset(port: Option<&str>) -> Command {
     global(port, None).arg("run")
 }
 
+/// `esptool [--port PORT] [--chip CHIP] read-flash OFFSET SIZE FILE` ---
+/// reads `SIZE` bytes of flash starting at `OFFSET` into `FILE`, the read
+/// side of the firmware-identification probe (`crate::firmware_id`).
+pub fn read_flash(port: Option<&str>, offset: usize, size: usize, dest: &Path) -> Command {
+    global(port, None)
+        .arg("read-flash")
+        .arg(format!("{offset:#x}"))
+        .arg(format!("{size:#x}"))
+        .arg(dest.to_string_lossy().into_owned())
+}
+
 /// `esptool [--port PORT] [--chip CHIP] verify-flash OFFSET FILE`
 pub fn verify_flash(
     port: Option<&str>,
@@ -185,6 +196,20 @@ mod tests {
     #[test]
     fn reset_runs_the_application_in_flash() {
         assert_eq!(reset(None).to_string(), "esptool run");
+    }
+
+    #[test]
+    fn read_flash_places_offset_size_then_file() {
+        let command = read_flash(
+            Some("/dev/ttyUSB0"),
+            0x8000,
+            0x10000,
+            Path::new("/tmp/chiptui-probe.bin"),
+        );
+        assert_eq!(
+            command.to_string(),
+            "esptool --port /dev/ttyUSB0 read-flash 0x8000 0x10000 /tmp/chiptui-probe.bin"
+        );
     }
 
     #[test]

@@ -296,6 +296,72 @@ fn rescanning_the_same_backend_does_not_reset_the_selected_port() {
 }
 
 #[test]
+fn hotplug_updates_the_device_status() {
+    let (mut app, root) = zephyr_app("hotplug");
+    std::fs::write(root.join("dev/ttyACM0"), b"").unwrap();
+    app.handle(key(KeyCode::Char('d')));
+    assert_eq!(app.devices.discovery, DiscoveryState::Ready);
+    assert!(app.devices.selected_port().is_some());
+
+    // The selection defers the chip query, which chains into the firmware
+    // question; decline it to close the overlay, because while one is open
+    // the hotplug poll politely waits its turn.
+    assert!(pump_until(
+        &mut app,
+        |app| matches!(app.overlay, Some(Overlay::ConfirmFirmwareProbe { .. })),
+        20
+    ));
+    app.handle(key(KeyCode::Char('n')));
+
+    // Unplug: the /dev walk the poll counts changes, and the status
+    // follows --- this is the connect/disconnect feedback the monitor-only
+    // backend never had before.
+    std::fs::remove_file(root.join("dev/ttyACM0")).unwrap();
+    assert!(pump_until(
+        &mut app,
+        |app| app.devices.discovery == DiscoveryState::Failed,
+        20
+    ));
+    assert!(
+        app.devices.selected().is_none(),
+        "the port is gone; the selection must go with it"
+    );
+    assert!(
+        app.flash
+            .as_ref()
+            .is_some_and(|flash| flash.details.is_empty()),
+        "the departed board's identity must not outlive it"
+    );
+
+    // Replug: the same walk sees the port again, the selection returns,
+    // and the identity refills.
+    std::fs::write(root.join("dev/ttyACM0"), b"").unwrap();
+    assert!(pump_until(
+        &mut app,
+        |app| app.devices.discovery == DiscoveryState::Ready,
+        20
+    ));
+    assert!(app.devices.selected_port().is_some());
+    assert!(pump_until(
+        &mut app,
+        |app| app
+            .flash
+            .as_ref()
+            .is_some_and(|flash| flash.details.family.is_some()),
+        20
+    ));
+
+    // The replugged board is asked about again: the disconnect dropped the
+    // once-per-port memory, so `Firmware:` cannot sit at a stale answer.
+    assert!(pump_until(
+        &mut app,
+        |app| matches!(app.overlay, Some(Overlay::ConfirmFirmwareProbe { .. })),
+        20
+    ));
+    app.handle(key(KeyCode::Char('n')));
+}
+
+#[test]
 fn m_without_a_selected_port_still_lets_west_auto_detect() {
     // Symmetric with the mpremote monitor: `m` is an explicit user action,
     // and west's own auto-detection is its documented default --- ChipTUI

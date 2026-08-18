@@ -12,7 +12,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use crate::backend::Capability;
 use crate::browser::Browser;
 use crate::device::ScriptState;
-use crate::flash::{FlashAction, FlashPanel, FlashScreen, OptionsField};
+use crate::flash::{FlashAction, FlashPanel, FlashScreen, OptionsField, RunState};
 
 use super::{App, Focus, LogTab, MonitorSource, Overlay, View};
 
@@ -484,6 +484,117 @@ impl App {
             return false;
         };
         let started = flash.query_device_info(&mut self.processes, Some(&port));
+        self.flash = Some(flash);
+        started
+    }
+
+    /// The board whose identity and firmware answer the app is holding is
+    /// gone (an empty or failed rescan): drop both. Dropping
+    /// `firmware_probe_port` matters as much as clearing the details --- a
+    /// replug, even on the very same port, is a board ChipTUI has not
+    /// asked about, so the identification question re-arms instead of
+    /// trusting an answer that belonged to whatever was plugged in before.
+    pub(super) fn device_disconnected(&mut self) {
+        self.firmware_probe_port = None;
+        self.firmware_probe_ask_pending = false;
+        self.firmware_probe_pending = false;
+        if let Some(flash) = &mut self.flash {
+            flash.clear_device_details();
+        }
+    }
+
+    /// Queues the firmware-identification question once the background
+    /// chip query has succeeded for the selected device: reading flash is
+    /// the only way to say *which* firmware the board runs, and esptool
+    /// resets the board into its bootloader to do it --- stopping the
+    /// firmware --- so the user is asked first. Once per port: a declined
+    /// or answered question never nags the same board again, and switching
+    /// devices re-arms it (with the old board's answer cleared, since a
+    /// stale `Firmware:` would out the new board by association).
+    pub(super) fn queue_firmware_probe_question(&mut self) {
+        let Some(port) = self.devices.selected_port().map(str::to_string) else {
+            return;
+        };
+        if self.firmware_probe_port.as_deref() == Some(port.as_str()) {
+            return;
+        }
+        // Only a successful identity read says the board answers esptool
+        // at all; a failed one leaves the pane at its honest placeholder
+        // and the firmware question unasked.
+        if !self
+            .flash
+            .as_ref()
+            .is_some_and(|flash| matches!(flash.state, RunState::Succeeded))
+        {
+            return;
+        }
+        self.firmware_probe_port = Some(port);
+        if let Some(flash) = &mut self.flash {
+            flash.clear_firmware_identity();
+        }
+        self.firmware_probe_ask_pending = true;
+    }
+
+    /// Opens the queued firmware-identification question once no overlay
+    /// can be preempted and no probe holds the port, polled from the tick
+    /// and after each process event (a chip query finishing while the user
+    /// answers something else defers to them).
+    pub(super) fn maybe_ask_firmware_probe(&mut self) {
+        if !self.firmware_probe_ask_pending
+            || self.overlay.is_some()
+            || self.probe.is_some()
+            || self.firmware_probe_port.as_deref() != self.devices.selected_port()
+        {
+            return;
+        }
+        self.firmware_probe_ask_pending = false;
+        self.overlay = Some(Overlay::ConfirmFirmwareProbe { confirm: false });
+    }
+
+    /// The user accepted stopping the firmware to identify it
+    /// (`Overlay::ConfirmFirmwareProbe`). The read itself still waits for
+    /// every port holder to be gone, exactly like the chip query.
+    pub(super) fn confirm_firmware_probe(&mut self) {
+        self.firmware_probe_pending = true;
+    }
+
+    /// Runs the consented firmware-identification read once the port is
+    /// free, polled on every tick and after each process event. Unlike the
+    /// chip query, a script believed running does *not* postpone this one:
+    /// stopping the firmware is precisely what the user consented to. A
+    /// refusal (a manual command owns the panel, or the port vanished)
+    /// drops it --- the same courtesy-not-worth-interrupting rule --- and
+    /// the pane keeps its `undefined`.
+    pub(super) fn maybe_run_deferred_firmware_probe(&mut self) {
+        if !self.firmware_probe_pending
+            || self.overlay.is_some()
+            || self.restore_pending
+            || self.probe.is_some()
+            || self.device_monitor_process.is_some()
+            || self.run_process.is_some()
+            || self.browser.as_ref().is_some_and(Browser::is_busy)
+            || self.flash_query_pending
+        {
+            return;
+        }
+        self.firmware_probe_pending = false;
+        self.maybe_query_firmware_identity();
+    }
+
+    /// Starts the background `esptool read-flash` identification query,
+    /// same shape as [`Self::maybe_query_device_info`]. Returns whether it
+    /// started.
+    fn maybe_query_firmware_identity(&mut self) -> bool {
+        if !self.ensure_flash_panel() {
+            return false;
+        }
+        let Some(port) = self.devices.selected_port().map(str::to_string) else {
+            return false;
+        };
+        let Some(mut flash) = self.flash.take() else {
+            return false;
+        };
+        let started = flash.query_firmware_identity(&mut self.processes, Some(&port));
         self.flash = Some(flash);
         started
     }

@@ -152,6 +152,9 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
         Overlay::ConfirmEraseForMicroPython { confirm } => {
             draw_confirm_erase_for_micropython(frame, area, confirm, palette)
         }
+        Overlay::ConfirmFirmwareProbe { confirm } => {
+            draw_confirm_firmware_probe(frame, area, app, confirm, palette)
+        }
         Overlay::ConfirmSwitchProject { confirm } => {
             draw_confirm_switch_project(frame, area, app, confirm, palette)
         }
@@ -304,6 +307,44 @@ fn draw_confirm_erase_for_micropython(
         message,
         confirm,
         (65, 9),
+        palette,
+    );
+}
+
+/// Identifying the firmware reads the flash --- and reading flash resets
+/// the board into its bootloader, stopping the running firmware for the
+/// duration. That consequence is the dialog's first line; the literal
+/// command (with the region it reads, `SPEC.md` §15) is the second. The
+/// scratch file's generated name is shown as `(tmp)` --- it is never where
+/// anything of the user's lives.
+fn draw_confirm_firmware_probe(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    confirm: bool,
+    palette: Palette,
+) {
+    let command = crate::backend::micropython::esptool::commands::read_flash(
+        app.devices.selected_port(),
+        crate::firmware_id::READ_OFFSET,
+        crate::firmware_id::READ_SIZE,
+        std::path::Path::new("(tmp)"),
+    );
+    let message = vec![
+        Line::from("Identify the firmware installed on this device?".fg(palette.fg)),
+        Line::from(
+            "Reading flash stops the running firmware until the read finishes.".fg(palette.warning),
+        ),
+        Line::from(""),
+        Line::from(command.to_string().fg(palette.muted)),
+    ];
+    draw_confirm_dialog(
+        frame,
+        area,
+        "Identify firmware?",
+        message,
+        confirm,
+        (74, 9),
         palette,
     );
 }

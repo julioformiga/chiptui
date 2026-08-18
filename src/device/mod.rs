@@ -9,26 +9,15 @@ mod vendor;
 
 pub use path::DevicePath;
 
-/// Counts the number of connected serial ports matching common patterns.
-/// Used for lightweight hotplug detection on supported platforms.
-pub fn count_serial_ports() -> Option<usize> {
-    #[cfg(unix)]
-    {
-        Some(usb_serial_ports(std::path::Path::new("/dev")).len())
-    }
-    #[cfg(not(unix))]
-    {
-        None
-    }
-}
-
 /// USB serial port paths under `dir`, sorted --- the port-discovery half of
 /// device scanning for a backend that has no listing tool of its own
 /// (`mpremote devs` does this job for MicroPython; Zephyr's `west monitor`
-/// just wants a `/dev/ttyACM*` handed to it). The prefix set matches
-/// [`count_serial_ports`]: CDC-ACM and USB-serial on Linux, `cu.usb`/`tty.usb`
-/// on macOS. Legacy `ttyS*` UARTs are deliberately excluded --- a typical
-/// machine has dozens, none of them a development board.
+/// just wants a `/dev/ttyACM*` handed to it), and the count hotplug
+/// detection compares against `last_port_count` (same prefix set, so a
+/// change in what it counts is exactly a change worth rescanning).
+/// CDC-ACM and USB-serial on Linux, `cu.usb`/`tty.usb` on macOS. Legacy
+/// `ttyS*` UARTs are deliberately excluded --- a typical machine has
+/// dozens, none of them a development board.
 pub fn usb_serial_ports(dir: &std::path::Path) -> Vec<String> {
     #[cfg(unix)]
     {

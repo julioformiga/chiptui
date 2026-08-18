@@ -718,6 +718,21 @@ impl App {
                     |_| {},
                 );
             }
+            // Default *no*, like every other interruption: accepting stops
+            // the firmware for the duration of the flash read. Declining
+            // is a final answer for this port --- no re-asking, and the
+            // Device info pane keeps its honest `undefined`.
+            Overlay::ConfirmFirmwareProbe { confirm } => {
+                self.dispatch_confirm(
+                    key.code,
+                    confirm,
+                    |app, confirm| {
+                        app.overlay = Some(Overlay::ConfirmFirmwareProbe { confirm });
+                    },
+                    Self::confirm_firmware_probe,
+                    |_| {},
+                );
+            }
             Overlay::ConfirmDelete {
                 side,
                 name,

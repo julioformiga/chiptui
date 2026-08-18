@@ -15,6 +15,7 @@ use chiptui::backend::BackendKind;
 use chiptui::browser::{Browser, PaneState};
 use chiptui::device::{DeviceInfo, ScriptState};
 use chiptui::event::AppEvent;
+use chiptui::firmware_id::FlashFirmware;
 use chiptui::flash::FlashPanel;
 use chiptui::process::ProcessManager;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -126,7 +127,70 @@ fn an_idle_board_is_listed_without_asking_anything() {
         20
     ));
     assert_eq!(app.devices.script_state(), ScriptState::Stopped);
+    // The one ask an idle board earns is the firmware-identification
+    // question (the chip query's follow-up), never the script's
+    // interrupt. Declining it leaves nothing open.
+    assert!(pump_until(
+        &mut app,
+        |app| matches!(app.overlay, Some(Overlay::ConfirmFirmwareProbe { .. })),
+        20
+    ));
+    app.handle(key(KeyCode::Char('n')));
     assert_eq!(app.overlay, None, "nothing needed the user's say-so");
+}
+
+#[test]
+fn accepting_the_firmware_question_identifies_the_flash() {
+    let mut app = app_with("mpremote");
+
+    assert!(pump_until(
+        &mut app,
+        |app| matches!(app.overlay, Some(Overlay::ConfirmFirmwareProbe { .. })),
+        20
+    ));
+
+    let frame = render(&mut app, 110, 24);
+    assert!(
+        frame.contains("Identify firmware?"),
+        "missing title:\n{frame}"
+    );
+    assert!(
+        frame.contains("stops the running firmware"),
+        "the consequence must be named:\n{frame}"
+    );
+    assert!(
+        frame.contains("read-flash 0x0 0x20000"),
+        "the literal command is quoted, SPEC.md §15:\n{frame}"
+    );
+
+    app.handle(key(KeyCode::Char('y')));
+
+    // The read starts once every port holder is gone and lands in the
+    // Device info pane next to the MAC.
+    assert!(pump_until(
+        &mut app,
+        |app| app
+            .flash
+            .as_ref()
+            .is_some_and(|flash| flash.details.firmware.is_some()),
+        20
+    ));
+    assert_eq!(
+        app.flash.as_ref().unwrap().details.firmware,
+        Some(FlashFirmware::MicroPython)
+    );
+    let frame = render(&mut app, 110, 24);
+    assert!(
+        frame.contains("Firmware:"),
+        "the pane must show the label:\n{frame}"
+    );
+    assert!(
+        frame.contains("MicroPython"),
+        "the identified firmware must be named:\n{frame}"
+    );
+
+    // The question is once per port: the read finishing opens nothing new.
+    assert!(pump_until(&mut app, |app| app.overlay.is_none(), 5));
 }
 
 #[test]
@@ -265,7 +329,21 @@ fn a_silent_board_is_listed_without_guessing_a_running_script() {
         20
     ));
     assert_eq!(app.devices.script_state(), ScriptState::Unknown);
+    // Unknown is not Running, so the chip query still ran --- the firmware
+    // question is the only overlay this board earns. It is declined, not
+    // the script's interrupt (nothing was guessed about the script).
+    assert!(pump_until(
+        &mut app,
+        |app| matches!(app.overlay, Some(Overlay::ConfirmFirmwareProbe { .. })),
+        20
+    ));
+    app.handle(key(KeyCode::Char('n')));
     assert_eq!(app.overlay, None);
+    assert_eq!(
+        app.flash.as_ref().unwrap().details.firmware,
+        None,
+        "a declined identification stays undefined"
+    );
 }
 
 #[test]

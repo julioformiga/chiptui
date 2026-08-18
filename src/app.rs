@@ -269,6 +269,14 @@ pub enum Overlay {
     ConfirmRestartDevice { confirm: bool },
     /// Ask to flash MicroPython if device is unresponsive.
     ConfirmEraseForMicroPython { confirm: bool },
+    /// Ask whether the firmware installed on the device may be identified
+    /// by reading its flash: `esptool read-flash` resets the board into
+    /// its bootloader, stopping the running firmware for the duration, so
+    /// --- like every interruption confirm --- the default is No. A
+    /// declined (or failed) identification leaves the Device info pane's
+    /// `Firmware:` field at `undefined`. Asked at most once per selected
+    /// port (`App::firmware_probe_port`).
+    ConfirmFirmwareProbe { confirm: bool },
     /// Ask for confirmation before deleting a file or directory.
     ConfirmDelete {
         side: Side,
@@ -671,6 +679,19 @@ pub struct App {
     /// selected device); [`Self::resume_held_root_listing`] releases it
     /// once the query reports back. See [`flash_view`].
     held_root_listing: bool,
+    /// The port the firmware-identification question was last queued for:
+    /// the question is asked at most once per selected device, because a
+    /// declined answer is an answer. Switching devices changes the port
+    /// and re-arms it --- the answer belongs to the board it was read
+    /// from. See [`flash_view`].
+    firmware_probe_port: Option<String>,
+    /// The firmware-identification question wants to open but another
+    /// overlay is in the way; the tick opens it once the coast is clear.
+    firmware_probe_ask_pending: bool,
+    /// The user accepted stopping the firmware to identify it; the
+    /// `esptool read-flash` run itself is deferred until every port
+    /// holder is gone, like the chip query.
+    firmware_probe_pending: bool,
     /// A short-lived `mpremote repl` session asking a newly selected device
     /// whether a script is running, *before* the first filesystem operation
     /// interrupts it --- see [`probe`]. `None` whenever no probe is in flight.
@@ -764,6 +785,9 @@ impl App {
             run_state: RunState::default(),
             flash_query_pending: false,
             held_root_listing: false,
+            firmware_probe_port: None,
+            firmware_probe_ask_pending: false,
+            firmware_probe_pending: false,
             probe: None,
             probed_port: None,
             restore_pending: false,
@@ -1116,6 +1140,8 @@ impl App {
                 self.tick_probe();
                 self.check_interrupt_gate();
                 self.maybe_offer_restore();
+                self.maybe_ask_firmware_probe();
+                self.maybe_run_deferred_firmware_probe();
                 if self.maybe_run_deferred_flash_query() == flash_view::DeferredQuery::Dropped {
                     // The held listing was waiting on a query that can never
                     // start now; listing beats waiting forever.
@@ -1127,11 +1153,23 @@ impl App {
     }
 
     fn check_device_hotplug(&mut self) {
-        if !self.manager.capabilities().contains(Capability::Filesystem) {
+        // Every device-shaped backend watches for connect/disconnect: one
+        // with a filesystem rescans through `mpremote devs`, a monitor-only
+        // one (Zephyr) through the same `/dev` walk its scan is. A backend
+        // with neither has no device status worth keeping fresh.
+        let caps = self.manager.capabilities();
+        if !caps.contains(Capability::Filesystem) && !caps.contains(Capability::Monitor) {
             return;
         }
         // only check every 4 ticks (1 second)
         if !self.ticks.is_multiple_of(4) {
+            return;
+        }
+        // A rescan can open the device picker (several boards appeared) or
+        // clear the selection (they all left); neither belongs on top of a
+        // dialog the user is mid-answer on. The count comparison simply
+        // happens on a later tick once it closes.
+        if self.overlay.is_some() {
             return;
         }
 
@@ -1156,17 +1194,19 @@ impl App {
             return;
         }
 
-        let current_count = crate::device::count_serial_ports();
-        if let Some(current) = current_count {
-            if let Some(last) = self.last_port_count
-                && current != last
-            {
-                self.logs
-                    .info("device connection change detected, rescanning...");
+        let current_count = crate::device::usb_serial_ports(&self.serial_dir).len();
+        if let Some(last) = self.last_port_count
+            && current_count != last
+        {
+            self.logs
+                .info("device connection change detected, rescanning...");
+            if caps.contains(Capability::Filesystem) {
                 self.scan_devices();
+            } else {
+                self.scan_serial_devices();
             }
-            self.last_port_count = Some(current);
         }
+        self.last_port_count = Some(current_count);
     }
 
     /// Routes a process result to whatever asked for it.
@@ -1268,9 +1308,7 @@ impl App {
                         self.set_device_pane_error(
                             "no MicroPython device found — connect a board and press 'd'",
                         );
-                        if let Some(flash) = self.flash.as_mut() {
-                            flash.clear_device_details();
-                        }
+                        self.device_disconnected();
                     } else if self.devices.needs_selection() {
                         // Several boards: ask before touching any of them.
                         self.open_device_picker();
@@ -1283,9 +1321,7 @@ impl App {
                 Some(Err(error)) => {
                     self.devices.set_failed(error.clone());
                     self.set_device_pane_error(error);
-                    if let Some(flash) = self.flash.as_mut() {
-                        flash.clear_device_details();
-                    }
+                    self.device_disconnected();
                 }
                 None => {}
             }
@@ -1355,6 +1391,7 @@ impl App {
             // newly selected device; its finishing is the listing's cue.
             if query_finished {
                 self.resume_held_root_listing();
+                self.queue_firmware_probe_question();
             }
         }
 
@@ -1366,6 +1403,8 @@ impl App {
         if self.maybe_run_deferred_flash_query() == flash_view::DeferredQuery::Dropped {
             self.resume_held_root_listing();
         }
+        self.maybe_ask_firmware_probe();
+        self.maybe_run_deferred_firmware_probe();
 
         // A completed command may have armed either follow-up question.
         self.check_interrupt_gate();
@@ -1928,6 +1967,7 @@ impl App {
                 | Overlay::ConfirmUpload { .. }
                 | Overlay::ConfirmRestartDevice { .. }
                 | Overlay::ConfirmEraseForMicroPython { .. }
+                | Overlay::ConfirmFirmwareProbe { .. }
                 | Overlay::ConfirmInterruptDevice { .. }
                 | Overlay::ConfirmSwitchProject { .. }
                 | Overlay::SyncPreview { .. },

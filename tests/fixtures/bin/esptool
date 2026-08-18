@@ -74,6 +74,35 @@ case "$args" in
         printf 'Verified OK!\n'
         ;;
 
+    *"read-flash"*)
+        # The firmware-identification probe: the "flash" it asked for is
+        # written into the destination file (the last argument). ttyUSB0
+        # answers like a MicroPython board, ttyUSB1 like one running Zephyr
+        # (banner in the bootloader region, as on real hardware), ttyUSB2
+        # like a plain ESP-IDF app.
+        dest=$(printf '%s\n' "$@" | tail -n 1)
+        printf 'esptool v5.3.1\n'
+        printf 'Detecting chip type... ESP32\n'
+        printf 'Chip is ESP32-D0WD (revision 3)\n'
+        case "$args" in
+            *"--port /dev/ttyUSB1"*)
+                printf '*** Booting Zephyr OS build v4.0.0 ***\n' > "$dest"
+                ;;
+            *"--port /dev/ttyUSB2"*)
+                # The esp_app_desc magic word 0xABCD5432 (LE: 32 54 cd ab)
+                # at its conventional spot 0x10028: app image at 0x10000,
+                # image header 0x20, segment header 0x08. Everything else
+                # erased --- a plain IDF app names itself no other way.
+                head -c 65576 /dev/zero | tr '\000' '\377' > "$dest"
+                printf '\062\124\315\253' >> "$dest"
+                ;;
+            *)
+                printf 'MicroPython v1.28.0 on 2025-11-01; ESP32 module with ESP32\n' > "$dest"
+                ;;
+        esac
+        printf 'Read 131072 bytes\n'
+        ;;
+
     *"run"*)
         printf 'esptool v5.3.1\n'
         printf 'Hard resetting via RTS pin...\n'

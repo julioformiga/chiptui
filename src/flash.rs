@@ -6,7 +6,8 @@
 //! UI. Unlike the browser, only one command is ever meaningful at a time
 //! (the user explicitly picks an action), so there is no request queue.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use crate::backend::micropython::curl::{commands as curl_commands, parse as curl_parse};
@@ -16,6 +17,7 @@ use crate::backend::micropython::esptool::{
 use crate::backend::micropython::firmware::{self, BoardCandidate, FirmwareFile, FirmwareKind};
 use crate::backend::tool_available;
 use crate::files::{self, LocalEntry};
+use crate::firmware_id;
 use crate::logs::Level;
 use crate::process::{Outcome, ProcessEvent, ProcessId, ProcessManager, Stream};
 
@@ -39,6 +41,13 @@ pub enum FlashAction {
     WriteFlash,
     VerifyFlash,
     Reset,
+    /// Reads the partition table plus the start of the app area so
+    /// [`crate::firmware_id`] can identify the installed firmware.
+    /// Background-only: it is deliberately absent from [`Self::ALL`] --- the
+    /// user reaches it through the identification question, never the menu,
+    /// because it stops the running firmware (esptool resets the board to
+    /// read its flash) and that consent is collected by the caller.
+    ReadFlash,
 }
 
 impl FlashAction {
@@ -59,6 +68,7 @@ impl FlashAction {
             Self::WriteFlash => "write / flash firmware",
             Self::VerifyFlash => "verify flash",
             Self::Reset => "reset",
+            Self::ReadFlash => "identify firmware",
         }
     }
 
@@ -73,6 +83,7 @@ impl FlashAction {
             Self::WriteFlash => "⇪",
             Self::VerifyFlash => "✓",
             Self::Reset => "↺",
+            Self::ReadFlash => "◎",
         }
     }
 
@@ -164,6 +175,9 @@ struct RunningCommand {
     /// refresh rather than a user-initiated [`FlashPanel::run`] --- only the
     /// latter should ever trigger an unprompted online firmware search.
     background: bool,
+    /// Set only for [`FlashAction::ReadFlash`]: where `esptool read-flash`
+    /// is writing the bytes [`complete`] will parse.
+    probe_dest: Option<PathBuf>,
     stdout: String,
     stderr: String,
 }
@@ -229,6 +243,18 @@ enum FetchKind {
     Boards,
     Firmware { board_id: String },
     Download { dest: PathBuf },
+}
+
+/// A unique scratch path for one `read-flash` run, under the system temp
+/// dir --- never the project tree, and never a fixed name (tests run in
+/// parallel threads that would share a pid).
+fn firmware_probe_path() -> PathBuf {
+    static PROBE_COUNT: AtomicU64 = AtomicU64::new(0);
+    std::env::temp_dir().join(format!(
+        "chiptui-firmware-probe-{}-{}.bin",
+        std::process::id(),
+        PROBE_COUNT.fetch_add(1, Ordering::Relaxed)
+    ))
 }
 
 /// What an online search/download changed.
@@ -301,6 +327,16 @@ impl FlashPanel {
     /// board's chip/flash identity after it is gone.
     pub fn clear_device_details(&mut self) {
         self.details = DeviceDetails::default();
+    }
+
+    /// Drops only the firmware identification. Called when the device
+    /// selection changes: the answer belongs to the board it was read
+    /// from, and unlike the identity fields (refreshed by the next chip
+    /// query) it only comes back once the identification question has been
+    /// answered for the new board --- until then `undefined` is the honest
+    /// display, not the previous board's answer.
+    pub fn clear_firmware_identity(&mut self) {
+        self.details.firmware = None;
     }
 
     pub fn selected_action(&self) -> FlashAction {
@@ -468,7 +504,7 @@ impl FlashPanel {
         if self.blocked_reason(action).is_some() {
             return None;
         }
-        self.build_command(action, port)
+        self.build_command(action, port, None)
             .map(|command| command.to_string())
     }
 
@@ -476,6 +512,7 @@ impl FlashPanel {
         &self,
         action: FlashAction,
         port: Option<&str>,
+        probe_dest: Option<&Path>,
     ) -> Option<crate::process::Command> {
         let chip = self.chip.family();
         Some(match action {
@@ -483,6 +520,12 @@ impl FlashPanel {
             FlashAction::FlashInfo => commands::flash_id(port),
             FlashAction::EraseFlash => commands::erase_flash(port),
             FlashAction::Reset => commands::reset(port),
+            FlashAction::ReadFlash => commands::read_flash(
+                port,
+                firmware_id::READ_OFFSET,
+                firmware_id::READ_SIZE,
+                probe_dest?,
+            ),
             FlashAction::WriteFlash => commands::write_flash(
                 port,
                 chip,
@@ -523,7 +566,7 @@ impl FlashPanel {
         processes: &mut ProcessManager,
         port: Option<&str>,
     ) -> Vec<Notice> {
-        let notices = self.spawn(action, processes, port, false);
+        let notices = self.spawn(action, processes, port, false, None);
         if notices.is_empty() {
             self.output.clear();
         }
@@ -549,7 +592,25 @@ impl FlashPanel {
         processes: &mut ProcessManager,
         port: Option<&str>,
     ) -> bool {
-        self.spawn(FlashAction::ChipInfo, processes, port, true)
+        self.spawn(FlashAction::ChipInfo, processes, port, true, None)
+            .is_empty()
+    }
+
+    /// Reads the flash region [`crate::firmware_id`] needs and identifies
+    /// the installed firmware from it --- the second background query after
+    /// [`Self::query_device_info`], started only once the user has answered
+    /// the identification question (esptool resets the board into its
+    /// bootloader to read flash, stopping whatever the firmware was doing;
+    /// that consent is the caller's business). Same rules as the identity
+    /// query otherwise: never navigates, and a busy panel refuses rather
+    /// than queues. Returns whether the query started.
+    pub fn query_firmware_identity(
+        &mut self,
+        processes: &mut ProcessManager,
+        port: Option<&str>,
+    ) -> bool {
+        let dest = firmware_probe_path();
+        self.spawn(FlashAction::ReadFlash, processes, port, true, Some(dest))
             .is_empty()
     }
 
@@ -559,6 +620,7 @@ impl FlashPanel {
         processes: &mut ProcessManager,
         port: Option<&str>,
         background: bool,
+        probe_dest: Option<PathBuf>,
     ) -> Vec<Notice> {
         if self.is_busy() {
             return vec![(Level::Warn, "a command is already running".to_string())];
@@ -566,7 +628,7 @@ impl FlashPanel {
         if let Some(reason) = self.blocked_reason(action) {
             return vec![(Level::Warn, reason.to_string())];
         }
-        let Some(command) = self.build_command(action, port) else {
+        let Some(command) = self.build_command(action, port, probe_dest.as_deref()) else {
             return vec![(Level::Warn, "cannot build that command".to_string())];
         };
         let command = match &self.tool_path {
@@ -579,6 +641,7 @@ impl FlashPanel {
             id,
             action,
             background,
+            probe_dest,
             stdout: String::new(),
             stderr: String::new(),
         });
@@ -650,6 +713,9 @@ impl FlashPanel {
         }
         self.details
             .merge(parse::parse_device_details(&running.stdout));
+        if let Some(dest) = &running.probe_dest {
+            self.identify_firmware_from(dest, update);
+        }
         if running.background {
             update.background_query_finished = true;
         }
@@ -679,6 +745,29 @@ impl FlashPanel {
                     }
                 }
             }
+        }
+    }
+
+    /// Parses the bytes `esptool read-flash` just wrote and records what
+    /// they say; the scratch file is removed either way. A failed or
+    /// unrecognized read leaves [`Self::details`]'s firmware `None`, which
+    /// the Device info pane renders as `undefined`.
+    fn identify_firmware_from(&mut self, dest: &Path, update: &mut FlashUpdate) {
+        let identified = std::fs::read(dest)
+            .ok()
+            .and_then(|data| firmware_id::identify(&data));
+        let _ = std::fs::remove_file(dest);
+        match identified {
+            Some(firmware) => {
+                self.details.firmware = Some(firmware);
+                update.notices.push((
+                    Level::Success,
+                    format!("firmware on the device: {}", firmware.label()),
+                ));
+            }
+            None => update
+                .notices
+                .push((Level::Info, "firmware could not be identified".to_string())),
         }
     }
 
@@ -1239,6 +1328,90 @@ mod tests {
         assert!(!panel.query_device_info(&mut processes, None));
         settle(&mut panel, &mut processes);
         assert_eq!(panel.details.family, Some(ChipFamily::Esp32));
+    }
+
+    #[test]
+    fn query_firmware_identity_identifies_from_the_read() {
+        use crate::firmware_id::FlashFirmware;
+
+        let fixture = Fixture::new("query-firmware-identity");
+        let mut panel = FlashPanel::new(&fixture.root);
+        panel.set_tool_path(fake_esptool());
+        let mut processes = ProcessManager::new();
+
+        assert!(
+            panel.query_firmware_identity(&mut processes, None),
+            "with the panel idle the probe must start"
+        );
+        let update = settle(&mut panel, &mut processes);
+
+        assert_eq!(panel.details.firmware, Some(FlashFirmware::MicroPython));
+        assert_eq!(
+            panel.screen,
+            FlashScreen::Menu,
+            "a background query must not navigate anywhere"
+        );
+        assert!(
+            update
+                .notices
+                .iter()
+                .any(|(level, message)| matches!(level, Level::Success)
+                    && message.contains("MicroPython")),
+            "the identification result must reach the log: {:?}",
+            update.notices
+        );
+    }
+
+    #[test]
+    fn query_firmware_identity_reads_a_zephyr_board() {
+        use crate::firmware_id::FlashFirmware;
+
+        let fixture = Fixture::new("query-firmware-identity-zephyr");
+        let mut panel = FlashPanel::new(&fixture.root);
+        panel.set_tool_path(fake_esptool());
+        let mut processes = ProcessManager::new();
+
+        assert!(panel.query_firmware_identity(&mut processes, Some("/dev/ttyUSB1")));
+        settle(&mut panel, &mut processes);
+
+        assert_eq!(panel.details.firmware, Some(FlashFirmware::Zephyr));
+    }
+
+    #[test]
+    fn query_firmware_identity_reads_a_plain_espidf_board() {
+        use crate::firmware_id::FlashFirmware;
+
+        let fixture = Fixture::new("query-firmware-identity-espidf");
+        let mut panel = FlashPanel::new(&fixture.root);
+        panel.set_tool_path(fake_esptool());
+        let mut processes = ProcessManager::new();
+
+        assert!(panel.query_firmware_identity(&mut processes, Some("/dev/ttyUSB2")));
+        settle(&mut panel, &mut processes);
+
+        assert_eq!(
+            panel.details.firmware,
+            Some(FlashFirmware::EspIdf),
+            "the esp_app_desc magic alone names a plain IDF app"
+        );
+    }
+
+    #[test]
+    fn query_firmware_identity_refuses_while_something_else_is_running() {
+        let fixture = Fixture::new("query-firmware-identity-busy");
+        let mut panel = FlashPanel::new(&fixture.root);
+        panel.set_tool_path(fake_esptool());
+        let mut processes = ProcessManager::new();
+
+        panel.run(FlashAction::ChipInfo, &mut processes, None);
+        assert!(panel.is_busy());
+
+        assert!(!panel.query_firmware_identity(&mut processes, None));
+        settle(&mut panel, &mut processes);
+        assert_eq!(
+            panel.details.firmware, None,
+            "a refused probe must not leave an answer behind"
+        );
     }
 
     #[test]

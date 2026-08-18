@@ -188,6 +188,11 @@ pub struct DeviceDetails {
     pub flash_manufacturer: Option<String>,
     pub flash_device: Option<String>,
     pub flash_size: Option<String>,
+    /// Which firmware the identification probe found in flash
+    /// ([`crate::firmware_id`]). `None` means "not identified" --- never
+    /// asked, declined, or unrecognized --- which the Device info pane
+    /// renders as `undefined`.
+    pub firmware: Option<crate::firmware_id::FlashFirmware>,
 }
 
 impl DeviceDetails {
@@ -220,6 +225,9 @@ impl DeviceDetails {
         }
         if other.flash_size.is_some() {
             self.flash_size = other.flash_size;
+        }
+        if other.firmware.is_some() {
+            self.firmware = other.firmware;
         }
     }
 

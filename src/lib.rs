@@ -16,6 +16,7 @@ pub mod editor;
 pub mod error;
 pub mod event;
 pub mod files;
+pub mod firmware_id;
 pub mod flash;
 pub mod highlight;
 pub mod home;

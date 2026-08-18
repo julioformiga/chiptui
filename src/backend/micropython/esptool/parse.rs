@@ -50,6 +50,10 @@ pub fn parse_device_details(stdout: &str) -> DeviceDetails {
         flash_manufacturer: parse_field(stdout, "Manufacturer:"),
         flash_device: parse_field(stdout, "Device:"),
         flash_size: parse_field(stdout, "Detected flash size:"),
+        // Never read off a banner: only the flash-identification probe
+        // (`crate::flash::FlashPanel::query_firmware_identity`) sets this,
+        // so merging stdout can only ever leave it untouched.
+        firmware: None,
     }
 }
 

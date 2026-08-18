@@ -95,6 +95,9 @@ impl App {
         if ports.is_empty() {
             self.devices
                 .set_failed("no USB serial port found — connect the board and press 'd'");
+            // The departed board's identity does not outlive it --- same
+            // rule as the mpremote scan's empty branch.
+            self.device_disconnected();
             return;
         }
         let devices = ports

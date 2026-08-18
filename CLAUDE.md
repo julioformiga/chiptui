@@ -198,7 +198,15 @@ The Zephyr monitor is wired too: `m` runs `west monitor [--port P]` (`Backend::m
 in the same PTY session MicroPython uses, and port discovery for a backend without `mpremote
 devs` is `device::usb_serial_ports` — a synchronous `/dev` walk (no subprocess) feeding the
 same `DeviceState`/picker flow (`App::scan_serial_devices`, `serial_dir` overridable for
-deterministic tests; `home_dir` is the equivalent seam for workspace discovery). With that,
+deterministic tests; `home_dir` is the equivalent seam for workspace discovery). Connect/
+disconnect feedback covers both device-shaped backends (`check_device_hotplug` gates on
+`Filesystem || Monitor`, not `Filesystem` alone): the tick poll counts USB serial ports through
+the same `serial_dir` walk and rescans on a change — `mpremote devs` for a filesystem backend,
+the `/dev` walk for a monitor-only one — but never while an overlay is open (a picker must not
+pop over a dialog mid-answer). Any empty or failed rescan routes through `device_disconnected`,
+which drops the departed board's esptool identity *and* the firmware-identification state, so a
+replug — even on the same port — refills the identity and re-asks the firmware question instead
+of sitting at a stale answer. With that,
 Zephyr's Phase 3 surface (detect, board, build, clean, flash, monitor) plus its environment
 layer (workspace/venv/SDK resolution, menuconfig, build dirs, `west update`, `west sdk list`)
 is complete; debug/signing remain Roadmap items.
@@ -376,7 +384,23 @@ These are the decisions that shape most code, and getting them wrong causes wide
   harmlessly and the pane keeps its honest placeholder. Such a backend's `FlashPanel` exists
   purely as the query engine (`ensure_flash_panel` skips the `firmware/` dir for a backend
   without `DeviceInfo`/`EraseFlash`), never lists (no browser is created), and 'x' still routes
-  to the build panel's flash.
+  to the build panel's flash. A successful identity query chains into the firmware
+  *identification* question (`Overlay::ConfirmFirmwareProbe`, default No, once per selected
+  port — `App::firmware_probe_port`): `esptool read-flash 0x0 0x20000` (the bootloader region,
+  the partition table and the start of the app area — the Zephyr/MCUboot banner lives in the
+  bootloader, below 0x8000 — into a temp file) resets the board into its bootloader, so it
+  stops the running firmware and only runs on an explicit yes. The bytes are parsed by
+  `src/firmware_id.rs` (Zephyr's `mcuboot`/`slot0_partition` partition labels decide first, then
+  case-insensitive banner strings — MicroPython-on-Zephyr reads as Zephyr, the structural
+  truth — then the `esp_app_desc_t` magic `0xABCD5432` scanned in the *app* region names a
+  plain ESP-IDF app; bootloader bytes never classify anything, since the ESP-IDF bootloader
+  is shared by all three firmwares), and the answer lands on the MAC row of the Device info
+  pane as `Firmware: MicroPython|Zephyr|ESP-IDF` (`DeviceDetails::firmware`), `undefined`
+  when declined, failed or unrecognized. The read itself waits for a free port like the chip query
+  (`maybe_run_deferred_firmware_probe`) — but not for a script believed running: stopping the
+  firmware is exactly what was consented to. Switching devices clears the old board's answer
+  and re-arms the question; the features row is truncated to one line so the MAC+Firmware row
+  keeps its fixed place in the pane's four rows.
 
 ## Testing
 
