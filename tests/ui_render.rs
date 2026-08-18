@@ -528,6 +528,25 @@ fn overlays_draw_above_the_dashboard() {
 }
 
 #[test]
+fn theme_picker_leads_with_auto_over_the_fixed_themes() {
+    // `Auto` is the one theme answer that depends on the session: it leads
+    // the picker's rows with the two backends it maps to swatched side by
+    // side, ahead of every fixed theme.
+    let mut app = app_with_backend(BackendKind::Zephyr);
+    app.overlay = Some(Overlay::ThemePicker { selected: 0 });
+    let picker = render(&mut app, 100, 40);
+    assert!(picker.contains("Auto"), "auto row missing:\n{picker}");
+    assert!(
+        picker.contains("(per backend)"),
+        "auto row should say what it does:\n{picker}"
+    );
+    assert!(
+        picker.contains("Catppuccin Mocha") && picker.contains("Everforest"),
+        "fixed themes missing:\n{picker}"
+    );
+}
+
+#[test]
 fn selected_rows_carry_the_themes_selection_background() {
     use ratatui::style::Color;
 

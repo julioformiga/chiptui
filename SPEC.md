@@ -835,6 +835,13 @@ config), so switching the theme recolors the whole application:
     placeholders) uses the theme's `muted` color;
 -   state carries meaning through `error`/`warning`/`success`/`info`.
 
+Besides the fixed themes, the picker (`t`) offers `Auto` (stored as
+`theme = auto`): the theme follows the active backend --- Catppuccin
+Mocha for a Zephyr project, Everforest for a MicroPython one, with
+Tokyo Night standing in wherever no backend is active (the home
+screen, an unresolved project). Any fixed pick applies to all projects
+alike.
+
 The one deliberate exception is the Monitor pane's fake terminal
 cursor, which mimics the terminal's own reverse-video cursor rather
 than reading as a selection. On the home screen, each backend's row

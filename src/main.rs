@@ -83,7 +83,12 @@ fn home_loop(
     home: &std::path::Path,
 ) -> Result<Option<PathBuf>> {
     let mut screen = HomeScreen::new(config_dir, home);
-    let theme = chiptui::app::resolve_theme(config_dir).palette();
+    // No backend is active on the home screen, so an `Auto` choice renders
+    // in the Tokyo Night stand-in there; the per-project loop resolves it
+    // against the project's own backend.
+    let theme = chiptui::app::resolve_theme(config_dir)
+        .resolve(None)
+        .palette();
     loop {
         guard
             .terminal()

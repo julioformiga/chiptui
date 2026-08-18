@@ -10,7 +10,7 @@ use crate::build::BuildAction;
 use crate::device::ScriptState;
 
 use super::help::{self, HelpSection};
-use super::{App, FileAction, Overlay, PendingEdit, PickerOption, View, ViewerSource};
+use super::{App, FileAction, Overlay, PendingEdit, PickerOption, ThemeChoice, View, ViewerSource};
 
 impl App {
     /// Shared key handling for every Yes/No confirm overlay
@@ -208,7 +208,7 @@ impl App {
                 _ => {}
             },
             Overlay::ThemePicker { selected } => {
-                let count = ratatui_themes::ThemeName::all().len();
+                let count = ThemeChoice::all().len();
                 match key.code {
                     KeyCode::Esc | KeyCode::Char('q') => self.overlay = None,
                     KeyCode::Up | KeyCode::Char('k') => {

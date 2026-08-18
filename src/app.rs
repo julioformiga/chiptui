@@ -189,11 +189,12 @@ pub enum Overlay {
     BackendPicker { selected: usize },
     /// Serial device selection (`SPEC.md` §8: never guess which board).
     DevicePicker { selected: usize },
-    /// The color theme picker (`t`): every `ratatui_themes::ThemeName`,
-    /// cursor starting on whichever is active. Picking one applies
-    /// immediately and persists to the user config's `[ui] theme`
-    /// (`App::apply_theme_picker`) --- unlike the backend override, there is
-    /// no "Automatic" row, since the theme has no detection to fall back to.
+    /// The color theme picker (`t`): `Auto` first, then every
+    /// `ratatui_themes::ThemeName`, cursor starting on the active choice.
+    /// Picking one applies immediately and persists to the user config's
+    /// `[ui] theme` (`App::apply_theme_picker`); `Auto` follows the active
+    /// backend (Zephyr: Catppuccin Mocha, MicroPython: Everforest) instead
+    /// of naming a theme outright.
     ThemePicker { selected: usize },
     /// A destructive esptool action awaiting explicit confirmation
     /// (`SPEC.md` §15). `message` is the literal command about to run, never
@@ -622,14 +623,74 @@ impl PickerOption {
     }
 }
 
-/// Resolves the active theme from `[ui] theme` in the user config, falling
-/// back to Tokyo Night on an absent or unparsable slug --- shared by
-/// [`App::new`] and `main.rs`'s home screen, which draws before an `App`
-/// exists at all.
-pub fn resolve_theme(config_dir: &std::path::Path) -> ratatui_themes::ThemeName {
+/// One row of the theme picker. Every `Named` row is a fixed theme that
+/// applies to all projects alike; `Auto` is the one answer that depends on
+/// the session --- it follows the active backend, so a Zephyr project
+/// renders in Catppuccin Mocha and a MicroPython one in Everforest, with
+/// Tokyo Night standing in wherever no backend is active yet (the home
+/// screen, an unresolved project).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThemeChoice {
+    Auto,
+    Named(ratatui_themes::ThemeName),
+}
+
+impl ThemeChoice {
+    /// The picker's rows: `Auto` first, then every fixed theme --- the same
+    /// "the meta answer leads" order the backend picker follows.
+    pub fn all() -> Vec<Self> {
+        std::iter::once(Self::Auto)
+            .chain(
+                ratatui_themes::ThemeName::all()
+                    .iter()
+                    .copied()
+                    .map(Self::Named),
+            )
+            .collect()
+    }
+
+    /// Parses a stored `[ui] theme` slug: `auto` is ours, every other slug
+    /// belongs to `ratatui_themes`.
+    pub fn from_slug(slug: &str) -> Option<Self> {
+        if slug.eq_ignore_ascii_case("auto") {
+            Some(Self::Auto)
+        } else {
+            slug.parse().ok().map(Self::Named)
+        }
+    }
+
+    pub fn slug(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Named(theme) => theme.slug(),
+        }
+    }
+
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::Auto => "Auto",
+            Self::Named(theme) => theme.display_name(),
+        }
+    }
+
+    /// The concrete theme this choice renders as for the active backend.
+    pub fn resolve(self, backend: Option<BackendKind>) -> ratatui_themes::ThemeName {
+        match (self, backend) {
+            (Self::Auto, Some(BackendKind::Zephyr)) => ratatui_themes::ThemeName::CatppuccinMocha,
+            (Self::Auto, Some(BackendKind::MicroPython)) => ratatui_themes::ThemeName::Everforest,
+            (Self::Auto, None) => ratatui_themes::ThemeName::TokyoNight,
+            (Self::Named(theme), _) => theme,
+        }
+    }
+}
+
+/// Resolves the stored `[ui] theme` choice, falling back to Tokyo Night on
+/// an absent or unparsable slug --- shared by [`App::new`] and `main.rs`'s
+/// home screen, which draws before an `App` exists at all.
+pub fn resolve_theme(config_dir: &std::path::Path) -> ThemeChoice {
     crate::settings::theme(config_dir)
-        .and_then(|slug| slug.parse().ok())
-        .unwrap_or(ratatui_themes::ThemeName::TokyoNight)
+        .and_then(|slug| ThemeChoice::from_slug(&slug))
+        .unwrap_or(ThemeChoice::Named(ratatui_themes::ThemeName::TokyoNight))
 }
 
 pub struct App {
@@ -782,11 +843,14 @@ pub struct App {
     /// afterwards --- so redirecting the home really does redirect every
     /// config read, `$XDG_CONFIG_HOME` included.
     config_dir: std::path::PathBuf,
-    /// The active UI theme --- Tokyo Night unless overridden by `[ui] theme`
-    /// in the user config. Loaded once at startup and cached: unlike
+    /// The stored theme choice --- `Auto` unless `[ui] theme` in the user
+    /// config names a fixed theme. The concrete theme rendered each frame
+    /// is derived from it plus the active backend ([`Self::theme`]), so an
+    /// `Auto` session recolors itself when the backend changes. Loaded once
+    /// at startup and cached: unlike
     /// [`ZephyrSettings`](crate::settings::ZephyrSettings) (recomputed on
     /// demand), this is read every frame by the renderer.
-    theme: ratatui_themes::ThemeName,
+    theme: ThemeChoice,
     /// Memoized [`Self::tool_status`]. The render path asks twice a frame
     /// (once to measure the pane, once to draw it) for an answer that only
     /// changes with the selected backend or the resolved tool locations, and
@@ -891,56 +955,73 @@ impl App {
         self.previewed_theme().palette()
     }
 
-    /// The active theme's name --- unlike [`Self::theme_palette`], this is
-    /// never the live preview: it is what the picker's "(active)" marker
-    /// means (the answer `Esc` would keep), and [`Self::apply_theme_picker`]
-    /// is the only thing that changes it.
+    /// The theme this session renders in right now: the stored choice
+    /// resolved against the active backend, so an `Auto` choice follows a
+    /// backend override or re-detection live. Deliberately named apart
+    /// from [`crate::backend::BackendKind::palette`], which answers a
+    /// different question ("which backend is this row?") and coexists with
+    /// this one rather than being replaced by it. While [`Overlay::ThemePicker`]
+    /// is open the palette previews the hovered row live (the whole UI behind the
+    /// popup, popup included, so a pick can be judged before it commits);
+    /// this value itself is untouched until `Enter`, so `Esc` reverts for
+    /// free --- nothing was ever committed to preview.
     pub fn theme(&self) -> ratatui_themes::ThemeName {
+        self.theme.resolve(self.manager.selected_kind())
+    }
+
+    /// The stored choice behind [`Self::theme`] --- what the picker's
+    /// "(active)" marker sits on and what a restart would reload: `Auto`
+    /// when the session follows the backend, a fixed theme otherwise.
+    pub fn theme_choice(&self) -> ThemeChoice {
         self.theme
     }
 
     fn previewed_theme(&self) -> ratatui_themes::ThemeName {
         match &self.overlay {
-            Some(Overlay::ThemePicker { selected }) => ratatui_themes::ThemeName::all()
+            Some(Overlay::ThemePicker { selected }) => ThemeChoice::all()
                 .get(*selected)
                 .copied()
-                .unwrap_or(self.theme),
-            _ => self.theme,
+                .map(|choice| choice.resolve(self.manager.selected_kind()))
+                .unwrap_or_else(|| self.theme()),
+            _ => self.theme(),
         }
     }
 
     /// Opens the theme picker (`t`) with the cursor on the currently active
-    /// theme, the same "start where the current answer is" convention the
+    /// choice, the same "start where the current answer is" convention the
     /// backend override picker follows.
     fn open_theme_picker(&mut self) {
-        let selected = ratatui_themes::ThemeName::all()
+        let selected = ThemeChoice::all()
             .iter()
             .position(|&candidate| candidate == self.theme)
             .unwrap_or(0);
         self.overlay = Some(Overlay::ThemePicker { selected });
     }
 
-    /// Applies the picked theme immediately (no restart needed --- the next
+    /// Applies the picked choice immediately (no restart needed --- the next
     /// frame just reads a different [`Self::theme_palette`]) and persists it
     /// to the user config the same way `workspace_view`'s
     /// `accept_workspace_dir` saves the workspace answer: a failed write
     /// still applies the theme for this session, it just cannot survive a
     /// restart, so it is logged as a warning rather than lost silently.
     fn apply_theme_picker(&mut self, selected: usize) {
-        let Some(theme) = ratatui_themes::ThemeName::all().get(selected).copied() else {
+        let Some(choice) = ThemeChoice::all().get(selected).copied() else {
             return;
         };
-        self.theme = theme;
+        self.theme = choice;
+        let applied = match choice {
+            ThemeChoice::Auto => {
+                "Auto --- Zephyr: Catppuccin Mocha, MicroPython: Everforest".to_string()
+            }
+            ThemeChoice::Named(theme) => theme.display_name().to_string(),
+        };
         let config = self.user_config_path();
-        match crate::settings::save_theme(&config, theme.slug()) {
-            Ok(()) => self.logs.info(format!(
-                "theme set to {} ({})",
-                theme.display_name(),
-                config.display()
-            )),
+        match crate::settings::save_theme(&config, choice.slug()) {
+            Ok(()) => self
+                .logs
+                .info(format!("theme set to {applied} ({})", config.display())),
             Err(err) => self.logs.warn(format!(
-                "theme set to {} for this session, but could not save it to {}: {err}",
-                theme.display_name(),
+                "theme set to {applied} for this session, but could not save it to {}: {err}",
                 config.display()
             )),
         }
@@ -2463,9 +2544,9 @@ mod tests {
     fn t_opens_the_theme_picker_on_the_active_theme() {
         let mut app = app();
         app.handle(key(KeyCode::Char('t')));
-        let expected = ratatui_themes::ThemeName::all()
+        let expected = ThemeChoice::all()
             .iter()
-            .position(|&candidate| candidate == app.theme())
+            .position(|&candidate| candidate == app.theme_choice())
             .unwrap();
         assert_eq!(
             app.overlay,
@@ -2482,7 +2563,7 @@ mod tests {
         let Some(Overlay::ThemePicker { selected }) = app.overlay else {
             panic!("theme picker should be open");
         };
-        let hovered = ratatui_themes::ThemeName::all()[selected];
+        let hovered = ThemeChoice::all()[selected].resolve(app.manager.selected_kind());
 
         assert_eq!(
             app.theme_palette(),
@@ -2509,16 +2590,97 @@ mod tests {
         let Some(Overlay::ThemePicker { selected }) = app.overlay else {
             panic!("theme picker should be open");
         };
-        let expected = ratatui_themes::ThemeName::all()[selected];
+        let expected = ThemeChoice::all()[selected];
         app.handle(key(KeyCode::Enter));
 
         assert_eq!(app.overlay, None);
-        assert_eq!(app.theme(), expected, "applies without a restart");
+        assert_eq!(app.theme_choice(), expected, "applies without a restart");
         assert_eq!(
             crate::settings::theme(&home.join(".config")).as_deref(),
             Some(expected.slug()),
             "and survives one"
         );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn auto_theme_slug_parses_and_round_trips() {
+        assert_eq!(ThemeChoice::from_slug("auto"), Some(ThemeChoice::Auto));
+        assert_eq!(ThemeChoice::from_slug("Auto"), Some(ThemeChoice::Auto));
+        assert_eq!(
+            ThemeChoice::from_slug("catppuccin-mocha"),
+            Some(ThemeChoice::Named(
+                ratatui_themes::ThemeName::CatppuccinMocha
+            ))
+        );
+        assert_eq!(
+            ThemeChoice::from_slug("everforest"),
+            Some(ThemeChoice::Named(ratatui_themes::ThemeName::Everforest))
+        );
+        assert_eq!(ThemeChoice::from_slug("not-a-theme"), None);
+        assert_eq!(ThemeChoice::Auto.slug(), "auto");
+        assert_eq!(ThemeChoice::Auto.display_name(), "Auto");
+        assert_eq!(
+            ThemeChoice::all().first().copied(),
+            Some(ThemeChoice::Auto),
+            "Auto leads the picker's rows"
+        );
+    }
+
+    #[test]
+    fn auto_theme_follows_the_active_backend() {
+        let home = std::env::temp_dir().join(format!("chiptui-theme-auto-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let mut app = App::new(std::env::temp_dir());
+        app.detect();
+        app.set_home_dir(&home);
+
+        // Pick the leading Auto row: the picker opens on the active choice,
+        // and `Up` from row `s` reaches row 0 after exactly `s` presses.
+        app.handle(key(KeyCode::Char('t')));
+        let Some(Overlay::ThemePicker { selected }) = app.overlay else {
+            panic!("theme picker should be open");
+        };
+        for _ in 0..selected {
+            app.handle(key(KeyCode::Up));
+        }
+        assert_eq!(
+            app.overlay,
+            Some(Overlay::ThemePicker { selected: 0 }),
+            "navigation should land on the Auto row"
+        );
+        app.handle(key(KeyCode::Enter));
+
+        assert_eq!(app.theme_choice(), ThemeChoice::Auto);
+        assert_eq!(
+            crate::settings::theme(&home.join(".config")).as_deref(),
+            Some("auto"),
+            "Auto persists under its own slug"
+        );
+
+        // No backend is active, so Auto stands in with the default; each
+        // backend then recolors the session live, without a restart or a
+        // re-pick.
+        assert_eq!(app.theme(), ratatui_themes::ThemeName::TokyoNight);
+        app.manager.set_override(Some(BackendKind::Zephyr));
+        assert_eq!(
+            app.theme(),
+            ratatui_themes::ThemeName::CatppuccinMocha,
+            "a Zephyr session renders in Catppuccin Mocha"
+        );
+        app.manager.set_override(Some(BackendKind::MicroPython));
+        assert_eq!(
+            app.theme(),
+            ratatui_themes::ThemeName::Everforest,
+            "a MicroPython session renders in Everforest"
+        );
+        app.manager.set_override(None);
+        assert_eq!(
+            app.theme(),
+            ratatui_themes::ThemeName::TokyoNight,
+            "back to no backend, back to the stand-in"
+        );
+
         let _ = std::fs::remove_dir_all(&home);
     }
 

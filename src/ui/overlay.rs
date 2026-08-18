@@ -7,7 +7,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, List, ListItem, ListState, Paragraph};
 
 use crate::app::help::{self, HelpSection};
-use crate::app::{App, FileAction, Overlay, PickerOption, ViewerSource, ViewerState};
+use crate::app::{App, FileAction, Overlay, PickerOption, ThemeChoice, ViewerSource, ViewerState};
 use crate::backend::BackendKind;
 use crate::browser::SyncPlan;
 use crate::highlight::{self, TokenKind};
@@ -1652,32 +1652,47 @@ fn draw_picker(frame: &mut Frame, area: Rect, app: &App, selected: usize, palett
     );
 }
 
-/// The theme picker: every `ratatui_themes::ThemeName`, each row swatched in
-/// its own accent color so the pick can be judged before it is applied,
-/// rather than by name alone.
+/// The theme picker: `Auto` first, then every `ratatui_themes::ThemeName`,
+/// each row swatched in its own accent color so the pick can be judged
+/// before it is applied, rather than by name alone. The `Auto` row swatches
+/// the two themes it can resolve to side by side (Zephyr's Mocha, then
+/// MicroPython's Everforest) --- the mapping reads at a glance without a
+/// label long enough to widen the popup, and the live preview plus the
+/// post-pick log line spell it out in full.
 fn draw_theme_picker(frame: &mut Frame, area: Rect, app: &App, selected: usize, palette: Palette) {
-    let themes = ratatui_themes::ThemeName::all();
-    let active = app.theme();
+    let choices = ThemeChoice::all();
+    let active = app.theme_choice();
 
-    let items: Vec<ListItem> = themes
+    let items: Vec<ListItem> = choices
         .iter()
-        .map(|theme| {
-            let swatch = theme.palette().accent;
-            let mut spans = vec![
-                Span::styled("██ ", Style::new().fg(swatch)),
-                Span::styled(
-                    format!("{:<16}", theme.display_name()),
-                    Style::new().fg(palette.fg),
-                ),
-            ];
-            if *theme == active {
+        .map(|&choice| {
+            let mut spans = Vec::new();
+            match choice {
+                ThemeChoice::Auto => {
+                    for kind in [BackendKind::Zephyr, BackendKind::MicroPython] {
+                        let accent = choice.resolve(Some(kind)).palette().accent;
+                        spans.push(Span::styled("██ ", Style::new().fg(accent)));
+                    }
+                }
+                ThemeChoice::Named(theme) => {
+                    spans.push(Span::styled("██ ", Style::new().fg(theme.palette().accent)));
+                    spans.push(Span::raw("   "));
+                }
+            }
+            spans.push(Span::styled(
+                format!("{:<16}", choice.display_name()),
+                Style::new().fg(palette.fg),
+            ));
+            if choice == active {
                 spans.push(Span::styled("(active)", muted_style(palette)));
+            } else if choice == ThemeChoice::Auto {
+                spans.push(Span::styled("(per backend)", muted_style(palette)));
             }
             ListItem::new(Line::from(spans))
         })
         .collect();
 
-    let popup = centered(area, 44, themes.len() as u16 + 2);
+    let popup = centered(area, 44, choices.len() as u16 + 2);
     let mut state = ListState::default().with_selected(Some(selected));
 
     frame.render_widget(Clear, popup);
