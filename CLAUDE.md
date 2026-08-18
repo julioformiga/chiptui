@@ -410,7 +410,11 @@ These are the decisions that shape most code, and getting them wrong causes wide
   is shared by all three firmwares), and the answer lands on its own row of the Device info
   pane, directly under the MAC, as `Firmware: MicroPython|Zephyr|ESP-IDF`
   (`DeviceDetails::firmware`), `undefined`
-  when declined, failed or unrecognized. The read itself waits for a free port like the chip query
+  when declined, failed or unrecognized — with one distinction: a window that is entirely
+  `0xFF` is erased flash, reported as `none (erased flash)` in warning color (`firmware_id::
+  classify` → `FirmwareVerdict::Erased`), because "no firmware installed" is an answer, not
+  an unknown; an empty/truncated read deliberately does not qualify as erased. The read
+  itself waits for a free port like the chip query
   (`maybe_run_deferred_firmware_probe`) — but not for a script believed running: stopping the
   firmware is exactly what was consented to. Switching devices clears the old board's answer
   and re-arms the question; the features row is truncated to one line and the crystal rides

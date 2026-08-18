@@ -15,7 +15,7 @@ use chiptui::backend::BackendKind;
 use chiptui::browser::{Browser, PaneState};
 use chiptui::device::{DeviceInfo, ScriptState};
 use chiptui::event::AppEvent;
-use chiptui::firmware_id::FlashFirmware;
+use chiptui::firmware_id::{FirmwareVerdict, FlashFirmware};
 use chiptui::flash::FlashPanel;
 use chiptui::process::ProcessManager;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -177,7 +177,7 @@ fn accepting_the_firmware_question_identifies_the_flash() {
     ));
     assert_eq!(
         app.flash.as_ref().unwrap().details.firmware,
-        Some(FlashFirmware::MicroPython)
+        Some(FirmwareVerdict::Firmware(FlashFirmware::MicroPython))
     );
     let frame = render(&mut app, 110, 24);
     assert!(

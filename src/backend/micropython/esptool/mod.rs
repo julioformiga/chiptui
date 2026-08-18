@@ -188,11 +188,12 @@ pub struct DeviceDetails {
     pub flash_manufacturer: Option<String>,
     pub flash_device: Option<String>,
     pub flash_size: Option<String>,
-    /// Which firmware the identification probe found in flash
-    /// ([`crate::firmware_id`]). `None` means "not identified" --- never
-    /// asked, declined, or unrecognized --- which the Device info pane
-    /// renders as `undefined`.
-    pub firmware: Option<crate::firmware_id::FlashFirmware>,
+    /// What the identification probe found in flash
+    /// ([`crate::firmware_id`]): a named firmware, or a chip whose flash
+    /// is erased (`FirmwareVerdict::Erased`, no firmware at all). `None`
+    /// means "not identified" --- never asked, declined, or unrecognized
+    /// --- which the Device info pane renders as `undefined`.
+    pub firmware: Option<crate::firmware_id::FirmwareVerdict>,
 }
 
 impl DeviceDetails {

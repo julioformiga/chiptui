@@ -17,7 +17,7 @@ use crate::backend::micropython::esptool::{
 use crate::backend::micropython::firmware::{self, BoardCandidate, FirmwareFile, FirmwareKind};
 use crate::backend::tool_available;
 use crate::files::{self, LocalEntry};
-use crate::firmware_id;
+use crate::firmware_id::{self, FirmwareVerdict};
 use crate::logs::Level;
 use crate::process::{Outcome, ProcessEvent, ProcessId, ProcessManager, Stream};
 
@@ -753,16 +753,23 @@ impl FlashPanel {
     /// unrecognized read leaves [`Self::details`]'s firmware `None`, which
     /// the Device info pane renders as `undefined`.
     fn identify_firmware_from(&mut self, dest: &Path, update: &mut FlashUpdate) {
-        let identified = std::fs::read(dest)
+        let verdict = std::fs::read(dest)
             .ok()
-            .and_then(|data| firmware_id::identify(&data));
+            .and_then(|data| firmware_id::classify(&data));
         let _ = std::fs::remove_file(dest);
-        match identified {
-            Some(firmware) => {
-                self.details.firmware = Some(firmware);
+        match verdict {
+            Some(FirmwareVerdict::Firmware(firmware)) => {
+                self.details.firmware = Some(FirmwareVerdict::Firmware(firmware));
                 update.notices.push((
                     Level::Success,
                     format!("firmware on the device: {}", firmware.label()),
+                ));
+            }
+            Some(FirmwareVerdict::Erased) => {
+                self.details.firmware = Some(FirmwareVerdict::Erased);
+                update.notices.push((
+                    Level::Warn,
+                    "no firmware: the device's flash is erased".to_string(),
                 ));
             }
             None => update
@@ -1345,7 +1352,10 @@ mod tests {
         );
         let update = settle(&mut panel, &mut processes);
 
-        assert_eq!(panel.details.firmware, Some(FlashFirmware::MicroPython));
+        assert_eq!(
+            panel.details.firmware,
+            Some(FirmwareVerdict::Firmware(FlashFirmware::MicroPython))
+        );
         assert_eq!(
             panel.screen,
             FlashScreen::Menu,
@@ -1374,7 +1384,35 @@ mod tests {
         assert!(panel.query_firmware_identity(&mut processes, Some("/dev/ttyUSB1")));
         settle(&mut panel, &mut processes);
 
-        assert_eq!(panel.details.firmware, Some(FlashFirmware::Zephyr));
+        assert_eq!(
+            panel.details.firmware,
+            Some(FirmwareVerdict::Firmware(FlashFirmware::Zephyr))
+        );
+    }
+
+    #[test]
+    fn query_firmware_identity_reads_a_blank_board() {
+        let fixture = Fixture::new("query-firmware-identity-blank");
+        let mut panel = FlashPanel::new(&fixture.root);
+        panel.set_tool_path(fake_esptool());
+        let mut processes = ProcessManager::new();
+
+        assert!(panel.query_firmware_identity(&mut processes, Some("/dev/ttyUSB3")));
+        let update = settle(&mut panel, &mut processes);
+
+        assert_eq!(
+            panel.details.firmware,
+            Some(FirmwareVerdict::Erased),
+            "an all-0xFF read is a chip with no firmware, not an unrecognized one"
+        );
+        assert!(
+            update
+                .notices
+                .iter()
+                .any(|(level, message)| matches!(level, Level::Warn) && message.contains("erased")),
+            "a blank device must be named as blank: {:?}",
+            update.notices
+        );
     }
 
     #[test]
@@ -1391,7 +1429,7 @@ mod tests {
 
         assert_eq!(
             panel.details.firmware,
-            Some(FlashFirmware::EspIdf),
+            Some(FirmwareVerdict::Firmware(FlashFirmware::EspIdf)),
             "the esp_app_desc magic alone names a plain IDF app"
         );
     }

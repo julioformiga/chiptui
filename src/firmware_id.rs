@@ -8,6 +8,9 @@
 //! Zephyr OS`) and every ESP-IDF application embeds its `esp_app_desc`
 //! magic. [`identify`] is a pure function over the bytes `esptool
 //! read-flash` brought back, so every rule here is unit-testable in memory.
+//! A window that is entirely `0xFF` answers differently from an
+//! unrecognized one: [`classify`] reports erased flash --- a device with
+//! no firmware on it at all.
 
 /// What the flash contents say the board is running. The two backends
 /// ChipTUI knows how to drive, plus the ESP-IDF app neither of them is ---
@@ -34,6 +37,21 @@ impl FlashFirmware {
         }
     }
 }
+
+/// The identification read's full verdict. A named firmware is one
+/// answer, but so is proof the flash is erased: "no firmware installed"
+/// is different from `None` (never asked, declined, or nothing
+/// recognizable) and worth reporting as what it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FirmwareVerdict {
+    Firmware(FlashFirmware),
+    /// The whole identification window reads `0xFF`: erased flash, a
+    /// chip that never had firmware written to it (or was erased since).
+    Erased,
+}
+
+/// What erased NOR flash reads as, on every byte.
+const ERASED: u8 = 0xFF;
 
 /// Where the identification read starts: the very beginning of flash. On
 /// a Zephyr sysbuild image the bootloader region (below 0x8000) is
@@ -96,6 +114,25 @@ pub fn identify(data: &[u8]) -> Option<FlashFirmware> {
         return Some(FlashFirmware::EspIdf);
     }
     None
+}
+
+/// The identification question the Device info pane actually asks:
+/// which firmware the flash carries, or that it carries none. Erased
+/// flash is checked first --- every firmware writes into the bootloader
+/// region the window starts at, so an all-`0xFF` window can only be a
+/// blank chip, never a firmware that happens to be quiet.
+pub fn classify(data: &[u8]) -> Option<FirmwareVerdict> {
+    if is_erased(data) {
+        return Some(FirmwareVerdict::Erased);
+    }
+    identify(data).map(FirmwareVerdict::Firmware)
+}
+
+/// Whether the window reads as erased flash throughout. An empty read is
+/// deliberately *not* erased: a failed or truncated `read-flash` must not
+/// masquerade as a blank device.
+fn is_erased(data: &[u8]) -> bool {
+    !data.is_empty() && data.iter().all(|&byte| byte == ERASED)
 }
 
 /// Whether the app region carries an `esp_app_desc_t` magic word. Only the
@@ -239,6 +276,34 @@ mod tests {
     #[test]
     fn erased_flash_identifies_nothing() {
         assert_eq!(identify(&[0xFF; READ_SIZE]), None);
+    }
+
+    #[test]
+    fn erased_flash_classifies_as_no_firmware() {
+        assert_eq!(classify(&[0xFF; READ_SIZE]), Some(FirmwareVerdict::Erased));
+    }
+
+    #[test]
+    fn an_empty_read_is_not_a_blank_device() {
+        // A failed or truncated read must not read as "no firmware":
+        // that verdict claims the chip is blank.
+        assert_eq!(classify(&[]), None);
+    }
+
+    #[test]
+    fn unrecognized_contents_stay_unrecognized() {
+        // Zeros are written bytes without any signature --- neither a
+        // firmware nor an erased chip.
+        assert_eq!(classify(&[0x00; READ_SIZE]), None);
+    }
+
+    #[test]
+    fn a_named_firmware_classifies_as_itself() {
+        let data = window(&[entry("nvs", 1), entry("factory", 0)], b"MicroPython v1");
+        assert_eq!(
+            classify(&data),
+            Some(FirmwareVerdict::Firmware(FlashFirmware::MicroPython))
+        );
     }
 
     #[test]

@@ -9,6 +9,7 @@ use ratatui::widgets::{Paragraph, Tabs, Wrap};
 
 use crate::app::{App, Focus, LogTab, MonitorSource, ProjectRow};
 use crate::backend::Capability;
+use crate::firmware_id::FirmwareVerdict;
 use crate::flash::RunState;
 use crate::logs::{Level, PREFIX_WIDTH};
 use crate::project::DetectionOutcome;
@@ -540,11 +541,16 @@ fn device_content(app: &App, width: usize, palette: Palette) -> Vec<Line<'static
         // The firmware answer sits directly under the MAC, the identity it
         // belongs beside. `undefined` is the honest value while (and after)
         // the identification question goes unanswered --- see
-        // `Overlay::ConfirmFirmwareProbe`.
+        // `Overlay::ConfirmFirmwareProbe`. A blank chip is a different,
+        // answerable condition: erased flash means no firmware at all.
         let (value, style) = match details.firmware {
-            Some(kind) => (
+            Some(FirmwareVerdict::Firmware(kind)) => (
                 kind.label().to_string(),
                 Style::new().fg(palette.success).bold(),
+            ),
+            Some(FirmwareVerdict::Erased) => (
+                "none (erased flash)".to_string(),
+                Style::new().fg(palette.warning),
             ),
             None => ("undefined".to_string(), muted_style(palette)),
         };

@@ -79,7 +79,8 @@ case "$args" in
         # written into the destination file (the last argument). ttyUSB0
         # answers like a MicroPython board, ttyUSB1 like one running Zephyr
         # (banner in the bootloader region, as on real hardware), ttyUSB2
-        # like a plain ESP-IDF app.
+        # like a plain ESP-IDF app, ttyUSB3 like a blank chip (erased
+        # flash reads 0xFF everywhere --- 0x20000 bytes, the read's size).
         dest=$(printf '%s\n' "$@" | tail -n 1)
         printf 'esptool v5.3.1\n'
         printf 'Detecting chip type... ESP32\n'
@@ -95,6 +96,9 @@ case "$args" in
                 # erased --- a plain IDF app names itself no other way.
                 head -c 65576 /dev/zero | tr '\000' '\377' > "$dest"
                 printf '\062\124\315\253' >> "$dest"
+                ;;
+            *"--port /dev/ttyUSB3"*)
+                head -c 131072 /dev/zero | tr '\000' '\377' > "$dest"
                 ;;
             *)
                 printf 'MicroPython v1.28.0 on 2025-11-01; ESP32 module with ESP32\n' > "$dest"

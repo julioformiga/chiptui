@@ -14,6 +14,7 @@ use chiptui::app::help::{self, HelpSection};
 use chiptui::app::{App, Focus, LogTab, Overlay};
 use chiptui::backend::BackendKind;
 use chiptui::backend::micropython::esptool::{ChipFamily, DeviceDetails};
+use chiptui::firmware_id::FirmwareVerdict;
 use chiptui::flash::FlashPanel;
 
 /// Renders the dashboard at `width`x`height` and returns it as plain text.
@@ -358,6 +359,31 @@ fn device_pane_shows_chip_details_once_esptool_has_reported_them() {
     assert!(
         frame.contains("24:6f:28:12:34:56"),
         "missing MAC address:\n{frame}"
+    );
+}
+
+/// A blank chip is an answer, not an unknown: the firmware row names the
+/// erased flash instead of falling back to `undefined`.
+#[test]
+fn device_pane_names_erased_flash_as_no_firmware() {
+    let mut app = app_with_backend(BackendKind::MicroPython);
+    let mut flash = FlashPanel::new(std::env::temp_dir());
+    flash.details = DeviceDetails {
+        family: Some(ChipFamily::Esp32),
+        mac: Some("24:6f:28:12:34:56".to_string()),
+        firmware: Some(FirmwareVerdict::Erased),
+        ..DeviceDetails::default()
+    };
+    app.flash = Some(flash);
+
+    let frame = render(&mut app, 100, 30);
+    assert!(
+        frame.contains("none (erased flash)"),
+        "a blank chip must be named as blank:\n{frame}"
+    );
+    assert!(
+        !frame.contains("undefined"),
+        "erased is an answer, not an unknown:\n{frame}"
     );
 }
 
