@@ -539,10 +539,10 @@ fn device_content(app: &App, width: usize, palette: Palette) -> Vec<Line<'static
             Span::styled(mac.clone(), Style::new().fg(palette.fg)),
         ]));
         // The firmware answer sits directly under the MAC, the identity it
-        // belongs beside. `undefined` is the honest value while (and after)
-        // the identification question goes unanswered --- see
-        // `Overlay::ConfirmFirmwareProbe`. A blank chip is a different,
-        // answerable condition: erased flash means no firmware at all.
+        // belongs beside. `undefined` is the honest value while the
+        // identification read has not run, or could not recognize anything;
+        // a blank chip is a different, answerable condition: erased flash
+        // means no firmware at all.
         let (value, style) = match details.firmware {
             Some(FirmwareVerdict::Firmware(kind)) => (
                 kind.label().to_string(),

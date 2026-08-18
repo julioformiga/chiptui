@@ -1,0 +1,50 @@
+#!/bin/sh
+# Fake `mpremote` for a board running a foreign firmware (Zephyr): `devs`
+# lists it like any USB serial board, but `repl` shows what such a board
+# actually shows --- a boot banner pouring out with no `>>> ` prompt. The
+# startup probe must classify that as a *running script* (it cannot know
+# better: output with no prompt is running, and boards with an auto-reset
+# circuit reboot and print exactly this when the serial port opens), which
+# is why the firmware-gate tests pair this fake with
+# `esptool-zephyr-board`: the identification chain, not a file listing,
+# must be what runs after the user accepts the interruption.
+#
+# Every filesystem command exits the way mpremote does against a firmware
+# with no REPL: if any test ever sees this output, a listing escaped the
+# gate.
+
+args="$*"
+
+case "$args" in
+    "connect "*) args=$(printf '%s' "$args" | cut -d' ' -f3-) ;;
+esac
+
+case "$args" in
+    devs)
+        printf '/dev/ttyACM0 e6614104036e5f24 303a:1001 Feather ESP32\n'
+        ;;
+
+    repl)
+        # The boot banner a Zephyr image prints when the port's opening
+        # resets the board: meaningful lines, no prompt anywhere --- the
+        # probe's "running script" verdict. Waits for ctrl-] (0x1d) like
+        # the real `mpremote repl`.
+        printf '*** Booting Zephyr OS build v4.0.0 ***\n'
+        printf 'I: Init GPIO\n'
+        printf 'I: 3 external IRQs\n'
+        printf 'D: uart console initialized\n'
+        stty raw -echo
+        while [ "$(dd bs=1 count=1 2>/dev/null | od -An -tuC | tr -d ' \n')" != "29" ]; do :; done
+        stty sane
+        ;;
+
+    df|"fs --no-verbose"*)
+        echo 'mpremote: could not enter raw repl; is another task blocking the REPL?' >&2
+        exit 1
+        ;;
+
+    *)
+        echo "mpremote: no device found" >&2
+        exit 1
+        ;;
+esac

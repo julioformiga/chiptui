@@ -1,0 +1,34 @@
+#!/bin/sh
+# Fake `esptool` for a board running Zephyr: `chip-id` answers like any
+# ESP32 (the board itself is ordinary; only its firmware differs), while
+# `read-flash` returns the bytes `firmware_id` classifies as Zephyr (the
+# banner in the bootloader region, as on real hardware). The firmware-gate
+# tests use it to check that the first listing is refused with the reason
+# instead of attempted against a firmware mpremote cannot talk to.
+
+case "$*" in
+    *"chip-id"*)
+        printf 'esptool v5.3.1\n'
+        printf 'Serial port /dev/ttyACM0\n'
+        printf 'Detecting chip type... ESP32\n'
+        printf 'Chip is ESP32-D0WD (revision 3)\n'
+        printf 'Features: WiFi, BT, Dual Core, 240MHz, VRef calibration in efuse, Coding Scheme None\n'
+        printf 'Crystal is 40MHz\n'
+        printf 'MAC: 24:6f:28:12:34:56\n'
+        printf 'Chip ID: 0x1234567890ab\n'
+        ;;
+
+    *"read-flash"*)
+        dest=$(printf '%s\n' "$@" | tail -n 1)
+        printf 'esptool v5.3.1\n'
+        printf 'Detecting chip type... ESP32\n'
+        printf 'Chip is ESP32-D0WD (revision 3)\n'
+        printf '*** Booting Zephyr OS build v4.0.0 ***\n' > "$dest"
+        printf 'Read 131072 bytes\n'
+        ;;
+
+    *)
+        echo "A fatal error occurred: Could not open port, no device found" >&2
+        exit 1
+        ;;
+esac

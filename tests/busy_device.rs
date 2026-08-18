@@ -10,7 +10,7 @@
 
 use std::time::{Duration, Instant};
 
-use chiptui::app::{App, Overlay};
+use chiptui::app::{App, Focus, Overlay};
 use chiptui::backend::BackendKind;
 use chiptui::browser::{Browser, PaneState};
 use chiptui::device::{DeviceInfo, ScriptState};
@@ -119,54 +119,30 @@ fn pane(app: &App) -> &PaneState {
 fn an_idle_board_is_listed_without_asking_anything() {
     let mut app = app_with("mpremote");
 
-    // Probe sees the banner and prompt, concludes "idle", and the listing
-    // proceeds on its own.
+    // Probe sees the banner and prompt, concludes "idle"; the chip
+    // identity and the firmware read follow on the same port, and the
+    // MicroPython verdict releases the listing.
     assert!(pump_until(
         &mut app,
         |app| matches!(pane(app), PaneState::Ready),
         20
     ));
     assert_eq!(app.devices.script_state(), ScriptState::Stopped);
-    // The one ask an idle board earns is the firmware-identification
-    // question (the chip query's follow-up), never the script's
-    // interrupt. Declining it leaves nothing open.
-    assert!(pump_until(
-        &mut app,
-        |app| matches!(app.overlay, Some(Overlay::ConfirmFirmwareProbe { .. })),
-        20
-    ));
-    app.handle(key(KeyCode::Char('n')));
+    assert_eq!(
+        app.flash.as_ref().unwrap().details.firmware,
+        Some(FirmwareVerdict::Firmware(FlashFirmware::MicroPython))
+    );
+    // The whole chain is automatic: no interrupt confirm, no firmware
+    // question --- nothing needed the user's say-so.
     assert_eq!(app.overlay, None, "nothing needed the user's say-so");
 }
 
 #[test]
-fn accepting_the_firmware_question_identifies_the_flash() {
+fn the_firmware_is_identified_before_the_first_listing() {
     let mut app = app_with("mpremote");
 
-    assert!(pump_until(
-        &mut app,
-        |app| matches!(app.overlay, Some(Overlay::ConfirmFirmwareProbe { .. })),
-        20
-    ));
-
-    let frame = render(&mut app, 110, 24);
-    assert!(
-        frame.contains("Identify firmware?"),
-        "missing title:\n{frame}"
-    );
-    assert!(
-        frame.contains("stops the running firmware"),
-        "the consequence must be named:\n{frame}"
-    );
-    assert!(
-        frame.contains("read-flash 0x0 0x20000"),
-        "the literal command is quoted, SPEC.md §15:\n{frame}"
-    );
-
-    app.handle(key(KeyCode::Char('y')));
-
-    // The read starts once every port holder is gone and lands in the
-    // Device info pane next to the MAC.
+    // The identification read runs as part of the chain the selection
+    // started, and the MicroPython verdict is what releases the listing.
     assert!(pump_until(
         &mut app,
         |app| app
@@ -179,6 +155,11 @@ fn accepting_the_firmware_question_identifies_the_flash() {
         app.flash.as_ref().unwrap().details.firmware,
         Some(FirmwareVerdict::Firmware(FlashFirmware::MicroPython))
     );
+    assert!(pump_until(
+        &mut app,
+        |app| matches!(pane(app), PaneState::Ready),
+        20
+    ));
     let frame = render(&mut app, 110, 24);
     assert!(
         frame.contains("Firmware:"),
@@ -189,8 +170,55 @@ fn accepting_the_firmware_question_identifies_the_flash() {
         "the identified firmware must be named:\n{frame}"
     );
 
-    // The question is once per port: the read finishing opens nothing new.
+    // The read is once per port: nothing re-opens or re-asks anything.
     assert!(pump_until(&mut app, |app| app.overlay.is_none(), 5));
+}
+
+#[test]
+fn a_board_running_zephyr_is_refused_rather_than_listed() {
+    // The chip is an ordinary ESP32; only the firmware differs. The chain
+    // identifies it, and the listing is refused with the reason instead of
+    // garbage-listing a board mpremote cannot talk to.
+    let mut app = app_with_tools("mpremote", "esptool-zephyr-board");
+
+    assert!(pump_until(
+        &mut app,
+        |app| matches!(pane(app), PaneState::Failed(_)),
+        20
+    ));
+    assert!(matches!(
+        pane(&app),
+        PaneState::Failed(message)
+            if message.contains("Zephyr") && message.contains("cannot read files")
+    ));
+    assert!(
+        !app.browser.as_ref().unwrap().is_busy(),
+        "no listing was attempted against the Zephyr firmware"
+    );
+    assert_eq!(
+        app.flash.as_ref().unwrap().details.firmware,
+        Some(FirmwareVerdict::Firmware(FlashFirmware::Zephyr))
+    );
+    let frame = render(&mut app, 110, 24);
+    assert!(
+        frame.contains("not MicroPython"),
+        "the pane must carry the warning:\n{frame}"
+    );
+
+    // 'r' is the recovery path: it re-runs the identification (a re-flash
+    // may have changed the answer) and, the board still running Zephyr,
+    // refuses again.
+    app.focus = Focus::FilesDevice;
+    app.handle(key(KeyCode::Char('r')));
+    assert!(pump_until(
+        &mut app,
+        |app| matches!(pane(app), PaneState::Failed(_)),
+        20
+    ));
+    assert!(
+        matches!(pane(&app), PaneState::Failed(message) if message.contains("Zephyr")),
+        "the re-check must refuse again with the reason"
+    );
 }
 
 #[test]
@@ -206,14 +234,60 @@ fn a_busy_board_holds_the_listing_behind_a_confirmation() {
         "the probe found the running script and asked"
     );
     assert!(
-        app.browser.as_ref().unwrap().held_for_interrupt(),
-        "the listing is held, not racing the script"
+        !app.browser.as_ref().unwrap().is_busy(),
+        "nothing was sent to the port: the listing is held behind the identification chain, not queued in the browser"
     );
     assert!(
         matches!(pane(&app), PaneState::Loading),
         "the pane is waiting, not failed"
     );
     assert_eq!(app.devices.script_state(), ScriptState::Running);
+}
+
+#[test]
+fn a_banner_printing_foreign_board_identifies_before_any_listing() {
+    // A board whose firmware prints its boot banner when the port opens
+    // (any foreign firmware on an auto-reset ESP32): the probe cannot tell
+    // it from a busy script, so it asks --- but what the accepted
+    // interruption must move is the identification chain, never a file
+    // listing. Only the verdict may refuse or release the listing.
+    let mut app = app_with_tools("mpremote-zephyr-board", "esptool-zephyr-board");
+
+    assert!(pump_until(
+        &mut app,
+        |app| matches!(app.overlay, Some(Overlay::ConfirmInterruptDevice { .. })),
+        20
+    ));
+    assert!(
+        !app.browser.as_ref().unwrap().is_busy(),
+        "no mpremote filesystem command may run before the firmware is known"
+    );
+
+    app.handle(key(KeyCode::Char('y')));
+
+    // The chain runs: chip identity, then the firmware read --- and the
+    // Zephyr verdict refuses the listing with the reason instead of ever
+    // talking to a filesystem the firmware does not have.
+    assert!(pump_until(
+        &mut app,
+        |app| matches!(pane(app), PaneState::Failed(_)),
+        20
+    ));
+    assert!(
+        matches!(pane(&app), PaneState::Failed(message) if message.contains("Zephyr"),),
+        "the refusal must name the firmware"
+    );
+    assert!(
+        !app.browser.as_ref().unwrap().is_busy(),
+        "the listing was refused, not attempted"
+    );
+    assert_eq!(
+        app.flash.as_ref().unwrap().details.firmware,
+        Some(FirmwareVerdict::Firmware(FlashFirmware::Zephyr))
+    );
+    // There was no MicroPython script to bring back: the "running script"
+    // was the firmware's own boot banner, so no restore question opens.
+    assert!(pump_until(&mut app, |app| app.overlay.is_none(), 5));
 }
 
 #[test]
@@ -230,6 +304,10 @@ fn declining_the_interruption_drops_the_listing() {
 
     assert_eq!(app.overlay, None);
     assert!(matches!(pane(&app), PaneState::Failed(message) if message.contains("script")));
+    assert!(
+        !app.browser.as_ref().unwrap().is_busy(),
+        "the held listing was dropped, not left loading forever"
+    );
     assert_eq!(
         app.devices.script_state(),
         ScriptState::Running,
@@ -320,30 +398,23 @@ fn restoring_via_hard_reset_marks_the_script_running_again() {
 fn a_silent_board_is_listed_without_guessing_a_running_script() {
     let mut app = app_with("mpremote-quiet-board");
 
-    // Nothing to see: the probe's window passes, it gives up, and the first
-    // listing proceeds ungated --- the documented blind spot for scripts
-    // that never print.
+    // Nothing to see: the probe's window passes, it gives up, and the chain
+    // continues ungated --- the documented blind spot for scripts that
+    // never print.
     assert!(pump_until(
         &mut app,
         |app| matches!(pane(app), PaneState::Ready),
         20
     ));
     assert_eq!(app.devices.script_state(), ScriptState::Unknown);
-    // Unknown is not Running, so the chip query still ran --- the firmware
-    // question is the only overlay this board earns. It is declined, not
-    // the script's interrupt (nothing was guessed about the script).
-    assert!(pump_until(
-        &mut app,
-        |app| matches!(app.overlay, Some(Overlay::ConfirmFirmwareProbe { .. })),
-        20
-    ));
-    app.handle(key(KeyCode::Char('n')));
-    assert_eq!(app.overlay, None);
+    // Unknown is not Running, so the chip query and the firmware read both
+    // ran; the identification answers MicroPython with no overlay to
+    // answer along the way.
     assert_eq!(
         app.flash.as_ref().unwrap().details.firmware,
-        None,
-        "a declined identification stays undefined"
+        Some(FirmwareVerdict::Firmware(FlashFirmware::MicroPython))
     );
+    assert_eq!(app.overlay, None);
 }
 
 #[test]
@@ -520,9 +591,10 @@ fn the_device_info_query_waits_while_the_script_runs() {
 
 #[test]
 fn the_first_listing_waits_for_the_chip_identity_query() {
-    // The slow fake esptool (~1s chip-id) widens the window in which the
-    // identity query owns the port, so the ordering is observable: chip-id
-    // first, files only after it reports back.
+    // The slow fake esptool (~1s chip-id and read-flash) widens the window
+    // in which each identification step owns the port, so the ordering is
+    // observable: chip-id first, the firmware read next, files only after
+    // its verdict.
     let mut app = app_with_tools("mpremote", "esptool-slow-chip");
 
     // The probe finds the board idle and releases the port; the identity
@@ -544,12 +616,43 @@ fn the_first_listing_waits_for_the_chip_identity_query() {
         "the pane waits rather than failing"
     );
 
-    // The query's finish is the listing's cue; the dashboard ends up with
-    // both the chip identity and the files.
+    // The chip query's success arms the firmware read --- the listing waits
+    // behind that too now.
+    assert!(
+        pump_until(
+            &mut app,
+            |app| app
+                .flash
+                .as_ref()
+                .is_some_and(|flash| flash.details.family.is_some()),
+            20
+        ),
+        "the chip identity should arrive"
+    );
+    assert!(
+        pump_until(
+            &mut app,
+            |app| app.flash.as_ref().is_some_and(|flash| flash.is_busy()),
+            20
+        ),
+        "the firmware read should start once the chip query releases the port"
+    );
+    assert!(
+        !app.browser.as_ref().unwrap().is_busy(),
+        "the listing must not race the firmware read either"
+    );
+    assert!(matches!(pane(&app), PaneState::Loading));
+
+    // The read's verdict is the listing's cue; the dashboard ends up with
+    // the chip identity, the firmware and the files.
     assert!(pump_until(
         &mut app,
         |app| matches!(pane(app), PaneState::Ready),
         20
     ));
     assert!(app.flash.as_ref().unwrap().details.family.is_some());
+    assert_eq!(
+        app.flash.as_ref().unwrap().details.firmware,
+        Some(FirmwareVerdict::Firmware(FlashFirmware::MicroPython))
+    );
 }

@@ -307,14 +307,6 @@ pub enum Overlay {
     ConfirmRestartDevice { confirm: bool },
     /// Ask to flash MicroPython if device is unresponsive.
     ConfirmEraseForMicroPython { confirm: bool },
-    /// Ask whether the firmware installed on the device may be identified
-    /// by reading its flash: `esptool read-flash` resets the board into
-    /// its bootloader, stopping the running firmware for the duration, so
-    /// --- like every interruption confirm --- the default is No. A
-    /// declined (or failed) identification leaves the Device info pane's
-    /// `Firmware:` field at `undefined`. Asked at most once per selected
-    /// port (`App::firmware_probe_port`).
-    ConfirmFirmwareProbe { confirm: bool },
     /// Ask for confirmation before deleting a file or directory.
     ConfirmDelete {
         side: Side,
@@ -800,24 +792,24 @@ pub struct App {
     /// kicks off (`AGENTS.md` §5's "one tool at a time" applies across
     /// tools too, not just within `mpremote`).
     flash_query_pending: bool,
-    /// The first device listing is being held behind the background
-    /// `esptool chip-id` (the identity query comes first on a newly
-    /// selected device); [`Self::resume_held_root_listing`] releases it
-    /// once the query reports back. See [`flash_view`].
+    /// The first device listing is being held behind the identification
+    /// chain on a newly selected device --- first the background
+    /// `esptool chip-id`, then the firmware read its success arms
+    /// ([`flash_view`]); [`Self::drive_held_root_listing`] re-evaluates it
+    /// each time a link of that chain reports back.
     held_root_listing: bool,
-    /// The port the firmware-identification question was last queued for:
-    /// the question is asked at most once per selected device, because a
-    /// declined answer is an answer. Switching devices changes the port
-    /// and re-arms it --- the answer belongs to the board it was read
-    /// from. See [`flash_view`].
-    firmware_probe_port: Option<String>,
-    /// The firmware-identification question wants to open but another
-    /// overlay is in the way; the tick opens it once the coast is clear.
-    firmware_probe_ask_pending: bool,
-    /// The user accepted stopping the firmware to identify it; the
-    /// `esptool read-flash` run itself is deferred until every port
-    /// holder is gone, like the chip query.
-    firmware_probe_pending: bool,
+    /// The port the firmware-identification read covers (pending, running
+    /// or concluded): the verdict belongs to the board it was read from,
+    /// so the first listing is gated against the selected port, and a
+    /// device switch or re-flash drops the answer. See [`flash_view`].
+    firmware_check_port: Option<String>,
+    /// Where [`Self::firmware_check_port`]'s identification read stands:
+    /// `Pending` waits for a free port (polled from the tick), `Running`
+    /// holds the first listing behind the read, and `Idle` means concluded
+    /// --- a verdict in [`Self::flash`], or a read that could not produce
+    /// one (the listing then proceeds ungated and lets mpremote speak for
+    /// itself).
+    firmware_check: flash_view::FirmwareCheck,
     /// A short-lived `mpremote repl` session asking a newly selected device
     /// whether a script is running, *before* the first filesystem operation
     /// interrupts it --- see [`probe`]. `None` whenever no probe is in flight.
@@ -922,9 +914,8 @@ impl App {
             run_state: RunState::default(),
             flash_query_pending: false,
             held_root_listing: false,
-            firmware_probe_port: None,
-            firmware_probe_ask_pending: false,
-            firmware_probe_pending: false,
+            firmware_check_port: None,
+            firmware_check: flash_view::FirmwareCheck::Idle,
             probe: None,
             probed_port: None,
             restore_pending: false,
@@ -1294,13 +1285,13 @@ impl App {
                 self.tick_probe();
                 self.check_interrupt_gate();
                 self.maybe_offer_restore();
-                self.maybe_ask_firmware_probe();
-                self.maybe_run_deferred_firmware_probe();
+                self.maybe_run_deferred_firmware_check();
                 if self.maybe_run_deferred_flash_query() == flash_view::DeferredQuery::Dropped {
                     // The held listing was waiting on a query that can never
                     // start now; listing beats waiting forever.
-                    self.resume_held_root_listing();
+                    self.drive_held_root_listing();
                 }
+                self.drive_held_root_listing();
             }
             AppEvent::Process(event) => self.on_process(&event),
         }
@@ -1468,8 +1459,16 @@ impl App {
                         self.open_device_picker();
                     } else {
                         // Exactly one, or a previous choice still present.
-                        self.load_device_root();
+                        // The chip query is deferred *before* the listing
+                        // is requested: `load_device_root` holds the first
+                        // listing behind the identification chain only when
+                        // it can see the query coming, and deferring after
+                        // would let the listing win the port (a rescan
+                        // whose probe no longer runs --- `probed_port` is
+                        // already set, the script belief is stale --- issues
+                        // it straight away).
                         self.defer_device_info_query();
+                        self.load_device_root();
                     }
                 }
                 Some(Err(error)) => {
@@ -1520,7 +1519,8 @@ impl App {
         if let Some(mut flash) = self.flash.take() {
             let update = flash.on_process(event);
             let fetch_update = flash.on_curl_process(event);
-            let query_finished = update.background_query_finished;
+            let chip_query_finished = update.background_chip_query_finished;
+            let firmware_read_finished = update.background_firmware_read_finished;
             self.flash = Some(flash);
 
             for (level, message) in update.notices {
@@ -1541,11 +1541,47 @@ impl App {
                 self.offer_flash_after_download();
             }
 
-            // The background chip query gates the first device listing on a
-            // newly selected device; its finishing is the listing's cue.
-            if query_finished {
-                self.resume_held_root_listing();
-                self.queue_firmware_probe_question();
+            // An erase or write-flash changed what the flash carries: the
+            // verdict that gated the listing is stale, and the next listing
+            // (`r`, or a device reselect) re-identifies instead of trusting
+            // it.
+            if update.firmware_invalidated {
+                self.firmware_check_port = None;
+                self.firmware_check = flash_view::FirmwareCheck::Idle;
+                if let Some(flash) = &mut self.flash {
+                    flash.clear_firmware_identity();
+                }
+            }
+            if firmware_read_finished {
+                self.firmware_check = flash_view::FirmwareCheck::Idle;
+                // A foreign firmware (or a blank chip) means there was
+                // never a MicroPython script to bring back: the "running
+                // script" the probe saw was the firmware printing its
+                // boot banner, so the restore question that an accepted
+                // interruption armed has nothing to offer.
+                let foreign = self
+                    .flash
+                    .as_ref()
+                    .and_then(|flash| flash.details.firmware)
+                    .is_some_and(|verdict| {
+                        verdict
+                            != crate::firmware_id::FirmwareVerdict::Firmware(
+                                crate::firmware_id::FlashFirmware::MicroPython,
+                            )
+                    });
+                if foreign {
+                    self.restore_pending = false;
+                }
+            }
+            // The background chip query gates the first device listing on
+            // a newly selected device; its success arms the firmware read
+            // the listing waits on next, and either finishing re-drives
+            // the chain.
+            if chip_query_finished {
+                self.arm_firmware_check();
+            }
+            if chip_query_finished || firmware_read_finished {
+                self.drive_held_root_listing();
             }
         }
 
@@ -1555,10 +1591,10 @@ impl App {
         // because with a held queue (a running script) no process event ever
         // arrives to reach this line.
         if self.maybe_run_deferred_flash_query() == flash_view::DeferredQuery::Dropped {
-            self.resume_held_root_listing();
+            self.drive_held_root_listing();
         }
-        self.maybe_ask_firmware_probe();
-        self.maybe_run_deferred_firmware_probe();
+        self.maybe_run_deferred_firmware_check();
+        self.drive_held_root_listing();
 
         // A completed command may have armed either follow-up question.
         self.check_interrupt_gate();
@@ -2166,7 +2202,6 @@ impl App {
                 | Overlay::ConfirmUpload { .. }
                 | Overlay::ConfirmRestartDevice { .. }
                 | Overlay::ConfirmEraseForMicroPython { .. }
-                | Overlay::ConfirmFirmwareProbe { .. }
                 | Overlay::ConfirmInterruptDevice { .. }
                 | Overlay::ConfirmSwitchProject { .. }
                 | Overlay::SyncPreview { .. },

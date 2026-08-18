@@ -281,11 +281,20 @@ pub struct FlashUpdate {
     pub offer_flash: bool,
     /// Device query finished, chip is known, but firmware folder is empty.
     pub search_online_for_firmware: bool,
-    /// The background device query ([`FlashPanel::query_device_info`])
+    /// The background chip query ([`FlashPanel::query_device_info`])
     /// finished --- successfully or not. Whatever was chained behind it
-    /// (the first device listing, when `App` holds it for the query) may
+    /// (the firmware-identification read, when `App` armed one) may
     /// proceed.
-    pub background_query_finished: bool,
+    pub background_chip_query_finished: bool,
+    /// The background firmware-identification read
+    /// ([`FlashPanel::query_firmware_identity`]) finished: its verdict (or
+    /// lack of one) is in [`FlashPanel::details`], and the first device
+    /// listing waiting on it can be judged against it.
+    pub background_firmware_read_finished: bool,
+    /// An erase or write-flash just succeeded, so whatever firmware the
+    /// identification read named is stale: the caller drops the verdict
+    /// (and its gate) so the next listing re-identifies.
+    pub firmware_invalidated: bool,
 }
 
 impl FlashPanel {
@@ -601,6 +610,17 @@ impl FlashPanel {
             .is_empty()
     }
 
+    /// Whether the background identity query ([`Self::query_device_info`])
+    /// is in flight: the first device listing is held behind it, and the
+    /// firmware gate that follows only applies once it reports back ---
+    /// a listing must not slip past between the query's start and its
+    /// finish event.
+    pub fn chip_query_running(&self) -> bool {
+        self.in_flight
+            .as_ref()
+            .is_some_and(|running| running.background && running.action == FlashAction::ChipInfo)
+    }
+
     /// Reads the flash region [`crate::firmware_id`] needs and identifies
     /// the installed firmware from it --- the second background query after
     /// [`Self::query_device_info`], started only once the user has answered
@@ -722,7 +742,15 @@ impl FlashPanel {
             self.identify_firmware_from(dest, update);
         }
         if running.background {
-            update.background_query_finished = true;
+            match running.action {
+                FlashAction::ChipInfo => {
+                    update.background_chip_query_finished = true;
+                }
+                FlashAction::ReadFlash if running.probe_dest.is_some() => {
+                    update.background_firmware_read_finished = true;
+                }
+                _ => {}
+            }
         }
 
         match failure {
@@ -741,6 +769,15 @@ impl FlashPanel {
                 if running.action == FlashAction::EraseFlash {
                     update.notices.extend(self.discover_firmware());
                     update.offer_flash = true;
+                }
+
+                // The flash contents just changed: any firmware verdict
+                // the identification read produced is obsolete.
+                if matches!(
+                    running.action,
+                    FlashAction::EraseFlash | FlashAction::WriteFlash
+                ) {
+                    update.firmware_invalidated = true;
                 }
 
                 if running.action == FlashAction::FlashInfo && !running.background {
@@ -1341,7 +1378,7 @@ mod tests {
             "the background query is chip-id, which never mentions flash"
         );
         assert!(
-            update.background_query_finished,
+            update.background_chip_query_finished,
             "whatever was chained behind the query may proceed"
         );
         assert_eq!(

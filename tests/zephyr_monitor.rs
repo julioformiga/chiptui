@@ -303,15 +303,18 @@ fn hotplug_updates_the_device_status() {
     assert_eq!(app.devices.discovery, DiscoveryState::Ready);
     assert!(app.devices.selected_port().is_some());
 
-    // The selection defers the chip query, which chains into the firmware
-    // question; decline it to close the overlay, because while one is open
-    // the hotplug poll politely waits its turn.
+    // The selection defers the chip query, whose success arms the firmware
+    // read; let that chain settle (no overlay ever opens --- nothing needs
+    // the user's say-so anymore) so the unplug below cannot race it.
     assert!(pump_until(
         &mut app,
-        |app| matches!(app.overlay, Some(Overlay::ConfirmFirmwareProbe { .. })),
+        |app| app
+            .flash
+            .as_ref()
+            .is_some_and(|flash| flash.details.firmware.is_some()),
         20
     ));
-    app.handle(key(KeyCode::Char('n')));
+    assert_eq!(app.overlay, None);
 
     // Unplug: the /dev walk the poll counts changes, and the status
     // follows --- this is the connect/disconnect feedback the monitor-only
@@ -351,14 +354,17 @@ fn hotplug_updates_the_device_status() {
         20
     ));
 
-    // The replugged board is asked about again: the disconnect dropped the
-    // once-per-port memory, so `Firmware:` cannot sit at a stale answer.
+    // The replugged board is identified again: the disconnect dropped the
+    // per-port answer, so `Firmware:` cannot sit at a stale verdict.
     assert!(pump_until(
         &mut app,
-        |app| matches!(app.overlay, Some(Overlay::ConfirmFirmwareProbe { .. })),
+        |app| app
+            .flash
+            .as_ref()
+            .is_some_and(|flash| flash.details.firmware.is_some()),
         20
     ));
-    app.handle(key(KeyCode::Char('n')));
+    assert_eq!(app.overlay, None);
 }
 
 #[test]

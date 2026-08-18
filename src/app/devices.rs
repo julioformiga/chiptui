@@ -10,7 +10,9 @@ use std::path::{Path, PathBuf};
 use crate::backend::{BackendKind, Capability};
 use crate::browser::Browser;
 use crate::device::{DiscoveryState, ScriptState};
+use crate::firmware_id::{FirmwareVerdict, FlashFirmware};
 
+use super::flash_view::{FirmwareCheck, FirmwareHold};
 use super::{App, LogTab, MonitorSource, Overlay, PickerOption};
 
 impl App {
@@ -336,6 +338,21 @@ impl App {
             }
             return;
         }
+        // Then the firmware that identity read opens the question of: only
+        // MicroPython exposes a filesystem mpremote can walk, so the
+        // listing waits for the identification read's verdict and is
+        // refused --- with the reason in the pane --- when the board runs
+        // something else (`super::flash_view`).
+        match self.hold_root_listing_for_firmware() {
+            FirmwareHold::Release => {}
+            FirmwareHold::Held => {
+                if let Some(browser) = &mut self.browser {
+                    browser.set_device_loading();
+                }
+                return;
+            }
+            FirmwareHold::Blocked => return,
+        }
         let Some(mut browser) = self.browser.take() else {
             return;
         };
@@ -408,30 +425,63 @@ impl App {
 
     /// Opens the interrupt confirmation when device requests are being held.
     ///
+    /// Two things can be waiting on the user's say-so: browser requests
+    /// queued behind the interrupt gate (a navigation key, a menu action),
+    /// and the identification chain itself --- when the probe believes a
+    /// script is running, the chip query politely waits for the belief to
+    /// clear and the first listing is held behind that query, so without
+    /// asking nothing would ever move. The same question covers both
+    /// (esptool resets the board to read the chip, which interrupts
+    /// exactly like mpremote's raw REPL does).
+    ///
     /// Polled after any key or process event that might have queued a
-    /// request, so the overlay appears no matter which path armed the gate
-    /// (a navigation key, a menu action, an automatic reload), and defers
-    /// politely while another overlay is open.
+    /// request, and on every tick, so the overlay appears no matter which
+    /// path armed the gate, and defers politely while another overlay is
+    /// open.
     pub(super) fn check_interrupt_gate(&mut self) {
         if self.overlay.is_some() {
             return;
         }
-        if self
+        let browser_gated = self
             .browser
             .as_ref()
-            .is_some_and(Browser::held_for_interrupt)
-        {
+            .is_some_and(Browser::held_for_interrupt);
+        let chain_gated = self.held_root_listing
+            && self.flash_query_pending
+            && self.devices.script_state() == ScriptState::Running;
+        if browser_gated || chain_gated {
             self.overlay = Some(Overlay::ConfirmInterruptDevice { confirm: false });
         }
     }
 
+    /// Declines the interrupt on the identification chain's half: the held
+    /// listing is dropped with the same explainable state the browser's
+    /// held requests get, so the pane does not spin on "loading" forever
+    /// (`Overlay::ConfirmInterruptDevice`'s decline path).
+    pub(super) fn decline_held_listing(&mut self) {
+        if !self.held_root_listing {
+            return;
+        }
+        self.held_root_listing = false;
+        self.set_device_pane_error("cancelled — a script is running on the device");
+    }
+
     /// Asks how to bring an interrupted script back, once the operations the
     /// user accepted have drained ([`Overlay::RestoreDeviceScript`]).
+    /// "Drained" includes the identification chain: an accepted
+    /// interruption moves the chip query and the firmware read first, and
+    /// the restore question must not open on top of the port they hold.
     pub(super) fn maybe_offer_restore(&mut self) {
         if !self.restore_pending
             || self.overlay.is_some()
             || self.probe.is_some()
             || self.browser.as_ref().is_some_and(Browser::is_busy)
+            || self.flash_query_pending
+            || self.firmware_check != FirmwareCheck::Idle
+            || self
+                .flash
+                .as_ref()
+                .is_some_and(crate::flash::FlashPanel::is_busy)
         {
             return;
         }
@@ -460,6 +510,14 @@ impl App {
         // The REPL-banner version belonged to whichever board was selected
         // before; the new board re-answers it through its own probe/monitor.
         self.mpy_version = None;
+        // So did the firmware verdict: the new board's chip query re-arms
+        // the identification, and until then `undefined` is the honest
+        // display --- not the previous board's answer.
+        self.firmware_check_port = None;
+        self.firmware_check = FirmwareCheck::Idle;
+        if let Some(flash) = &mut self.flash {
+            flash.clear_firmware_identity();
+        }
 
         // Everything below is the MicroPython follow-through: an mpremote
         // probe and listing. A backend without a filesystem has neither
@@ -504,6 +562,48 @@ impl App {
                 self.maybe_query_device_info();
             }
         }
+    }
+
+    /// `r` on the device pane: re-list, through the firmware gate. With
+    /// MicroPython confirmed for this port it is the plain forced reload
+    /// the key has always been; without a confirmation it re-runs the
+    /// identification first --- the recovery path after flashing
+    /// MicroPython over a different firmware, where the pane sat refused
+    /// until the board's answer changed.
+    pub(super) fn reload_device_pane(&mut self) {
+        let port = self.devices.selected_port().map(str::to_string);
+        let confirmed = port.as_deref().is_some_and(|port| {
+            self.firmware_check_port.as_deref() == Some(port)
+                && self.flash.as_ref().is_some_and(|flash| {
+                    flash.details.firmware
+                        == Some(FirmwareVerdict::Firmware(FlashFirmware::MicroPython))
+                })
+        });
+        if !confirmed {
+            // Re-arm the identification for this port the same way the chip
+            // query's finish does: the pending read and the port it belongs
+            // to are one fact (`arm_firmware_check`), or the gate would see
+            // an unclaimed port and list straight away.
+            self.firmware_check_port = port;
+            self.firmware_check = if self
+                .flash
+                .as_ref()
+                .is_some_and(|flash| flash.details.family.is_some())
+            {
+                // Only ask again when esptool has ever read this board's
+                // chip: a board whose chip query cannot succeed (no
+                // esptool-backed bootloader) would just pay for a refused
+                // read on every reload.
+                FirmwareCheck::Pending
+            } else {
+                FirmwareCheck::Idle
+            };
+            self.load_device_root();
+            return;
+        }
+        self.dispatch_browser(|browser, processes, port| {
+            browser.load_device(processes, port, true)
+        });
     }
 
     pub(super) fn open_picker(&mut self) {

@@ -218,8 +218,8 @@ the same `serial_dir` walk and rescans on a change — `mpremote devs` for a fil
 the `/dev` walk for a monitor-only one — but never while an overlay is open (a picker must not
 pop over a dialog mid-answer). Any empty or failed rescan routes through `device_disconnected`,
 which drops the departed board's esptool identity *and* the firmware-identification state, so a
-replug — even on the same port — refills the identity and re-asks the firmware question instead
-of sitting at a stale answer. With that,
+replug — even on the same port — refills the identity and re-runs the firmware identification
+instead of sitting at a stale answer. With that,
 Zephyr's Phase 3 surface (detect, board, build, clean, flash, monitor) plus its environment
 layer (workspace/venv/SDK resolution, menuconfig, build dirs, `west update`, `west sdk list`)
 is complete; debug/signing remain Roadmap items.
@@ -385,7 +385,7 @@ These are the decisions that shape most code, and getting them wrong causes wide
   connection banner's identity half; flash geometry stays in the Flash view) runs *first* on a
   newly selected device: after the probe releases the port, the first device listing is held
   behind it (`App::hold_root_listing_for_chip_identity`/`held_root_listing`, released by
-  `FlashUpdate::background_query_finished` or, if the query can never start, by the tick's
+  `FlashUpdate::background_chip_query_finished` or, if the query can never start, by the tick's
   `DeferredQuery::Dropped`), so the port changes hands probe → esptool → mpremote instead of
   being contended. The query is also gated on the script belief
   (`maybe_run_deferred_flash_query`, tick-polled): esptool resets the board to read the chip,
@@ -398,11 +398,31 @@ These are the decisions that shape most code, and getting them wrong causes wide
   purely as the query engine (`ensure_flash_panel` skips the `firmware/` dir for a backend
   without `DeviceInfo`/`EraseFlash`), never lists (no browser is created), and 'x' still routes
   to the build panel's flash. A successful identity query chains into the firmware
-  *identification* question (`Overlay::ConfirmFirmwareProbe`, default No, once per selected
-  port — `App::firmware_probe_port`): `esptool read-flash 0x0 0x20000` (the bootloader region,
+  *identification* read (`arm_firmware_check`, once per selected port — `App::firmware_check_port`):
+  `esptool read-flash 0x0 0x20000` (the bootloader region,
   the partition table and the start of the app area — the Zephyr/MCUboot banner lives in the
-  bootloader, below 0x8000 — into a temp file) resets the board into its bootloader, so it
-  stops the running firmware and only runs on an explicit yes. The bytes are parsed by
+  bootloader, below 0x8000 — into a temp file) is part of the same selection chain, not an extra
+  intrusion to ask about — esptool already reset the board once to read the chip, so the read adds
+  no interruption the chain has not already made, and no overlay asks permission. The first
+  listing is held behind it too (`hold_root_listing_for_firmware`, driven by
+  `drive_held_root_listing` whenever a link of the chain reports back), because only MicroPython
+  exposes a filesystem mpremote can walk: a verdict of Zephyr or ESP-IDF refuses the listing with
+  `cannot read files — the device runs X, not MicroPython` in the device pane, and erased flash
+  says to flash MicroPython first (`non_micropython_block_reason`); MicroPython releases the
+  listing, and so does a board that could not be asked at all (a failed chip query — no
+  esptool-backed bootloader — or a refused read: mpremote then fails on its own, which is what
+  `Overlay::ConfirmEraseForMicroPython` exists for). A board the probe believes is *running a
+  script* holds the listing behind the same chain instead of queueing it in the browser: a foreign
+  firmware printing its boot banner (any auto-reset ESP32) is indistinguishable from a busy
+  script at probe time, so `check_interrupt_gate` also fires for the held listing and the one
+  question covers the whole chain — accepting marks the script stopped and lets chip-id →
+  read-flash run to a verdict (which then releases *or refuses* the listing), declining drops
+  the listing (`decline_held_listing`) with the same cancelled-script pane state the browser's
+  held requests get; a foreign verdict cancels the restore question (`restore_pending`), since
+  the "script" was the firmware's boot banner, and `maybe_offer_restore` waits for the whole
+  chain to drain before opening, so the queries no longer guard on it (doing so deadlocked the
+  chain: the restore question waits for the identification that waits on the belief the question
+  itself would clear). The bytes are parsed by
   `src/firmware_id.rs` (Zephyr's `mcuboot`/`slot0_partition` partition labels decide first, then
   case-insensitive banner strings — MicroPython-on-Zephyr reads as Zephyr, the structural
   truth — then the `esp_app_desc_t` magic `0xABCD5432` scanned in the *app* region names a
@@ -410,14 +430,18 @@ These are the decisions that shape most code, and getting them wrong causes wide
   is shared by all three firmwares), and the answer lands on its own row of the Device info
   pane, directly under the MAC, as `Firmware: MicroPython|Zephyr|ESP-IDF`
   (`DeviceDetails::firmware`), `undefined`
-  when declined, failed or unrecognized — with one distinction: a window that is entirely
+  when the read failed or recognized nothing — with one distinction: a window that is entirely
   `0xFF` is erased flash, reported as `none (erased flash)` in warning color (`firmware_id::
   classify` → `FirmwareVerdict::Erased`), because "no firmware installed" is an answer, not
   an unknown; an empty/truncated read deliberately does not qualify as erased. The read
   itself waits for a free port like the chip query
-  (`maybe_run_deferred_firmware_probe`) — but not for a script believed running: stopping the
-  firmware is exactly what was consented to. Switching devices clears the old board's answer
-  and re-arms the question; the features row is truncated to one line and the crystal rides
+  (`maybe_run_deferred_firmware_check`) — but not for a script believed running: by the time it
+  is armed the chip query has already reset the board. Switching devices clears the old board's
+  answer and re-arms the read; a successful erase/write-flash invalidates it
+  (`FlashUpdate::firmware_invalidated`) so the next listing re-identifies, and `r` on the device
+  pane (`reload_device_pane`) re-runs the identification whenever MicroPython is not confirmed —
+  the recovery path after re-flashing. The features row is truncated to one line and the crystal
+  rides
   the chip's own row, so the MAC and Firmware rows keep their fixed place in the pane's
   four rows.
 

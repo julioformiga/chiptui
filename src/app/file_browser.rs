@@ -48,12 +48,18 @@ impl App {
         // end, and the device column cannot hold focus in the first place
         // (focus_order/clamp_focus).
         let has_filesystem = self.manager.capabilities().contains(Capability::Filesystem);
+        // A device-pane reload is the firmware gate's recovery path: after a
+        // re-flash (or a refused read) it re-identifies before listing, so
+        // it cannot go straight to the browser the way the local reload
+        // below does.
+        if has_filesystem && key.code == KeyCode::Char('r') && browser.focus == Side::Device {
+            self.browser = Some(browser);
+            self.reload_device_pane();
+            return;
+        }
         let reaches_device = match key.code {
             KeyCode::Right | KeyCode::Left | KeyCode::Backspace => true,
             KeyCode::Char('c' | 'S') => has_filesystem,
-            // A device-pane reload re-lists; a local reload just re-reads the
-            // disk, so only the device side needs the guard.
-            KeyCode::Char('r') => has_filesystem && browser.focus == Side::Device,
             _ => false,
         };
         if reaches_device {

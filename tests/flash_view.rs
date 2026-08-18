@@ -814,25 +814,26 @@ fn picking_a_device_defers_the_esptool_query_until_mpremote_releases_the_port() 
     );
 
     // Drive everything to completion: probe, then the chip identity query,
-    // then the listing it was holding (the new order --- the query gates the
-    // first listing), then the query's answer. The loop breaks only when
-    // both tools are done.
+    // then the firmware read its success arms (the new order --- the
+    // identification gates the first listing), then the listing its verdict
+    // releases. The loop breaks only when every tool is done.
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         for event in app.processes.drain() {
             app.handle(AppEvent::Process(event));
         }
         if !app.browser.as_ref().unwrap().is_busy()
-            && app
-                .flash
-                .as_ref()
-                .is_some_and(|flash| flash.details.family.is_some())
+            && app.flash.as_ref().is_some_and(|flash| {
+                flash.details.family.is_some()
+                    && flash.details.firmware.is_some()
+                    && !flash.is_busy()
+            })
         {
             break;
         }
         assert!(
             Instant::now() < deadline,
-            "probe, listing or the deferred esptool query never finished"
+            "probe, listing or the deferred esptool queries never finished"
         );
         std::thread::sleep(Duration::from_millis(5));
     }
@@ -843,7 +844,7 @@ fn picking_a_device_defers_the_esptool_query_until_mpremote_releases_the_port() 
     );
     assert!(
         !app.flash.as_ref().unwrap().is_busy(),
-        "the deferred esptool query never ran"
+        "the deferred esptool queries never ran"
     );
     assert_eq!(
         app.flash.as_ref().unwrap().details.family,

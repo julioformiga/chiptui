@@ -739,21 +739,6 @@ impl App {
                     |_| {},
                 );
             }
-            // Default *no*, like every other interruption: accepting stops
-            // the firmware for the duration of the flash read. Declining
-            // is a final answer for this port --- no re-asking, and the
-            // Device info pane keeps its honest `undefined`.
-            Overlay::ConfirmFirmwareProbe { confirm } => {
-                self.dispatch_confirm(
-                    key.code,
-                    confirm,
-                    |app, confirm| {
-                        app.overlay = Some(Overlay::ConfirmFirmwareProbe { confirm });
-                    },
-                    Self::confirm_firmware_probe,
-                    |_| {},
-                );
-            }
             Overlay::ConfirmDelete {
                 side,
                 name,
@@ -809,6 +794,13 @@ impl App {
                         app.set_script_state(ScriptState::Stopped);
                     },
                     |app| {
+                        // The listing held behind the identification chain
+                        // (a script believed running keeps the chip query
+                        // waiting, and the listing waits on the query) is
+                        // dropped with the same explainable state. First,
+                        // before `dispatch_browser`'s closing gate check
+                        // can see it still held and re-ask.
+                        app.decline_held_listing();
                         app.dispatch_browser(|browser, _, _| {
                             browser.cancel_held_requests();
                             Vec::new()

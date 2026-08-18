@@ -1,7 +1,10 @@
 #!/bin/sh
-# Fake `esptool` whose `chip-id` takes ~1s, for ordering tests: long enough
-# that the test can observe ChipTUI holding the first device listing behind
-# the identity query instead of racing it on the serial port.
+# Fake `esptool` whose `chip-id` and `read-flash` each take ~1s, for
+# ordering tests: long enough that the test can observe ChipTUI holding the
+# first device listing behind each identification step (the chip identity
+# query first, the firmware read its success arms next) instead of racing
+# either on the serial port. The read answers like a MicroPython board, the
+# verdict that releases the listing.
 case "$*" in
     *"chip-id"*)
         sleep 1
@@ -12,6 +15,15 @@ case "$*" in
         printf 'Features: WiFi, BT, Dual Core, 240MHz, VRef calibration in efuse, Coding Scheme None\n'
         printf 'Crystal is 40MHz\n'
         printf 'MAC: 24:6f:28:12:34:56\n'
+        ;;
+    *"read-flash"*)
+        sleep 1
+        dest=$(printf '%s\n' "$@" | tail -n 1)
+        printf 'esptool v5.3.1\n'
+        printf 'Detecting chip type... ESP32\n'
+        printf 'Chip is ESP32-D0WD (revision 3)\n'
+        printf 'MicroPython v1.28.0 on 2025-11-01; ESP32 module with ESP32\n' > "$dest"
+        printf 'Read 131072 bytes\n'
         ;;
     *)
         echo "A fatal error occurred: unexpected command: $*" >&2
