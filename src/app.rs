@@ -1512,9 +1512,15 @@ impl App {
         if let Some(mut build) = self.build.take() {
             let caps = self.manager.capabilities();
             let notices = build.on_process(event, &caps);
+            // The flash contents may have just changed under a build-panel
+            // command; read the flag before the panel goes back.
+            let flashed = build.take_flash_finished();
             self.build = Some(build);
             for (level, message) in notices {
                 self.logs.push(level, message);
+            }
+            if flashed {
+                self.reidentify_firmware_after_build_flash();
             }
         }
 

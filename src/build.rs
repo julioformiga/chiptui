@@ -311,6 +311,11 @@ pub struct BuildPanel {
     pub shields: ListFetch<Shield>,
     offset: UtcOffset,
     running: Option<Running>,
+    /// Set when a `Flash` command finished successfully and not yet
+    /// consumed ([`Self::take_flash_finished`]): the device's flash
+    /// contents just changed under a command the esptool flow knows
+    /// nothing about, so the caller must re-ask the firmware question.
+    flash_finished: bool,
     /// Overrides the executable the backend's commands name (`west`), the
     /// seam tests (and later `[tools]` config) plug a substitute into.
     tool_path: Option<String>,
@@ -340,6 +345,7 @@ impl BuildPanel {
             shields: ListFetch::default(),
             offset,
             running: None,
+            flash_finished: false,
             tool_path: None,
             tool_env: Vec::new(),
         }
@@ -721,6 +727,13 @@ impl BuildPanel {
         true
     }
 
+    /// Whether a `Flash` command finished successfully since the last
+    /// call: the built image was just written to the device, so whatever
+    /// the firmware identification read before it is stale.
+    pub fn take_flash_finished(&mut self) -> bool {
+        std::mem::take(&mut self.flash_finished)
+    }
+
     /// Feeds a process event back into the panel, returning log notices.
     /// Covers all of its processes: the build command and the background
     /// `west boards`/`west shields` fetches --- each matched by id, each
@@ -843,6 +856,9 @@ impl BuildPanel {
             .position(|candidate| *candidate == target)
             .unwrap_or(0);
 
+        if ok && running.action == BuildAction::Flash {
+            self.flash_finished = true;
+        }
         if ok && running.updates_board {
             let cached = cached_board(&self.root, &self.build_dir).map(|name| BoardChoice {
                 name,

@@ -459,7 +459,11 @@ These are the decisions that shape most code, and getting them wrong causes wide
   answer and re-arms the read; a successful erase/write-flash invalidates it
   (`FlashUpdate::firmware_invalidated`) so the next listing re-identifies, and `r` on the device
   pane (`reload_device_pane`) re-runs the identification whenever MicroPython is not confirmed —
-  the recovery path after re-flashing. The features row is truncated to one line and the crystal
+  the recovery path after re-flashing. The build panel's `west flash` re-identifies too
+  (`BuildPanel::take_flash_finished` → `App::reidentify_firmware_after_build_flash`): it
+  invalidates the same state and re-arms the read directly, because no listing ever drives the
+  Zephyr side — the new verdict arrives on its own once the port frees. The features row is
+  truncated to one line and the crystal
   rides
   the chip's own row, so the MAC and Firmware rows keep their fixed place in the pane's
   four rows.

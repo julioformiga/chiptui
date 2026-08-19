@@ -619,6 +619,32 @@ impl App {
         }
     }
 
+    /// `west flash` just rewrote the device from the build panel: the
+    /// firmware the identification read named is as stale as the flash it
+    /// was read from. Unlike the esptool flow there is no device listing
+    /// coming that would re-ask the question on its own, so this
+    /// invalidates the old answer (the same fields
+    /// `FlashUpdate::firmware_invalidated` clears) and re-arms the read
+    /// directly --- a *new* identification runs as soon as the port is
+    /// free. A board that is not selected, or never answered the chip
+    /// query, keeps nothing to re-ask: `arm_firmware_check` refuses both.
+    pub(super) fn reidentify_firmware_after_build_flash(&mut self) {
+        if self.devices.selected_port().is_none() {
+            return;
+        }
+        self.firmware_check_port = None;
+        self.firmware_check = FirmwareCheck::Idle;
+        if let Some(flash) = self.flash.as_mut() {
+            flash.clear_firmware_identity();
+        }
+        self.mpy_version = None;
+        self.probed_port = None;
+        self.set_script_state(ScriptState::Unknown);
+        self.arm_firmware_check();
+        self.logs
+            .info("flash changed the device — re-identifying its firmware");
+    }
+
     /// Starts the armed identification read once every port holder is
     /// gone, polled on every tick and after each process event --- the
     /// same guards as the chip query, minus the script belief: by the time

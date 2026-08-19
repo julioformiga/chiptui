@@ -382,3 +382,64 @@ fn m_without_a_selected_port_still_lets_west_auto_detect() {
         "west monitor without --port must still start"
     );
 }
+
+#[test]
+fn a_west_flash_reidentifies_the_firmware() {
+    let (mut app, root) = zephyr_app("reflash");
+    std::fs::write(root.join("dev/ttyACM0"), b"").unwrap();
+    app.handle(key(KeyCode::Char('d')));
+
+    // The selection's chain identifies the firmware once.
+    assert!(pump_until(
+        &mut app,
+        |app| app
+            .flash
+            .as_ref()
+            .is_some_and(|flash| flash.details.firmware.is_some()),
+        20
+    ));
+    let identifications = |app: &App| {
+        app.logs
+            .visible(usize::MAX)
+            .filter(|entry| entry.message.contains("firmware on the device"))
+            .count()
+    };
+    assert_eq!(identifications(&app), 1);
+
+    // Flash from the build panel: it needs a board answer (the session
+    // state a picker pick would leave behind), then the last lifecycle
+    // row, behind its confirm.
+    app.build
+        .as_mut()
+        .unwrap()
+        .set_picked("esp32_devkitc_wrover/esp32/procpu");
+    app.focus = Focus::Build;
+    for _ in 0..6 {
+        app.handle(key(KeyCode::Down));
+    }
+    app.handle(key(KeyCode::Enter));
+    assert!(matches!(app.overlay, Some(Overlay::ConfirmBuild { .. })));
+    app.handle(key(KeyCode::Char('y')));
+    assert!(pump_until(
+        &mut app,
+        |app| app
+            .build
+            .as_ref()
+            .and_then(|panel| panel.last.as_ref())
+            .is_some_and(|last| last.ok),
+        20
+    ));
+
+    // The flash changed the device: a new identification read runs on its
+    // own --- no listing, no keypress, no re-selection to drive it.
+    assert!(
+        pump_until(&mut app, |app| identifications(app) >= 2, 20),
+        "the firmware must be re-read after west flash"
+    );
+    assert!(
+        app.flash
+            .as_ref()
+            .is_some_and(|flash| flash.details.firmware.is_some()),
+        "the re-read must leave a standing verdict"
+    );
+}

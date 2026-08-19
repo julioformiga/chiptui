@@ -777,7 +777,10 @@ one-line contextual shortcut footer:
   The one layout the window cannot date --- a Zephyr *simple boot* image, whose application
   banner sits deep in flash past it --- gets a follow-up read (the next 512 KiB) that only
   dates the verdict already standing; a hunt that finds nothing, or a board that went away,
-  changes nothing. Every row is a `□` while open,
+  changes nothing. Whenever the flash contents change the verdict is re-read: after the
+  esptool flow's erase/write the next listing re-identifies, and after a successful
+  `west flash` from the build panel --- which no listing drives --- the identification runs
+  again on its own once the port frees. Every row is a `□` while open,
   a `✓` once answered, a red `✗` when a configured answer fails validation. The
   environment's `versions` (Zephyr and venv Python, read from files) ride the pane's
   bottom border's right edge once a workspace resolves --- a late-arriving fact that
