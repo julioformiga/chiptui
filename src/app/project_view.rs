@@ -42,8 +42,8 @@ impl App {
             return vec![
                 ProjectRow::MpyProjectsBase,
                 ProjectRow::MpyProjectPath,
-                ProjectRow::MpyEntry,
-                ProjectRow::MpyVersion,
+                ProjectRow::MpyDependencies,
+                ProjectRow::MpyScript,
             ];
         }
         Vec::new()
@@ -69,9 +69,11 @@ impl App {
                 .is_some_and(|panel| panel.board.is_none()),
             ProjectRow::MpyProjectsBase => self.mpy_projects.is_none(),
             // The working directory already answers this until a pick
-            // overrides it; the entry/version rows are reports, not
+            // overrides it; the dependencies/script rows are reports, not
             // questions.
-            ProjectRow::MpyProjectPath | ProjectRow::MpyEntry | ProjectRow::MpyVersion => false,
+            ProjectRow::MpyProjectPath | ProjectRow::MpyDependencies | ProjectRow::MpyScript => {
+                false
+            }
         }
     }
 
@@ -117,7 +119,7 @@ impl App {
 
     /// Answers one checklist row: the Zephyr rows run through the workspace
     /// actions they always did, the MicroPython rows open their own flows,
-    /// and the report rows (entry, version) carry nothing to run.
+    /// and the report rows (dependencies, script) carry nothing to run.
     fn run_project_row(&mut self, row: ProjectRow) {
         let action = match row {
             ProjectRow::ZephyrPath => Some(WorkspaceAction::Choose),
@@ -132,7 +134,7 @@ impl App {
                 self.open_mpy_project_flow();
                 return;
             }
-            ProjectRow::MpyEntry | ProjectRow::MpyVersion => return,
+            ProjectRow::MpyDependencies | ProjectRow::MpyScript => return,
         };
         if let Some(action) = action {
             self.run_workspace_action(action);
@@ -264,7 +266,7 @@ impl App {
     }
 
     /// The MicroPython project root in effect: the session's pick, or the
-    /// detection root when none was made. The Entry row reads this.
+    /// detection root when none was made. The Dependencies row reads this.
     pub fn mpy_effective_root(&self) -> PathBuf {
         self.mpy_root.clone().unwrap_or_else(|| {
             self.manager.root().map_or_else(

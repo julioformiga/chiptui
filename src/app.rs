@@ -103,10 +103,11 @@ pub enum ProjectRow {
     MpyProjectsBase,
     /// "Which project to browse?" (re-roots the local pane, session-only).
     MpyProjectPath,
-    /// The entry points in the project root (`main.py`/`boot.py`).
-    MpyEntry,
-    /// The board's MicroPython version, off the REPL banner.
-    MpyVersion,
+    /// Dependency files present in the project root (`requirements.txt`/`manifest.py`).
+    MpyDependencies,
+    /// Whether the board is believed to be running user code right now
+    /// ([`crate::device::ScriptState`]).
+    MpyScript,
 }
 
 /// Which tab row 3 is showing. `Left`/`Right` switch between them while
@@ -1286,6 +1287,7 @@ impl App {
                 self.check_interrupt_gate();
                 self.maybe_offer_restore();
                 self.maybe_run_deferred_firmware_check();
+                self.maybe_run_deferred_version_hunt();
                 if self.maybe_run_deferred_flash_query() == flash_view::DeferredQuery::Dropped {
                     // The held listing was waiting on a query that can never
                     // start now; listing beats waiting forever.
@@ -1551,6 +1553,14 @@ impl App {
                 if let Some(flash) = &mut self.flash {
                     flash.clear_firmware_identity();
                 }
+                // The REPL-banner version belonged to whichever firmware sat
+                // on the flash before; a write/erase makes it as stale as
+                // the verdict above, and `probed_port`/the script belief
+                // must clear too or the probe that would re-read it never
+                // runs again on this same port.
+                self.mpy_version = None;
+                self.probed_port = None;
+                self.set_script_state(crate::device::ScriptState::Unknown);
             }
             if firmware_read_finished {
                 self.firmware_check = flash_view::FirmwareCheck::Idle;
@@ -1562,12 +1572,15 @@ impl App {
                 let foreign = self
                     .flash
                     .as_ref()
-                    .and_then(|flash| flash.details.firmware)
+                    .and_then(|flash| flash.details.firmware.clone())
                     .is_some_and(|verdict| {
-                        verdict
-                            != crate::firmware_id::FirmwareVerdict::Firmware(
+                        !matches!(
+                            verdict,
+                            crate::firmware_id::FirmwareVerdict::Firmware(
                                 crate::firmware_id::FlashFirmware::MicroPython,
+                                _
                             )
+                        )
                     });
                 if foreign {
                     self.restore_pending = false;
@@ -1594,6 +1607,7 @@ impl App {
             self.drive_held_root_listing();
         }
         self.maybe_run_deferred_firmware_check();
+        self.maybe_run_deferred_version_hunt();
         self.drive_held_root_listing();
 
         // A completed command may have armed either follow-up question.

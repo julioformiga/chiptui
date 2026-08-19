@@ -9,7 +9,8 @@ use ratatui::widgets::{Paragraph, Tabs, Wrap};
 
 use crate::app::{App, Focus, LogTab, MonitorSource, ProjectRow};
 use crate::backend::Capability;
-use crate::firmware_id::FirmwareVerdict;
+use crate::device::ScriptState;
+use crate::firmware_id::{FirmwareVerdict, FlashFirmware};
 use crate::flash::RunState;
 use crate::logs::{Level, PREFIX_WIDTH};
 use crate::project::DetectionOutcome;
@@ -41,8 +42,8 @@ fn pad_info(mut lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
 /// Project identity: the environment's open questions, answered in place.
 ///
 /// For a backend that asks any (Zephyr: installation, projects folder,
-/// project, target; MicroPython: projects folder, project, plus the entry
-/// and version reports), the pane is the checklist those questions moved
+/// project, target; MicroPython: projects folder, project, plus the
+/// dependencies and script reports), the pane is the checklist those questions moved
 /// into --- navigable through `ctrl+p`, never part of the `Tab` tour. A
 /// backend that asks nothing falls back to plain detection info (root and
 /// type). The environment's versions ride the pane's bottom border (right
@@ -183,10 +184,10 @@ fn project_row_line(
             }
             super::workspace::checklist_row(true, false, "Project path", value, palette)
         }
-        ProjectRow::MpyEntry => {
+        ProjectRow::MpyDependencies => {
             let root = app.mpy_effective_root();
             let entry = |name: &str| root.join(name).is_file();
-            let (main, boot) = (entry("main.py"), entry("boot.py"));
+            let (reqs, manifest) = (entry("requirements.txt"), entry("manifest.py"));
             let mark = |present: bool| {
                 Span::styled(
                     if present { "✓" } else { "✗" },
@@ -200,30 +201,31 @@ fn project_row_line(
                 )
             };
             super::workspace::checklist_row(
-                main || boot,
+                reqs || manifest,
                 false,
-                "Entry",
+                "Dependencies",
                 Line::from(vec![
-                    mark(main),
-                    Span::raw(" main.py   "),
-                    mark(boot),
-                    Span::raw(" boot.py"),
+                    mark(reqs),
+                    Span::raw(" requirements.txt "),
+                    mark(manifest),
+                    Span::raw(" manifest.py"),
                 ]),
                 palette,
             )
         }
-        ProjectRow::MpyVersion => {
-            let value = match &app.mpy_version {
-                Some(version) => Line::from(Span::styled(
-                    format!("MicroPython {version}"),
-                    Style::new().fg(palette.success).bold(),
-                )),
-                None => Line::from(Span::styled(
-                    "waiting for the REPL banner",
-                    muted_style(palette),
-                )),
+        ProjectRow::MpyScript => {
+            let (text, style, answered) = match app.devices.script_state() {
+                ScriptState::Running => ("running", Style::new().fg(palette.warning).bold(), true),
+                ScriptState::Stopped => ("idle", Style::new().fg(palette.success).bold(), true),
+                ScriptState::Unknown => ("unknown", muted_style(palette), false),
             };
-            super::workspace::checklist_row(app.mpy_version.is_some(), false, "MPy", value, palette)
+            super::workspace::checklist_row(
+                answered,
+                false,
+                "Script",
+                Line::from(Span::styled(text, style)),
+                palette,
+            )
         }
     }
 }
@@ -539,15 +541,26 @@ fn device_content(app: &App, width: usize, palette: Palette) -> Vec<Line<'static
             Span::styled(mac.clone(), Style::new().fg(palette.fg)),
         ]));
         // The firmware answer sits directly under the MAC, the identity it
-        // belongs beside. `undefined` is the honest value while the
-        // identification read has not run, or could not recognize anything;
-        // a blank chip is a different, answerable condition: erased flash
-        // means no firmware at all.
-        let (value, style) = match details.firmware {
-            Some(FirmwareVerdict::Firmware(kind)) => (
-                kind.label().to_string(),
-                Style::new().fg(palette.success).bold(),
-            ),
+        // belongs beside, and carries the version the same read found in
+        // the banner/descriptor bytes (`Zephyr v4.0.0`, `ESP-IDF v5.3.1`);
+        // MicroPython keeps its second source: a read that found no
+        // version string still shows the one the REPL banner gave. The
+        // rest is as ever: `undefined` is the honest value while the
+        // identification read has not run, or could not recognize
+        // anything; a blank chip is a different, answerable condition:
+        // erased flash means no firmware at all.
+        let (value, style) = match &details.firmware {
+            Some(FirmwareVerdict::Firmware(kind, version)) => {
+                let version = version.as_deref().or(match kind {
+                    FlashFirmware::MicroPython => app.mpy_version.as_deref(),
+                    _ => None,
+                });
+                let label = match version {
+                    Some(version) => format!("{} {version}", kind.label()),
+                    None => kind.label().to_string(),
+                };
+                (label, Style::new().fg(palette.success).bold())
+            }
             Some(FirmwareVerdict::Erased) => (
                 "none (erased flash)".to_string(),
                 Style::new().fg(palette.warning),

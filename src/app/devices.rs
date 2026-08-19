@@ -575,8 +575,10 @@ impl App {
         let confirmed = port.as_deref().is_some_and(|port| {
             self.firmware_check_port.as_deref() == Some(port)
                 && self.flash.as_ref().is_some_and(|flash| {
-                    flash.details.firmware
-                        == Some(FirmwareVerdict::Firmware(FlashFirmware::MicroPython))
+                    matches!(
+                        flash.details.firmware,
+                        Some(FirmwareVerdict::Firmware(FlashFirmware::MicroPython, _))
+                    )
                 })
         });
         if !confirmed {

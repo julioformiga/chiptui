@@ -80,7 +80,11 @@ case "$args" in
         # answers like a MicroPython board, ttyUSB1 like one running Zephyr
         # (banner in the bootloader region, as on real hardware), ttyUSB2
         # like a plain ESP-IDF app, ttyUSB3 like a blank chip (erased
-        # flash reads 0xFF everywhere --- 0x20000 bytes, the read's size).
+        # flash reads 0xFF everywhere --- 0x20000 bytes, the read's size),
+        # and ttyUSB4 like a Zephyr *simple boot* board: the first window
+        # identifies through the kernel's strings but the banner (and its
+        # version) only exists at 0x6053c --- deep past the window, where
+        # only the follow-up version hunt reads.
         dest=$(printf '%s\n' "$@" | tail -n 1)
         printf 'esptool v5.3.1\n'
         printf 'Detecting chip type... ESP32\n'
@@ -92,13 +96,44 @@ case "$args" in
             *"--port /dev/ttyUSB2"*)
                 # The esp_app_desc magic word 0xABCD5432 (LE: 32 54 cd ab)
                 # at its conventional spot 0x10028: app image at 0x10000,
-                # image header 0x20, segment header 0x08. Everything else
-                # erased --- a plain IDF app names itself no other way.
+                # image header 0x20, segment header 0x08. Then the
+                # descriptor's own NUL-padded fixed-width fields: the
+                # app's version (a project without a git tag is just `1`),
+                # project_name, build time/date, and the IDF build's
+                # version --- the one the Device info pane reports.
                 head -c 65576 /dev/zero | tr '\000' '\377' > "$dest"
                 printf '\062\124\315\253' >> "$dest"
+                printf '\000\000\000\000' >> "$dest"
+                printf '\000\000\000\000\000\000\000\000' >> "$dest"
+                printf '1' >> "$dest";           head -c 31 /dev/zero >> "$dest"
+                printf 'hello_world' >> "$dest"; head -c 21 /dev/zero >> "$dest"
+                printf '10:30:00' >> "$dest";    head -c 8 /dev/zero >> "$dest"
+                printf '2025-11-01' >> "$dest";  head -c 6 /dev/zero >> "$dest"
+                printf 'v5.3.1' >> "$dest";      head -c 26 /dev/zero >> "$dest"
                 ;;
             *"--port /dev/ttyUSB3"*)
                 head -c 131072 /dev/zero | tr '\000' '\377' > "$dest"
+                ;;
+            *"--port /dev/ttyUSB4"*)
+                # A simple-boot image: erased throughout except the
+                # kernel's panic format at 0xa00 (what names the firmware
+                # inside the identification window) and the boot banner at
+                # 0x6053c (what dates it, reachable only by the hunt).
+                img=$(mktemp "${TMPDIR:-/tmp}/chiptui-deep.XXXXXX")
+                head -c 655360 /dev/zero | tr '\000' '\377' > "$img"
+                printf '>>> ZEPHYR FATAL ERROR %%d: %%s on CPU %%d\n' \
+                    | dd of="$img" bs=1 seek=2560 conv=notrunc status=none
+                printf '*** Booting Zephyr OS build v4.4.0-11847-gc5dffcb7c9da ***\n' \
+                    | dd of="$img" bs=1 seek=395068 conv=notrunc status=none
+                case "$args" in
+                    *"0x0 0x20000"*)
+                        head -c 131072 "$img" > "$dest"
+                        ;;
+                    *"0x20000 0x80000"*)
+                        tail -c +131073 "$img" | head -c 524288 > "$dest"
+                        ;;
+                esac
+                rm -f "$img"
                 ;;
             *)
                 printf 'MicroPython v1.28.0 on 2025-11-01; ESP32 module with ESP32\n' > "$dest"

@@ -10,7 +10,9 @@
 //! read-flash` brought back, so every rule here is unit-testable in memory.
 //! A window that is entirely `0xFF` answers differently from an
 //! unrecognized one: [`classify`] reports erased flash --- a device with
-//! no firmware on it at all.
+//! no firmware on it at all --- and a named firmware carries the version
+//! it names itself with ([`version`]): the banner string for MicroPython
+//! and Zephyr, the app descriptor's stamped fields for ESP-IDF.
 
 /// What the flash contents say the board is running. The two backends
 /// ChipTUI knows how to drive, plus the ESP-IDF app neither of them is ---
@@ -42,9 +44,13 @@ impl FlashFirmware {
 /// answer, but so is proof the flash is erased: "no firmware installed"
 /// is different from `None` (never asked, declined, or nothing
 /// recognizable) and worth reporting as what it is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FirmwareVerdict {
-    Firmware(FlashFirmware),
+    /// The firmware the window names, plus the version it names itself
+    /// with when the same bytes carry one (`Firmware: Zephyr v4.0.0`).
+    /// `None` is honest: labels identify without any version in reach,
+    /// and a guessed version is worse than a bare name.
+    Firmware(FlashFirmware, Option<String>),
     /// The whole identification window reads `0xFF`: erased flash, a
     /// chip that never had firmware written to it (or was erased since).
     Erased,
@@ -64,9 +70,21 @@ pub const READ_OFFSET: usize = 0x0;
 /// How much flash the identification read covers --- the bootloader
 /// (0x0–0x8000), the partition table (0x8000) and the first 64 KiB of the
 /// conventional application area (0x10000). Enough for partition labels
-/// and banner strings of either firmware wherever it keeps them; far
+/// and for the banners of an MCUboot sysbuild (which names itself in the
+/// bootloader) and a MicroPython app (banner at the image start); far
 /// cheaper than reading the whole chip.
 pub const READ_SIZE: usize = 0x20000;
+/// Where the follow-up version hunt reads from when the identification
+/// window named a firmware without a version: right past it. A Zephyr
+/// *simple boot* image is one contiguous XIP image whose application
+/// banner (`*** Booting Zephyr OS build … ***`) lands deep in flash ---
+/// on real hardware (ESP32-C3, verified) it sat at 0x6053c, unreachable
+/// from [`READ_SIZE`]. The hunt covers the next 512 KiB, where the
+/// rodata of ordinary applications keeps their banner; a build that
+/// names itself deeper than that stays bare rather than guessed at, and
+/// a failed hunt changes nothing.
+pub const HUNT_OFFSET: usize = READ_OFFSET + READ_SIZE;
+pub const HUNT_SIZE: usize = 0x80000;
 
 /// One partition-table entry is 32 bytes: magic, type, subtype, offset,
 /// size, a 16-byte NUL-padded label, then flags.
@@ -92,6 +110,13 @@ const APP_REGION_OFFSET: usize = 0x10000;
 /// the whole app region is scanned.
 const APP_DESC_MAGIC: [u8; 4] = [0x32, 0x54, 0xCD, 0xAB];
 
+/// Fixed-width, NUL-padded fields inside an `esp_app_desc_t`, at offsets
+/// past its magic word: the app's own `version`, then `project_name`,
+/// build `time`/`date`, and the ESP-IDF build that produced the image.
+const DESC_FIELD_LEN: usize = 32;
+const DESC_VERSION_OFFSET: usize = 16;
+const DESC_IDF_VERSION_OFFSET: usize = 112;
+
 /// Scans the identification window for firmware signatures. Partition
 /// labels decide first --- they are structural, so they cannot appear in
 /// a foreign image by accident the way a string can (a
@@ -116,6 +141,21 @@ pub fn identify(data: &[u8]) -> Option<FlashFirmware> {
     None
 }
 
+/// The version the identified firmware names itself with, read off the
+/// same bytes that identified it. MicroPython and Zephyr compile their
+/// banners into the image (`MicroPython v1.28.0 on …`, `*** Booting
+/// Zephyr OS build v4.0.0 ***`); an ESP-IDF app's descriptor carries
+/// stamped fields instead, where the IDF build's version is the
+/// deterministic one (an app without a git tag is just `1`).
+/// `None` when the window carries no version to read.
+pub fn version(data: &[u8], firmware: FlashFirmware) -> Option<String> {
+    match firmware {
+        FlashFirmware::MicroPython => banner_version(data, b"micropython"),
+        FlashFirmware::Zephyr => banner_version(data, b"zephyr os build"),
+        FlashFirmware::EspIdf => esp_idf_version(data),
+    }
+}
+
 /// The identification question the Device info pane actually asks:
 /// which firmware the flash carries, or that it carries none. Erased
 /// flash is checked first --- every firmware writes into the bootloader
@@ -125,7 +165,7 @@ pub fn classify(data: &[u8]) -> Option<FirmwareVerdict> {
     if is_erased(data) {
         return Some(FirmwareVerdict::Erased);
     }
-    identify(data).map(FirmwareVerdict::Firmware)
+    identify(data).map(|kind| FirmwareVerdict::Firmware(kind, version(data, kind)))
 }
 
 /// Whether the window reads as erased flash throughout. An empty read is
@@ -135,16 +175,88 @@ fn is_erased(data: &[u8]) -> bool {
     !data.is_empty() && data.iter().all(|&byte| byte == ERASED)
 }
 
-/// Whether the app region carries an `esp_app_desc_t` magic word. Only the
-/// app region counts: the ESP-IDF bootloader that fills the region below
-/// the partition table is shared by MicroPython and Zephyr builds too, so
-/// a magic (or any IDF string) down there says nothing about which
-/// firmware is running --- the check runs after the two name-bearing
-/// firmwares have had their say for the same reason.
+/// Where the app region's `esp_app_desc_t` magic word sits in the
+/// window, if it does. Only the app region counts: the ESP-IDF
+/// bootloader that fills the region below the partition table is shared
+/// by MicroPython and Zephyr builds too, so a magic (or any IDF string)
+/// down there says nothing about which firmware is running.
+fn esp_idf_app_descriptor(data: &[u8]) -> Option<usize> {
+    data[APP_REGION_OFFSET.min(data.len())..]
+        .windows(APP_DESC_MAGIC.len())
+        .position(|bytes| bytes == APP_DESC_MAGIC)
+        .map(|offset| offset + APP_REGION_OFFSET)
+}
+
 fn has_esp_idf_app_descriptor(data: &[u8]) -> bool {
-    let app = &data[APP_REGION_OFFSET.min(data.len())..];
-    app.windows(APP_DESC_MAGIC.len())
-        .any(|bytes| bytes == APP_DESC_MAGIC)
+    esp_idf_app_descriptor(data).is_some()
+}
+
+/// The version fields of the app descriptor the magic word opened: the
+/// IDF build's own stamp first, the app's version second (a project
+/// without a git tag defaults to a bare `1`, which names nothing).
+fn esp_idf_version(data: &[u8]) -> Option<String> {
+    let offset = esp_idf_app_descriptor(data)?;
+    [DESC_IDF_VERSION_OFFSET, DESC_VERSION_OFFSET]
+        .into_iter()
+        .find_map(|field| descriptor_field(data, offset + field))
+}
+
+/// One NUL-padded fixed-width descriptor field, read as a version: it
+/// must be printable, non-empty and carry a digit to count --- anything
+/// else is padding or garbage, not a version.
+fn descriptor_field(data: &[u8], start: usize) -> Option<String> {
+    let field = data.get(start..start.checked_add(DESC_FIELD_LEN)?)?;
+    let end = field
+        .iter()
+        .position(|&byte| byte == 0)
+        .unwrap_or(DESC_FIELD_LEN);
+    let bytes = &field[..end];
+    (!bytes.is_empty()
+        && bytes.iter().all(|byte| byte.is_ascii_graphic())
+        && bytes.iter().any(|byte| byte.is_ascii_digit()))
+    .then(|| String::from_utf8_lossy(bytes).into_owned())
+}
+
+/// The version token following every case-insensitive occurrence of
+/// `marker`, first one that parses (`micropython` also matches paths and
+/// build flags, so the first hit may carry no version at all).
+fn banner_version(data: &[u8], marker: &[u8]) -> Option<String> {
+    data.windows(marker.len())
+        .enumerate()
+        .filter(|(_, window)| window.eq_ignore_ascii_case(marker))
+        .find_map(|(offset, _)| version_token(&data[offset + marker.len()..]))
+}
+
+/// The version starting at `rest`: optional spaces, an optional `v`,
+/// then the version's own characters. Kept honest by requiring a digit
+/// (so `view` or `version` is not a version) and capped at a sane
+/// length, since flash bytes around a banner are not trustworthy.
+fn version_token(rest: &[u8]) -> Option<String> {
+    let mut bytes = rest
+        .iter()
+        .copied()
+        .skip_while(|byte| matches!(byte, b' ' | b'\t'));
+    let mut token = Vec::new();
+    if matches!(bytes.next(), Some(b'v' | b'V')) {
+        token.push(b'v');
+    }
+    for byte in bytes {
+        if !(byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'+' | b'_')) {
+            break;
+        }
+        token.push(byte);
+        if token.len() > DESC_FIELD_LEN {
+            return None;
+        }
+    }
+    while token
+        .last()
+        .is_some_and(|byte| !byte.is_ascii_alphanumeric())
+    {
+        token.pop();
+    }
+    (!token.is_empty() && token.iter().any(|byte| byte.is_ascii_digit()))
+        .then(|| String::from_utf8_lossy(&token).into_owned())
 }
 
 /// Whether any valid partition entry carries a Zephyr label. The table
@@ -302,7 +414,104 @@ mod tests {
         let data = window(&[entry("nvs", 1), entry("factory", 0)], b"MicroPython v1");
         assert_eq!(
             classify(&data),
-            Some(FirmwareVerdict::Firmware(FlashFirmware::MicroPython))
+            Some(FirmwareVerdict::Firmware(
+                FlashFirmware::MicroPython,
+                Some("v1".to_string())
+            ))
+        );
+    }
+
+    #[test]
+    fn the_banner_names_the_micropython_version() {
+        let data = window(
+            &[entry("nvs", 1), entry("factory", 0)],
+            b"\x00MicroPython v1.28.0 on 2025-11-01; ESP32 module\n",
+        );
+        assert_eq!(
+            version(&data, FlashFirmware::MicroPython),
+            Some("v1.28.0".to_string())
+        );
+    }
+
+    #[test]
+    fn a_micropython_daily_build_keeps_its_full_version() {
+        let data = window(
+            &[entry("nvs", 1), entry("factory", 0)],
+            b"MicroPython v1.25.0-123.g0123abcdef on 2025-01-01\n",
+        );
+        assert_eq!(
+            version(&data, FlashFirmware::MicroPython),
+            Some("v1.25.0-123.g0123abcdef".to_string())
+        );
+    }
+
+    #[test]
+    fn a_zephyr_banner_names_its_build_version() {
+        let mut data = vec![0xFF; 0x1000];
+        data.extend_from_slice(b"*** Booting Zephyr OS build v4.0.0-***\n");
+        assert_eq!(
+            version(&data, FlashFirmware::Zephyr),
+            Some("v4.0.0".to_string()),
+            "the trailing dash before the asterisks is not part of the version"
+        );
+    }
+
+    #[test]
+    fn a_zephyr_git_describe_banner_keeps_its_full_version() {
+        // The banner as a simple-boot board actually prints it (captured on
+        // hardware): a git-describe string, not a bare tag, sitting deep
+        // past the identification window.
+        let mut data = vec![0xFF; HUNT_OFFSET];
+        data.extend_from_slice(b"*** Booting Zephyr OS build v4.4.0-11847-gc5dffcb7c9da ***\n");
+
+        // The identification window: names the firmware (the kernel's
+        // strings sit early), but cannot date it.
+        let marker = b">>> ZEPHYR FATAL ERROR %d: %s on CPU %d";
+        data[..marker.len()].copy_from_slice(marker);
+        assert_eq!(
+            classify(&data[..READ_SIZE]),
+            Some(FirmwareVerdict::Firmware(FlashFirmware::Zephyr, None))
+        );
+
+        // The hunt window: the same bytes' follow-up region dates the
+        // verdict the first window left bare.
+        assert_eq!(
+            version(&data[HUNT_OFFSET..], FlashFirmware::Zephyr),
+            Some("v4.4.0-11847-gc5dffcb7c9da".to_string())
+        );
+    }
+
+    #[test]
+    fn labels_without_a_banner_carry_no_version() {
+        // A Zephyr sysbuild image whose banner sits outside the window:
+        // the partition labels still identify, but no version may be
+        // invented for them.
+        let data = window(&[entry("mcuboot", 0), entry("slot0_partition", 0)], b"");
+        assert_eq!(
+            classify(&data),
+            Some(FirmwareVerdict::Firmware(FlashFirmware::Zephyr, None))
+        );
+    }
+
+    #[test]
+    fn a_non_version_word_after_the_banner_is_not_a_version() {
+        let data = window(
+            &[entry("nvs", 1), entry("factory", 0)],
+            b"micropython build",
+        );
+        assert_eq!(version(&data, FlashFirmware::MicroPython), None);
+    }
+
+    #[test]
+    fn a_later_banner_still_names_the_version() {
+        // The first `micropython` hit may be a path fragment with no
+        // version after it; the scan owes the answer to the real banner.
+        let mut data = window(&[entry("nvs", 1), entry("factory", 0)], b"");
+        data.extend_from_slice(b"/build/micropython/port\x00");
+        data.extend_from_slice(b"MicroPython v1.28.0 on 2025-11-01\n");
+        assert_eq!(
+            version(&data, FlashFirmware::MicroPython),
+            Some("v1.28.0".to_string())
         );
     }
 
@@ -328,10 +537,46 @@ mod tests {
         data
     }
 
+    /// The full descriptor past its magic word: the reserved words, the
+    /// app's `version`, `project_name`, build `time`/`date`, then the
+    /// IDF build's version --- every field NUL-padded to 32 bytes, the
+    /// shape `esp_app_desc_t` mandates.
+    fn descriptor(data: &mut Vec<u8>, offset: usize, field: usize, value: &[u8]) {
+        let start = offset + field;
+        data.resize(start, 0);
+        data.extend_from_slice(value);
+        data.resize(start + DESC_FIELD_LEN, 0);
+    }
+
     #[test]
     fn esp_idf_app_descriptor_identifies_espidf() {
         let data = espidf_window();
         assert_eq!(identify(&data), Some(FlashFirmware::EspIdf));
+        assert_eq!(version(&data, FlashFirmware::EspIdf), None);
+    }
+
+    #[test]
+    fn the_app_descriptor_names_the_idf_version() {
+        let mut data = espidf_window();
+        let offset = data.len() - APP_DESC_MAGIC.len();
+        descriptor(&mut data, offset, DESC_VERSION_OFFSET, b"1");
+        descriptor(&mut data, offset, DESC_IDF_VERSION_OFFSET, b"v5.3.1");
+        assert_eq!(
+            version(&data, FlashFirmware::EspIdf),
+            Some("v5.3.1".to_string()),
+            "the IDF build's stamp outranks an app version that is just `1`"
+        );
+    }
+
+    #[test]
+    fn a_meaningful_app_version_is_the_espidf_fallback() {
+        let mut data = espidf_window();
+        let offset = data.len() - APP_DESC_MAGIC.len();
+        descriptor(&mut data, offset, DESC_VERSION_OFFSET, b"v2.4.1");
+        assert_eq!(
+            version(&data, FlashFirmware::EspIdf),
+            Some("v2.4.1".to_string())
+        );
     }
 
     #[test]

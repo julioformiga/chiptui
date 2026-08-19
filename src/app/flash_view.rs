@@ -667,6 +667,42 @@ impl App {
         started
     }
 
+    /// Runs the version hunt (`FlashPanel::query_firmware_version`) once the
+    /// identification read armed it: the follow-up read is pure courtesy ---
+    /// nothing waits on it, so it only ever starts when the port is free,
+    /// nothing interactive holds the session (an overlay must not sit on top
+    /// of an esptool that resets the board underneath it), and the selected
+    /// port still exists. A verdict that no longer standing, or a port that
+    /// vanished, drops the hunt: a bare firmware name is the honest answer
+    /// it already was.
+    pub(super) fn maybe_run_deferred_version_hunt(&mut self) {
+        let Some(flash) = self.flash.as_ref() else {
+            return;
+        };
+        if !flash.has_pending_version_hunt() {
+            return;
+        }
+        if self.overlay.is_some()
+            || self.probe.is_some()
+            || self.device_monitor_process.is_some()
+            || self.run_process.is_some()
+            || self.browser.as_ref().is_some_and(Browser::is_busy)
+        {
+            return;
+        }
+        let Some(port) = self.devices.selected_port().map(str::to_string) else {
+            if let Some(flash) = self.flash.as_mut() {
+                flash.drop_version_hunt();
+            }
+            return;
+        };
+        let Some(mut flash) = self.flash.take() else {
+            return;
+        };
+        flash.query_firmware_version(&mut self.processes, Some(&port));
+        self.flash = Some(flash);
+    }
+
     /// The firmware half of the first-listing chain: after the chip
     /// identity, the board's firmware decides whether mpremote has
     /// anything to talk to. Only MicroPython exposes a filesystem over
@@ -718,7 +754,7 @@ impl App {
         let reason = self
             .flash
             .as_ref()
-            .and_then(|flash| flash.details.firmware)
+            .and_then(|flash| flash.details.firmware.clone())
             .and_then(non_micropython_block_reason);
         match reason {
             Some(reason) => {
@@ -879,16 +915,22 @@ impl App {
 
 /// The message a non-MicroPython firmware verdict refuses the file listing
 /// with: files can only be read on MicroPython, so the pane must say that
-/// --- and name the firmware that answered instead --- rather than show
-/// mpremote's failure to talk to a firmware it does not speak. `None` for
-/// MicroPython (no reason to refuse).
+/// --- and name the firmware (and version, when the read found one) that
+/// answered instead --- rather than show mpremote's failure to talk to a
+/// firmware it does not speak. `None` for MicroPython (no reason to
+/// refuse).
 fn non_micropython_block_reason(verdict: FirmwareVerdict) -> Option<String> {
     match verdict {
-        FirmwareVerdict::Firmware(FlashFirmware::MicroPython) => None,
-        FirmwareVerdict::Firmware(other) => Some(format!(
-            "cannot read files — the device runs {}, not MicroPython",
-            other.label()
-        )),
+        FirmwareVerdict::Firmware(FlashFirmware::MicroPython, _) => None,
+        FirmwareVerdict::Firmware(other, version) => {
+            let named = match version {
+                Some(version) => format!("{} {version}", other.label()),
+                None => other.label().to_string(),
+            };
+            Some(format!(
+                "cannot read files — the device runs {named}, not MicroPython"
+            ))
+        }
         FirmwareVerdict::Erased => {
             Some("no firmware on the device — flash MicroPython to browse its files".to_string())
         }
@@ -902,13 +944,22 @@ mod tests {
     #[test]
     fn only_non_micropython_verdicts_refuse_the_listing() {
         assert_eq!(
-            non_micropython_block_reason(FirmwareVerdict::Firmware(FlashFirmware::MicroPython)),
+            non_micropython_block_reason(FirmwareVerdict::Firmware(
+                FlashFirmware::MicroPython,
+                Some("v1.28.0".to_string())
+            )),
             None,
             "MicroPython is the one verdict the listing may proceed on"
         );
         for (verdict, needle) in [
-            (FirmwareVerdict::Firmware(FlashFirmware::Zephyr), "Zephyr"),
-            (FirmwareVerdict::Firmware(FlashFirmware::EspIdf), "ESP-IDF"),
+            (
+                FirmwareVerdict::Firmware(FlashFirmware::Zephyr, Some("v4.0.0".to_string())),
+                "Zephyr v4.0.0",
+            ),
+            (
+                FirmwareVerdict::Firmware(FlashFirmware::EspIdf, None),
+                "ESP-IDF",
+            ),
         ] {
             let reason =
                 non_micropython_block_reason(verdict).expect("a foreign firmware must refuse");

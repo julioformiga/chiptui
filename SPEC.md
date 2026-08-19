@@ -765,12 +765,23 @@ one-line contextual shortcut footer:
   `Zephyr path`, `Projects base`, `Project path`, then `Board` with its optional `Shield`
   riding the same line (`←`/`→` switch which half `Enter` acts on); MicroPython (under
   `ProjectSelect`) asks `Projects base` (`[micropython] projects`) and `Project path` (a
-  session-only pick that re-roots the file browser's local pane), then reports `Entry`
-  (`main.py`/`boot.py` presence) and `MPy` (the board's version, read off the REPL banner
-  the probe/monitor already sees). Every row is a `□` while open, a `✓` once answered, a
-  red `✗` when a configured answer fails validation. The environment's `versions` (Zephyr
-  and venv Python, read from files) ride the pane's bottom border's right edge once a
-  workspace resolves --- a late-arriving fact that costs no content row; missing tool
+  session-only pick that re-roots the file browser's local pane), then reports
+  `Dependencies` (`requirements.txt`/`manifest.py` presence) and `Script` (whether the
+  board is believed to be running user code right now). The board's firmware version rides
+  the Device info pane's `Firmware` row instead, read from the same identification window
+  that named the firmware: MicroPython and Zephyr compile their banners into the image
+  (`Firmware: MicroPython v1.28.0`, `Firmware: Zephyr v4.0.0`), and a plain ESP-IDF app's
+  descriptor carries its stamped build version (`Firmware: ESP-IDF v5.3.1`); MicroPython
+  falls back to the REPL banner the probe/monitor already sees when the read found no
+  version string, and a firmware that names no version stays bare rather than guessed.
+  The one layout the window cannot date --- a Zephyr *simple boot* image, whose application
+  banner sits deep in flash past it --- gets a follow-up read (the next 512 KiB) that only
+  dates the verdict already standing; a hunt that finds nothing, or a board that went away,
+  changes nothing. Every row is a `□` while open,
+  a `✓` once answered, a red `✗` when a configured answer fails validation. The
+  environment's `versions` (Zephyr and venv Python, read from files) ride the pane's
+  bottom border's right edge once a workspace resolves --- a late-arriving fact that
+  costs no content row; missing tool
   availability shows in the header as a red `⚠ N` beside the backend name (names in the
   log warning).
 - **Row 2** --- the dual-pane local/device file browser, shown whenever the selected backend

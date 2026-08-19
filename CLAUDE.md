@@ -43,9 +43,12 @@ question too (`Capability::ProjectSelect`) --- `[micropython] projects` in the u
 (`settings::mpy_projects_raw`/`save_mpy_projects`) answers the Projects base row, a pick
 from its subdirectories (`Overlay::ProjectPicker { mpy: true }`, any subdirectory qualifies)
 re-roots the local pane session-only (`App::set_mpy_project`), and the pane's other two rows
-report `Entry` (main.py/boot.py in the root) and `MPy` (the board's version, parsed off the
-REPL banner by `device::micropython_version` --- fed by the probe and the monitor, dropped
-with the board on disconnect/switch). Editing a device file downloads it to a scratch temp file
+report `Dependencies` (`requirements.txt`/`manifest.py` presence in the project root) and
+`Script` (whether the board is believed to be running user code right now,
+`DeviceState::script_state()`). The board's MicroPython version itself, parsed off the REPL
+banner by `device::micropython_version` --- fed by the probe and the monitor, dropped with the
+board on disconnect/switch --- rides the Device info pane's `Firmware` row instead (see below),
+appended to the `MicroPython` label. Editing a device file downloads it to a scratch temp file
 (`browser::edit_download_path`), never the project tree — the point is to prove a change on the
 device first; `Download` is the separate, explicit step for landing a confirmed-good result in the
 project. On a clean `$EDITOR` exit it re-uploads to the same device path and then offers a
@@ -63,8 +66,8 @@ capability-gated `FileAction::for_entry` menu are unchanged). The environment's
 prerequisites moved *up* into row 1's **Project pane**, which is the checklist now:
 `Zephyr path`, `Projects base`, `Project path`, `Board · Shield` (the last two answered by
 the build panel but asked here; `←`/`→` on the merged target row switch which half `Enter`
-acts on --- `App::board_segment`) for Zephyr, `Projects base`/`Project path`/`Entry`/
-`MPy` for MicroPython (`src/app/project_view.rs`, `App::project_rows`). The pane is
+acts on --- `App::board_segment`) for Zephyr, `Projects base`/`Project path`/`Dependencies`/
+`Script` for MicroPython (`src/app/project_view.rs`, `App::project_rows`). The pane is
 navigable but deliberately off the `Tab` tour: `ctrl+p` enters it (toggle: a second press
 returns to wherever focus was; the cursor lands on the first question still open), `Tab`
 re-enters the tour at its first stop. The operation buttons they gate live in the **Project
@@ -429,7 +432,23 @@ These are the decisions that shape most code, and getting them wrong causes wide
   plain ESP-IDF app; bootloader bytes never classify anything, since the ESP-IDF bootloader
   is shared by all three firmwares), and the answer lands on its own row of the Device info
   pane, directly under the MAC, as `Firmware: MicroPython|Zephyr|ESP-IDF`
-  (`DeviceDetails::firmware`), `undefined`
+  (`DeviceDetails::firmware`) --- the verdict carries the version the *same read* found
+  (`firmware_id::version`: the `MicroPython v1.28.0 on …` / `*** Booting Zephyr OS build
+  v4.0.0 ***` banner strings, or for a plain IDF app the `esp_app_desc_t`'s stamped fields,
+  where the IDF build's version outranks a project's), so the row reads e.g.
+  `Firmware: Zephyr v4.0.0` / `Firmware: ESP-IDF v5.3.1`; a MicroPython verdict whose read
+  found no version string falls back to the REPL-banner fact (`App::mpy_version`), and a
+  firmware that names no version stays bare (labels identify without one; a guessed version
+  is worse than none). One real layout needs the second read the hunt exists for: a Zephyr
+  *simple boot* image is one contiguous XIP image whose application banner lives far past the
+  identification window (on real hardware, an ESP32-C3: kernel strings at 0xa00, banner at
+  0x6053c, no partition table, no `esp_app_desc`), so a versionless verdict arms
+  `FlashPanel::query_firmware_version` (`version_hunt_pending`), a follow-up
+  `read-flash 0x20000 0x80000` that only dates the standing verdict and never re-judges it
+  (`firmware_id::HUNT_OFFSET`/`HUNT_SIZE`, `apply_version_from`) --- driven through the same
+  tick-polled deferral as the other background queries (`App::maybe_run_deferred_version_hunt`),
+  refused under an open overlay, dropped with the identity it belonged to, and inert by design
+  for ESP-IDF (the descriptor the window already read is its only version source), `undefined`
   when the read failed or recognized nothing — with one distinction: a window that is entirely
   `0xFF` is erased flash, reported as `none (erased flash)` in warning color (`firmware_id::
   classify` → `FirmwareVerdict::Erased`), because "no firmware installed" is an answer, not

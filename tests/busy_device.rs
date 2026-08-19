@@ -130,7 +130,10 @@ fn an_idle_board_is_listed_without_asking_anything() {
     assert_eq!(app.devices.script_state(), ScriptState::Stopped);
     assert_eq!(
         app.flash.as_ref().unwrap().details.firmware,
-        Some(FirmwareVerdict::Firmware(FlashFirmware::MicroPython))
+        Some(FirmwareVerdict::Firmware(
+            FlashFirmware::MicroPython,
+            Some("v1.28.0".to_string())
+        ))
     );
     // The whole chain is automatic: no interrupt confirm, no firmware
     // question --- nothing needed the user's say-so.
@@ -153,7 +156,10 @@ fn the_firmware_is_identified_before_the_first_listing() {
     ));
     assert_eq!(
         app.flash.as_ref().unwrap().details.firmware,
-        Some(FirmwareVerdict::Firmware(FlashFirmware::MicroPython))
+        Some(FirmwareVerdict::Firmware(
+            FlashFirmware::MicroPython,
+            Some("v1.28.0".to_string())
+        ))
     );
     assert!(pump_until(
         &mut app,
@@ -162,12 +168,8 @@ fn the_firmware_is_identified_before_the_first_listing() {
     ));
     let frame = render(&mut app, 110, 24);
     assert!(
-        frame.contains("Firmware:"),
-        "the pane must show the label:\n{frame}"
-    );
-    assert!(
-        frame.contains("MicroPython"),
-        "the identified firmware must be named:\n{frame}"
+        frame.contains("Firmware:  MicroPython v1.28.0"),
+        "the pane must name the identified firmware with its version:\n{frame}"
     );
 
     // The read is once per port: nothing re-opens or re-asks anything.
@@ -197,7 +199,10 @@ fn a_board_running_zephyr_is_refused_rather_than_listed() {
     );
     assert_eq!(
         app.flash.as_ref().unwrap().details.firmware,
-        Some(FirmwareVerdict::Firmware(FlashFirmware::Zephyr))
+        Some(FirmwareVerdict::Firmware(
+            FlashFirmware::Zephyr,
+            Some("v4.0.0".to_string())
+        ))
     );
     let frame = render(&mut app, 110, 24);
     assert!(
@@ -283,7 +288,10 @@ fn a_banner_printing_foreign_board_identifies_before_any_listing() {
     );
     assert_eq!(
         app.flash.as_ref().unwrap().details.firmware,
-        Some(FirmwareVerdict::Firmware(FlashFirmware::Zephyr))
+        Some(FirmwareVerdict::Firmware(
+            FlashFirmware::Zephyr,
+            Some("v4.0.0".to_string())
+        ))
     );
     // There was no MicroPython script to bring back: the "running script"
     // was the firmware's own boot banner, so no restore question opens.
@@ -412,7 +420,10 @@ fn a_silent_board_is_listed_without_guessing_a_running_script() {
     // answer along the way.
     assert_eq!(
         app.flash.as_ref().unwrap().details.firmware,
-        Some(FirmwareVerdict::Firmware(FlashFirmware::MicroPython))
+        Some(FirmwareVerdict::Firmware(
+            FlashFirmware::MicroPython,
+            Some("v1.28.0".to_string())
+        ))
     );
     assert_eq!(app.overlay, None);
 }
@@ -653,6 +664,9 @@ fn the_first_listing_waits_for_the_chip_identity_query() {
     assert!(app.flash.as_ref().unwrap().details.family.is_some());
     assert_eq!(
         app.flash.as_ref().unwrap().details.firmware,
-        Some(FirmwareVerdict::Firmware(FlashFirmware::MicroPython))
+        Some(FirmwareVerdict::Firmware(
+            FlashFirmware::MicroPython,
+            Some("v1.28.0".to_string())
+        ))
     );
 }

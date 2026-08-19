@@ -17,7 +17,7 @@ use crate::backend::micropython::esptool::{
 use crate::backend::micropython::firmware::{self, BoardCandidate, FirmwareFile, FirmwareKind};
 use crate::backend::tool_available;
 use crate::files::{self, LocalEntry};
-use crate::firmware_id::{self, FirmwareVerdict};
+use crate::firmware_id::{self, FirmwareVerdict, FlashFirmware};
 use crate::logs::Level;
 use crate::process::{Outcome, ProcessEvent, ProcessId, ProcessManager, Stream};
 
@@ -178,6 +178,12 @@ struct RunningCommand {
     /// Set only for [`FlashAction::ReadFlash`]: where `esptool read-flash`
     /// is writing the bytes [`complete`] will parse.
     probe_dest: Option<PathBuf>,
+    /// True when this read is the version hunt
+    /// ([`FlashPanel::query_firmware_version`]) rather than the
+    /// identification read: it reads the follow-up window
+    /// ([`firmware_id::HUNT_OFFSET`]) and its finish must not re-drive the
+    /// first-listing chain.
+    hunt_version: bool,
     stdout: String,
     stderr: String,
 }
@@ -210,6 +216,13 @@ pub struct FlashPanel {
     /// once the user accepts the confirmation overlay.
     pending_action: Option<FlashAction>,
     in_flight: Option<RunningCommand>,
+    /// Whether the last identification read left a firmware named without
+    /// a version --- the version hunt
+    /// ([`FlashPanel::query_firmware_version`]) is armed for it, and the
+    /// caller runs it through the same tick-polled deferral as the other
+    /// background queries. Cleared with [`Self::details`]: a verdict that
+    /// no longer stands must not be filled in after the fact.
+    version_hunt_pending: bool,
     /// Overrides the `esptool` executable. `None` means "resolve on PATH".
     tool_path: Option<String>,
     /// Boards found by [`FlashPanel::search_online`].
@@ -315,6 +328,7 @@ impl FlashPanel {
             state: RunState::default(),
             pending_action: None,
             in_flight: None,
+            version_hunt_pending: false,
             tool_path: None,
             online_boards: Vec::new(),
             online_firmware: Vec::new(),
@@ -341,6 +355,7 @@ impl FlashPanel {
     /// board's chip/flash identity after it is gone.
     pub fn clear_device_details(&mut self) {
         self.details = DeviceDetails::default();
+        self.version_hunt_pending = false;
     }
 
     /// Drops only the firmware identification. Called when the device
@@ -351,6 +366,7 @@ impl FlashPanel {
     /// display, not the previous board's answer.
     pub fn clear_firmware_identity(&mut self) {
         self.details.firmware = None;
+        self.version_hunt_pending = false;
     }
 
     pub fn selected_action(&self) -> FlashAction {
@@ -518,7 +534,7 @@ impl FlashPanel {
         if self.blocked_reason(action).is_some() {
             return None;
         }
-        self.build_command(action, port, None)
+        self.build_command(action, port, None, false)
             .map(|command| command.to_string())
     }
 
@@ -527,6 +543,7 @@ impl FlashPanel {
         action: FlashAction,
         port: Option<&str>,
         probe_dest: Option<&Path>,
+        hunt_version: bool,
     ) -> Option<crate::process::Command> {
         let chip = self.chip.family();
         Some(match action {
@@ -534,12 +551,14 @@ impl FlashPanel {
             FlashAction::FlashInfo => commands::flash_id(port),
             FlashAction::EraseFlash => commands::erase_flash(port),
             FlashAction::Reset => commands::reset(port),
-            FlashAction::ReadFlash => commands::read_flash(
-                port,
-                firmware_id::READ_OFFSET,
-                firmware_id::READ_SIZE,
-                probe_dest?,
-            ),
+            FlashAction::ReadFlash => {
+                let (offset, size) = if hunt_version {
+                    (firmware_id::HUNT_OFFSET, firmware_id::HUNT_SIZE)
+                } else {
+                    (firmware_id::READ_OFFSET, firmware_id::READ_SIZE)
+                };
+                commands::read_flash(port, offset, size, probe_dest?)
+            }
             FlashAction::WriteFlash => commands::write_flash(
                 port,
                 chip,
@@ -580,7 +599,7 @@ impl FlashPanel {
         processes: &mut ProcessManager,
         port: Option<&str>,
     ) -> Vec<Notice> {
-        let notices = self.spawn(action, processes, port, false, None);
+        let notices = self.spawn(action, processes, port, false, None, false);
         if notices.is_empty() {
             self.output.clear();
         }
@@ -606,7 +625,7 @@ impl FlashPanel {
         processes: &mut ProcessManager,
         port: Option<&str>,
     ) -> bool {
-        self.spawn(FlashAction::ChipInfo, processes, port, true, None)
+        self.spawn(FlashAction::ChipInfo, processes, port, true, None, false)
             .is_empty()
     }
 
@@ -635,8 +654,69 @@ impl FlashPanel {
         port: Option<&str>,
     ) -> bool {
         let dest = firmware_probe_path();
-        self.spawn(FlashAction::ReadFlash, processes, port, true, Some(dest))
-            .is_empty()
+        self.spawn(
+            FlashAction::ReadFlash,
+            processes,
+            port,
+            true,
+            Some(dest),
+            false,
+        )
+        .is_empty()
+    }
+
+    /// Whether the identification read left a firmware named without a
+    /// version, i.e. whether [`Self::query_firmware_version`] has anything
+    /// to do.
+    pub fn has_pending_version_hunt(&self) -> bool {
+        self.version_hunt_pending
+    }
+
+    /// Drops an armed version hunt without running it (e.g. the port it was
+    /// armed for is gone).
+    pub fn drop_version_hunt(&mut self) {
+        self.version_hunt_pending = false;
+    }
+
+    /// The follow-up to a versionless verdict: `esptool read-flash` over the
+    /// window after the identification one, hunting only the version of the
+    /// firmware already named (a Zephyr *simple boot* image carries its
+    /// application banner far deeper than the identification window ---
+    /// see [`firmware_id::HUNT_OFFSET`]). Same rules as the other background
+    /// queries: never navigates, refuses when busy, and --- being pure
+    /// courtesy --- a refusal simply leaves the firmware bare. Returns
+    /// whether the hunt started.
+    pub fn query_firmware_version(
+        &mut self,
+        processes: &mut ProcessManager,
+        port: Option<&str>,
+    ) -> bool {
+        // Only a verdict that still stands, still versionless, may be filled
+        // in: a cleared or switched identity means the hunt is moot.
+        if !self.version_hunt_pending
+            || !matches!(
+                self.details.firmware,
+                Some(FirmwareVerdict::Firmware(_, None))
+            )
+        {
+            self.version_hunt_pending = false;
+            return false;
+        }
+        let dest = firmware_probe_path();
+        let started = self
+            .spawn(
+                FlashAction::ReadFlash,
+                processes,
+                port,
+                true,
+                Some(dest),
+                true,
+            )
+            .is_empty();
+        if started {
+            self.version_hunt_pending = false;
+        }
+        started
     }
 
     fn spawn(
@@ -646,6 +726,7 @@ impl FlashPanel {
         port: Option<&str>,
         background: bool,
         probe_dest: Option<PathBuf>,
+        hunt_version: bool,
     ) -> Vec<Notice> {
         if self.is_busy() {
             return vec![(Level::Warn, "a command is already running".to_string())];
@@ -653,7 +734,8 @@ impl FlashPanel {
         if let Some(reason) = self.blocked_reason(action) {
             return vec![(Level::Warn, reason.to_string())];
         }
-        let Some(command) = self.build_command(action, port, probe_dest.as_deref()) else {
+        let Some(command) = self.build_command(action, port, probe_dest.as_deref(), hunt_version)
+        else {
             return vec![(Level::Warn, "cannot build that command".to_string())];
         };
         let command = match &self.tool_path {
@@ -667,6 +749,7 @@ impl FlashPanel {
             action,
             background,
             probe_dest,
+            hunt_version,
             stdout: String::new(),
             stderr: String::new(),
         });
@@ -739,14 +822,21 @@ impl FlashPanel {
         self.details
             .merge(parse::parse_device_details(&running.stdout));
         if let Some(dest) = &running.probe_dest {
-            self.identify_firmware_from(dest, update);
+            if running.hunt_version {
+                self.apply_version_from(dest, update);
+            } else {
+                self.identify_firmware_from(dest, update);
+            }
         }
         if running.background {
             match running.action {
                 FlashAction::ChipInfo => {
                     update.background_chip_query_finished = true;
                 }
-                FlashAction::ReadFlash if running.probe_dest.is_some() => {
+                // The hunt's finish is none of the first-listing chain's
+                // business: the identification read already reported, and
+                // re-driving the gate would re-refuse a settled pane.
+                FlashAction::ReadFlash if running.probe_dest.is_some() && !running.hunt_version => {
                     update.background_firmware_read_finished = true;
                 }
                 _ => {}
@@ -800,12 +890,19 @@ impl FlashPanel {
             .and_then(|data| firmware_id::classify(&data));
         let _ = std::fs::remove_file(dest);
         match verdict {
-            Some(FirmwareVerdict::Firmware(firmware)) => {
-                self.details.firmware = Some(FirmwareVerdict::Firmware(firmware));
-                update.notices.push((
-                    Level::Success,
-                    format!("firmware on the device: {}", firmware.label()),
-                ));
+            Some(FirmwareVerdict::Firmware(firmware, version)) => {
+                let named = match &version {
+                    Some(version) => format!("{} {version}", firmware.label()),
+                    None => firmware.label().to_string(),
+                };
+                // A firmware the window could name but not date asks for the
+                // hunt (unless it is ESP-IDF, whose only version source is
+                // the descriptor the window already read).
+                self.version_hunt_pending = version.is_none() && firmware != FlashFirmware::EspIdf;
+                self.details.firmware = Some(FirmwareVerdict::Firmware(firmware, version));
+                update
+                    .notices
+                    .push((Level::Success, format!("firmware on the device: {named}")));
             }
             Some(FirmwareVerdict::Erased) => {
                 self.details.firmware = Some(FirmwareVerdict::Erased);
@@ -817,6 +914,32 @@ impl FlashPanel {
             None => update
                 .notices
                 .push((Level::Info, "firmware could not be identified".to_string())),
+        }
+    }
+
+    /// Parses the bytes the version hunt's `esptool read-flash` just wrote
+    /// and, if they carry the named firmware's version, fills it into the
+    /// standing verdict; the scratch file is removed either way. The verdict
+    /// itself is not re-judged --- the hunt reads a window the
+    /// identification rules were never meant to run over, and only ever
+    /// dates a firmware the first window already named. A hunt that finds
+    /// nothing changes nothing: the firmware stays bare, which stays honest.
+    fn apply_version_from(&mut self, dest: &Path, update: &mut FlashUpdate) {
+        let standing = match &self.details.firmware {
+            Some(FirmwareVerdict::Firmware(kind, None)) => Some(*kind),
+            _ => None,
+        };
+        let version = standing.and_then(|kind| {
+            std::fs::read(dest)
+                .ok()
+                .and_then(|data| firmware_id::version(&data, kind))
+        });
+        let _ = std::fs::remove_file(dest);
+        if let (Some(kind), Some(version)) = (standing, version) {
+            self.details.firmware = Some(FirmwareVerdict::Firmware(kind, Some(version.clone())));
+            update
+                .notices
+                .push((Level::Info, format!("{} build {version}", kind.label())));
         }
     }
 
@@ -1427,7 +1550,10 @@ mod tests {
 
         assert_eq!(
             panel.details.firmware,
-            Some(FirmwareVerdict::Firmware(FlashFirmware::MicroPython))
+            Some(FirmwareVerdict::Firmware(
+                FlashFirmware::MicroPython,
+                Some("v1.28.0".to_string())
+            ))
         );
         assert_eq!(
             panel.screen,
@@ -1439,8 +1565,8 @@ mod tests {
                 .notices
                 .iter()
                 .any(|(level, message)| matches!(level, Level::Success)
-                    && message.contains("MicroPython")),
-            "the identification result must reach the log: {:?}",
+                    && message.contains("MicroPython v1.28.0")),
+            "the identification result and its version must reach the log: {:?}",
             update.notices
         );
     }
@@ -1459,7 +1585,129 @@ mod tests {
 
         assert_eq!(
             panel.details.firmware,
-            Some(FirmwareVerdict::Firmware(FlashFirmware::Zephyr))
+            Some(FirmwareVerdict::Firmware(
+                FlashFirmware::Zephyr,
+                Some("v4.0.0".to_string())
+            ))
+        );
+        assert!(
+            !panel.has_pending_version_hunt(),
+            "a banner the window itself dated needs no hunt"
+        );
+    }
+
+    #[test]
+    fn a_versionless_zephyr_verdict_is_dated_by_the_follow_up_hunt() {
+        use crate::firmware_id::FlashFirmware;
+
+        let fixture = Fixture::new("query-firmware-version-hunt");
+        let mut panel = FlashPanel::new(&fixture.root);
+        panel.set_tool_path(fake_esptool());
+        let mut processes = ProcessManager::new();
+
+        // A simple-boot board: the identification window names Zephyr
+        // through the kernel's strings, but the banner --- and the version
+        // in it --- sits deep past it.
+        assert!(panel.query_firmware_identity(&mut processes, Some("/dev/ttyUSB4")));
+        settle(&mut panel, &mut processes);
+        assert_eq!(
+            panel.details.firmware,
+            Some(FirmwareVerdict::Firmware(FlashFirmware::Zephyr, None))
+        );
+        assert!(
+            panel.has_pending_version_hunt(),
+            "a firmware named without a version arms the hunt"
+        );
+
+        // The hunt reads the follow-up window and dates the standing
+        // verdict; the identification is not re-judged.
+        assert!(panel.query_firmware_version(&mut processes, Some("/dev/ttyUSB4")));
+        let update = settle(&mut panel, &mut processes);
+        assert_eq!(
+            panel.details.firmware,
+            Some(FirmwareVerdict::Firmware(
+                FlashFirmware::Zephyr,
+                Some("v4.4.0-11847-gc5dffcb7c9da".to_string())
+            ))
+        );
+        assert!(!panel.has_pending_version_hunt());
+        assert!(
+            update
+                .notices
+                .iter()
+                .any(|(level, message)| matches!(level, Level::Info)
+                    && message.contains("Zephyr build v4.4.0")),
+            "the hunt's answer must reach the log: {:?}",
+            update.notices
+        );
+    }
+
+    #[test]
+    fn a_hunt_that_finds_nothing_leaves_the_verdict_bare() {
+        use crate::firmware_id::FlashFirmware;
+
+        let fixture = Fixture::new("query-firmware-version-hunt-empty");
+        let mut panel = FlashPanel::new(&fixture.root);
+        panel.set_tool_path(fake_esptool());
+        let mut processes = ProcessManager::new();
+
+        assert!(panel.query_firmware_identity(&mut processes, Some("/dev/ttyUSB4")));
+        settle(&mut panel, &mut processes);
+
+        // The hunt runs against a window with no Zephyr banner (here: a
+        // MicroPython board's): the verdict stays exactly as it was.
+        assert!(panel.query_firmware_version(&mut processes, Some("/dev/ttyUSB0")));
+        settle(&mut panel, &mut processes);
+        assert_eq!(
+            panel.details.firmware,
+            Some(FirmwareVerdict::Firmware(FlashFirmware::Zephyr, None)),
+            "a failed hunt must not re-judge the firmware or invent a version"
+        );
+        assert!(!panel.has_pending_version_hunt());
+    }
+
+    #[test]
+    fn a_cleared_identity_disarms_the_hunt() {
+        let fixture = Fixture::new("query-firmware-version-hunt-cleared");
+        let mut panel = FlashPanel::new(&fixture.root);
+        panel.set_tool_path(fake_esptool());
+        let mut processes = ProcessManager::new();
+
+        assert!(panel.query_firmware_identity(&mut processes, Some("/dev/ttyUSB4")));
+        settle(&mut panel, &mut processes);
+        assert!(panel.has_pending_version_hunt());
+
+        // The board went away: whatever the hunt might still read belongs
+        // to no standing verdict.
+        panel.clear_firmware_identity();
+        assert!(!panel.has_pending_version_hunt());
+        assert!(!panel.query_firmware_version(&mut processes, Some("/dev/ttyUSB4")));
+        settle(&mut panel, &mut processes);
+        assert_eq!(panel.details.firmware, None);
+    }
+
+    #[test]
+    fn a_versioned_micropython_verdict_never_hunts() {
+        use crate::firmware_id::FlashFirmware;
+
+        let fixture = Fixture::new("query-firmware-version-hunt-mpy");
+        let mut panel = FlashPanel::new(&fixture.root);
+        panel.set_tool_path(fake_esptool());
+        let mut processes = ProcessManager::new();
+
+        assert!(panel.query_firmware_identity(&mut processes, None));
+        settle(&mut panel, &mut processes);
+        assert_eq!(
+            panel.details.firmware,
+            Some(FirmwareVerdict::Firmware(
+                FlashFirmware::MicroPython,
+                Some("v1.28.0".to_string())
+            ))
+        );
+        assert!(!panel.has_pending_version_hunt());
+        assert!(
+            !panel.query_firmware_version(&mut processes, None),
+            "nothing is armed: the hunt must refuse to run"
         );
     }
 
@@ -1502,8 +1750,11 @@ mod tests {
 
         assert_eq!(
             panel.details.firmware,
-            Some(FirmwareVerdict::Firmware(FlashFirmware::EspIdf)),
-            "the esp_app_desc magic alone names a plain IDF app"
+            Some(FirmwareVerdict::Firmware(
+                FlashFirmware::EspIdf,
+                Some("v5.3.1".to_string())
+            )),
+            "the esp_app_desc magic names a plain IDF app, and the descriptor's stamp names its version"
         );
     }
 

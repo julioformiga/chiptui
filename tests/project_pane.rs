@@ -1,8 +1,8 @@
 //! The Project pane (row 1): `ctrl+p`'s way in and out, the MicroPython
-//! project questions (projects folder, project pick, entry report, version
-//! report), and the re-rooting a pick performs on the file browser's local
-//! side. The Zephyr rows' flows are covered by `build_view.rs`; this file
-//! covers the pane-level grammar and the MicroPython half.
+//! project questions (projects folder, project pick, dependencies report,
+//! script report), and the re-rooting a pick performs on the file browser's
+//! local side. The Zephyr rows' flows are covered by `build_view.rs`; this
+//! file covers the pane-level grammar and the MicroPython half.
 
 #![cfg(unix)]
 
@@ -40,8 +40,8 @@ fn scratch(tag: &str) -> PathBuf {
     root
 }
 
-/// A MicroPython app: `main.py` at the root (so the Entry row has something
-/// to report), seams pointed at the scratch tree.
+/// A MicroPython app: `main.py` at the root (so the project detects as one),
+/// seams pointed at the scratch tree.
 fn mpy_app(tag: &str) -> (App, PathBuf) {
     let root = scratch(tag);
     std::fs::write(root.join("main.py"), "print('hi')\n").unwrap();
@@ -120,19 +120,24 @@ fn tab_leaves_the_project_pane_at_the_tours_first_stop() {
 
 #[test]
 fn the_micropython_pane_renders_its_four_rows() {
-    let (mut app, _root) = mpy_app("render");
+    let (mut app, root) = mpy_app("render");
+    std::fs::write(
+        root.join("requirements.txt"),
+        "adafruit-circuitpython-neopixel\n",
+    )
+    .unwrap();
 
     let frame = render(&mut app, 100, 30);
-    for label in ["Projects base", "Project path", "Entry", "MPy"] {
+    for label in ["Projects base", "Project path", "Dependencies", "Script"] {
         assert!(frame.contains(label), "missing the {label} row:\n{frame}");
     }
     assert!(
-        frame.contains("✓ main.py"),
-        "the entry point is reported present:\n{frame}"
+        frame.contains("✓ requirements.txt") && frame.contains("✗ manifest.py"),
+        "dependency files are reported individually:\n{frame}"
     );
     assert!(
-        frame.contains("waiting for the REPL banner"),
-        "an unseen version is honest about it:\n{frame}"
+        frame.contains("unknown"),
+        "a script belief the probe/monitor never formed is honest about it:\n{frame}"
     );
     assert!(
         frame.contains("Project files:"),
@@ -229,6 +234,7 @@ fn picking_a_micropython_project_reroots_the_local_pane() {
     let apps = root.join("home/mpy-apps");
     std::fs::create_dir_all(apps.join("blink/src")).unwrap();
     std::fs::write(apps.join("blink/main.py"), "print('blink')\n").unwrap();
+    std::fs::write(apps.join("blink/requirements.txt"), "\n").unwrap();
     std::fs::create_dir_all(apps.join("other")).unwrap();
     app.mpy_projects = Some(apps.clone());
 
@@ -261,7 +267,7 @@ fn picking_a_micropython_project_reroots_the_local_pane() {
         "the local pane's title names the picked project:\n{frame}"
     );
     assert!(
-        frame.contains("✓ main.py"),
-        "the entry report reads the picked root:\n{frame}"
+        frame.contains("✓ requirements.txt"),
+        "the dependencies report reads the picked root:\n{frame}"
     );
 }
