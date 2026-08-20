@@ -69,7 +69,7 @@ pub fn draw(frame: &mut Frame, screen: &HomeScreen, theme: super::Palette) {
         Style::new().add_modifier(Modifier::BOLD)
     };
     frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(" 󱇬 New project ", create_style))),
+        Paragraph::new(Line::from(Span::styled(" + New project ", create_style))),
         create_area,
     );
 

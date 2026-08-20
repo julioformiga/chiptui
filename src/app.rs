@@ -396,16 +396,23 @@ pub enum FileAction {
 }
 
 impl FileAction {
+    /// Every label buffer-widths to the same 3 cells before its word: a
+    /// genuinely wide emoji gets one space, a narrow glyph like `▶` gets two.
+    /// `🗑`/`👁` look narrow to `unicode-width` (East Asian Width Neutral)
+    /// but most emoji fonts draw them two cells wide regardless, so the old
+    /// two-space compensation matched the buffer and not the terminal.
+    /// `\u{FE0F}` (VS16) fixes that: it makes `unicode-width` score them 2,
+    /// same trick already used for the file-listing's `⚙️`.
     pub fn label(self) -> &'static str {
         match self {
             Self::Open => "📂 Open",
             Self::SendToDevice => "📤 Send to device",
             Self::Download => "📥 Download",
             Self::Run => "▶  Run",
-            Self::View => "👁  View",
+            Self::View => "👁️ View",
             Self::Edit => "📝 Edit",
             Self::Diff => "🔀 Diff",
-            Self::Delete => "🗑  Delete",
+            Self::Delete => "🗑️ Delete",
         }
     }
 
@@ -2375,6 +2382,40 @@ mod tests {
         app.log_tab = LogTab::Monitor;
         app.set_monitor_source(MonitorSource::Device);
         (app, id)
+    }
+
+    /// Every `FileAction` label must buffer-width to 3 cells before its
+    /// word --- the padding a wide (2-cell) icon needs is one space less than
+    /// a narrow (1-cell) one. This is what a `🗑`/`👁` missing `\u{FE0F}`
+    /// breaks: `unicode_width` scores them narrow while most emoji fonts
+    /// draw them wide, so the single-space padding used for genuinely wide
+    /// icons quietly desyncs the menu from the terminal.
+    #[test]
+    fn every_file_action_label_budgets_the_same_column() {
+        use ratatui::text::Span;
+
+        for action in [
+            FileAction::Open,
+            FileAction::SendToDevice,
+            FileAction::Download,
+            FileAction::Run,
+            FileAction::View,
+            FileAction::Edit,
+            FileAction::Diff,
+            FileAction::Delete,
+        ] {
+            let label = action.label();
+            let word_start = label
+                .char_indices()
+                .find(|(_, c)| c.is_alphabetic())
+                .map(|(i, _)| i)
+                .expect("label has a word");
+            let prefix_width = Span::raw(&label[..word_start]).width();
+            assert_eq!(
+                prefix_width, 3,
+                "{label:?} budgets {prefix_width} cells before its word, want 3"
+            );
+        }
     }
 
     #[test]

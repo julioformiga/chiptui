@@ -177,6 +177,12 @@ Destructive actions such as:
 
 must require appropriate confirmation.
 
+No Private Use Area codepoints (Nerd Font icons and the like) in any glyph
+the UI draws --- they render as tofu or blank space on a terminal without
+that font installed, and there is no fallback. Stick to standard Unicode
+(plain symbols or emoji); `tests/no_private_use_glyphs.rs` scans `src/` for
+violations.
+
 ## Testing
 
 Every new feature should include tests where practical.
