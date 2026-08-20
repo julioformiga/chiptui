@@ -6,6 +6,9 @@
 //! deliverable: directory, project type, backend, device information and
 //! capabilities.
 
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::KeyCode;
@@ -33,10 +36,27 @@ fn key(code: KeyCode) -> chiptui::event::AppEvent {
     ))
 }
 
+/// A home directory that does not exist, unique per call. `bootstrap`
+/// reads the user config out of `$HOME`, so without this the frames
+/// assert against whatever the developer happens to have configured ---
+/// the theme picker's `(active)` row moves to `Auto` for anyone whose
+/// own `[ui] theme` is `auto`, and a test that ever answers a prompt
+/// would write into the real config (`CLAUDE.md`).
+fn scratch_home() -> PathBuf {
+    static COUNT: AtomicU64 = AtomicU64::new(0);
+    std::env::temp_dir().join(format!(
+        "chiptui-ui-render-home-{}-{}",
+        std::process::id(),
+        COUNT.fetch_add(1, Ordering::Relaxed)
+    ))
+}
+
 /// An app whose detection has been forced to a known backend, so the assertions
-/// do not depend on the directory the tests happen to run in.
+/// do not depend on the directory the tests happen to run in --- nor on the
+/// configuration of the machine running them ([`scratch_home`]).
 fn app_with_backend(kind: BackendKind) -> App {
     let mut app = App::new(std::env::temp_dir());
+    app.set_home_dir(scratch_home());
     app.bootstrap();
     app.manager.set_override(Some(kind));
     app

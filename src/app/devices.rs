@@ -88,6 +88,12 @@ impl App {
                 &self.config_dir,
                 &self.home_dir,
             ));
+        // And so does `[ui] theme`, read once in `App::new` from the home
+        // this call is replacing: everything the config answers has to move
+        // with it, or a redirected home still renders the real user's
+        // palette --- and their `theme = "auto"` still decides which row of
+        // the theme picker reads `(active)`.
+        self.theme = super::resolve_theme(&self.config_dir);
     }
 
     /// Scans `serial_dir` for USB serial ports and applies the result:
