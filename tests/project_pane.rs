@@ -127,7 +127,7 @@ fn the_micropython_pane_renders_its_four_rows() {
     )
     .unwrap();
 
-    let frame = render(&mut app, 100, 30);
+    let frame = render(&mut app, 100, 32);
     for label in ["Projects base", "Project path", "Dependencies", "Script"] {
         assert!(frame.contains(label), "missing the {label} row:\n{frame}");
     }
@@ -261,7 +261,7 @@ fn picking_a_micropython_project_reroots_the_local_pane() {
     assert_eq!(browser.local_path, apps.join("blink"));
     assert_eq!(app.header_project(), "blink", "the header names the pick");
 
-    let frame = render(&mut app, 100, 30);
+    let frame = render(&mut app, 100, 32);
     assert!(
         frame.contains("Project files: blink/"),
         "the local pane's title names the picked project:\n{frame}"

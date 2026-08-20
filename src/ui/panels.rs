@@ -509,21 +509,47 @@ fn device_content(app: &App, width: usize, palette: Palette) -> Vec<Line<'static
         lines.push(field("crystal", crystal.clone(), palette));
     }
     if let Some(family) = details.family {
+        // One row, always --- the same rule the features line below
+        // follows, and for the same reason: a wrapped chip line pushes the
+        // MAC and Firmware rows past the pane's fixed [`INFO_ROWS`]
+        // height. At the minimum width an `ESP32-S3 (revision 3) · 40MHz`
+        // report is exactly what overflows, so the suffixes are dropped
+        // whole rather than wrapped --- the crystal first (it rides this
+        // line only because the pane had no row to spare for it), then the
+        // revision, then the chip's own name truncates as a last resort.
+        let budget = width.saturating_sub(2 + LABEL_WIDTH);
+        let name = family.label().to_string();
+        let revision = details
+            .revision
+            .as_ref()
+            .map(|revision| format!(" (revision {revision})"))
+            .unwrap_or_default();
+        let crystal = details
+            .crystal_mhz
+            .as_ref()
+            .map(|crystal| format!(" · {crystal}"))
+            .unwrap_or_default();
+        let fits = |suffix: &str| name.chars().count() + suffix.chars().count() <= budget;
+        let (revision, crystal) = if fits(&format!("{revision}{crystal}")) {
+            (revision, crystal)
+        } else if fits(&revision) {
+            (revision, String::new())
+        } else {
+            (String::new(), String::new())
+        };
+
         let mut spans = vec![
             label_span("chip", palette),
             Span::styled(
-                family.label().to_string(),
+                truncate_end(&name, budget),
                 Style::new().fg(palette.success).bold(),
             ),
         ];
-        if let Some(revision) = &details.revision {
-            spans.push(Span::styled(
-                format!(" (revision {revision})"),
-                Style::new().fg(palette.fg),
-            ));
+        if !revision.is_empty() {
+            spans.push(Span::styled(revision, Style::new().fg(palette.fg)));
         }
-        if let Some(crystal) = &details.crystal_mhz {
-            spans.push(Span::styled(format!(" · {crystal}"), muted_style(palette)));
+        if !crystal.is_empty() {
+            spans.push(Span::styled(crystal, muted_style(palette)));
         }
         lines.push(Line::from(spans));
     }

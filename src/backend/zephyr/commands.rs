@@ -109,12 +109,6 @@ pub fn update() -> Command {
     Command::new(PROGRAM).arg("update")
 }
 
-/// `west sdk list` --- the managed SDK's inventory: installed versions,
-/// available releases and their toolchains. Read-only.
-pub fn sdk_list() -> Command {
-    Command::new(PROGRAM).arg("sdk").arg("list")
-}
-
 /// `west boards` --- every known board target, `name description` per line
 /// (alphabetical; HWMv2 names carry a `/` qualifier, e.g.
 /// `nrf52840dk/nrf52840`). Slow (it walks every board root), so callers run
@@ -248,7 +242,6 @@ mod tests {
     #[test]
     fn workspace_commands_stay_bare() {
         assert_eq!(update().to_string(), "west update");
-        assert_eq!(sdk_list().to_string(), "west sdk list");
     }
 
     #[test]

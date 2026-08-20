@@ -177,10 +177,6 @@ impl Backend for ZephyrBackend {
         Some(commands::update())
     }
 
-    fn sdk_list_command(&self) -> Option<crate::process::Command> {
-        Some(commands::sdk_list())
-    }
-
     fn monitor_command(&self, port: Option<&str>) -> Option<crate::process::Command> {
         Some(commands::monitor(port))
     }

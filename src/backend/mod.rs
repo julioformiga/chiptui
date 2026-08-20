@@ -193,10 +193,10 @@ pub enum Capability {
     /// setting and a project picker, and gates project commands (build,
     /// clean, ...) on a selected, buildable project.
     ProjectSelect,
-    /// Maintaining the backend's shared environment (`west update`,
-    /// `west sdk list`): operations that act on the workspace rather than
-    /// the project. Not destructive as a capability --- the pane confirms
-    /// the state-changing action itself.
+    /// Maintaining the backend's shared environment (`west update`):
+    /// operations that act on the workspace rather than the project. Not
+    /// destructive as a capability --- the pane confirms the
+    /// state-changing action itself.
     WorkspaceSync,
 }
 
@@ -410,13 +410,6 @@ pub trait Backend {
     /// changing operation the caller confirms before running. Returns
     /// `None` when the backend has no [`Capability::WorkspaceSync`].
     fn workspace_update_command(&self) -> Option<crate::process::Command> {
-        None
-    }
-
-    /// Returns the read-only command listing the toolchain inventory
-    /// (`west sdk list`). Returns `None` when the backend has no
-    /// [`Capability::WorkspaceSync`].
-    fn sdk_list_command(&self) -> Option<crate::process::Command> {
         None
     }
 }

@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use chiptui::app::{App, Focus, LogTab, MonitorSource, Overlay, View};
 use chiptui::backend::BackendKind;
 use chiptui::backend::BuildKind;
+use chiptui::build::BuildAction;
 use chiptui::event::AppEvent;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -75,6 +76,20 @@ fn app_with_west(tag: &str, tool: &str) -> App {
     app
 }
 
+/// Walks the build panel's cursor onto `action`, so a test names the row it
+/// means instead of counting `Down` presses --- the count moves whenever the
+/// action list does, and a miscount lands on a neighbouring row silently.
+fn cursor_on(app: &mut App, action: BuildAction) {
+    let caps = app.manager.capabilities();
+    let panel = app.build.as_mut().expect("a build panel");
+    let target = panel
+        .actions(&caps)
+        .iter()
+        .position(|candidate| *candidate == action)
+        .unwrap_or_else(|| panic!("{action:?} is not in the action list"));
+    panel.cursor = target;
+}
+
 /// Drains process events into the app until `done` holds or time runs out.
 fn pump_until(app: &mut App, mut done: impl FnMut(&App) -> bool, secs: u64) -> bool {
     let deadline = Instant::now() + Duration::from_secs(secs);
@@ -125,7 +140,7 @@ fn the_panel_appears_and_is_a_focus_stop_for_a_build_backend() {
     // (140 columns: the merged Board · Shield row shows both names in
     // full --- at 100 the shared value column tail-truncates one of them.)
     app.focus = Focus::Build;
-    let frame = render(&mut app, 140, 30);
+    let frame = render(&mut app, 140, 32);
     assert!(frame.contains("Build"), "missing panel:\n{frame}");
     assert!(
         frame.contains("nrf52840dk/nrf52840"),
@@ -156,12 +171,7 @@ fn enter_builds_and_streams_into_the_monitor_tab() {
     let mut app = app_with_west("run", "west");
     app.focus = Focus::Build;
 
-    // The list is Update Zephyr, SDK List, Menuconfig, Clean, Build,
-    // Rebuild, Flash: four rows down sits Build.
-    app.handle(key(KeyCode::Down));
-    app.handle(key(KeyCode::Down));
-    app.handle(key(KeyCode::Down));
-    app.handle(key(KeyCode::Down));
+    cursor_on(&mut app, BuildAction::Build(BuildKind::Build));
     app.handle(key(KeyCode::Enter));
 
     assert!(app.build.as_ref().unwrap().is_busy());
@@ -218,7 +228,7 @@ fn enter_builds_and_streams_into_the_monitor_tab() {
     );
 
     // The Monitor tab shows the streamed output, tail-following.
-    let frame = render(&mut app, 100, 30);
+    let frame = render(&mut app, 100, 32);
     assert!(
         frame.contains("fake west: build"),
         "output missing:\n{frame}"
@@ -230,10 +240,8 @@ fn clean_asks_before_running() {
     let mut app = app_with_west("clean", "west");
     app.focus = Focus::Build;
 
-    app.handle(key(KeyCode::Down)); // Update Zephyr
-    app.handle(key(KeyCode::Down)); // SDK List
-    app.handle(key(KeyCode::Down)); // Menuconfig
-    app.handle(key(KeyCode::Enter)); // Clean
+    cursor_on(&mut app, BuildAction::Build(BuildKind::Clean));
+    app.handle(key(KeyCode::Enter));
 
     // Destructive capability (Capability::Clean): a confirm quoting the
     // literal command, defaulting to No.
@@ -244,7 +252,7 @@ fn clean_asks_before_running() {
             confirm: false
         })
     );
-    let frame = render(&mut app, 100, 30);
+    let frame = render(&mut app, 100, 32);
     assert!(
         frame.contains("west build -t clean"),
         "the confirm must quote the literal command:\n{frame}"
@@ -276,7 +284,7 @@ fn clean_asks_before_running() {
     // Declining leaves nothing running.
     let mut app2 = app_with_west("clean-decline", "west");
     app2.focus = Focus::Build;
-    app2.handle(key(KeyCode::Down)); // Clean
+    cursor_on(&mut app2, BuildAction::Build(BuildKind::Clean));
     app2.handle(key(KeyCode::Enter));
     app2.handle(key(KeyCode::Esc));
     assert!(!app2.build.as_ref().unwrap().is_busy());
@@ -287,10 +295,7 @@ fn rebuild_is_pristine_and_pins_the_cached_board() {
     let mut app = app_with_west("rebuild", "west");
     app.focus = Focus::Build;
 
-    for _ in 0..5 {
-        // Update Zephyr, SDK List, Menuconfig, Clean, Build
-        app.handle(key(KeyCode::Down));
-    } // Rebuild
+    cursor_on(&mut app, BuildAction::Build(BuildKind::Rebuild));
     app.handle(key(KeyCode::Enter));
 
     assert!(
@@ -326,16 +331,12 @@ fn stop_cancels_the_running_command() {
     // at 31 rows: row 1's fixed four content rows make the unclipped
     // layout (header + info + the build pane's full stack + the log
     // pane's minimum + footer) exactly this tall.
-    let idle = render(&mut app, 100, 31);
+    let idle = render(&mut app, 100, 32);
 
-    // Update Zephyr, SDK List, Menuconfig, Clean, then Build.
-    app.handle(key(KeyCode::Down));
-    app.handle(key(KeyCode::Down));
-    app.handle(key(KeyCode::Down));
-    app.handle(key(KeyCode::Down));
+    cursor_on(&mut app, BuildAction::Build(BuildKind::Build));
     app.handle(key(KeyCode::Enter));
     assert!(app.build.as_ref().unwrap().is_busy());
-    let running_frame = render(&mut app, 100, 31);
+    let running_frame = render(&mut app, 100, 32);
     // Height constancy: the structural borders --- every pane's bottom
     // rule starts the line with `╰` (the Stop box's own rules are indented
     // into the pane's right half, so they never match) --- must sit on the
@@ -397,7 +398,7 @@ fn stop_cancels_the_running_command() {
     assert!(!last.ok, "a cancelled build is not a success");
 
     // Idle again: the box is gone, the stack whole.
-    let frame = render(&mut app, 100, 30);
+    let frame = render(&mut app, 100, 32);
     assert!(
         !frame.contains("■ Stop"),
         "no Stop box may show while idle:\n{frame}"
@@ -414,11 +415,7 @@ fn a_failed_command_reports_and_keeps_the_panel_usable() {
     let mut app = app_with_west("fail", "noisy");
     app.focus = Focus::Build;
 
-    // Update Zephyr, SDK List, Menuconfig, Clean, then Build.
-    app.handle(key(KeyCode::Down));
-    app.handle(key(KeyCode::Down));
-    app.handle(key(KeyCode::Down));
-    app.handle(key(KeyCode::Down));
+    cursor_on(&mut app, BuildAction::Build(BuildKind::Build));
     app.handle(key(KeyCode::Enter));
     let finished = pump_until(
         &mut app,
@@ -499,7 +496,7 @@ fn the_board_picker_fetches_filters_and_picks_for_the_session() {
     assert!(loaded, "the fake west boards never finished");
 
     // The modal lists the targets.
-    let frame = render(&mut app, 100, 30);
+    let frame = render(&mut app, 100, 32);
     assert!(
         frame.contains("native/native64"),
         "list not shown:\n{frame}"
@@ -513,7 +510,7 @@ fn the_board_picker_fetches_filters_and_picks_for_the_session() {
     app.handle(key(KeyCode::Char('N')));
     app.handle(key(KeyCode::Char('R')));
     app.handle(key(KeyCode::Char('F')));
-    let frame = render(&mut app, 100, 30);
+    let frame = render(&mut app, 100, 32);
     assert!(
         frame.contains("nrf52840dk/nrf52840"),
         "filter failed:\n{frame}"
@@ -540,7 +537,7 @@ fn the_board_picker_fetches_filters_and_picks_for_the_session() {
         "a pick must not write project configuration"
     );
 
-    let frame = render(&mut app, 140, 30);
+    let frame = render(&mut app, 140, 32);
     assert!(
         frame.contains("picked"),
         "the row must say the board's origin:\n{frame}"
@@ -573,7 +570,7 @@ fn the_shield_picker_lists_picks_and_clears_for_the_session() {
         app.handle(key(KeyCode::Down));
     }
     app.handle(key(KeyCode::Right));
-    let frame = render(&mut app, 100, 30);
+    let frame = render(&mut app, 100, 32);
     assert!(
         frame.contains("Shield"),
         "the target row must show:\n{frame}"
@@ -603,7 +600,7 @@ fn the_shield_picker_lists_picks_and_clears_for_the_session() {
     assert!(loaded, "the fake west shields never finished");
 
     // The modal lists the shields, with the (none) row to clear one.
-    let frame = render(&mut app, 100, 30);
+    let frame = render(&mut app, 100, 32);
     assert!(frame.contains("nrf7002ek"), "list not shown:\n{frame}");
     assert!(
         frame.contains("(none)"),
@@ -643,7 +640,7 @@ fn the_shield_picker_lists_picks_and_clears_for_the_session() {
     // The row shows the answer, and the (none) row clears it. (Focus never
     // left the Project pane's target row, and its segment is still the
     // shield half --- ctrl+p is a toggle, and a second press would leave.)
-    let frame = render(&mut app, 100, 30);
+    let frame = render(&mut app, 100, 32);
     assert!(
         frame.contains("nrf7002ek"),
         "the answer must show:\n{frame}"
@@ -842,7 +839,7 @@ fn the_workspace_file_section_titles_with_the_project_and_offers_the_parent_row(
     // columns: the fixture's generated name is long, and the
     // "Project files: " prefix eats 15 of them.)
     let project = root.file_name().unwrap().to_string_lossy().into_owned();
-    let frame = render(&mut app, 140, 30);
+    let frame = render(&mut app, 140, 32);
     assert!(
         frame.contains(&format!("{project}/")),
         "the title bar must name the project:\n{frame}"
@@ -856,7 +853,7 @@ fn the_workspace_file_section_titles_with_the_project_and_offers_the_parent_row(
     // that leads with `[..]`.
     workspace_cursor_on(&mut app, "src");
     app.handle(key(KeyCode::Enter));
-    let frame = render(&mut app, 140, 30);
+    let frame = render(&mut app, 140, 32);
     assert!(
         frame.contains(&format!("{project}/src/")),
         "the title must concatenate the descent:\n{frame}"
@@ -1009,7 +1006,7 @@ fn r_in_the_workspace_file_section_opens_a_prefilled_rename_prompt() {
         "the prompt must open pre-filled with the current name"
     );
 
-    let frame = render(&mut app, 100, 30);
+    let frame = render(&mut app, 100, 32);
     assert!(frame.contains("Rename"), "textbox not shown:\n{frame}");
     assert!(
         frame.contains("current name: main.c"),
@@ -1220,7 +1217,7 @@ fn a_missing_west_explains_itself_in_the_picker() {
         10,
     );
     assert!(failed, "the failed spawn never reported");
-    let frame = render(&mut app, 100, 30);
+    let frame = render(&mut app, 100, 32);
     assert!(
         frame.contains("is west on PATH?"),
         "the picker must explain the failure:\n{frame}"
@@ -1248,7 +1245,7 @@ fn flash_is_listed_confirms_and_runs_through_west() {
             confirm: false
         })
     );
-    let frame = render(&mut app, 100, 30);
+    let frame = render(&mut app, 100, 32);
     assert!(
         frame.contains("west flash"),
         "the confirm must quote the literal command:\n{frame}"
@@ -1339,7 +1336,7 @@ fn the_workspace_pane_resolves_from_project_config_and_runs_update() {
     // Where row 2 starts before the workspace resolves: resolving adds the
     // Project pane's versions badge, which must not move anything (row 1 is
     // a fixed four content rows).
-    let unresolved = render(&mut app, 100, 30);
+    let unresolved = render(&mut app, 100, 32);
     let row2 = unresolved
         .lines()
         .position(|l| l.contains("Project files"))
@@ -1384,7 +1381,7 @@ fn the_workspace_pane_resolves_from_project_config_and_runs_update() {
             .starts_with(ws.join(".venv/bin/west").to_str().unwrap())
     );
 
-    let frame = render(&mut app, 100, 30);
+    let frame = render(&mut app, 100, 32);
     assert!(
         frame.contains("Project files"),
         "the pane renders:\n{frame}"
@@ -1420,7 +1417,7 @@ fn the_workspace_pane_resolves_from_project_config_and_runs_update() {
             ..
         })
     ));
-    let frame = render(&mut app, 100, 30);
+    let frame = render(&mut app, 100, 32);
     assert!(
         frame.contains("west update"),
         "the confirm quotes the command:\n{frame}"
@@ -1514,7 +1511,7 @@ fn an_unconfigured_pane_shows_the_open_checklist_and_dim_buttons() {
 
     // The checklist asks, the buttons stay visible but dim --- the state
     // explains itself without a separate guidance block.
-    let frame = render(&mut app, 100, 30);
+    let frame = render(&mut app, 100, 32);
     assert!(
         frame.contains("□ Zephyr path"),
         "the open question must show:\n{frame}"
@@ -1643,7 +1640,7 @@ fn a_configured_but_broken_location_reports_the_guide_and_still_lets_you_choose(
     let message = panel.invalid.as_ref().unwrap();
     assert!(message.contains(".west"));
     assert!(message.contains("docs.zephyrproject.org"));
-    let frame = render(&mut app, 100, 30);
+    let frame = render(&mut app, 100, 32);
     assert!(
         frame.contains("docs.zephyrproject.org"),
         "the guide must show (in the log, the pane's rows are fixed):\n{frame}"
@@ -1664,9 +1661,7 @@ fn menuconfig_hands_the_terminal_over_instead_of_piping() {
     let mut app = app_with_west("menuconfig", "west");
     app.focus = Focus::Build;
 
-    // Menuconfig sits two rows down (the workspace pair leads the list).
-    app.handle(key(KeyCode::Down));
-    app.handle(key(KeyCode::Down));
+    cursor_on(&mut app, BuildAction::Menuconfig);
     app.handle(key(KeyCode::Enter));
 
     let command = app.take_pending_command().expect("a parked command");

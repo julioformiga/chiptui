@@ -572,8 +572,8 @@ workspace still finds it; `ZEPHYR_SDK_INSTALL_DIR`, `PATH`
 and `VIRTUAL_ENV` when a venv/SDK is known).
 
 Every command still runs with the project root as its working directory;
-only workspace-scoped operations (`west update`, `west sdk list`) run in
-the workspace itself. Status reads are files, not subprocesses: the
+only workspace-scoped operations (`west update`) run in the workspace
+itself. Status reads are files, not subprocesses: the
 Zephyr version comes from `zephyr/VERSION`, the SDK version from
 `sdk_version`.
 
@@ -633,7 +633,7 @@ The initial backend should support:
 -   flash;
 -   serial monitor;
 -   build output/logs;
--   `west update` and `west sdk list` (workspace-scoped).
+-   `west update` (workspace-scoped).
 
 Potential future operations:
 
@@ -803,7 +803,7 @@ one-line contextual shortcut footer:
   `Project files: name/src/`; no action menu --- `Enter` descends or hands a text file to
   `$EDITOR`, `v` views, `Del` asks, `a` creates, `r` renames) beside the
   project panel (the build lifecycle). The project panel is buttons only
-  (`west update`, `west sdk list`, menuconfig, the lifecycle, flash) over a three-row footer
+  (`west update`, menuconfig, the lifecycle, flash) over a three-row footer
   that is always reserved --- the pane's height never changes when a command starts --- and
   splits horizontally while one runs: the build status on the left half, a `Stop` button
   (same widget, half the pane's width) on the right. A filesystem backend that can also

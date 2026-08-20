@@ -168,10 +168,10 @@ execute bit) a `PATH` lookup uses --- while every unlocated tool keeps the `PATH
 `PATH` lookups skip empty entries, which mean the cwd; that makes the *report* stricter
 than `execvp`, never the reverse.
 `west update` (confirm-gated --- it rewrites the shared workspace,
-through `Overlay::ConfirmWorkspace`) and `west sdk list` live as buttons in the Project
+through `Overlay::ConfirmWorkspace`) lives as a button in the Project
 actions pane, enabled once the
-installation resolves, under `Capability::WorkspaceSync`; both
-run through the build panel's one process slot into the Monitor tab. The **Project files**
+installation resolves, under `Capability::WorkspaceSync`; it
+runs through the build panel's one process slot into the Monitor tab. The **Project files**
 pane (the old workspace pane, `src/ui/workspace.rs`) is the project's own listing, whole:
 its title carries the walked path (`Project files: proj/src/`, never truncating the
 prefix), and the body is the list --- no action menu: `Enter` descends into a
@@ -229,7 +229,7 @@ conventional `build` directory inside the project (implicit in commands; the `Bu
 overlay and `set_build_dir` plumbing remain but no row offers them). Commands come from the
 backend (`Backend::build_command`,
 `src/backend/zephyr/commands.rs`: `west build`[-`b`][`--shield`]/`-t clean`/`--pristine=always`,
-`west update`, `west sdk list`), run with the project root as cwd — the UI never names `west`
+`west update`), run with the project root as cwd — the UI never names `west`
 (workspace-scoped commands run in the workspace). The panel's `Board` checklist row (under
 `Capability::BoardSelect`) opens `Overlay::BoardPicker`: a
 filterable list over a background `west boards` fetch (`Backend::board_list_command`, parsed by
@@ -262,8 +262,17 @@ which drops the departed board's esptool identity *and* the firmware-identificat
 replug — even on the same port — refills the identity and re-runs the firmware identification
 instead of sitting at a stale answer. With that,
 Zephyr's Phase 3 surface (detect, board, build, clean, flash, monitor) plus its environment
-layer (workspace/venv/SDK resolution, menuconfig, build dirs, `west update`, `west sdk list`)
+layer (workspace/venv/SDK resolution, menuconfig, build dirs, `west update`)
 is complete; debug/signing remain Roadmap items.
+
+The dashboard has a **declared minimum of 80x32** (`ui::MIN_WIDTH`/`MIN_HEIGHT`), and it is
+measured rather than aspirational: the Zephyr action stack is six buttons (one rule per edge,
+a divider between each pair, plus the always-reserved three-row footer = 18 rows with the
+pane's borders), which leaves row 3 four content rows of log, and the Device info pane's chip
+line drops its crystal/revision suffixes rather than wrapping so the `Firmware` row keeps its
+place in the fixed four. `tests/ui_render.rs`'s `the_declared_minimum_fits_the_whole_dashboard`
+locks all three; a seventh button breaks it, which is the point --- growing row 2 means moving
+the constant with it.
 
 `lib.rs` + `main.rs`: everything except `terminal` and `ui` is testable without a tty, and `ui` is
 testable through ratatui's `TestBackend` (see `tests/ui_render.rs`, `tests/files_view.rs`).

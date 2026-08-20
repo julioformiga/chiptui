@@ -420,11 +420,10 @@ impl App {
 
     /// Starts a workspace command through the build panel's process slot
     /// (one backend, one running command, whichever pane started it) and
-    /// moves the user to where its output streams. `pub(super)` since
-    /// [`super::build_view`]'s `SdkList` action calls it too --- both
-    /// `Update`/`SdkList` moved to the build panel's action list, but the
-    /// commands themselves stay defined here, next to
-    /// [`crate::workspace::WorkspacePanel::update_command`]/`sdk_list_command`.
+    /// moves the user to where its output streams. `pub(super)` because
+    /// `Update` moved to the build panel's action list, but the command
+    /// itself stays defined here, next to
+    /// [`crate::workspace::WorkspacePanel::update_command`].
     pub(super) fn start_workspace_command(
         &mut self,
         label: &'static str,

@@ -226,8 +226,8 @@ impl<T> ListFetch<T> {
 /// pane, next to the other environment answers, so the two panes are "what
 /// is defined" and "what runs". The lifecycle buttons stay visible but
 /// disabled until both answers exist (see [`BuildPanel::lifecycle_ready`]);
-/// `UpdateZephyr`/`SdkList` are gated on the resolved workspace instead
-/// (`App::build_action_enabled`), since they act on the shared installation,
+/// `UpdateZephyr` is gated on the resolved workspace instead
+/// (`App::build_action_enabled`), since it acts on the shared installation,
 /// not this project. `Stop` trails the list exactly
 /// while a command runs --- drawn as its own half-width box in the pane's
 /// bottom-right corner, not as a row of the stack.
@@ -250,15 +250,12 @@ pub enum BuildAction {
     /// environment the workspace pane's checklist resolves --- before any
     /// project action below it has something to run against.
     UpdateZephyr,
-    /// `west sdk list` --- the toolchain inventory. Read-only, runs
-    /// immediately like the lifecycle's non-destructive rows.
-    SdkList,
 }
 
 impl BuildAction {
-    /// Rows the list shows under `caps`: the workspace-scoped pair first
-    /// (`west update`, `west sdk list` --- the environment every later
-    /// action runs in), then menuconfig (a build-system question answered
+    /// Rows the list shows under `caps`: the workspace-scoped `west update`
+    /// first (the shared environment every later action runs in), then
+    /// menuconfig (a build-system question answered
     /// before any artifact exists), then the lifecycle in its own order
     /// (clean, build, rebuild), then flash under its capability. With
     /// `running`, `Stop` is appended (cancelling as discoverable as
@@ -270,7 +267,6 @@ impl BuildAction {
         let mut actions = Vec::with_capacity(BuildKind::ALL.len() + 5);
         if caps.contains(crate::backend::Capability::WorkspaceSync) {
             actions.push(Self::UpdateZephyr);
-            actions.push(Self::SdkList);
         }
         actions.push(Self::Menuconfig);
         actions.extend(BuildKind::ALL.iter().map(|kind| Self::Build(*kind)));
@@ -842,8 +838,8 @@ impl BuildPanel {
         // just built), Build otherwise --- a retry, or, for Clean
         // specifically, the build it exists to clear the way for (matching
         // the `Build` row `start_build` parks the cursor on while a clean
-        // runs); every other command (Flash, UpdateZephyr, SdkList) lands
-        // back on its own row.
+        // runs); every other command (Flash, UpdateZephyr) lands back on
+        // its own row.
         let settled = BuildAction::list(caps, false);
         let target = match running.action {
             BuildAction::Build(BuildKind::Clean) => BuildAction::Build(BuildKind::Build),
@@ -1385,9 +1381,9 @@ mod tests {
     }
 
     #[test]
-    fn the_workspace_pair_leads_the_buttons_and_stop_trails_them_when_running() {
+    fn workspace_sync_leads_the_buttons_and_stop_trails_them_when_running() {
         let mut panel = BuildPanel::new("/nonexistent", UtcOffset::UTC);
-        // Zephyr's real set: the workspace pair, menuconfig, the lifecycle,
+        // Zephyr's real set: `west update`, menuconfig, the lifecycle,
         // flash --- the project/board questions live in the workspace pane.
         let zephyr = crate::backend::Capabilities::from_slice(&[
             crate::backend::Capability::Build,
@@ -1401,7 +1397,6 @@ mod tests {
             panel.actions(&zephyr),
             vec![
                 BuildAction::UpdateZephyr,
-                BuildAction::SdkList,
                 BuildAction::Menuconfig,
                 BuildAction::Build(BuildKind::Clean),
                 BuildAction::Build(BuildKind::Build),
@@ -1410,7 +1405,7 @@ mod tests {
             ]
         );
         assert_eq!(panel.action_at(&zephyr, 0), Some(BuildAction::UpdateZephyr));
-        assert_eq!(panel.action_at(&zephyr, 6), Some(BuildAction::Flash));
+        assert_eq!(panel.action_at(&zephyr, 5), Some(BuildAction::Flash));
 
         // A backend without flash or workspace sync: menuconfig and the
         // lifecycle alone.
@@ -1452,7 +1447,7 @@ mod tests {
             "a started command parks the cursor on Stop"
         );
         assert_eq!(
-            panel.action_at(&zephyr, 5),
+            panel.action_at(&zephyr, 4),
             Some(BuildAction::Build(BuildKind::Rebuild))
         );
     }

@@ -65,7 +65,7 @@ fn app_with_backend(kind: BackendKind) -> App {
 #[test]
 fn a_narrow_footer_drops_whole_hints_and_keeps_the_way_out() {
     let mut app = app_with_backend(BackendKind::Zephyr);
-    let frame = render(&mut app, 60, 24);
+    let frame = render(&mut app, 80, 32);
     // `TestBackend::to_string` quotes each row, so the padding *and* the
     // closing quote come off before looking at how the line ends.
     let footer = frame.lines().last().unwrap().trim_matches('"').to_string();
@@ -81,7 +81,7 @@ fn a_narrow_footer_drops_whole_hints_and_keeps_the_way_out() {
 #[test]
 fn dashboard_shows_project_device_and_log_panes() {
     let mut app = app_with_backend(BackendKind::Zephyr);
-    let frame = render(&mut app, 140, 30);
+    let frame = render(&mut app, 140, 32);
 
     assert!(frame.contains("ChipTUI"), "missing header:\n{frame}");
     assert!(frame.contains("Zephyr"), "missing backend name:\n{frame}");
@@ -102,11 +102,18 @@ fn dashboard_shows_project_device_and_log_panes() {
 
 /// A Zephyr fixture with a buildable project root and one connected board.
 fn header_fixture(tag: &str) -> App {
+    header_fixture_named(tag, "esp32c3_oled")
+}
+
+/// The same fixture with the project's folder name chosen by the caller ---
+/// the header's centre section is sized against it, so a test about
+/// ellipsizing needs a name too long for the frame it renders at.
+fn header_fixture_named(tag: &str, project: &str) -> App {
     use chiptui::device::DeviceInfo;
 
     let base = std::env::temp_dir().join(format!("chiptui-header-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
-    let root = base.join("esp32c3_oled");
+    let root = base.join(project);
     std::fs::create_dir_all(root.join("dev")).unwrap();
     std::fs::create_dir_all(base.join("home")).unwrap();
     std::fs::write(
@@ -136,7 +143,7 @@ fn header_fixture(tag: &str) -> App {
 #[test]
 fn header_shows_the_backend_left_the_project_centered_the_device_right() {
     let mut app = header_fixture("wide");
-    let frame = render(&mut app, 140, 30);
+    let frame = render(&mut app, 140, 32);
     let header = frame.lines().next().unwrap().trim_matches('"').to_string();
 
     assert!(
@@ -166,8 +173,11 @@ fn header_shows_the_backend_left_the_project_centered_the_device_right() {
 
 #[test]
 fn a_narrow_header_ellipsizes_the_project_and_never_the_device() {
-    let mut app = header_fixture("narrow");
-    let frame = render(&mut app, 60, 24);
+    // At the declared minimum width, with a project name that cannot fit
+    // beside the backend and device sections.
+    const PROJECT: &str = "esp32c3_oled_with_a_very_long_name";
+    let mut app = header_fixture_named("narrow", PROJECT);
+    let frame = render(&mut app, 80, 32);
     let header = frame.lines().next().unwrap().trim_matches('"').to_string();
 
     assert!(
@@ -179,8 +189,8 @@ fn a_narrow_header_ellipsizes_the_project_and_never_the_device() {
         "the project name ellipsizes, label kept:\n{header}"
     );
     assert!(
-        !header.contains("esp32c3_oled"),
-        "a 60-column line cannot hold the whole name:\n{header}"
+        !header.contains(PROJECT),
+        "an 80-column line cannot hold the whole name:\n{header}"
     );
     assert!(
         header.trim_end().ends_with("● /dev/ttyACM0"),
@@ -191,7 +201,7 @@ fn a_narrow_header_ellipsizes_the_project_and_never_the_device() {
 #[test]
 fn an_unscanned_header_shows_the_disconnect_icon_and_reason() {
     let mut app = app_with_backend(BackendKind::MicroPython);
-    let frame = render(&mut app, 100, 30);
+    let frame = render(&mut app, 100, 32);
     let header = frame.lines().next().unwrap().trim_matches('"').to_string();
 
     assert!(
@@ -221,7 +231,7 @@ fn zephyr_shows_the_workspace_and_build_panes_in_row_two() {
     app.set_serial_dir(root.join("dev"));
     app.set_home_dir(root.join("home"));
     app.maybe_scan_devices();
-    let frame = render(&mut app, 100, 30);
+    let frame = render(&mut app, 100, 32);
 
     assert!(
         frame.contains("Project files:"),
@@ -271,7 +281,7 @@ fn zephyr_shows_the_workspace_and_build_panes_in_row_two() {
 fn dashboard_shows_the_file_browser_in_row_two_for_a_filesystem_backend() {
     let mut app = app_with_backend(BackendKind::MicroPython);
     app.maybe_scan_devices();
-    let frame = render(&mut app, 100, 30);
+    let frame = render(&mut app, 100, 32);
 
     assert!(
         frame.contains("Project files:"),
@@ -286,7 +296,7 @@ fn dashboard_shows_the_file_browser_in_row_two_for_a_filesystem_backend() {
 #[test]
 fn row_three_shows_a_log_monitor_tab_strip() {
     let mut app = app_with_backend(BackendKind::MicroPython);
-    let frame = render(&mut app, 100, 30);
+    let frame = render(&mut app, 100, 32);
 
     assert!(frame.contains("Log"), "missing the Log tab:\n{frame}");
     assert!(
@@ -299,10 +309,10 @@ fn row_three_shows_a_log_monitor_tab_strip() {
 fn switching_to_the_monitor_tab_changes_row_three() {
     let mut app = app_with_backend(BackendKind::MicroPython);
     app.focus = Focus::Logs;
-    let on_log = render(&mut app, 100, 30);
+    let on_log = render(&mut app, 100, 32);
 
     app.log_tab = LogTab::Monitor;
-    let on_monitor = render(&mut app, 100, 30);
+    let on_monitor = render(&mut app, 100, 32);
 
     assert_ne!(
         on_log, on_monitor,
@@ -317,7 +327,7 @@ fn switching_to_the_monitor_tab_changes_row_three() {
 #[test]
 fn dashboard_shows_the_working_directory_and_backend() {
     let mut app = app_with_backend(BackendKind::MicroPython);
-    let frame = render(&mut app, 120, 30);
+    let frame = render(&mut app, 120, 32);
 
     assert!(
         frame.contains("Projects base"),
@@ -333,7 +343,7 @@ fn dashboard_shows_the_working_directory_and_backend() {
 #[test]
 fn device_pane_prompts_to_open_flash_before_anything_has_been_queried() {
     let mut app = app_with_backend(BackendKind::MicroPython);
-    let frame = render(&mut app, 100, 30);
+    let frame = render(&mut app, 100, 32);
 
     assert!(
         frame.contains("press 'x'"),
@@ -349,7 +359,7 @@ fn device_pane_has_nothing_to_show_without_a_flash_capable_backend() {
     // only way to exercise the "no capability" branch.
     let mut app = App::new(std::env::temp_dir());
     app.bootstrap();
-    let frame = render(&mut app, 100, 30);
+    let frame = render(&mut app, 100, 32);
 
     assert!(
         frame.contains("no device information"),
@@ -369,7 +379,7 @@ fn device_pane_shows_chip_details_once_esptool_has_reported_them() {
     };
     app.flash = Some(flash);
 
-    let frame = render(&mut app, 100, 30);
+    let frame = render(&mut app, 100, 32);
     assert!(
         frame.contains("Device info"),
         "missing pane title:\n{frame}"
@@ -396,7 +406,7 @@ fn device_pane_names_erased_flash_as_no_firmware() {
     };
     app.flash = Some(flash);
 
-    let frame = render(&mut app, 100, 30);
+    let frame = render(&mut app, 100, 32);
     assert!(
         frame.contains("none (erased flash)"),
         "a blank chip must be named as blank:\n{frame}"
@@ -414,8 +424,8 @@ fn device_pane_names_erased_flash_as_no_firmware() {
 fn row_one_is_the_same_fixed_height_in_both_backends() {
     let mut zephyr = app_with_backend(BackendKind::Zephyr);
     let mut micropython = app_with_backend(BackendKind::MicroPython);
-    let z = render(&mut zephyr, 100, 30);
-    let m = render(&mut micropython, 100, 30);
+    let z = render(&mut zephyr, 100, 32);
+    let m = render(&mut micropython, 100, 32);
 
     let z_row2 = z.lines().position(|l| l.contains("Files"));
     let m_row2 = m.lines().position(|l| l.contains("Files"));
@@ -435,7 +445,7 @@ fn row_one_is_the_same_fixed_height_in_both_backends() {
 #[test]
 fn device_details_arriving_do_not_shift_the_dashboard() {
     let mut app = app_with_backend(BackendKind::MicroPython);
-    let before = render(&mut app, 100, 30);
+    let before = render(&mut app, 100, 32);
     let row2 = before
         .lines()
         .position(|l| l.contains("Files"))
@@ -454,7 +464,7 @@ fn device_details_arriving_do_not_shift_the_dashboard() {
     };
     app.flash = Some(flash);
 
-    let after = render(&mut app, 100, 30);
+    let after = render(&mut app, 100, 32);
     assert!(
         after.contains("24:6f:28:12:34:56"),
         "the details must show:\n{after}"
@@ -484,7 +494,7 @@ fn a_start_dir_below_the_project_root_rides_the_root_line() {
     app.set_home_dir(base.join("home"));
     app.bootstrap();
     app.manager.set_override(Some(BackendKind::MicroPython));
-    let frame = render(&mut app, 100, 30);
+    let frame = render(&mut app, 100, 32);
 
     assert!(
         frame.contains("(cwd "),
@@ -497,6 +507,79 @@ fn a_start_dir_below_the_project_root_rides_the_root_line() {
     );
 
     let _ = std::fs::remove_dir_all(&base);
+}
+
+/// The declared minimum is a promise, not an aspiration: at exactly
+/// `MIN_WIDTH`x`MIN_HEIGHT` every button the Zephyr pane offers must be
+/// drawn (frame closed, not clipped a row short), the Device info pane must
+/// keep all four of its rows, and row 3 must still have log to show. The
+/// button stack is what sizes row 2, so anything added to it moves this
+/// test --- which is the point: the constant and the layout cannot drift
+/// apart in silence.
+#[test]
+fn the_declared_minimum_fits_the_whole_dashboard() {
+    use chiptui::backend::micropython::esptool::{ChipFamily, DeviceDetails};
+
+    let mut app = header_fixture("minimum");
+    let mut flash = FlashPanel::new(std::env::temp_dir());
+    // The widest realistic report: a chip line with both a revision and a
+    // crystal is exactly what used to wrap at this width and push the
+    // firmware row out of the pane.
+    flash.details = DeviceDetails {
+        family: Some(ChipFamily::Esp32S3),
+        revision: Some("3".to_string()),
+        features: Some("WiFi, BLE, Dual Core, 240MHz".to_string()),
+        crystal_mhz: Some("40MHz".to_string()),
+        mac: Some("24:6f:28:12:34:56".to_string()),
+        firmware: Some(FirmwareVerdict::Firmware(
+            chiptui::firmware_id::FlashFirmware::Zephyr,
+            Some("v4.0.0".to_string()),
+        )),
+        ..DeviceDetails::default()
+    };
+    app.flash = Some(flash);
+
+    let frame = render(&mut app, 80, 32);
+    let lines: Vec<&str> = frame.lines().collect();
+
+    for label in [
+        "Update Zephyr",
+        "Menuconfig",
+        "Clean",
+        "Build",
+        "Rebuild",
+        "Flash",
+    ] {
+        assert!(
+            frame.contains(label),
+            "the `{label}` button is clipped at the declared minimum:\n{frame}"
+        );
+    }
+
+    // Not merely visible: the stack's own bottom rule has to follow the
+    // last button, or the group is drawn a row short of its frame.
+    let flash_row = lines
+        .iter()
+        .position(|line| line.contains("⇧ Flash"))
+        .expect("the Flash button renders");
+    assert!(
+        lines[flash_row + 1].contains('╰'),
+        "the button group is clipped one row short of its bottom rule:\n{frame}"
+    );
+
+    // Row 1 keeps all four rows: the chip line drops its suffixes rather
+    // than wrapping, so the firmware answer stays in the pane.
+    assert!(
+        frame.contains("Firmware:") && frame.contains("Zephyr v4.0.0"),
+        "the firmware row was pushed out of the Device info pane:\n{frame}"
+    );
+
+    // And row 3 still has something to show.
+    assert!(
+        app.log_viewport >= 4,
+        "the log pane is starved at the declared minimum: {} rows\n{frame}",
+        app.log_viewport
+    );
 }
 
 #[test]
@@ -516,6 +599,12 @@ fn rendering_survives_a_wide_range_of_sizes() {
     for (width, height) in [
         (60, 14),
         (80, 24),
+        // The declared minimum and the two frames just under it, on each
+        // axis: both must draw the size warning rather than a clipped
+        // dashboard, and neither may panic on the way.
+        (79, 32),
+        (80, 31),
+        (80, 32),
         (100, 30),
         (200, 60),
         (61, 15),
@@ -535,7 +624,7 @@ fn overlays_draw_above_the_dashboard() {
         filtering: false,
         selected: 0,
     });
-    let help = render(&mut app, 100, 30);
+    let help = render(&mut app, 100, 32);
     assert!(
         help.contains("Navigation"),
         "navigation division missing:\n{help}"
@@ -550,7 +639,7 @@ fn overlays_draw_above_the_dashboard() {
     );
 
     app.overlay = Some(Overlay::BackendPicker { selected: 0 });
-    let picker = render(&mut app, 100, 30);
+    let picker = render(&mut app, 100, 32);
     assert!(picker.contains("Automatic"), "picker missing:\n{picker}");
     assert!(
         picker.contains("MicroPython"),
@@ -558,7 +647,7 @@ fn overlays_draw_above_the_dashboard() {
     );
 
     app.overlay = Some(Overlay::ProjectSetup { selected: 0 });
-    let setup = render(&mut app, 100, 30);
+    let setup = render(&mut app, 100, 32);
     assert!(
         setup.contains("New project"),
         "project setup overlay missing:\n{setup}"
@@ -603,7 +692,7 @@ fn selected_rows_carry_the_themes_selection_background() {
     app.maybe_scan_devices();
     app.overlay = Some(Overlay::BackendPicker { selected: 0 });
 
-    let mut terminal = Terminal::new(TestBackend::new(100, 30)).expect("test terminal");
+    let mut terminal = Terminal::new(TestBackend::new(100, 32)).expect("test terminal");
     let palette = app.theme_palette();
     terminal
         .draw(|frame| chiptui::ui::draw(frame, &mut app))
@@ -646,7 +735,7 @@ fn help_fits_one_line_per_binding_and_scrolls_under_the_cursor() {
     // Wide enough for the whole table: every binding stays on one line ---
     // a description leaking onto a second line means the text outgrew the
     // single-window budget.
-    let wide = render(&mut app, 100, 30);
+    let wide = render(&mut app, 100, 32);
     assert!(
         wide.contains("scan for devices (mpremote or USB serial)"),
         "the full description is not on one line:\n{wide}"
@@ -659,9 +748,10 @@ fn help_fits_one_line_per_binding_and_scrolls_under_the_cursor() {
         "the description wrapped:\n{wide}"
     );
 
-    // Too short for the whole table: the cursor keeps the last command on
-    // screen by scrolling the list.
-    let short = render(&mut app, 100, 20);
+    // Too short for the whole table (thirty-five rows against the
+    // minimum's thirty-two): the cursor keeps the last command on screen
+    // by scrolling the list.
+    let short = render(&mut app, 100, 32);
     assert!(
         short.contains("q / ctrl+c"),
         "the last binding was cut off vertically:\n{short}"
@@ -677,7 +767,7 @@ fn the_help_window_narrows_under_the_filter() {
         selected: 0,
     });
 
-    let frame = render(&mut app, 100, 30);
+    let frame = render(&mut app, 100, 32);
     assert!(
         frame.contains("filter sync"),
         "the filter line is missing:\n{frame}"
@@ -702,9 +792,9 @@ fn the_renderer_publishes_the_log_viewport_height() {
     // The log pane's height drives page-scrolling, so it must reflect the frame.
     let mut app = app_with_backend(BackendKind::Zephyr);
 
-    render(&mut app, 100, 30);
+    render(&mut app, 100, 44);
     let tall = app.log_viewport;
-    render(&mut app, 100, 16);
+    render(&mut app, 100, 32);
     let short = app.log_viewport;
 
     assert!(
@@ -722,10 +812,10 @@ fn focus_is_visible_in_the_rendered_frame() {
     let mut app = app_with_backend(BackendKind::MicroPython);
     app.maybe_scan_devices();
     app.focus = Focus::FilesLocal;
-    let with_files_focus = render(&mut app, 100, 30);
+    let with_files_focus = render(&mut app, 100, 32);
 
     app.focus = Focus::Logs;
-    let with_log_focus = render(&mut app, 100, 30);
+    let with_log_focus = render(&mut app, 100, 32);
 
     assert_ne!(
         with_files_focus, with_log_focus,
@@ -741,7 +831,7 @@ fn long_log_entries_wrap_with_a_hanging_indent_past_the_stamp() {
     let message = format!("start {}end", "x".repeat(300));
     app.logs.info(message);
 
-    let frame = render(&mut app, 100, 30);
+    let frame = render(&mut app, 100, 32);
     assert!(frame.contains("start xxx"), "first row missing:\n{frame}");
     assert!(
         frame.contains(&format!("{}xxxx", " ".repeat(chiptui::logs::PREFIX_WIDTH))),
@@ -756,7 +846,7 @@ fn the_log_pane_shows_a_scrollbar_once_content_overflows_it() {
         app.logs.info(format!("entry {i:02}"));
     }
 
-    let frame = render(&mut app, 100, 30);
+    let frame = render(&mut app, 100, 32);
     assert!(frame.contains('┃'), "missing the scrollbar thumb:\n{frame}");
     assert!(app.logs.total_lines() >= 60);
     assert_eq!(
@@ -768,7 +858,7 @@ fn the_log_pane_shows_a_scrollbar_once_content_overflows_it() {
     // Scrolling moves the thumb: the bar reflects the visual position.
     app.focus = Focus::Logs;
     app.logs.scroll_up(usize::MAX, app.log_viewport);
-    let scrolled = render(&mut app, 100, 30);
+    let scrolled = render(&mut app, 100, 32);
     assert_ne!(frame, scrolled, "scrolling must move the thumb");
 }
 
@@ -780,7 +870,7 @@ fn the_monitor_tab_shows_the_same_scrollbar_once_output_overflows_it() {
     let mut app = app_with_backend(BackendKind::MicroPython);
     app.log_tab = LogTab::Monitor;
 
-    let short = render(&mut app, 100, 30);
+    let short = render(&mut app, 100, 32);
     assert!(
         !short.contains('┃'),
         "no scrollbar before the session has output:\n{short}"
@@ -790,7 +880,7 @@ fn the_monitor_tab_shows_the_same_scrollbar_once_output_overflows_it() {
         app.device_monitor_output
             .push(format!("monitor line {i:02}"));
     }
-    let frame = render(&mut app, 100, 30);
+    let frame = render(&mut app, 100, 32);
     assert!(frame.contains('┃'), "missing the scrollbar thumb:\n{frame}");
     assert!(
         frame.contains("monitor line 59"),
@@ -803,7 +893,7 @@ fn the_monitor_tab_shows_the_same_scrollbar_once_output_overflows_it() {
 
     // A short session loses the bar again once the buffer is empty.
     app.device_monitor_output.clear();
-    let cleared = render(&mut app, 100, 30);
+    let cleared = render(&mut app, 100, 32);
     assert!(
         !cleared.contains('┃'),
         "the bar must leave with the output:\n{cleared}"
@@ -824,14 +914,14 @@ fn the_monitor_tab_scrolls_back_through_its_output() {
             .push(format!("monitor line {i:02}"));
     }
 
-    let tail = render(&mut app, 100, 30);
+    let tail = render(&mut app, 100, 32);
     assert!(
         !tail.contains("monitor line 00"),
         "the tail view shows the newest output:\n{tail}"
     );
 
     app.handle(key(KeyCode::Home));
-    let top = render(&mut app, 100, 30);
+    let top = render(&mut app, 100, 32);
     assert!(
         top.contains("monitor line 00"),
         "Home must reach the oldest output:\n{top}"
@@ -844,14 +934,14 @@ fn the_monitor_tab_scrolls_back_through_its_output() {
     // New output arriving while scrolled must not move the view.
     app.device_monitor_output
         .push("monitor line 60".to_string());
-    let held = render(&mut app, 100, 30);
+    let held = render(&mut app, 100, 32);
     assert!(
         held.contains("monitor line 00"),
         "live output must not shift a scrolled monitor view:\n{held}"
     );
 
     app.handle(key(KeyCode::End));
-    let bottom = render(&mut app, 100, 30);
+    let bottom = render(&mut app, 100, 32);
     assert!(
         bottom.contains("monitor line 60"),
         "End must re-pin the tail:\n{bottom}"
@@ -877,7 +967,7 @@ fn the_log_and_monitor_tabs_live_on_the_panes_border_row() {
     // example it sits on the pane's top border, separated by the standard
     // divider, and the pane gains the row as content.
     let mut app = zephyr_app();
-    let frame = render(&mut app, 100, 30);
+    let frame = render(&mut app, 100, 32);
     assert!(
         frame.contains("Log • Monitor"),
         "the tabs must share the border row with the dot divider:\n{frame}"
@@ -916,7 +1006,7 @@ fn the_monitor_tab_shows_the_running_command_with_a_spinner() {
     app.log_tab = LogTab::Monitor;
     app.set_monitor_source(chiptui::app::MonitorSource::Build);
 
-    let frame = render(&mut app, 100, 30);
+    let frame = render(&mut app, 100, 32);
     assert!(
         frame.contains("⠋ Build ("),
         "a running command must show its label, spinner and row count:\n{frame}"
@@ -943,14 +1033,14 @@ fn the_monitor_tab_marks_the_last_finished_command() {
         at: time::OffsetDateTime::now_utc(),
     };
     app.build.as_mut().unwrap().last = Some(report(true));
-    let ok = render(&mut app, 100, 30);
+    let ok = render(&mut app, 100, 32);
     assert!(
         ok.contains("✓ Build ("),
         "a finished command must be checked green with its row count:\n{ok}"
     );
 
     app.build.as_mut().unwrap().last = Some(report(false));
-    let failed = render(&mut app, 100, 30);
+    let failed = render(&mut app, 100, 32);
     assert!(
         failed.contains("✗ Build ("),
         "a failed command must be crossed red:\n{failed}"
@@ -958,7 +1048,7 @@ fn the_monitor_tab_marks_the_last_finished_command() {
 
     // Before any command ran, the title stands alone with the row count.
     app.build.as_mut().unwrap().last = None;
-    let bare = render(&mut app, 100, 30);
+    let bare = render(&mut app, 100, 32);
     assert!(
         bare.contains("Build ("),
         "the source title still names the feed:\n{bare}"

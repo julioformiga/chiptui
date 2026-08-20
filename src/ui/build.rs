@@ -142,11 +142,6 @@ fn draw_rows(
                     .enabled(app.build_action_enabled(*action))
                     .selected(selected),
             ),
-            crate::build::BuildAction::SdkList => buttons.push(
-                Button::new("≡ SDK List")
-                    .enabled(app.build_action_enabled(*action))
-                    .selected(selected),
-            ),
             crate::build::BuildAction::Stop => unreachable!("Stop is drawn as the footer box"),
         }
     }

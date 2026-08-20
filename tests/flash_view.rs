@@ -320,7 +320,7 @@ fn the_online_search_window_names_its_source_and_the_local_folder_priority() {
         app.handle(key(KeyCode::Down));
     }
     app.handle(key(KeyCode::Enter));
-    let frame = render(&mut app, 110, 24);
+    let frame = render(&mut app, 110, 32);
 
     assert!(
         frame.contains("micropython.org/download/?mcu=esp32"),
@@ -336,7 +336,7 @@ fn the_online_search_window_names_its_source_and_the_local_folder_priority() {
     );
 
     settle(&mut app);
-    let frame = render(&mut app, 110, 24);
+    let frame = render(&mut app, 110, 32);
     assert!(
         frame.contains("2 boards for this query"),
         "results carry a status line:\n{frame}"
@@ -397,7 +397,7 @@ fn render(app: &mut App, width: u16, height: u16) -> String {
 fn the_flash_menu_flags_destructive_actions() {
     let project = Project::new("render-menu");
     let mut app = app_with_flash(&project);
-    let frame = render(&mut app, 110, 24);
+    let frame = render(&mut app, 110, 32);
 
     assert!(frame.contains("Erase flash"), "{frame}");
     assert!(frame.contains("confirm"), "{frame}");
@@ -407,7 +407,7 @@ fn the_flash_menu_flags_destructive_actions() {
 fn the_flash_menu_shows_an_icon_per_action() {
     let project = Project::new("render-menu-icons");
     let mut app = app_with_flash(&project);
-    let frame = render(&mut app, 110, 24);
+    let frame = render(&mut app, 110, 32);
 
     assert!(frame.contains("⌫ Erase flash"), "{frame}");
     assert!(frame.contains("⇪ Write / flash firmware"), "{frame}");
@@ -483,7 +483,7 @@ fn a_read_only_action_s_output_has_no_recap_section() {
     app.handle(key(KeyCode::Enter)); // chip information
     settle(&mut app);
 
-    let frame = render(&mut app, 110, 30);
+    let frame = render(&mut app, 110, 32);
     assert!(!frame.contains("console"), "{frame}");
     assert!(frame.contains("Chip is ESP32"), "{frame}");
 }
@@ -496,7 +496,7 @@ fn the_confirm_overlay_renders_the_literal_command() {
     app.handle(key(KeyCode::Down));
     app.handle(key(KeyCode::Enter));
 
-    let frame = render(&mut app, 110, 24);
+    let frame = render(&mut app, 110, 32);
     assert!(frame.contains("erase-flash"), "{frame}");
 }
 
@@ -504,7 +504,7 @@ fn the_confirm_overlay_renders_the_literal_command() {
 fn the_flash_dialog_is_layered_over_the_dashboard_not_a_replacement_for_it() {
     let project = Project::new("render-dialog-over-dashboard");
     let mut app = app_with_flash(&project);
-    let frame = render(&mut app, 110, 30);
+    let frame = render(&mut app, 110, 32);
 
     assert!(
         frame.contains("Project") && frame.contains("Device") && frame.contains("Log"),
@@ -538,7 +538,7 @@ fn help_in_the_flash_view_describes_flash_keys() {
         filtering: false,
         selected: 0,
     });
-    let frame = render(&mut app, 110, 24);
+    let frame = render(&mut app, 110, 32);
     assert!(frame.contains("move the menu cursor"), "{frame}");
 }
 

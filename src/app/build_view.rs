@@ -167,17 +167,16 @@ impl App {
     /// Runs a panel action: destructive ones (`Clean`, `Flash`, and
     /// `UpdateZephyr` --- it rewrites the shared workspace, `SPEC.md` §15)
     /// route through a confirm overlay quoting the literal command;
-    /// `menuconfig` hands the terminal to the child; `SdkList` (read-only)
-    /// and the rest act immediately. Disabled rows (the lifecycle before the
-    /// checklist is complete, or `UpdateZephyr`/`SdkList` before a workspace
-    /// is resolved --- [`Self::build_action_enabled`]) do nothing: the
-    /// dimmed row is the explanation. This is also the confirm overlay's
-    /// accept path, which is why it must not itself confirm again. Every
-    /// action that runs a *project* command passes through
+    /// `menuconfig` hands the terminal to the child; the rest act
+    /// immediately. Disabled rows (the lifecycle before the checklist is
+    /// complete, or `UpdateZephyr` before a workspace is resolved ---
+    /// [`Self::build_action_enabled`]) do nothing: the dimmed row is the
+    /// explanation. This is also the confirm overlay's accept path, which
+    /// is why it must not itself confirm again. Every action that runs a
+    /// *project* command passes through
     /// [`Self::require_buildable_project`] first --- no command runs in a
-    /// directory that is not a buildable application; `UpdateZephyr`/
-    /// `SdkList` skip that gate, since they run in the workspace, not the
-    /// project.
+    /// directory that is not a buildable application; `UpdateZephyr` skips
+    /// that gate, since it runs in the workspace, not the project.
     pub(super) fn run_build_action(&mut self, action: BuildAction) {
         if !self.build_action_enabled(action) {
             return;
@@ -212,11 +211,6 @@ impl App {
                 self.overlay = Some(Overlay::ConfirmBuild {
                     action,
                     confirm: false,
-                });
-            }
-            BuildAction::SdkList => {
-                self.start_workspace_command("SDK list", BuildAction::SdkList, |panel, backend| {
-                    panel.sdk_list_command(backend)
                 });
             }
         }

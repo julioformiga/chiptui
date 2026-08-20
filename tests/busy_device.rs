@@ -90,7 +90,7 @@ fn the_interrupt_and_restore_prompts_render() {
         20
     ));
 
-    let frame = render(&mut app, 110, 24);
+    let frame = render(&mut app, 110, 32);
     assert!(
         frame.contains("A script is running"),
         "the confirmation should say why it is asking:\n{frame}"
@@ -101,7 +101,7 @@ fn the_interrupt_and_restore_prompts_render() {
     );
 
     app.overlay = Some(Overlay::RestoreDeviceScript { selected: 2 });
-    let frame = render(&mut app, 110, 24);
+    let frame = render(&mut app, 110, 32);
     assert!(
         frame.contains("Restart device script?"),
         "missing restore title:\n{frame}"
@@ -166,7 +166,7 @@ fn the_firmware_is_identified_before_the_first_listing() {
         |app| matches!(pane(app), PaneState::Ready),
         20
     ));
-    let frame = render(&mut app, 110, 24);
+    let frame = render(&mut app, 110, 32);
     assert!(
         frame.contains("Firmware:  MicroPython v1.28.0"),
         "the pane must name the identified firmware with its version:\n{frame}"
@@ -204,7 +204,7 @@ fn a_board_running_zephyr_is_refused_rather_than_listed() {
             Some("v4.0.0".to_string())
         ))
     );
-    let frame = render(&mut app, 110, 24);
+    let frame = render(&mut app, 110, 32);
     assert!(
         frame.contains("not MicroPython"),
         "the pane must carry the warning:\n{frame}"

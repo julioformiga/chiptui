@@ -732,7 +732,7 @@ pub struct App {
     /// The workspace pane, created beside the build panel for a backend
     /// that maintains a shared environment ([`crate::backend::Capability::
     /// WorkspaceSync`]): which west workspace/venv/SDK the commands run
-    /// against, plus `west update` and `west sdk list`.
+    /// against, plus `west update`.
     pub workspace: Option<crate::workspace::WorkspacePanel>,
     /// The Project pane's cursor, over its checklist rows (the environment
     /// questions that moved out of the workspace pane into row 1).
@@ -1860,9 +1860,9 @@ impl App {
                 panel.lifecycle_ready(self.project_gate_ok())
             }
             // Workspace-scoped, not project-scoped: a project/board answer
-            // is irrelevant to `west update`/`west sdk list`, which need
-            // only a resolved installation.
-            crate::build::BuildAction::UpdateZephyr | crate::build::BuildAction::SdkList => self
+            // is irrelevant to `west update`, which needs only a resolved
+            // installation.
+            crate::build::BuildAction::UpdateZephyr => self
                 .workspace
                 .as_ref()
                 .is_some_and(|workspace| workspace.resolved.is_some()),

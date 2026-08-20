@@ -2,8 +2,8 @@
 //! the row-2 counterpart of [`crate::build::BuildPanel`].
 //!
 //! Where the build panel owns what happens *in the project* (build, flash,
-//! board, plus the workspace-scoped `west update`/`west sdk list` it runs
-//! through --- see [`crate::build::BuildAction`]), this one owns what is
+//! board, plus the workspace-scoped `west update` it runs through --- see
+//! [`crate::build::BuildAction`]), this one owns what is
 //! *shared across projects*: which Zephyr installation the commands run
 //! against, which `west` executable (the workspace's venv, when it has
 //! one), which SDK. Below that checklist it also owns the project's own
@@ -201,16 +201,6 @@ impl WorkspacePanel {
         Some(
             self.west_env()
                 .apply(backend.workspace_update_command()?)
-                .current_dir(&workspace.dir),
-        )
-    }
-
-    /// `west sdk list`, same rooting and environment as [`Self::update_command`].
-    pub fn sdk_list_command(&self, backend: &dyn crate::backend::Backend) -> Option<Command> {
-        let workspace = self.resolved.as_ref()?;
-        Some(
-            self.west_env()
-                .apply(backend.sdk_list_command()?)
                 .current_dir(&workspace.dir),
         )
     }
@@ -455,7 +445,7 @@ mod tests {
                 WorkspaceAction::Project,
                 WorkspaceAction::BoardShield,
             ],
-            "west update/sdk list now live in the build panel's action list"
+            "west update now lives in the build panel's action list"
         );
     }
 
@@ -506,15 +496,12 @@ mod tests {
                 "/opt/myzephyr/zephyr".to_string()
             )]
         );
-        let sdk = panel.sdk_list_command(&ZephyrBackend).unwrap();
-        assert!(sdk.to_string().ends_with("west sdk list"));
     }
 
     #[test]
     fn an_unresolved_pane_builds_no_commands() {
         let panel = WorkspacePanel::new(Resolution::NotConfigured, "");
         assert!(panel.update_command(&ZephyrBackend).is_none());
-        assert!(panel.sdk_list_command(&ZephyrBackend).is_none());
     }
 
     fn files_fixture(tag: &str) -> PathBuf {

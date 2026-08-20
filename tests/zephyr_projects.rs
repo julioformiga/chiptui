@@ -240,7 +240,7 @@ fn picking_a_buildable_project_reroots_and_builds() {
 
     // The Project pane's path row follows the pick too (it would still
     // name the bare cwd otherwise).
-    let frame = render(&mut app, 100, 30);
+    let frame = render(&mut app, 100, 32);
     let path_line = frame
         .lines()
         .find(|line| line.contains("Project path"))

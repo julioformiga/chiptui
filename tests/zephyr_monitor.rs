@@ -163,7 +163,7 @@ fn the_chip_identity_is_queried_even_on_the_zephyr_backend() {
         "identity aside, this backend still never lists files"
     );
 
-    let frame = render(&mut app, 110, 24);
+    let frame = render(&mut app, 110, 32);
     assert!(
         frame.contains("Device info"),
         "the pane must exist for a build backend too:\n{frame}"

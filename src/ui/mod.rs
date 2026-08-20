@@ -31,9 +31,16 @@ use ratatui::widgets::{
 use crate::app::{App, Focus, LogTab, View};
 use crate::backend::BackendKind;
 
-/// Below this the panes cannot be rendered legibly.
-const MIN_WIDTH: u16 = 60;
-const MIN_HEIGHT: u16 = 14;
+/// Below this the dashboard cannot be rendered legibly --- and the number
+/// is the *measured* one, not an aspiration: at 80x32 the row-2 button
+/// stack (six actions: one rule per edge, a divider between each pair, and
+/// the always-reserved three-row footer = 18 rows with its borders) fits
+/// whole, and row 3 still gets four content rows of log. One row less and
+/// the stack loses its bottom rule; one column less and the Device info
+/// pane's chip line wraps, pushing the `Firmware` row out of its fixed
+/// four. Anything that grows row 2 has to move these numbers with it.
+const MIN_WIDTH: u16 = 80;
+const MIN_HEIGHT: u16 = 32;
 
 /// Frames of the shared "something is running" spinner, animated off
 /// [`App::ticks`] (one frame per tick). Used by the file panes' waits, the

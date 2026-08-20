@@ -679,7 +679,7 @@ fn the_device_picker_renders_a_helpful_empty_state() {
     app.bootstrap();
     app.overlay = Some(Overlay::DevicePicker { selected: 0 });
 
-    let frame = render(&mut app, 110, 24);
+    let frame = render(&mut app, 110, 32);
     assert!(
         frame.contains("No MicroPython device found"),
         "empty picker state not rendered:\n{frame}"
@@ -925,7 +925,7 @@ fn the_browser_renders_both_panes_with_comparison_markers() {
     let mut app = app_in_browser(&project);
     // 132 columns: the footer's middle-dropping fits every hint including
     // the new ctrl+p row at smaller widths.
-    let frame = render(&mut app, 132, 24);
+    let frame = render(&mut app, 132, 32);
 
     assert!(
         frame.contains("Project files:"),
@@ -985,7 +985,7 @@ fn a_pending_listing_renders_a_spinner_not_a_frozen_pane() {
     // A scan is started as soon as the backend has a filesystem; the listing
     // waits for it, so the pane reports the search rather than a bare idle
     // prompt.
-    let frame = render(&mut app, 110, 24);
+    let frame = render(&mut app, 110, 32);
     assert!(
         frame.contains("searching for a device"),
         "no progress indication:\n{frame}"
@@ -1017,7 +1017,7 @@ fn the_device_picker_lists_only_real_boards() {
     ]);
     app.overlay = Some(Overlay::DevicePicker { selected: 0 });
 
-    let frame = render(&mut app, 110, 24);
+    let frame = render(&mut app, 110, 32);
     assert!(
         frame.contains("/dev/ttyACM0"),
         "picker missing a device:\n{frame}"
@@ -1140,7 +1140,7 @@ fn disconnecting_the_device_clears_the_stale_dashboard_details() {
         app.flash.as_ref().unwrap().details
     );
 
-    let frame = render(&mut app, 100, 30);
+    let frame = render(&mut app, 100, 32);
     assert!(
         !frame.contains("ESP32-S3"),
         "the Device panel still shows the previous board:\n{frame}"
@@ -1171,7 +1171,7 @@ fn entering_a_local_text_file_opens_the_action_dialog() {
         })
     );
 
-    let frame = render(&mut app, 110, 24);
+    let frame = render(&mut app, 110, 32);
     assert!(frame.contains("Send to device"), "menu not shown:\n{frame}");
     assert!(frame.contains("View"));
     assert!(frame.contains("Edit"));
@@ -1256,7 +1256,7 @@ fn choosing_view_opens_the_viewer_ready_with_highlighted_content() {
         }
     );
 
-    let frame = render(&mut app, 110, 24);
+    let frame = render(&mut app, 110, 32);
     assert!(
         frame.contains("CONFIG=1"),
         "file content not shown:\n{frame}"
@@ -1445,7 +1445,7 @@ fn the_run_tab_renders_timestamps_on_each_line() {
         },
     ];
 
-    let frame = render(&mut app, 100, 30);
+    let frame = render(&mut app, 100, 32);
     assert!(frame.contains("Run:"), "missing run title:\n{frame}");
     assert!(
         frame.contains("hello"),
@@ -1474,7 +1474,7 @@ fn pressing_i_opens_the_package_install_prompt_on_the_device_pane() {
         })
     );
 
-    let frame = render(&mut app, 110, 24);
+    let frame = render(&mut app, 110, 32);
     assert!(
         frame.contains("Install package"),
         "prompt not shown:\n{frame}"
@@ -1541,7 +1541,7 @@ fn entering_a_local_directory_opens_the_dialog_defaulted_to_open() {
         "a directory gets the menu too now, defaulted to 'Open'"
     );
 
-    let frame = render(&mut app, 110, 24);
+    let frame = render(&mut app, 110, 32);
     assert!(frame.contains("Open"), "menu not shown:\n{frame}");
     assert!(frame.contains("Send to device"));
     assert!(frame.contains("Delete"));
@@ -1632,7 +1632,7 @@ fn entering_a_binary_local_file_opens_the_dialog_without_view_or_edit() {
         "a binary file still gets send/download/delete, just not view/edit"
     );
 
-    let frame = render(&mut app, 110, 24);
+    let frame = render(&mut app, 110, 32);
     assert!(frame.contains("Send to device"), "menu not shown:\n{frame}");
     assert!(frame.contains("Delete"));
     assert!(
@@ -1657,7 +1657,7 @@ fn pressing_a_opens_create_entry_for_the_focused_pane() {
         })
     );
 
-    let frame = render(&mut app, 110, 24);
+    let frame = render(&mut app, 110, 32);
     assert!(frame.contains("New (local)"), "textbox not shown:\n{frame}");
 }
 
@@ -1758,7 +1758,7 @@ fn entering_a_device_text_file_opens_the_dialog_with_download() {
         })
     );
 
-    let frame = render(&mut app, 110, 24);
+    let frame = render(&mut app, 110, 32);
     assert!(frame.contains("Download"), "menu not shown:\n{frame}");
     assert!(frame.contains("View"));
     assert!(frame.contains("Edit"));
@@ -1855,7 +1855,7 @@ fn choosing_diff_renders_a_unified_diff_of_local_vs_device() {
         }
     );
 
-    let frame = render(&mut app, 110, 24);
+    let frame = render(&mut app, 110, 32);
     assert!(
         frame.contains("Diff: diff.py"),
         "title should name the diff:\n{frame}"
@@ -1889,7 +1889,7 @@ fn diff_is_not_offered_for_an_identical_file() {
     app.browser.as_mut().unwrap().cursor_to(3); // same.py
     app.handle(key(KeyCode::Enter));
 
-    let frame = render(&mut app, 110, 24);
+    let frame = render(&mut app, 110, 32);
     assert!(
         !frame.contains("Diff"),
         "an identical file offers no diff:\n{frame}"
