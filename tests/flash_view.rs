@@ -23,6 +23,13 @@ fn fake_esptool() -> String {
     format!("{}/tests/fixtures/bin/esptool", env!("CARGO_MANIFEST_DIR"))
 }
 
+fn fake_esptool_progress_slow() -> String {
+    format!(
+        "{}/tests/fixtures/bin/esptool-progress-slow",
+        env!("CARGO_MANIFEST_DIR")
+    )
+}
+
 fn fake_curl() -> String {
     format!("{}/tests/fixtures/bin/curl", env!("CARGO_MANIFEST_DIR"))
 }
@@ -82,6 +89,22 @@ fn settle(app: &mut App) {
         !app.flash.as_ref().unwrap().is_busy(),
         "esptool command never completed"
     );
+}
+
+/// Drives the app until `done` holds or time runs out --- for asserting on
+/// an in-flight state (`settle` above only ever waits for the *end*).
+fn pump_until(app: &mut App, mut done: impl FnMut(&App) -> bool, secs: u64) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    while Instant::now() < deadline {
+        for event in app.processes.drain() {
+            app.handle(AppEvent::Process(event));
+        }
+        if done(app) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    done(app)
 }
 
 #[test]
@@ -258,6 +281,86 @@ fn write_flash_end_to_end_succeeds_and_detects_the_chip() {
         flash.chip.family(),
         Some(ChipFamily::Esp32),
         "the esptool banner was picked up"
+    );
+}
+
+/// Item 05 of the 2026-08-20 UX audit: the state line must show esptool's
+/// own write percentage while it streams in, not just a stopwatch, and go
+/// back to the counted duration once the command finishes. Driven through
+/// the device pane's **Project actions** tab (`x`), the path that actually
+/// renders `draw_action_state` --- `app_with_flash`'s standalone dialog
+/// switches away to the Monitor tab the instant a command starts
+/// (`App::show_flash_in_monitor`), so it never shows this line at all.
+///
+/// Firmware and offset are set directly on the panel rather than walked
+/// through the Options screen: reaching Options from this tab by pressing
+/// `Enter` on Write/flash does not open it as a dialog (only
+/// `offer_flash_after_erase` does that), so a firmware file discovered this
+/// way sits unconfirmable on screen --- a preexisting gap, not something
+/// this test is about. Pre-selecting both means `Enter` here takes the
+/// already-armed, destructive branch straight to the confirm overlay
+/// instead, same as erase.
+#[test]
+fn a_running_write_flash_reports_esptools_percentage() {
+    let project = Project::new("write-progress");
+    project.write_firmware("app.bin");
+    let mut app = App::new(&project.root);
+    app.bootstrap();
+    app.manager.set_override(Some(BackendKind::MicroPython));
+    app.maybe_scan_devices();
+    app.handle(key(KeyCode::Char('x')));
+    assert!(
+        app.device_actions_tab_active(),
+        "the actions tab must be showing"
+    );
+    let flash = app.flash.as_mut().unwrap();
+    flash.set_tool_path(fake_esptool_progress_slow());
+    flash.discover_firmware();
+    assert!(flash.select_firmware(0));
+    flash.set_offset("0x1000".to_string());
+
+    app.handle(key(KeyCode::Down)); // flash information -> erase flash
+    app.handle(key(KeyCode::Down)); // erase flash -> write flash
+    app.handle(key(KeyCode::Enter)); // firmware and offset already set: straight to confirm
+    match &app.overlay {
+        Some(Overlay::Confirm { message, .. }) => assert!(message.contains("write-flash")),
+        other => panic!("expected a confirmation overlay, got {other:?}"),
+    }
+    app.handle(key(KeyCode::Char('y'))); // confirm
+
+    assert!(app.flash.as_ref().unwrap().is_busy());
+    assert!(
+        app.device_actions_tab_active(),
+        "still on the tab once running"
+    );
+    let caught_progress = pump_until(
+        &mut app,
+        |app| app.flash.as_ref().unwrap().progress().is_some(),
+        10,
+    );
+    assert!(caught_progress, "no esptool percentage was ever parsed");
+    assert_eq!(
+        app.flash.as_ref().unwrap().progress(),
+        Some(chiptui::progress::Progress::Percent(10))
+    );
+    // Wide enough that the state line's half of the (already half-width)
+    // actions pane fits the label and the percentage both.
+    let frame = render(&mut app, 200, 40);
+    assert!(
+        frame.contains("Write / flash firmware · 10%"),
+        "state line missing the percentage:\n{frame}"
+    );
+
+    settle(&mut app);
+    let flash = app.flash.as_ref().unwrap();
+    assert!(
+        matches!(flash.state, RunState::Succeeded),
+        "state was {:?}",
+        flash.state
+    );
+    assert!(
+        flash.progress().is_none(),
+        "progress must clear once the command is no longer running"
     );
 }
 

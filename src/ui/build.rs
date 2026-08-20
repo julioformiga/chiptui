@@ -51,10 +51,19 @@ fn draw_state(
         return;
     }
     let line = if let Some(elapsed) = panel.elapsed() {
-        Line::from(vec![
-            label("state", palette),
-            format!("running · {}", BuildPanel::secs(elapsed)).fg(palette.accent),
-        ])
+        let text = match panel.progress() {
+            // The tool's own progress (ninja's step counter, or an esptool
+            // percentage from a runner that shells out to it) --- the
+            // command's label instead of the generic "running", since the
+            // count alone does not say what it counts.
+            Some(progress) => format!(
+                "{} · {}",
+                panel.running_label().unwrap_or("running"),
+                progress.render()
+            ),
+            None => format!("running · {}", BuildPanel::secs(elapsed)),
+        };
+        Line::from(vec![label("state", palette), text.fg(palette.accent)])
     } else if let Some(report) = &panel.last {
         report_line(report, palette)
     } else {

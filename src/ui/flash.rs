@@ -485,12 +485,18 @@ fn draw_action_state(
     let line = if let Some(activity) = flash.activity() {
         match activity {
             Activity::User => {
-                let elapsed = flash.elapsed().unwrap_or_default();
-                Line::from(vec![
-                    label("state", palette),
-                    format!("running · {}", crate::build::BuildPanel::secs(elapsed))
-                        .fg(palette.accent),
-                ])
+                let text = match flash.progress() {
+                    Some(progress) => format!(
+                        "{} · {}",
+                        flash.running_label().unwrap_or("running"),
+                        progress.render()
+                    ),
+                    None => {
+                        let elapsed = flash.elapsed().unwrap_or_default();
+                        format!("running · {}", crate::build::BuildPanel::secs(elapsed))
+                    }
+                };
+                Line::from(vec![label("state", palette), text.fg(palette.accent)])
             }
             // Not the user's work, so it is not counted and never reported
             // as a result --- but it holds the port or the one fetch slot,

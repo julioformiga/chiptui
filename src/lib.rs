@@ -22,6 +22,7 @@ pub mod highlight;
 pub mod home;
 pub mod logs;
 pub mod process;
+pub mod progress;
 pub mod project;
 pub mod settings;
 pub mod startup;

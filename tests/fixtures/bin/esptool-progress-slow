@@ -1,0 +1,20 @@
+#!/bin/sh
+# Fake `esptool write-flash` that streams its percentage with a pause
+# between lines, so a test can catch the panel mid-flash and see progress
+# parsed out of real streamed output (`src/progress.rs`,
+# `tests/flash_view.rs`'s progress test) --- not just fed a canned string.
+# Unlike `tests/fixtures/bin/progress` (which proves the \r-only pump
+# itself), this reproduces esptool's actual `write-flash` transcript so the
+# panel's whole path --- command, chip banner, percentage --- is exercised.
+printf 'esptool v5.3.1\n'
+printf 'Detecting chip type... ESP32\n'
+printf 'Chip is ESP32-D0WD (revision 3)\n'
+sleep 0.2
+printf 'Writing at 0x00001000... (10 %%)\r'
+sleep 0.2
+printf 'Writing at 0x00001000... (50 %%)\r'
+sleep 0.2
+printf 'Writing at 0x00001000... (100 %%)\r\n'
+printf 'Wrote 16384 bytes\n'
+printf 'Hash of data verified.\n'
+exit 0

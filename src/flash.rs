@@ -237,6 +237,11 @@ struct RunningCommand {
     started: Instant,
     stdout: String,
     stderr: String,
+    /// The latest step/percentage parsed out of the command's own output
+    /// (see [`crate::progress`]) --- esptool's write-flash percentage, most
+    /// commonly. `None` until a matching line arrives, which most esptool
+    /// actions (chip/flash info, erase, reset) never send.
+    progress: Option<crate::progress::Progress>,
 }
 
 pub struct FlashPanel {
@@ -496,6 +501,22 @@ impl FlashPanel {
         self.in_flight
             .as_ref()
             .map(|running| running.started.elapsed())
+    }
+
+    /// The running command's own label (`FlashAction::label`), for the
+    /// state line's progress text --- a percentage alone does not say what
+    /// it is a percentage of.
+    pub fn running_label(&self) -> Option<&'static str> {
+        self.in_flight
+            .as_ref()
+            .map(|running| running.action.label())
+    }
+
+    /// The running command's latest parsed progress (see [`crate::progress`]).
+    /// `None` either before the first matching line arrives or once the
+    /// command finishes.
+    pub fn progress(&self) -> Option<crate::progress::Progress> {
+        self.in_flight.as_ref().and_then(|running| running.progress)
     }
 
     /// What is holding the panel right now, as the actions tab's state
@@ -914,6 +935,7 @@ impl FlashPanel {
             started: Instant::now(),
             stdout: String::new(),
             stderr: String::new(),
+            progress: None,
         });
         self.state = RunState::Running;
         // A user-started command puts the tab's `Stop` row in the list from
@@ -943,6 +965,9 @@ impl FlashPanel {
                     };
                     buffer.push_str(text);
                     buffer.push('\n');
+                    if let Some(progress) = crate::progress::detect(text) {
+                        running.progress = Some(progress);
+                    }
                     self.output.push(text.clone());
                 }
                 return update;

@@ -235,6 +235,46 @@ fn enter_builds_and_streams_into_the_monitor_tab() {
     );
 }
 
+/// Item 05 of the 2026-08-20 UX audit: the state line must show ninja's own
+/// step counter while it streams in, not just a stopwatch, and go back to
+/// the counted duration once the command finishes.
+#[test]
+fn a_running_build_reports_ninjas_step_counter() {
+    let mut app = app_with_west("progress", "west-progress");
+    app.focus = Focus::Build;
+
+    cursor_on(&mut app, BuildAction::Build(BuildKind::Build));
+    app.handle(key(KeyCode::Enter));
+    assert!(app.build.as_ref().unwrap().is_busy());
+
+    let caught_progress = pump_until(
+        &mut app,
+        |app| app.build.as_ref().unwrap().progress().is_some(),
+        10,
+    );
+    assert!(caught_progress, "no ninja progress line was ever parsed");
+    assert_eq!(
+        app.build.as_ref().unwrap().progress(),
+        Some(chiptui::progress::Progress::Steps { done: 1, total: 3 })
+    );
+    let frame = render(&mut app, 100, 32);
+    assert!(
+        frame.contains("Build · 1/3"),
+        "state line missing the step counter:\n{frame}"
+    );
+
+    let finished = pump_until(
+        &mut app,
+        |app| app.build.as_ref().unwrap().last.is_some(),
+        10,
+    );
+    assert!(finished, "the fake west never finished");
+    assert!(
+        app.build.as_ref().unwrap().progress().is_none(),
+        "progress must clear once the command is no longer running"
+    );
+}
+
 #[test]
 fn clean_asks_before_running() {
     let mut app = app_with_west("clean", "west");

@@ -66,6 +66,10 @@ struct Running {
     /// row it was launched from is already gone.
     action: BuildAction,
     started: Instant,
+    /// The latest step/percentage parsed out of the command's own output
+    /// (see [`crate::progress`]) --- `None` until a matching line arrives,
+    /// which some commands (`Clean`, `Update Zephyr`) never send.
+    progress: Option<crate::progress::Progress>,
 }
 
 /// One board target from `west boards`: the name `west build -b` takes and
@@ -581,6 +585,13 @@ impl BuildPanel {
             .map(|running| running.started.elapsed())
     }
 
+    /// The running command's latest parsed progress (see [`crate::progress`]),
+    /// for the state line. `None` either before the first matching line
+    /// arrives or once the command finishes.
+    pub fn progress(&self) -> Option<crate::progress::Progress> {
+        self.running.as_ref().and_then(|running| running.progress)
+    }
+
     /// The build-directory picker's rows for a filter: the typed name first
     /// when it would create something new, then the conventional `build`,
     /// then every other configured directory --- so even a fresh project
@@ -693,6 +704,7 @@ impl BuildPanel {
             updates_board,
             action,
             started: Instant::now(),
+            progress: None,
         });
         // `Stop` now trails the list, drawn as the half-width box in the
         // pane's bottom-right corner: land the cursor on it, so cancelling
@@ -747,6 +759,11 @@ impl BuildPanel {
                     .as_ref()
                     .is_some_and(|running| running.id == *id)
                 {
+                    if let Some(progress) = crate::progress::detect(text)
+                        && let Some(running) = &mut self.running
+                    {
+                        running.progress = Some(progress);
+                    }
                     self.push_output(text.clone());
                 } else {
                     self.boards.on_line(*id, text);
