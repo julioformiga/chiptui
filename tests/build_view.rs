@@ -1286,7 +1286,7 @@ fn flash_is_listed_confirms_and_runs_through_west() {
 }
 
 #[test]
-fn x_routes_a_build_backend_to_west_flash_and_micropython_to_esptool() {
+fn x_routes_a_build_backend_to_west_flash_and_micropython_to_the_actions_tab() {
     // Zephyr: `x` opens the flash confirm of the build panel, not esptool's
     // dialog --- that dialog cannot talk to this board.
     let mut app = app_with_west("x-zephyr", "west");
@@ -1300,13 +1300,19 @@ fn x_routes_a_build_backend_to_west_flash_and_micropython_to_esptool() {
     );
     assert_ne!(app.view, View::Flash);
 
-    // MicroPython: `x` still opens the esptool flash dialog.
+    // MicroPython: `x` opens the device pane's Project actions tab --- the
+    // esptool menu's new home --- not a dialog.
     let mut app = App::new(std::env::temp_dir());
     app.bootstrap();
     app.manager.set_override(Some(BackendKind::MicroPython));
     app.maybe_scan_devices();
     app.handle(key(KeyCode::Char('x')));
-    assert_eq!(app.view, View::Flash);
+    assert_ne!(app.view, View::Flash);
+    assert!(
+        app.device_actions_tab_active(),
+        "the actions tab is showing"
+    );
+    assert_eq!(app.focus, Focus::FilesDevice);
 }
 
 /// A west workspace under the fixture home: `.west/`, `zephyr/VERSION`, and

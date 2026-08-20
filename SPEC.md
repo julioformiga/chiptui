@@ -459,7 +459,14 @@ terminal/serial stream and preserve terminal input/output semantics.
 ### Flashing
 
 `esptool` operations should be presented separately from normal
-MicroPython filesystem operations.
+MicroPython filesystem operations: the device pane's second tab,
+**Project actions** (opened with `x`; the arrow keys switch between it
+and **Device files** from either side while the pane has focus, the same
+rule as the Log/Monitor strip), carries the
+actions as the same stacked-button group the Zephyr project panel uses,
+including its reserved state/`Stop` footer --- one action grammar across
+backends. The per-action options screen and the online firmware screens
+remain dialogs layered over the dashboard.
 
 Potential actions:
 
@@ -468,7 +475,9 @@ Potential actions:
 -   erase flash;
 -   write/flash firmware;
 -   verify;
--   reset.
+-   reset;
+-   search firmware online;
+-   paste a firmware URL.
 
 `erase_flash` must require explicit confirmation.
 
@@ -797,7 +806,12 @@ one-line contextual shortcut footer:
   (`west update`, `west sdk list`, menuconfig, the lifecycle, flash) over a three-row footer
   that is always reserved --- the pane's height never changes when a command starts --- and
   splits horizontally while one runs: the build status on the left half, a `Stop` button
-  (same widget, half the pane's width) on the right. No file
+  (same widget, half the pane's width) on the right. A filesystem backend that can also
+  flash (today: MicroPython) keeps the dual-pane browser and gains the same button-group
+  grammar as the device pane's second tab: a `Project actions • Device files` strip on the
+  pane's border, the esptool actions plus the online-firmware entries as the stacked
+  buttons, the same reserved state/`Stop` footer, and row 2 sized to the stack while that
+  tab is showing. No file
   listing of the environment itself for such a backend --- editing the project's own
   sources beyond the list is the user's editor's job; otherwise a single full-width
   placeholder while no pane exists yet.
@@ -808,17 +822,21 @@ one-line contextual shortcut footer:
   once one exists. The `Monitor` tab itself only appears for a backend with
   `Capability::Monitor`.
 
-The Flash view (opened with `x`) is a dialog layered over the dimmed dashboard for choosing and
-configuring an action, not a full-screen replacement. Running an action closes the dialog and
-moves focus to row 3's Monitor tab, where its output streams --- there is no separate output
-screen inside the dialog.
+The Flash view's options and online screens are dialogs layered over the dimmed dashboard
+for choosing and configuring an action, never full-screen replacements. Starting an action
+from the actions tab shows the Monitor tab without moving focus off the pane (the cursor
+waits on `Stop`); starting one from a dialog closes it and moves focus to row 3's Monitor
+tab, where its output streams --- there is no separate output screen.
 
 > **Status**: implemented. Row 2 is capability-driven: the dual-pane file browser for
 > MicroPython; for Zephyr the full row is Project files (the project's own listing, the
 > checklist having moved up to row 1's Project pane) | Project actions (`src/build.rs`: the
 > lifecycle buttons only, gated on both answers,
 > streaming into
-> the Monitor tab; commands are quoted by the confirm overlays, not on the rows). The
+> the Monitor tab; commands are quoted by the confirm overlays, not on the rows). For
+> MicroPython the device pane is a tabbed pane (`src/ui/files.rs`): **Project actions**
+> (the esptool menu as the same button-stack widget, `src/ui/flash.rs`) • **Device files**,
+> with `x` and the pane's arrow keys switching. The
 > Monitor tab shows the device serial session (`m`), flash/erase output, and build output.
 
 The exact proportions (row heights, column widths) are not fixed.

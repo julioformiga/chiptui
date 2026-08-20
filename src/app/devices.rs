@@ -13,7 +13,7 @@ use crate::device::{DiscoveryState, ScriptState};
 use crate::firmware_id::{FirmwareVerdict, FlashFirmware};
 
 use super::flash_view::{FirmwareCheck, FirmwareHold};
-use super::{App, LogTab, MonitorSource, Overlay, PickerOption};
+use super::{App, DevicePaneTab, LogTab, MonitorSource, Overlay, PickerOption};
 
 impl App {
     /// Ensures row 2's panes exist and the right scans start, without
@@ -644,6 +644,10 @@ impl App {
                 self.report_tools();
             }
         }
+        // The pane the old backend showed is not this backend's pane: the
+        // actions tab belongs to a device pane that may not even exist for
+        // the one being switched to, so the tab starts over with it.
+        self.device_pane_tab = DevicePaneTab::Files;
         // A switch away from a backend with no filesystem (e.g. Zephyr) never
         // created a browser to scan with; a switch onto one should not still
         // be sitting on "not scanned" just because it happened via the
@@ -662,6 +666,10 @@ impl App {
             return;
         };
         self.manager.set_override(Some(kind));
+        // The pane the old backend showed is not this backend's pane: the
+        // actions tab belongs to the device pane that may not even exist
+        // yet, so the tab starts over with it.
+        self.device_pane_tab = DevicePaneTab::Files;
         match self.manager.create_scaffold(kind) {
             Ok(created) if created.written.is_empty() => {
                 self.logs.success(format!("{kind} selected"));

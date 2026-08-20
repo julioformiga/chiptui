@@ -138,13 +138,13 @@ fn draw_dashboard(frame: &mut Frame, body: Rect, app: &mut App, palette: Palette
 
     let [row1, rest] =
         Layout::vertical([Constraint::Length(info_height), Constraint::Min(0)]).areas(body);
-    // Row 2 leans on its content when the workspace/project panes claim
-    // it: their stacked button groups (checklist rows, a separator, a rule
-    // per button edge, the pinned state line) are the tallest content on
-    // the dashboard, so the row is sized to fit them and the log pane
-    // (which scrolls) takes the remainder. The browser keeps the
-    // historical 60/40 split.
-    let [row2, row3] = if app.workspace_pane_visible() {
+    // Row 2 leans on its content when the workspace/project panes or the
+    // device pane's actions tab claim it: their stacked button groups
+    // (checklist rows, a separator, a rule per button edge, the pinned
+    // state line) are the tallest content on the dashboard, so the row is
+    // sized to fit them and the log pane (which scrolls) takes the
+    // remainder. The browser keeps the historical 60/40 split.
+    let [row2, row3] = if app.workspace_pane_visible() || app.device_actions_tab_active() {
         let needed = row2_content_height(app)
             .saturating_add(2) // the pane's borders (the state line is content, already counted)
             .min(rest.height.saturating_sub(3).max(1));
@@ -204,7 +204,18 @@ fn row2_content_height(app: &App) -> u16 {
         let mains = panel.actions(&caps).len() - usize::from(panel.is_busy());
         (2 * mains + 1 + 3) as u16
     });
-    workspace.max(build)
+    // The device pane's Project actions tab sizes the row by the same
+    // rule while it is showing: its stack is the tallest content the
+    // browser row has, and a clipped button is one the user cannot press.
+    let actions = if app.device_actions_tab_active() {
+        app.flash.as_ref().map_or(0, |flash| {
+            let mains = flash.pane_actions().len() - usize::from(flash.is_busy());
+            (2 * mains + 1 + 3) as u16
+        })
+    } else {
+        0
+    };
+    workspace.max(build).max(actions)
 }
 
 fn draw_too_small(frame: &mut Frame, area: Rect) {

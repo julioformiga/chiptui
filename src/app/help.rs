@@ -100,6 +100,12 @@ pub enum When {
     /// A specific flash-view screen; `None` is the flash view without a
     /// panel (its fallback footer).
     Screen(Option<FlashScreen>),
+    /// The device pane is showing its **Project actions** tab (the flash
+    /// menu's new home) and holds focus.
+    ActionsTab,
+    /// The device pane is *not* showing the actions tab --- the files
+    /// grammar's sites, so they stop claiming keys the tab took over.
+    FilesTab,
 }
 
 /// Everything a [`Site`] can be tested against: the state the footer is
@@ -112,6 +118,9 @@ pub struct Context {
     pub run_view: bool,
     pub log_tab: LogTab,
     pub flash_screen: Option<FlashScreen>,
+    /// Whether the device pane's Project actions tab is showing and
+    /// focused (see [`When::ActionsTab`]).
+    pub actions_tab: bool,
 }
 
 impl Site {
@@ -131,6 +140,8 @@ impl When {
             When::RunView => ctx.run_view,
             When::LogTab => ctx.log_tab == LogTab::Log,
             When::Screen(screen) => ctx.flash_screen == screen,
+            When::ActionsTab => ctx.actions_tab,
+            When::FilesTab => !ctx.actions_tab,
         }
     }
 }
@@ -212,7 +223,7 @@ const FILES: &[Focus] = &[Focus::FilesLocal, Focus::FilesDevice];
 /// rows, 50..=59 the dashboard-wide commands, 60..=69 the Logs extras,
 /// 70..=72 the tail every context keeps. Flash screens reuse the same
 /// bands per screen (their sites never co-match).
-const DASHBOARD_NAVIGATION: [HelpBinding; 9] = [
+const DASHBOARD_NAVIGATION: [HelpBinding; 10] = [
     sited(
         "tab / shift+tab",
         "move focus between panes",
@@ -235,6 +246,14 @@ const DASHBOARD_NAVIGATION: [HelpBinding; 9] = [
                 &[],
                 When::Always,
             ),
+            site(
+                "↑/↓",
+                "select",
+                10,
+                &[Focus::FilesDevice],
+                &[Capability::Flash, Capability::EraseFlash],
+                When::ActionsTab,
+            ),
             site("↑/↓", "scroll", 63, &[Focus::Logs], &[], When::LogTab),
         ],
     ),
@@ -243,12 +262,38 @@ const DASHBOARD_NAVIGATION: [HelpBinding; 9] = [
     sited(
         "→",
         "descend into the selected directory",
-        &[site("→", "descend", 11, FILES, &[], When::Always)],
+        // The local pane keeps its arrow; the device pane's arrows belong
+        // to its tab strip instead (below) --- Backspace ascends there.
+        &[site(
+            "→",
+            "descend",
+            11,
+            &[Focus::FilesLocal],
+            &[],
+            When::Always,
+        )],
     ),
     sited(
         "backspace / ←",
         "go to the parent directory",
-        &[site("←/bksp", "up", 12, FILES, &[], When::Always)],
+        &[
+            site("←/bksp", "up", 12, &[Focus::FilesLocal], &[], When::Always),
+            // On the device pane only Backspace ascends: the arrows switch
+            // the pane's tabs, row 3's rule.
+            site("bksp", "up", 12, &[Focus::FilesDevice], &[], When::FilesTab),
+        ],
+    ),
+    sited(
+        "← / →",
+        "switch the device pane's tabs",
+        &[site(
+            "←/→",
+            "actions/files",
+            13,
+            &[Focus::FilesDevice],
+            &[Capability::Flash, Capability::EraseFlash],
+            When::Always,
+        )],
     ),
     sited(
         "← / →",
@@ -282,7 +327,7 @@ const DASHBOARD_COMMANDS: [HelpBinding; 20] = [
         "re-detect, reload, or rename (file list)",
         KeyCode::Char('r'),
         &[
-            site("r", "reload", 13, FILES, &[], When::Always),
+            site("r", "reload", 13, FILES, &[], When::FilesTab),
             site("r", "rename", 15, &[Focus::Workspace], &[], When::Always),
             site("r", "re-detect", 10, &[Focus::Logs], &[], When::Always),
         ],
@@ -301,7 +346,7 @@ const DASHBOARD_COMMANDS: [HelpBinding; 20] = [
     ),
     action(
         "x",
-        "open the flash view (esptool)",
+        "open the device pane's Project actions tab",
         KeyCode::Char('x'),
         &[site(
             "x",
@@ -317,7 +362,7 @@ const DASHBOARD_COMMANDS: [HelpBinding; 20] = [
         "browser: entry menu; workspace: open or answer",
         KeyCode::Enter,
         &[
-            site("enter", "menu", 10, FILES, &[], When::Always),
+            site("enter", "menu", 10, FILES, &[], When::FilesTab),
             site(
                 "enter",
                 "open / edit",
@@ -360,7 +405,7 @@ const DASHBOARD_COMMANDS: [HelpBinding; 20] = [
         "create a file, or a dir if the name ends with /",
         KeyCode::Char('a'),
         &[
-            site("a", "new", 14, FILES, &[], When::Always),
+            site("a", "new", 14, FILES, &[], When::FilesTab),
             site("a", "new", 14, &[Focus::Workspace], &[], When::Always),
         ],
     ),
@@ -374,7 +419,7 @@ const DASHBOARD_COMMANDS: [HelpBinding; 20] = [
             15,
             FILES,
             &[Capability::Filesystem],
-            When::Always,
+            When::FilesTab,
         )],
     ),
     shifted(
@@ -387,27 +432,37 @@ const DASHBOARD_COMMANDS: [HelpBinding; 20] = [
             16,
             FILES,
             &[Capability::Filesystem],
-            When::Always,
+            When::FilesTab,
         )],
     ),
     action(
         "h",
         "show or hide dot-files",
         KeyCode::Char('h'),
-        &[site("h", "hidden", 17, FILES, &[], When::Always)],
+        &[site("h", "hidden", 17, FILES, &[], When::FilesTab)],
     ),
     action(
         "enter (build pane)",
-        "run the selected build action",
+        "run the selected action (build or flash pane)",
         KeyCode::Enter,
-        &[site(
-            "enter",
-            "run / stop",
-            11,
-            &[Focus::Build],
-            &[],
-            When::Always,
-        )],
+        &[
+            site(
+                "enter",
+                "run / stop",
+                11,
+                &[Focus::Build],
+                &[],
+                When::Always,
+            ),
+            site(
+                "enter",
+                "run / stop",
+                11,
+                &[Focus::FilesDevice],
+                &[Capability::Flash, Capability::EraseFlash],
+                When::ActionsTab,
+            ),
+        ],
     ),
     action(
         "d",
@@ -425,7 +480,7 @@ const DASHBOARD_COMMANDS: [HelpBinding; 20] = [
             18,
             &[Focus::FilesDevice],
             &[Capability::PackageInstall],
-            When::Always,
+            When::FilesTab,
         )],
     ),
     action(
@@ -878,6 +933,7 @@ mod tests {
             run_view: false,
             log_tab: LogTab::Log,
             flash_screen: None,
+            actions_tab: false,
         }
     }
 

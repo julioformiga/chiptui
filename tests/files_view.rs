@@ -932,8 +932,11 @@ fn the_browser_renders_both_panes_with_comparison_markers() {
         "missing local pane:\n{frame}"
     );
     assert!(
-        frame.contains("Device files:"),
-        "missing device pane:\n{frame}"
+        // A flash-capable backend renders the device pane as a tabbed pane:
+        // the strip names both tabs, with the walked device path riding
+        // the strip's right edge as the files tab's status.
+        frame.contains("Project actions • Device files"),
+        "missing device pane tab strip:\n{frame}"
     );
     assert!(
         // 1,040,384 used of 1,441,792 total, per the fake mpremote's `df` fixture.

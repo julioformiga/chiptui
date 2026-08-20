@@ -14,7 +14,7 @@ use chiptui::app::{App, Focus, LogTab, MonitorSource, Overlay, View};
 use chiptui::backend::BackendKind;
 use chiptui::backend::micropython::esptool::ChipFamily;
 use chiptui::browser::Browser;
-use chiptui::device::DeviceInfo;
+use chiptui::device::{DeviceInfo, ScriptState};
 use chiptui::event::AppEvent;
 use chiptui::flash::{FlashAction, FlashPanel, FlashScreen, RunState};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -725,6 +725,175 @@ fn device(port: &str) -> DeviceInfo {
     }
 }
 
+/// An app whose browser row exists (so the device pane can host the Project
+/// actions tab), pointed at the fake esptool, with `x` already pressed: the
+/// tab is showing and holds focus. The device scan runs against the real
+/// `mpremote` on PATH (there is none in CI), so discovery simply fails ---
+/// the pane and its tab exist regardless.
+fn app_in_actions_tab(project: &Project) -> App {
+    let mut app = App::new(&project.root);
+    app.bootstrap();
+    app.manager.set_override(Some(BackendKind::MicroPython));
+    app.maybe_scan_devices();
+    app.handle(key(KeyCode::Char('x')));
+    app.flash.as_mut().unwrap().set_tool_path(fake_esptool());
+    app
+}
+
+#[test]
+fn x_switches_the_device_pane_to_the_actions_tab() {
+    let project = Project::new("pane-open");
+    let mut app = app_in_actions_tab(&project);
+
+    assert_ne!(app.view, View::Flash, "no dialog opens");
+    assert_eq!(app.focus, Focus::FilesDevice);
+    assert!(app.device_actions_tab_active());
+
+    // 8 stacked buttons cost 2N+1 rows plus the reserved three-row footer:
+    // the row needs 22+ rows of its own, so render tall enough to fit.
+    let frame = render(&mut app, 110, 40);
+    assert!(
+        frame.contains("Project actions • Device files"),
+        "missing the pane's tab strip:\n{frame}"
+    );
+    assert!(frame.contains("◆ chip information"), "{frame}");
+    assert!(frame.contains("⇪ write / flash firmware"), "{frame}");
+    assert!(frame.contains("⇩ Search firmware online"), "{frame}");
+    assert!(frame.contains("✎ Firmware URL"), "{frame}");
+    assert!(
+        frame.contains("no command yet"),
+        "the reserved state line before any run:\n{frame}"
+    );
+    assert!(
+        !frame.contains("■ Stop"),
+        "Stop appears only while a command runs:\n{frame}"
+    );
+}
+
+#[test]
+fn the_arrows_switch_the_pane_tabs_from_either_side() {
+    let project = Project::new("pane-switch");
+    let mut app = app_in_actions_tab(&project);
+
+    app.handle(key(KeyCode::Left));
+    assert!(
+        !app.device_actions_tab_active(),
+        "the strip's other tab is one arrow away"
+    );
+    // The pane keeps focus; on the files side the arrows switch tabs too
+    // (row 3's rule), never navigating directories --- Backspace is the
+    // way up there.
+    assert_eq!(app.focus, Focus::FilesDevice);
+
+    app.handle(key(KeyCode::Right));
+    assert!(
+        app.device_actions_tab_active(),
+        "either arrow switches back --- a two-tab strip has one other place to go"
+    );
+
+    app.handle(key(KeyCode::Char('x')));
+    assert!(app.device_actions_tab_active(), "`x` returns to the tab");
+    assert_eq!(app.focus, Focus::FilesDevice);
+}
+
+#[test]
+fn the_actions_tab_keeps_focus_and_parks_the_cursor_on_stop() {
+    let project = Project::new("pane-run");
+    let mut app = app_in_actions_tab(&project);
+
+    app.handle(key(KeyCode::Enter)); // chip information, read-only
+    let flash = app.flash.as_ref().unwrap();
+    assert!(flash.is_busy(), "the action started");
+    assert_eq!(
+        flash.pane_cursor,
+        flash.pane_actions().len() - 1,
+        "the cursor parks on Stop while the command runs"
+    );
+    // The build pane's rule: the Monitor tab is shown, never focused --- the
+    // pane keeps the user while the command runs.
+    assert_eq!(app.log_tab, LogTab::Monitor);
+    assert_eq!(app.monitor_source, MonitorSource::Flash);
+    assert_eq!(app.view, View::Dashboard);
+    assert_eq!(app.focus, Focus::FilesDevice);
+    let frame = render(&mut app, 110, 40);
+    assert!(frame.contains("■ Stop"), "{frame}");
+
+    settle(&mut app);
+    assert!(
+        app.device_actions_tab_active(),
+        "the tab survives its own run"
+    );
+    assert_eq!(app.focus, Focus::FilesDevice);
+    assert_eq!(
+        app.flash.as_ref().unwrap().pane_cursor,
+        0,
+        "a finished command lands back on its own row"
+    );
+    let frame = render(&mut app, 110, 40);
+    assert!(
+        frame.contains("chip information ok in"),
+        "the report line names the finished run:\n{frame}"
+    );
+    assert!(!frame.contains("■ Stop"), "{frame}");
+}
+
+#[test]
+fn erase_from_the_actions_tab_still_confirms_with_the_literal_command() {
+    let project = Project::new("pane-erase");
+    let mut app = app_in_actions_tab(&project);
+
+    app.handle(key(KeyCode::Down));
+    app.handle(key(KeyCode::Down)); // erase flash
+    app.handle(key(KeyCode::Enter));
+
+    match &app.overlay {
+        Some(Overlay::Confirm { message, .. }) => assert!(
+            message.contains("erase-flash"),
+            "the confirmation must show the real command: {message}"
+        ),
+        other => panic!("expected the erase confirmation, got {other:?}"),
+    }
+    assert!(
+        !app.flash.as_ref().unwrap().is_busy(),
+        "nothing runs before the user accepts"
+    );
+
+    app.handle(key(KeyCode::Char('y')));
+    settle(&mut app);
+    assert!(
+        matches!(app.flash.as_ref().unwrap().state, RunState::Succeeded),
+        "the erase ran after the accept"
+    );
+}
+
+#[test]
+fn the_search_button_opens_the_online_window_as_a_dialog() {
+    let project = Project::new("pane-search");
+    let mut app = app_in_actions_tab(&project);
+    {
+        let flash = app.flash.as_mut().unwrap();
+        flash.set_curl_tool_path(fake_curl());
+        flash.cycle_chip(true);
+        flash.cycle_chip(true); // Esp32, matching the curl fixture
+    }
+    for _ in 0..6 {
+        app.handle(key(KeyCode::Down)); // Search firmware online
+    }
+    app.handle(key(KeyCode::Enter));
+
+    assert_eq!(app.view, View::Flash, "the online window is a dialog");
+    assert_eq!(
+        app.flash.as_ref().unwrap().screen,
+        FlashScreen::OnlineBoards
+    );
+    settle(&mut app);
+    assert_eq!(
+        app.flash.as_ref().unwrap().online_boards.len(),
+        2,
+        "the fixture's two boards arrive"
+    );
+}
+
 #[test]
 fn a_device_becoming_known_at_startup_queries_it_with_esptool_in_the_background() {
     // Mirrors how `App::maybe_scan_devices` finds an mpremote scan already
@@ -869,4 +1038,150 @@ fn a_direct_url_can_be_pasted_from_the_boards_window() {
 
     app.handle(key(KeyCode::Char('u')));
     assert_eq!(app.flash.as_ref().unwrap().screen, FlashScreen::CustomUrl);
+}
+
+#[test]
+fn leaving_a_dialog_returns_to_the_pane_that_hosts_the_menu() {
+    // The actions tab *is* the menu, so `esc` out of a dialog screen must
+    // land on the dashboard --- stepping back to `FlashScreen::Menu` would
+    // draw the six actions a second time, over the pane already showing
+    // them, with the dialog's own footer to match.
+    let project = Project::new("pane-esc");
+    let mut app = app_in_actions_tab(&project);
+
+    for _ in 0..7 {
+        app.handle(key(KeyCode::Down)); // Firmware URL
+    }
+    app.handle(key(KeyCode::Enter));
+    assert_eq!(app.view, View::Flash);
+    assert_eq!(app.flash.as_ref().unwrap().screen, FlashScreen::CustomUrl);
+
+    app.handle(key(KeyCode::Esc));
+    assert_eq!(app.view, View::Dashboard, "back is the pane, not a menu");
+    assert!(app.device_actions_tab_active(), "on the tab it came from");
+    let frame = render(&mut app, 110, 40);
+    assert!(
+        !frame.contains("╭ Flash "),
+        "no dialog is left layered over the pane:\n{frame}"
+    );
+}
+
+#[test]
+fn a_refused_search_opens_no_dialog_from_the_tab() {
+    // No chip is known here (nothing ever queried the board), so the search
+    // only warns. The panel stays on `FlashScreen::Menu` --- which is the
+    // pane itself --- and nothing should pop over the dashboard.
+    let project = Project::new("pane-search-refused");
+    let mut app = app_in_actions_tab(&project);
+
+    for _ in 0..6 {
+        app.handle(key(KeyCode::Down)); // Search firmware online
+    }
+    app.handle(key(KeyCode::Enter));
+
+    assert_eq!(
+        app.view,
+        View::Dashboard,
+        "the log line is the whole answer"
+    );
+    let frame = render(&mut app, 110, 40);
+    assert!(!frame.contains("╭ Flash "), "{frame}");
+}
+
+#[test]
+fn the_arrows_create_the_flash_panel_the_tab_draws() {
+    // `x` is not the only way onto the tab: with no board plugged in
+    // nothing else creates the panel, so the strip's own arrows must.
+    let project = Project::new("pane-arrow-first");
+    let mut app = App::new(&project.root);
+    app.bootstrap();
+    app.manager.set_override(Some(BackendKind::MicroPython));
+    app.maybe_scan_devices();
+    app.focus = Focus::FilesDevice;
+    assert!(app.flash.is_none(), "nothing has created a panel yet");
+
+    app.handle(key(KeyCode::Right));
+    assert!(app.device_actions_tab_active());
+    assert!(app.flash.is_some(), "the tab arrives with its panel");
+
+    // The row is sized to the button stack, so the buttons are actually
+    // there to press --- a panel-less tab collapsed row 2 to its borders.
+    let frame = render(&mut app, 110, 40);
+    assert!(frame.contains("◆ chip information"), "{frame}");
+    assert!(frame.contains("✎ Firmware URL"), "{frame}");
+    assert!(frame.contains("no command yet"), "{frame}");
+}
+
+#[test]
+fn the_tab_names_a_running_fetch_and_stops_it() {
+    // A fetch dims every button on the tab, so the state line has to say
+    // what for --- and the `Stop` that appears with it has to reach the
+    // fetch, not just the esptool command.
+    let project = Project::new("pane-fetch-stop");
+    let mut app = app_in_actions_tab(&project);
+    {
+        let flash = app.flash.as_mut().unwrap();
+        flash.set_curl_tool_path(fake_curl());
+        flash.cycle_chip(true);
+        flash.cycle_chip(true); // Esp32, matching the curl fixture
+    }
+    for _ in 0..6 {
+        app.handle(key(KeyCode::Down)); // Search firmware online
+    }
+    app.handle(key(KeyCode::Enter));
+    app.handle(key(KeyCode::Esc)); // back to the pane, fetch still in flight
+
+    assert_eq!(app.view, View::Dashboard);
+    let frame = render(&mut app, 110, 40);
+    assert!(
+        frame.contains("searching online…"),
+        "the dimmed buttons say what they are waiting for:\n{frame}"
+    );
+    assert!(frame.contains("■ Stop"), "{frame}");
+
+    app.handle(key(KeyCode::End)); // the Stop row
+    app.handle(key(KeyCode::Enter));
+    settle(&mut app);
+    assert!(
+        !app.flash.as_ref().unwrap().is_busy(),
+        "the Stop reached the fetch"
+    );
+    let frame = render(&mut app, 110, 40);
+    assert!(!frame.contains("■ Stop"), "{frame}");
+}
+
+#[test]
+fn the_strip_carries_each_tabs_own_status() {
+    // The right edge of the strip belongs to the tab that is showing: the
+    // files tab reports where the listing is, the actions tab has no
+    // listing to locate --- but a running script gates every esptool
+    // action, so that half of the status stays on both.
+    let project = Project::new("pane-strip-status");
+    let mut app = app_in_actions_tab(&project);
+    app.devices.set_devices(vec![device("/dev/ttyACM0")]);
+    app.devices.set_script_state(ScriptState::Running);
+
+    let actions = render(&mut app, 110, 40);
+    let strip = actions
+        .lines()
+        .find(|line| line.contains("Project actions • Device files"))
+        .unwrap()
+        .to_string();
+    assert!(strip.contains("script running"), "{strip}");
+    assert!(
+        !strip.contains(" / "),
+        "no device path to report on this tab: {strip}"
+    );
+
+    app.handle(key(KeyCode::Left)); // over to the files tab
+    let files = render(&mut app, 110, 40);
+    let strip = files
+        .lines()
+        .find(|line| line.contains("Project actions • Device files"))
+        .unwrap()
+        .to_string();
+    assert!(
+        strip.contains("/ · script running"),
+        "the walked path comes back with it: {strip}"
+    );
 }

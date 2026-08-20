@@ -10,16 +10,19 @@ use std::collections::BTreeMap;
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style, Stylize};
+use ratatui::symbols;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Gauge, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{Gauge, List, ListItem, ListState, Paragraph, Tabs, Wrap};
 
 use crate::app::{App, Focus};
 use crate::backend::Capability;
 use crate::browser::{Browser, PaneState};
 use crate::device::{DiscoveryState, ScriptState};
 use crate::files::SyncStatus;
+use crate::ui::panels::truncate_start;
 use crate::ui::{
-    Palette, SPINNER, content_style, dashboard_focused, muted_style, pane_block, selection_style,
+    Palette, SPINNER, content_style, dashboard_focused, muted_style, pane_block, pane_border,
+    selection_style,
 };
 
 pub fn draw(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
@@ -34,9 +37,11 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
 
     // The legend explains the comparison markers, which only exist when
     // there is a device pane to compare against; without it the row's last
-    // line is dead weight for the local pane.
+    // line is dead weight for the local pane. The actions tab claims the
+    // row's full height instead (its stack is the tallest content the row
+    // shows), so the legend yields its line while that tab is showing.
     let has_filesystem = app.manager.capabilities().contains(Capability::Filesystem);
-    let (body, legend) = if has_filesystem {
+    let (body, legend) = if has_filesystem && !app.device_actions_tab_active() {
         let [body, legend] =
             Layout::vertical([Constraint::Min(3), Constraint::Length(1)]).areas(area);
         (body, Some(legend))
@@ -167,18 +172,137 @@ fn draw_device(
     if app.devices.script_state() == ScriptState::Running {
         title.push_str(" · script running");
     }
-    let block = pane_block(&title, focused, palette);
+    // A backend that can flash or erase gets the pane the flash menu moved
+    // into: the border row carries the `Project actions • Device files`
+    // tab strip (row 3's grammar) and the walked path rides the strip's
+    // right edge as the active tab's status; anything else keeps the
+    // plain titled pane the pane has always been.
+    let tabbed = app.device_actions_tab_available();
+    let block = if tabbed {
+        pane_border(focused, palette)
+    } else {
+        pane_block(&title, focused, palette)
+    };
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if tabbed && app.device_actions_tab_active() {
+        super::flash::draw_actions_pane(frame, inner, app, palette);
+    } else {
+        draw_device_content(frame, inner, app, browser, statuses, palette);
+    }
+    if tabbed {
+        draw_device_tabs(frame, area, app, browser, palette);
+    }
+}
+
+/// The tab strip over the device pane's own top border (the same Ratatui
+/// `Tabs` pattern row 3 uses): `Project actions • Device files`, the
+/// active tab bold and underlined --- cyan while the pane holds focus,
+/// like every focused pane. At the strip's right edge rides the *active*
+/// tab's status: for the files tab the walked device path with the
+/// running-script flag --- the facts the pane's old title carried,
+/// displaced by the strip but still one glance away --- and for the
+/// actions tab the flag alone, since there is no listing to locate there,
+/// but a running script still gates every esptool action.
+fn draw_device_tabs(frame: &mut Frame, pane: Rect, app: &App, browser: &Browser, palette: Palette) {
+    let strip = Rect {
+        x: pane.x.saturating_add(1),
+        y: pane.y,
+        width: pane.width.saturating_sub(2),
+        height: 1,
+    };
+    if strip.width == 0 {
+        return;
+    }
+
+    let focused = dashboard_focused(app, Focus::FilesDevice);
+    let active_style = if focused {
+        Style::new()
+            .fg(palette.accent)
+            .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+    } else {
+        Style::new().add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+    };
+    let inactive_style = muted_style(palette);
+    let actions_tab = app.device_actions_tab_active();
+
+    let titles = vec![
+        Line::from(Span::styled(
+            "Project actions",
+            if actions_tab {
+                active_style
+            } else {
+                inactive_style
+            },
+        )),
+        Line::from(Span::styled(
+            "Device files",
+            if actions_tab {
+                inactive_style
+            } else {
+                active_style
+            },
+        )),
+    ];
+    let tabs = Tabs::new(titles)
+        .select(Some(usize::from(!actions_tab)))
+        .style(inactive_style)
+        .highlight_style(Style::new())
+        .padding(" ", " ")
+        .divider(symbols::DOT);
+    frame.render_widget(tabs, strip);
+
+    let mut status = if actions_tab {
+        String::new()
+    } else {
+        browser.device_path.to_string()
+    };
+    if app.devices.script_state() == ScriptState::Running {
+        if !status.is_empty() {
+            status.push_str(" · ");
+        }
+        status.push_str("script running");
+    }
+    if status.is_empty() {
+        return;
+    }
+    // The status never takes more than half the strip from the tabs; a
+    // path that long is shortened from the left, its tail being the part
+    // that identifies where the listing is. The leading space keeps it off
+    // the border's dashes, truncated or not.
+    let budget = (strip.width as usize / 2).max(8);
+    let status = format!(" {}", truncate_start(&status, budget - 1));
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(status, muted_style(palette))))
+            .alignment(Alignment::Right),
+        strip,
+    );
+}
+
+/// The device listing itself (idle/loading/failed/ready), into the pane's
+/// inner rect --- the border and, for a flash-capable backend, the tab
+/// strip on it are drawn by [`draw_device`].
+fn draw_device_content(
+    frame: &mut Frame,
+    inner: Rect,
+    app: &App,
+    browser: &Browser,
+    statuses: &BTreeMap<String, SyncStatus>,
+    palette: Palette,
+) {
+    let focused = dashboard_focused(app, Focus::FilesDevice);
+    let spinner = SPINNER[(app.ticks as usize) % SPINNER.len()];
 
     match &browser.device_state {
         PaneState::Idle => {
             frame.render_widget(
-                Paragraph::new("press 'd' to look for a device".fg(palette.muted)).block(block),
-                area,
+                Paragraph::new("press 'd' to look for a device".fg(palette.muted)),
+                inner,
             );
             return;
         }
         PaneState::Loading => {
-            let spinner = SPINNER[(app.ticks as usize) % SPINNER.len()];
             // Finding the board, waiting on the user and listing it are all
             // waits, but they fail or stall for different reasons, so they
             // are named differently.
@@ -190,25 +314,21 @@ fn draw_device(
                 format!("listing {}", browser.device_path)
             };
             frame.render_widget(
-                Paragraph::new(format!("{spinner} {what}…").fg(palette.muted)).block(block),
-                area,
+                Paragraph::new(format!("{spinner} {what}…").fg(palette.muted)),
+                inner,
             );
             return;
         }
         PaneState::Failed(error) => {
             frame.render_widget(
-                Paragraph::new(error.clone().fg(palette.error))
-                    .block(block)
-                    .wrap(Wrap { trim: true }),
-                area,
+                Paragraph::new(error.clone().fg(palette.error)).wrap(Wrap { trim: true }),
+                inner,
             );
             return;
         }
         PaneState::Ready => {}
     }
 
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
     let [list_area, footer_area] =
         Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(inner);
 
@@ -473,16 +593,7 @@ fn truncate(name: &str, max: usize) -> String {
 
 /// Shortens the pane title from the left: 15 is "Project files: ".len().
 fn shorten(path: &str, width: u16) -> String {
-    let budget = (width as usize).saturating_sub(15);
-    let length = path.chars().count();
-    if length <= budget {
-        return path.to_string();
-    }
-    if budget <= 1 {
-        return "…".to_string();
-    }
-    let tail: String = path.chars().skip(length - (budget - 1)).collect();
-    format!("…{tail}")
+    truncate_start(path, (width as usize).saturating_sub(15))
 }
 
 #[cfg(test)]

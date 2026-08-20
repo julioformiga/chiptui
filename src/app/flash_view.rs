@@ -13,9 +13,9 @@ use crate::backend::Capability;
 use crate::browser::{Browser, PaneState};
 use crate::device::ScriptState;
 use crate::firmware_id::{FirmwareVerdict, FlashFirmware};
-use crate::flash::{FlashAction, FlashPanel, FlashScreen, OptionsField, RunState};
+use crate::flash::{FlashAction, FlashPaneAction, FlashPanel, FlashScreen, OptionsField, RunState};
 
-use super::{App, Focus, LogTab, MonitorSource, Overlay, View};
+use super::{App, DevicePaneTab, Focus, LogTab, MonitorSource, Overlay, View};
 
 /// What trying to start the deferred device query concluded, so callers
 /// that chained something behind it (the first device listing,
@@ -84,11 +84,7 @@ impl App {
                     FlashScreen::Options
                     | FlashScreen::OnlineBoards
                     | FlashScreen::OnlineFirmware
-                    | FlashScreen::CustomUrl => {
-                        if let Some(flash) = &mut self.flash {
-                            flash.screen = FlashScreen::Menu;
-                        }
-                    }
+                    | FlashScreen::CustomUrl => self.leave_flash_screen(),
                 }
                 return;
             }
@@ -105,6 +101,107 @@ impl App {
             FlashScreen::OnlineBoards => self.on_flash_online_boards_key(key),
             FlashScreen::OnlineFirmware => self.on_flash_online_firmware_key(key),
             FlashScreen::CustomUrl => self.on_flash_custom_url_key(key),
+        }
+    }
+
+    /// One screen back from a dialog screen (options, the online windows,
+    /// the URL entry). The menu those screens sit over is the device
+    /// pane's **Project actions** tab now, so wherever the pane hosts it
+    /// "back" is the dashboard itself: stepping to [`FlashScreen::Menu`]
+    /// would layer a second copy of the very actions the pane behind the
+    /// dialog is already showing. Only a backend with no pane to host
+    /// them still has the dialog menu to step back to.
+    fn leave_flash_screen(&mut self) {
+        if self.device_actions_tab_available() {
+            self.view = View::Dashboard;
+        }
+        if let Some(flash) = &mut self.flash {
+            flash.screen = FlashScreen::Menu;
+        }
+    }
+
+    /// Layers the flash dialog over the dashboard for the screen the panel
+    /// just moved to. A refused step --- a search with no chip known, no
+    /// curl, or a command already running --- leaves the panel on
+    /// [`FlashScreen::Menu`], which is the screen the device pane's own tab
+    /// already *is*: there is nothing to open, and the warning in the log is
+    /// the whole answer.
+    fn show_flash_dialog(&mut self) {
+        let screen = self.flash.as_ref().map(|flash| flash.screen);
+        if screen == Some(FlashScreen::Menu) && self.device_actions_tab_available() {
+            return;
+        }
+        self.view = View::Flash;
+    }
+
+    /// Handles a key while the device pane's **Project actions** tab holds
+    /// focus: navigated like the build panel's list (`j`/`k`, arrows, page,
+    /// home/end) and `Enter` runs the row under the cursor --- `Stop` while
+    /// a command is running. The tab strip's own arrows (switching the
+    /// pane's tabs) are handled one level up, with the dashboard dispatch:
+    /// they switch from either side, row 3's rule.
+    pub(super) fn on_flash_pane_key(&mut self, key: KeyEvent) {
+        let Some(mut flash) = self.flash.take() else {
+            return;
+        };
+        let len = flash.pane_actions().len();
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => {
+                flash.pane_cursor = flash.pane_cursor.saturating_sub(1);
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                flash.pane_cursor = (flash.pane_cursor + 1).min(len - 1);
+            }
+            KeyCode::PageUp => flash.pane_cursor = flash.pane_cursor.saturating_sub(5),
+            KeyCode::PageDown => flash.pane_cursor = (flash.pane_cursor + 5).min(len - 1),
+            KeyCode::Home => flash.pane_cursor = 0,
+            KeyCode::End => flash.pane_cursor = len - 1,
+            KeyCode::Enter => {
+                let action = flash.pane_action_at(flash.pane_cursor);
+                self.flash = Some(flash);
+                if let Some(action) = action {
+                    self.run_flash_pane_action(action);
+                }
+                return;
+            }
+            _ => {}
+        }
+        self.flash = Some(flash);
+    }
+
+    /// Runs the row the actions tab's cursor sits on: an esptool action
+    /// through the same gate the menu always used (firmware pick or
+    /// confirmation first, `SPEC.md` §15), the two online-firmware entries
+    /// as their dialogs, `Stop` as a cancel.
+    fn run_flash_pane_action(&mut self, action: FlashPaneAction) {
+        match action {
+            FlashPaneAction::Stop => self.stop_flash(),
+            FlashPaneAction::Run(action) => self.trigger_flash_action(action),
+            FlashPaneAction::SearchOnline => {
+                self.search_online();
+                self.show_flash_dialog();
+            }
+            FlashPaneAction::CustomUrl => {
+                if let Some(flash) = &mut self.flash {
+                    flash.custom_url.clear();
+                    flash.screen = FlashScreen::CustomUrl;
+                }
+                self.show_flash_dialog();
+            }
+        }
+    }
+
+    /// Cancels whatever the panel is running at the user's request (the
+    /// tab's `Stop` button) --- the row is offered for every busy state
+    /// ([`FlashPanel::is_busy`]), so it reaches every one of them.
+    fn stop_flash(&mut self) {
+        let Some(flash) = &mut self.flash else {
+            return;
+        };
+        if flash.stop(&mut self.processes) {
+            // Whatever the row was offered for: the esptool command, one of
+            // the background queries, or a curl fetch.
+            self.logs.warn("stopping the running command");
         }
     }
 
@@ -372,6 +469,7 @@ impl App {
                 0 if action == FlashAction::WriteFlash => {
                     self.flash = Some(flash);
                     self.search_online();
+                    self.show_flash_dialog();
                 }
                 0 => {
                     self.flash = Some(flash);
@@ -418,23 +516,35 @@ impl App {
         }
     }
 
-    /// Closes the Flash dialog and moves focus to the Monitor tab, which
-    /// streams [`FlashPanel::output`] as it arrives --- called after a flash
-    /// action successfully spawns, replacing the dialog's former
-    /// `FlashScreen::Output` screen (`SPEC.md` §11).
+    /// Closes any open flash dialog and points the Monitor tab at the
+    /// streamed output ([`FlashPanel::output`]) --- called after a flash
+    /// action successfully spawns. Where the user *sits* while it runs
+    /// follows the pane: the actions tab keeps them (the Zephyr build
+    /// pane's rule --- the Monitor tab is shown, never focused, and the
+    /// cursor is already parked on `Stop` by the spawn); anything else
+    /// (a dialog-started run over the files tab) falls back to focusing
+    /// the Monitor tab, the behavior the dialog always had.
     pub(super) fn show_flash_in_monitor(&mut self) {
         self.view = View::Dashboard;
-        self.focus = Focus::Logs;
         self.log_tab = LogTab::Monitor;
         self.set_monitor_source(MonitorSource::Flash);
+        if self.device_actions_tab_active() {
+            self.focus = Focus::FilesDevice;
+        } else {
+            self.focus = Focus::Logs;
+        }
     }
 
-    /// Opens the flash view, if the selected backend can flash or erase.
+    /// Opens the flash actions, if the selected backend can flash or erase.
     ///
     /// The gate is the capability, never the backend kind (`AGENTS.md` §3).
     /// A backend whose flashing lives in the build panel (`west flash`
     /// behind a confirm, e.g. Zephyr) is routed there instead of esptool's
-    /// dialog --- this view is esptool-specific.
+    /// actions. A backend with a device pane (filesystem + esptool) gets
+    /// the **Project actions** tab: the pane *is* the menu now, so `x`
+    /// switches the tab and focuses it, and only the options/online screens
+    /// remain dialogs. Anything else (no browser to host the tab) keeps the
+    /// dialog form.
     pub fn open_flash(&mut self) {
         if self.build_pane_visible() {
             self.run_build_action(crate::build::BuildAction::Flash);
@@ -449,7 +559,27 @@ impl App {
                 .warn(format!("{backend} does not expose flash operations"));
             return;
         }
+        if self.device_actions_tab_available() {
+            self.show_device_actions_tab();
+            self.focus = Focus::FilesDevice;
+            return;
+        }
         self.view = View::Flash;
+    }
+
+    /// Switches the device pane to its **Project actions** tab, creating
+    /// the flash panel the tab draws if nothing has yet ([`x`
+    /// →`Self::open_flash`] is not the only way in: the strip's own arrows
+    /// reach the tab too, and a background query may never have run ---
+    /// with no board plugged in, nothing else creates the panel). An
+    /// actions tab without one would draw an empty pane over a row sized
+    /// for no content at all. The capability gate is the one
+    /// [`App::device_actions_tab_available`] passes before every call, so
+    /// it holds here.
+    pub(super) fn show_device_actions_tab(&mut self) {
+        if self.ensure_flash_panel() {
+            self.device_pane_tab = DevicePaneTab::Actions;
+        }
     }
 
     /// Capability-gates and lazily creates [`Self::flash`] --- the shared
@@ -906,6 +1036,7 @@ impl App {
             return;
         };
         flash.set_cursor_to(FlashAction::WriteFlash);
+        flash.set_pane_cursor_to(FlashAction::WriteFlash);
         match flash.firmware.len() {
             0 => {}
             1 => {
@@ -930,7 +1061,6 @@ impl App {
             return;
         };
         let notices = flash.discover_firmware();
-        flash.screen = FlashScreen::Menu;
         self.flash = Some(flash);
         for (level, message) in notices {
             self.logs.push(level, message);

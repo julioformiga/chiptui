@@ -62,7 +62,42 @@ Row 2 is capability-driven now: a backend that can build without a device filesy
 claims the *whole* row with a **Project files | Project actions** pair (`maybe_scan_devices`/
 `ensure_browser_scanning` skip the browser entirely for such a backend — listing/editing the
 project's own sources is the user's editor's job; MicroPython's dual-pane browser and its
-capability-gated `FileAction::for_entry` menu are unchanged). The environment's
+capability-gated `FileAction::for_entry` menu are unchanged, except that its device pane is
+a *tabbed* pane for a backend that can also flash: a `Project actions • Device files` strip
+drawn on the pane's border the way row 3's Log/Monitor strip is, the *active* tab's status
+riding the strip's right edge: the walked device path plus the running-script flag for the
+files tab, the flag alone for the actions tab (no listing to locate there, but a running
+script gates every esptool action). `x`
+(`App::open_flash`) creates the flash panel and switches to the actions tab instead of
+opening a dialog; the arrows switch the two tabs from *either* side while the pane holds
+focus — row 3's Log/Monitor rule, handled in `on_dashboard_key` before the pane dispatch —
+so on the files side they give up their directory meaning (Backspace still ascends,
+`Enter`'s menu descends); the local pane keeps its arrows, and an untabbed device pane
+(no flash capability) does too. The tab renders the esptool menu as
+the *same* stacked-button widget the Zephyr build pane uses (`ui::flash::draw_actions_pane`:
+one button per `FlashPanel::pane_actions` row --- the six esptool actions plus `⇩ Search
+firmware online` and `✎ Firmware URL`, the menu's old `s`/`u` keys as buttons --- over the
+same reserved three-row footer, `■ Stop` as its own half-width box while a command runs,
+the state line with a live counter/last report), row 2 sized to the stack while the tab is
+showing (`row2_content_height`). A started command keeps focus on the pane with the cursor
+parked on `Stop` (the Zephyr rule; `show_flash_in_monitor` focuses the Monitor tab only when
+the run started from a dialog), and a finished one lands back on its own row with a
+`FlashReport` in the footer. The state line names whatever holds the panel
+(`FlashPanel::activity`), because all four states dim every button: only `Activity::User` is
+counted and reported as a result --- the background queries and the curl fetches must not
+present themselves as the user's work --- but a query (`reading the board…`) or a fetch
+(`searching online…`/`downloading…`, kept short: while anything runs the state line owns
+only the footer's left half) still says so rather than leave a dimmed menu
+unexplained, and `FlashPanel::stop` cancels a fetch as readily as a command, since `is_busy`
+is what puts `Stop` on the pane in the first place. Either door onto the tab --- `x` or the
+strip's arrows --- creates the panel it draws (`show_device_actions_tab`), since with no
+board plugged in no background query ever will. The options/online/URL screens remain
+dialogs (`View::Flash`, e.g. after erase's write offer or from the search button), but only
+ever open onto a screen the panel actually reached (`show_flash_dialog`: a refused search
+leaves it on `FlashScreen::Menu`, which is the pane itself, so nothing opens) and `esc`
+out of one returns to the pane (`leave_flash_screen`) rather than to that now-hostless
+menu --- the dialog form of the menu survives only for a backend with no pane to host it;
+the Erase/Write confirmations are exactly as before. The environment's
 prerequisites moved *up* into row 1's **Project pane**, which is the checklist now:
 `Zephyr path`, `Projects base`, `Project path`, `Board · Shield` (the last two answered by
 the build panel but asked here; `←`/`→` on the merged target row switch which half `Enter`

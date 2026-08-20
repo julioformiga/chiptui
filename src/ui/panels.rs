@@ -477,7 +477,7 @@ fn device_content(app: &App, width: usize, palette: Palette) -> Vec<Line<'static
     let Some(flash) = app.flash.as_ref() else {
         return pad_info(vec![
             if esptool_flash_view {
-                Line::from("press 'x' to open Flash and query the device")
+                Line::from("press 'x' to open Project actions and query the device")
             } else {
                 Line::from("no device information for this project")
             }
@@ -489,7 +489,7 @@ fn device_content(app: &App, width: usize, palette: Palette) -> Vec<Line<'static
         return pad_info(vec![
             if esptool_flash_view {
                 Line::from(
-                    "no device data yet --- run chip or flash information from the Flash menu",
+                    "no device data yet --- run chip or flash information from Project actions",
                 )
             } else {
                 Line::from("no device information for this project")

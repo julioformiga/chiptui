@@ -12,8 +12,12 @@ use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{List, ListItem, ListState, Paragraph, Wrap};
 
+use super::button::{self, Button};
+use super::workspace::label;
 use crate::app::App;
-use crate::flash::{ChipGuess, FlashAction, FlashPanel, FlashScreen, OptionsField};
+use crate::flash::{
+    Activity, ChipGuess, FlashAction, FlashPaneAction, FlashPanel, FlashScreen, OptionsField,
+};
 use crate::ui::{Palette, SPINNER, muted_style, pane_block, selection_style};
 
 /// The dialog's width×height for `flash.screen`, sized to its content like
@@ -388,4 +392,159 @@ fn draw_custom_url(
             .wrap(Wrap { trim: false }),
         area,
     );
+}
+
+/// The device pane's **Project actions** tab: the flash menu's rows as the
+/// build pane's stacked button group (`crate::ui::button`), with the same
+/// reserved three-row footer --- the state line on the left half, `Stop`
+/// as its own half-width box on the right while a command runs --- so the
+/// two backends' action panes read identically (`SPEC.md` §11). The area
+/// is the pane's inner rect: the tabbed border around it is drawn by
+/// `crate::ui::files`, the pane this tab lives in.
+pub fn draw_actions_pane(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
+    let Some(flash) = &app.flash else {
+        frame.render_widget(
+            Paragraph::new("no flash operations for this backend".fg(palette.muted)),
+            area,
+        );
+        return;
+    };
+    let footer_top = draw_action_rows(frame, area, flash, palette);
+    draw_action_state(frame, area, flash, footer_top, palette);
+}
+
+/// The stacked buttons plus the footer's `Stop` box --- the same geometry
+/// `crate::ui::build` draws for the build pane (`Stop` trails the list
+/// exactly while a command runs, never a row of the stack; a pane too
+/// short for both pins the box to the bottom and clips the stack above
+/// it). Returns the footer's top row.
+fn draw_action_rows(frame: &mut Frame, area: Rect, flash: &FlashPanel, palette: Palette) -> u16 {
+    let actions = flash.pane_actions();
+    let stop = matches!(actions.last(), Some(FlashPaneAction::Stop));
+    let mains = &actions[..actions.len() - usize::from(stop)];
+    // Every main row waits out a running command (one esptool at a time,
+    // `spawn`'s own guard); `Stop` is the one thing that acts.
+    let enabled = !flash.is_busy();
+    let mut buttons: Vec<Button> = Vec::new();
+    for (position, action) in mains.iter().enumerate() {
+        let button = match action {
+            FlashPaneAction::Run(action) => {
+                Button::new(format!("{} {}", action.icon(), action.label()))
+            }
+            FlashPaneAction::SearchOnline => Button::new("⇩ Search firmware online"),
+            FlashPaneAction::CustomUrl => Button::new("✎ Firmware URL"),
+            FlashPaneAction::Stop => unreachable!("Stop is drawn as the footer box"),
+        }
+        .enabled(enabled)
+        .selected(flash.pane_cursor == position);
+        buttons.push(button);
+    }
+    let y = area.y;
+    let stack_end = y + button::stack_height(&buttons);
+    let footer_top = stack_end.min(area.bottom().saturating_sub(3)).max(area.y);
+    let stack_area = Rect {
+        height: footer_top.saturating_sub(area.y),
+        ..area
+    };
+    button::render_stack(frame, stack_area, y, &buttons, palette);
+    if stop {
+        // The right half of the footer: the same stacked-button widget,
+        // one button of its own, sharing its label row with the state.
+        let half = area.width / 2;
+        let corner = Rect {
+            x: area.x + half,
+            width: area.width - half,
+            y: footer_top,
+            height: area.bottom().saturating_sub(footer_top),
+        };
+        let selected = flash.pane_cursor == actions.len() - 1;
+        button::render_stack(
+            frame,
+            corner,
+            footer_top,
+            &[Button::new("■ Stop").selected(selected)],
+            palette,
+        );
+    }
+    footer_top
+}
+
+/// The command state on the footer's label row: the live counter while a
+/// *user* command runs (a background query is courtesy work, not the
+/// user's), the last result once one finishes, honest silence before the
+/// first. Same shape as the build pane's state line.
+fn draw_action_state(
+    frame: &mut Frame,
+    area: Rect,
+    flash: &FlashPanel,
+    footer_top: u16,
+    palette: Palette,
+) {
+    if area.height < 2 || footer_top + 1 >= area.bottom() {
+        return;
+    }
+    let line = if let Some(activity) = flash.activity() {
+        match activity {
+            Activity::User => {
+                let elapsed = flash.elapsed().unwrap_or_default();
+                Line::from(vec![
+                    label("state", palette),
+                    format!("running · {}", crate::build::BuildPanel::secs(elapsed))
+                        .fg(palette.accent),
+                ])
+            }
+            // Not the user's work, so it is not counted and never reported
+            // as a result --- but it holds the port or the one fetch slot,
+            // and every button above is dimmed because of it, so the pane
+            // owes the reason.
+            // Kept short on purpose: while a command runs the state line
+            // owns only the footer's left half, the `Stop` box the right.
+            Activity::Query => Line::from(vec![
+                label("state", palette),
+                "reading the board…".fg(palette.muted),
+            ]),
+            Activity::Search => Line::from(vec![
+                label("state", palette),
+                "searching online…".fg(palette.muted),
+            ]),
+            Activity::Download => Line::from(vec![
+                label("state", palette),
+                "downloading…".fg(palette.muted),
+            ]),
+        }
+    } else if let Some(report) = &flash.last {
+        let (mark, style) = if report.ok {
+            ("✓", Style::new().fg(palette.success))
+        } else {
+            ("✗", Style::new().fg(palette.error))
+        };
+        let outcome = if report.ok {
+            format!(
+                "{} ok in {}",
+                report.what,
+                crate::build::BuildPanel::secs(report.duration)
+            )
+        } else {
+            format!("{} failed", report.what)
+        };
+        Line::from(vec![
+            label("last", palette),
+            Span::styled(format!("{mark} {outcome}"), style),
+        ])
+    } else {
+        Line::from(vec![
+            label("state", palette),
+            "no command yet".fg(palette.muted),
+        ])
+    };
+    let rect = Rect {
+        y: footer_top + 1,
+        width: if flash.is_busy() {
+            area.width / 2
+        } else {
+            area.width
+        },
+        ..area
+    };
+    frame.render_widget(Paragraph::new(line), rect);
 }

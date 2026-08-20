@@ -120,6 +120,19 @@ pub enum LogTab {
     Monitor,
 }
 
+/// Which tab the device pane (row 2's right half) is showing for a backend
+/// that both browses a filesystem and flashes: the device listing, or the
+/// **Project actions** tab the flash menu became. Switched with `x` (which
+/// opens the actions side) and the arrows while the pane holds focus --- on
+/// the files side the arrows keep their directory meaning, so only the
+/// actions side ever switches. One pane, two tabs, the row-3 grammar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DevicePaneTab {
+    #[default]
+    Files,
+    Actions,
+}
+
 /// Which live feed the Monitor tab is currently showing. Changed only at
 /// explicit transition points --- never derived from [`FlashPanel`]/device
 /// state each frame --- so a finished flash run's output stays visible until
@@ -728,6 +741,9 @@ pub struct App {
     /// `true` the board (the left, required half), `false` the shield.
     /// Switched by `←`/`→` while the row is selected.
     pub board_segment: bool,
+    /// Which tab the device pane shows ([`DevicePaneTab`]); only meaningful
+    /// while [`Self::device_actions_tab_available`] holds.
+    pub device_pane_tab: DevicePaneTab,
     /// Where `ctrl+p` returns to when it toggles the Project pane's focus
     /// away --- the pane is a detour off the `Tab` tour, and the way back
     /// is where the detour started.
@@ -894,6 +910,7 @@ impl App {
             workspace: None,
             project_cursor: 0,
             board_segment: true,
+            device_pane_tab: DevicePaneTab::default(),
             focus_before_project: None,
             mpy_projects: None,
             mpy_projects_invalid: None,
@@ -1762,6 +1779,24 @@ impl App {
             && !caps.contains(Capability::Filesystem)
     }
 
+    /// Whether the device pane can host the **Project actions** tab: the
+    /// backend browses a filesystem (the pane exists) *and* can flash or
+    /// erase (there are actions to show). The tab strip is drawn whenever
+    /// this holds; `x` creates the flash panel and switches to it.
+    pub fn device_actions_tab_available(&self) -> bool {
+        let caps = self.manager.capabilities();
+        self.browser.is_some()
+            && caps.contains(Capability::Filesystem)
+            && (caps.contains(Capability::Flash) || caps.contains(Capability::EraseFlash))
+    }
+
+    /// Whether the device pane is *currently showing* the Project actions
+    /// tab --- the state `x` and the pane's arrow keys switch, and the flag
+    /// the renderer and the key dispatch branch on.
+    pub fn device_actions_tab_active(&self) -> bool {
+        self.device_pane_tab == DevicePaneTab::Actions && self.device_actions_tab_available()
+    }
+
     /// The header's `project` field. A backend that makes the project a
     /// question ([`Capability::ProjectSelect`]) answers it with the picked
     /// root --- the build panel's for Zephyr (and only once that root is a
@@ -2018,6 +2053,34 @@ impl App {
             _ => {}
         }
 
+        // Row 3's rule, on the device pane: while the pane holds focus the
+        // arrows switch its two tabs from *either* side --- the strip is the
+        // pane's navigation, like Log • Monitor. On the files side that
+        // means the arrows give up their directory meaning (Backspace still
+        // ascends; `Enter`'s menu descends), the price of one consistent
+        // tab grammar everywhere; an untabbed device pane (no flash
+        // capability) keeps the arrows for directories.
+        if self.focus == Focus::FilesDevice
+            && self.device_actions_tab_available()
+            && matches!(key.code, KeyCode::Left | KeyCode::Right)
+        {
+            match self.device_pane_tab {
+                // The way in creates the flash panel the tab draws, exactly
+                // as `x` does --- the strip is a second door to the same
+                // pane, not a lighter one.
+                DevicePaneTab::Files => self.show_device_actions_tab(),
+                DevicePaneTab::Actions => self.device_pane_tab = DevicePaneTab::Files,
+            }
+            return;
+        }
+
+        // The device pane's Project actions tab: its own grammar (buttons,
+        // not a listing), so it takes the keys before the browser does.
+        if self.focus == Focus::FilesDevice && self.device_actions_tab_active() {
+            self.on_flash_pane_key(key);
+            return;
+        }
+
         if matches!(self.focus, Focus::FilesLocal | Focus::FilesDevice)
             && !self.build_pane_visible_precondition()
         {
@@ -2242,6 +2305,8 @@ impl App {
                     run_view: self.is_run_view(),
                     log_tab: self.log_tab,
                     flash_screen: self.flash.as_ref().map(|flash| flash.screen),
+                    actions_tab: self.focus == Focus::FilesDevice
+                        && self.device_actions_tab_active(),
                 },
             ),
         }

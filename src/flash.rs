@@ -8,7 +8,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::backend::micropython::curl::{commands as curl_commands, parse as curl_parse};
 use crate::backend::micropython::esptool::{
@@ -98,6 +98,24 @@ impl FlashAction {
     }
 }
 
+/// One row of the device pane's **Project actions** tab (the tab the
+/// flash menu became): an esptool action, the two online-firmware
+/// entries, or --- appended exactly while a command runs, never a row of
+/// the stack --- `Stop`. The same shape [`crate::build::BuildAction`]
+/// gives the build pane, so the two panes read identically.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlashPaneAction {
+    Run(FlashAction),
+    /// Searches micropython.org/download/ for the known chip
+    /// (`FlashPanel::search_online`), as a button instead of the menu's
+    /// old `s` key.
+    SearchOnline,
+    /// Free-text entry for a direct firmware download URL, the menu's old
+    /// `u` key.
+    CustomUrl,
+    Stop,
+}
+
 /// What the panel currently knows about the connected chip.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChipGuess {
@@ -164,6 +182,40 @@ pub enum RunState {
     Failed(String),
 }
 
+/// What the panel is busy with, for the actions tab's state line
+/// ([`FlashPanel::activity`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Activity {
+    /// A command the user started --- from the tab's own buttons or from
+    /// a dialog. The only one counted while it runs, and the only one
+    /// that finishes into a [`FlashReport`]; the row it started from
+    /// names it, so the state line does not have to.
+    User,
+    /// One of the background `esptool` queries: the chip identity, the
+    /// firmware identification read, the version hunt. Courtesy work the
+    /// user never asked to watch, but it holds the port, so the pane says
+    /// so instead of claiming there is nothing running.
+    Query,
+    /// The online board/firmware search ([`FlashPanel::search_online`],
+    /// [`FlashPanel::fetch_board_page`]).
+    Search,
+    /// A firmware download ([`FlashPanel::download`]).
+    Download,
+}
+
+/// Result of the last finished *user-started* command, for the actions
+/// tab's state line --- the flash pane's counterpart of
+/// [`crate::build::BuildReport`]. Background queries (the courtesy chip
+/// refresh, the identification read) never report here: they are not work
+/// the user asked to watch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FlashReport {
+    /// What ran, as the action's own label ("erase flash", …).
+    pub what: &'static str,
+    pub ok: bool,
+    pub duration: Duration,
+}
+
 /// stdout/stderr collected for the in-flight process, kept separate from
 /// [`FlashPanel::output`] because [`parse::parse_chip_family`],
 /// [`parse::parse_device_details`] and [`parse::explain_error`] need
@@ -184,6 +236,7 @@ struct RunningCommand {
     /// ([`firmware_id::HUNT_OFFSET`]) and its finish must not re-drive the
     /// first-listing chain.
     hunt_version: bool,
+    started: Instant,
     stdout: String,
     stderr: String,
 }
@@ -194,6 +247,10 @@ pub struct FlashPanel {
     pub firmware_dir: PathBuf,
     /// Cursor into [`FlashAction::ALL`].
     pub cursor: usize,
+    /// Cursor into the Project actions tab's rows
+    /// ([`FlashPanel::pane_actions`]) --- the pane the flash menu became,
+    /// navigated like the build pane's list.
+    pub pane_cursor: usize,
     pub screen: FlashScreen,
     pub firmware: Vec<LocalEntry>,
     pub selected_firmware: Option<usize>,
@@ -212,6 +269,9 @@ pub struct FlashPanel {
     /// Lines from the current or most recently finished run, in arrival order.
     pub output: Vec<String>,
     pub state: RunState,
+    /// The last finished user-started command, for the actions tab's
+    /// state line (see [`FlashReport`]).
+    pub last: Option<FlashReport>,
     /// Set by [`FlashPanel::request_confirmation`], consumed by the caller
     /// once the user accepts the confirmation overlay.
     pending_action: Option<FlashAction>,
@@ -315,6 +375,7 @@ impl FlashPanel {
         Self {
             firmware_dir: firmware_dir.into(),
             cursor: 0,
+            pane_cursor: 0,
             screen: FlashScreen::Menu,
             firmware: Vec::new(),
             selected_firmware: None,
@@ -326,6 +387,7 @@ impl FlashPanel {
             options_focus: OptionsField::Chip,
             output: Vec::new(),
             state: RunState::default(),
+            last: None,
             pending_action: None,
             in_flight: None,
             version_hunt_pending: false,
@@ -385,6 +447,95 @@ impl FlashPanel {
         if let Some(index) = FlashAction::ALL.iter().position(|a| *a == action) {
             self.cursor = index;
         }
+    }
+
+    /// The button rows the device pane's Project actions tab shows: every
+    /// esptool menu action in its order, then the two online-firmware
+    /// entries (search, direct URL), with `Stop` appended exactly while a
+    /// command runs --- drawn as its own half-width box, never a stack row,
+    /// like the build pane's own `Stop`.
+    pub fn pane_actions(&self) -> Vec<FlashPaneAction> {
+        let mut rows: Vec<FlashPaneAction> = FlashAction::ALL
+            .iter()
+            .map(|action| FlashPaneAction::Run(*action))
+            .collect();
+        rows.push(FlashPaneAction::SearchOnline);
+        rows.push(FlashPaneAction::CustomUrl);
+        if self.is_busy() {
+            rows.push(FlashPaneAction::Stop);
+        }
+        rows
+    }
+
+    /// The row at `index` in the tab's drawn list, mirroring the layout
+    /// [`Self::pane_actions`] describes (bounds-checked: a cursor left on
+    /// `Stop` by a finishing command points past the shrunken list until
+    /// `complete` moves it).
+    pub fn pane_action_at(&self, index: usize) -> Option<FlashPaneAction> {
+        self.pane_actions().into_iter().nth(index)
+    }
+
+    /// Points the tab's cursor at `action`'s row: a finished command lands
+    /// back where it started (the build panel's post-finish tour).
+    pub fn set_pane_cursor_to(&mut self, action: FlashAction) {
+        if let Some(index) = self
+            .pane_actions()
+            .iter()
+            .position(|row| matches!(row, FlashPaneAction::Run(candidate) if *candidate == action))
+        {
+            self.pane_cursor = index;
+        }
+    }
+
+    /// Elapsed time of the running command, for the tab's live counter
+    /// (build pane's rule: drawn only while a *user* command runs).
+    pub fn elapsed(&self) -> Option<Duration> {
+        self.in_flight
+            .as_ref()
+            .map(|running| running.started.elapsed())
+    }
+
+    /// What is holding the panel right now, as the actions tab's state
+    /// line reports it.
+    ///
+    /// Every one of these dims the tab's buttons --- one `esptool` at a
+    /// time, one fetch at a time --- so the pane names all three rather
+    /// than leaving a dimmed menu unexplained. Only [`Activity::User`] is
+    /// the user's *work*, though: it alone is counted, and it alone
+    /// finishes into a [`FlashReport`].
+    pub fn activity(&self) -> Option<Activity> {
+        if let Some(running) = &self.in_flight {
+            return Some(if running.background {
+                Activity::Query
+            } else {
+                Activity::User
+            });
+        }
+        match self.fetch_kind()? {
+            FetchKind::Boards | FetchKind::Firmware { .. } => Some(Activity::Search),
+            FetchKind::Download { .. } => Some(Activity::Download),
+        }
+    }
+
+    /// Cancels whatever is running at the user's request (the tab's
+    /// `Stop`), build-panel rule: takes effect within the process
+    /// manager's poll interval.
+    ///
+    /// Whatever, not just the esptool command: a `Stop` the tab offers for
+    /// a curl fetch --- and it offers one, since [`Self::is_busy`] is what
+    /// puts the row there --- has to reach it, or the pane sits with every
+    /// button dimmed behind a button that does nothing.
+    pub fn stop(&mut self, processes: &mut ProcessManager) -> bool {
+        let mut stopped = false;
+        if let Some(running) = &self.in_flight {
+            processes.cancel(running.id);
+            stopped = true;
+        }
+        if let Some(fetch) = &self.in_flight_fetch {
+            processes.cancel(fetch.id);
+            stopped = true;
+        }
+        stopped
     }
 
     /// Scans `firmware_dir` for `.bin`/`.elf` candidates.
@@ -750,10 +901,18 @@ impl FlashPanel {
             background,
             probe_dest,
             hunt_version,
+            started: Instant::now(),
             stdout: String::new(),
             stderr: String::new(),
         });
         self.state = RunState::Running;
+        // A user-started command puts the tab's `Stop` row in the list from
+        // this moment: park the cursor on it (the build panel's rule), so
+        // cancelling is one Enter away. Background queries never move the
+        // cursor --- the user did not leave it.
+        if !background {
+            self.pane_cursor = self.pane_actions().len() - 1;
+        }
         Vec::new()
     }
 
@@ -778,7 +937,11 @@ impl FlashPanel {
                 }
                 return update;
             }
-            ProcessEvent::Finished { id, outcome, .. } => {
+            ProcessEvent::Finished {
+                id,
+                outcome,
+                duration,
+            } => {
                 let Some(running) = self.in_flight.take() else {
                     return update;
                 };
@@ -787,14 +950,20 @@ impl FlashPanel {
                     self.in_flight = Some(running);
                     return update;
                 }
-                self.complete(running, outcome, &mut update);
+                self.complete(running, outcome, *duration, &mut update);
             }
         }
 
         update
     }
 
-    fn complete(&mut self, running: RunningCommand, outcome: &Outcome, update: &mut FlashUpdate) {
+    fn complete(
+        &mut self,
+        running: RunningCommand,
+        outcome: &Outcome,
+        duration: Duration,
+        update: &mut FlashUpdate,
+    ) {
         let failure = match outcome {
             Outcome::Success => None,
             Outcome::SpawnFailed(_) => Some(format!(
@@ -843,6 +1012,7 @@ impl FlashPanel {
             }
         }
 
+        let ok = failure.is_none();
         match failure {
             Some(error) => {
                 self.state = RunState::Failed(error.clone());
@@ -877,6 +1047,22 @@ impl FlashPanel {
                     }
                 }
             }
+        }
+
+        // The actions tab's report line and cursor: a user-started command
+        // reports its outcome and lands back on its own row (the `Stop` tail
+        // just left the list); a background query is invisible courtesy work
+        // and only needs a cursor left pointing past the shrunken list
+        // clamped back onto it.
+        if !running.background {
+            self.last = Some(FlashReport {
+                what: running.action.label(),
+                ok,
+                duration,
+            });
+            self.set_pane_cursor_to(running.action);
+        } else {
+            self.pane_cursor = self.pane_cursor.min(self.pane_actions().len() - 1);
         }
     }
 
@@ -1911,6 +2097,50 @@ mod tests {
         settle_fetch(&mut panel, &mut processes);
         assert_eq!(panel.online_boards.len(), 2);
         assert!(!panel.searching_boards());
+    }
+
+    #[test]
+    fn a_fetch_is_named_and_stoppable_like_any_other_command() {
+        // `is_busy` is what puts `Stop` on the actions tab, and a fetch
+        // makes it busy: the row has to reach the fetch, and the state
+        // line has to say what the dimmed buttons are waiting for.
+        let fixture = Fixture::new("fetch-stop");
+        let mut panel = FlashPanel::new(&fixture.root);
+        panel.set_curl_tool_path(fake_curl());
+        let mut processes = ProcessManager::new();
+
+        panel.search_online("esp32c3", None, &mut processes);
+        assert_eq!(panel.activity(), Some(Activity::Search));
+        assert!(
+            matches!(panel.pane_actions().last(), Some(FlashPaneAction::Stop)),
+            "the tab offers a Stop for it"
+        );
+
+        assert!(panel.stop(&mut processes), "and the Stop reaches it");
+        settle_fetch(&mut panel, &mut processes);
+        assert_eq!(panel.activity(), None);
+        assert!(
+            panel.last.is_none(),
+            "a fetch is not one of the user's commands to report"
+        );
+    }
+
+    #[test]
+    fn a_background_query_is_named_but_never_reported() {
+        // The courtesy identity query dims every button while it holds the
+        // port, so the pane names it --- without counting it as the user's
+        // work or leaving a result line behind.
+        let fixture = Fixture::new("query-activity");
+        let mut panel = FlashPanel::new(&fixture.root);
+        panel.set_tool_path(fake_esptool());
+        let mut processes = ProcessManager::new();
+
+        assert!(panel.query_device_info(&mut processes, Some("/dev/ttyUSB0")));
+        assert_eq!(panel.activity(), Some(Activity::Query));
+
+        settle(&mut panel, &mut processes);
+        assert_eq!(panel.activity(), None);
+        assert!(panel.last.is_none(), "background work reports nothing");
     }
 
     #[test]
