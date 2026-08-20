@@ -1,0 +1,11 @@
+#!/bin/sh
+# Fake device tree compiler. Real `dtc --version` prints to stderr, and so
+# does this one --- the installer reads both streams, and a fixture that
+# quietly used stdout would stop testing that.
+case "$1" in
+    --version)
+        printf 'Version: DTC 1.7.0\n' >&2
+        exit 0
+        ;;
+esac
+exit 0

@@ -6,6 +6,11 @@
 # first output line) and the success path end to end. `boards` and `shields`
 # reproduce the `west boards`/`west shields` formats (name, whitespace,
 # description) for the pickers.
+#
+# The installer's subcommands do the minimum real work their step's
+# resumption check looks for --- `.west/config`, the manifest checkout's
+# `VERSION`, an SDK bundle directory --- so a test exercises the same
+# filesystem evidence `Step::already_done` reads on a real machine.
 case "$1" in
     boards)
         printf 'esp32_devkitc_wrover/esp32/procpu  ESP32 DevKitC-WROVER\n'
@@ -20,6 +25,109 @@ case "$1" in
         printf 'nrf7002ek       Nordic nRF7002 EK\n'
         printf 'x_nucleo_iks02a1 ST IKS02A1 MEMS shield\n'
         exit 0
+        ;;
+    init)
+        # `west init -m URL .` --- the workspace marker plus the manifest
+        # path the real `.west/config` carries.
+        mkdir -p .west
+        printf '[manifest]\npath = zephyr\nfile = west.yml\n' > .west/config
+        printf '=== Initializing in %s\n' "$PWD"
+        exit 0
+        ;;
+    update)
+        # The manifest checkout, with the VERSION file that tells the
+        # installer (and `Workspace::zephyr_version`) the update landed.
+        mkdir -p zephyr
+        printf 'VERSION_MAJOR = 4\nVERSION_MINOR = 1\nPATCHLEVEL = 0\n' > zephyr/VERSION
+        # The checkout carries the SDK version the workspace pins; without
+        # it the version-aware bundle detection is never exercised.
+        printf '0.17.0\n' > zephyr/SDK_VERSION
+        printf '=== updating zephyr (zephyr):\n'
+        printf '=== updating hal_espressif (modules/hal/espressif):\n'
+        exit 0
+        ;;
+    packages)
+        printf 'Successfully installed pyelftools-0.31\n'
+        exit 0
+        ;;
+    zephyr-export)
+        printf 'Zephyr (%s/zephyr/share/zephyr-package/cmake)\n' "$PWD"
+        printf 'has been added to the user package registry in:\n'
+        exit 0
+        ;;
+    sdk)
+        case "$2" in
+            list)
+                # The real `west sdk list` reads the CMake user package
+                # registry and dies when no SDK is installed --- it lists
+                # what is *installed*, never what is available. Reproducing
+                # that is the point: ChipTUI used to run it for discovery.
+                # The confirmation step runs at the workspace root, the
+                # install one level down in the checkout --- look in both.
+                if [ -z "$(ls -d ./zephyr-sdk-* ../zephyr-sdk-* 2>/dev/null)" ]; then
+                    printf 'FATAL ERROR: No Zephyr SDK installed.\n' >&2
+                    exit 1
+                fi
+                printf 'Zephyr SDK 0.17.0\n'
+                printf '  Installed at %s\n' "$(cd .. && pwd)/zephyr-sdk-0.17.0"
+                exit 0
+                ;;
+            install)
+                # Reproduces the real flag semantics, because the previous
+                # fixture reproduced an assumption instead and let a broken
+                # invocation pass the suite for a whole round.
+                #
+                # `-b BASE`  -> BASE/zephyr-sdk-<version>
+                # `-d DIR`   -> the SDK directory is *renamed to* DIR, which
+                #               also makes west run `<DIR>/setup.sh`. Passing
+                #               a relative `..` there points setup.sh at a
+                #               file that does not exist, and west dies with
+                #               a traceback after moving the bundle but
+                #               before downloading a single toolchain.
+                shift 2
+                base=""
+                toolchains=""
+                while [ $# -gt 0 ]; do
+                    case "$1" in
+                        -b|--install-base) base="$2"; shift 2 ;;
+                        -d|--install-dir)
+                            printf 'FileNotFoundError: %s/setup.sh\n' "$2" >&2
+                            exit 1
+                            ;;
+                        # `-t` is nargs="+": one flag, then every name until
+                        # the end of the line. A repeated `-t` would keep
+                        # only the last name.
+                        -t) shift
+                            while [ $# -gt 0 ]; do
+                                toolchains="$toolchains $1"
+                                shift
+                            done
+                            ;;
+                        *) shift ;;
+                    esac
+                done
+                [ -n "$base" ] || base="$HOME"
+                sdk="$base/zephyr-sdk-0.17.0"
+                mkdir -p "$sdk"
+                # `setup.sh -t NAME` unpacks one toolchain into gnu/, and
+                # only the ones asked for --- which is what makes "add just
+                # the missing one" observable.
+                if [ -z "$toolchains" ]; then
+                    printf 'Installing all 35 toolchains\n'
+                fi
+                for tc in $toolchains; do
+                    printf 'Installing toolchain %s\n' "$tc"
+                    mkdir -p "$sdk/gnu/$tc"
+                done
+                printf '0.17.0\n' > "$sdk/sdk_version"
+                # The bundle carries its own setup.sh, which is what west
+                # runs to register the SDK --- the step that `-d ..` skipped.
+                printf '#!/bin/sh\nexit 0\n' > "$sdk/setup.sh"
+                chmod +x "$sdk/setup.sh"
+                printf 'Installing Zephyr SDK 0.17.0 into %s\n' "$sdk"
+                exit 0
+                ;;
+        esac
         ;;
 esac
 printf 'fake west: %s\n' "$*"

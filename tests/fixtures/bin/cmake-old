@@ -1,0 +1,11 @@
+#!/bin/sh
+# A `cmake` below Zephyr's documented minimum (3.28.0), for the checklist's
+# refusal path. 3.9 also guards the version comparison itself: as strings
+# "3.9.6" sorts *after* "3.28.0".
+case "$1" in
+    --version)
+        printf 'cmake version 3.9.6\n'
+        exit 0
+        ;;
+esac
+exit 0

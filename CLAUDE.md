@@ -194,7 +194,107 @@ than `execvp`, never the reverse.
 through `Overlay::ConfirmWorkspace`) lives as a button in the Project
 actions pane, enabled once the
 installation resolves, under `Capability::WorkspaceSync`; it
-runs through the build panel's one process slot into the Monitor tab. The **Project files**
+runs through the build panel's one process slot into the Monitor tab. That
+button's slot is *shared*: with nothing resolved it reads `⇩ Install Zephyr`
+instead (`BuildAction::list_for`, keyed off `BuildPanel::workspace_installed`,
+pushed in by `apply_west_env` --- the one place a panel is seeded from the
+resolved environment, which is why `ensure_build_panel` calls it rather than
+repeating the seeding). The two are mutually exclusive by nature, so sharing
+one row keeps the stack at six buttons and `ui::MIN_HEIGHT` where it is.
+`Install Zephyr` opens `DirPurpose::Install` and then the **installer**
+(`src/install.rs` + `src/install/{prereq,steps,version}.rs`, `src/ui/install.rs`,
+`src/app/install_view.rs`, `Overlay::ZephyrInstall`): the getting-started guide
+run as a sequence, with its own process slot and output buffer (not the build
+panel's --- the output belongs in its own modal, and there is no resolved
+workspace for a build command anyway). The `Zephyr path` row is the other door, and the one
+that matters once a workspace is already resolved (the button is `Update Zephyr`
+then): a directory `install_check` refuses no longer merely re-renders the
+picker with the reason --- `accept_workspace_dir` opens
+`Overlay::ConfirmInstallHere`, whose wording comes from
+`zephyr::workspace::install_state` (the three-state classifier `install_check`
+was refactored onto, so there is one definition of `.west/`-and-checkout):
+*Install* / *Finish* / *Use*. It is its own variant, not the shared
+`Overlay::Confirm` (already multiplexed between the flash panel's `pending` and
+the installer's start question), and it carries the refusal because the overlay
+slot is one deep --- declining has to *rebuild* the picker, not uncover it. The
+target is `<folder>/zephyr`, unless the folder already carries `.west/`, which is
+resumed in place. A folder whose `zephyr/` is already a complete installation
+opens the modal in **adopt** mode (`Installer::mark_already_installed`, decided
+once in `open_installer` --- `Step::already_done` cannot answer it, since the
+queries and the two idempotent steps never resume, and on a *resumed* run
+`install_check` starts passing mid-sequence): the button reads
+`✓ Use this installation`, is not gated on the prerequisites, and records the
+location without spawning anything. Both endings share
+`persist_installation`, which names the switch in the log when it replaces an
+earlier installation and only chains into the projects picker while that
+question is still open. Prerequisites (`cmake` ≥ 3.28.0, `dtc` ≥ 1.4.6, `pyenv`) are queried
+in parallel for their versions --- the only place in this codebase that asks a
+tool its version through a subprocess; every other version is read from a file
+--- and a failing one dims the action button rather than being installed for
+the user, naming instead the command each detected package manager would use.
+The system `python3` row is `⚠`-only and never blocks: pyenv provides the
+workspace's 3.12 (newest from `pyenv install --list`), and the venv is built by
+that interpreter's absolute path under `pyenv root`, since `python3` off `PATH`
+does not honour `pyenv local` without shims. Every step's completion is read
+off the filesystem (`Step::already_done`), so an interrupted run resumes;
+`west packages pip --install` and `west zephyr-export` deliberately never
+qualify (no marker, and idempotent). `west sdk install` places the bundle with
+`-b <workspace root>` (absolute) --- **never** `-d`, whose argument is the SDK
+directory's final *name*, which overrides `-b`, extracts gigabytes inside the
+git checkout, and hands `run_setup` the literal path so it runs `../setup.sh`
+from the checkout: west dies there, after moving a bundle into place but before
+downloading one toolchain or registering anything, which is why a `-d ..` run
+looks half-installed and leaves `west sdk list` still answering nothing. The
+step's cwd is the manifest checkout for the guide's own reason --- west resolves
+the workspace and reads `${ZEPHYR_BASE}/SDK_VERSION` --- not to make `..` mean
+something. `steps::installed_sdk` is version-aware off that same pin, so a
+mismatched bundle leaves the step pending, and `steps::installed_toolchains`
+reads `<sdk>/gnu/` (bundle root on pre-1.0 layouts) because a bundle ships the
+*list* of what it offers but unpacks only what was asked for. The command
+carries `Installer::pending_toolchains()` --- picked minus installed --- so
+adding one toolchain to an existing SDK costs a `setup.sh -t` and no download
+(`west sdk install` finds the version registered and skips straight to setup);
+that state is `Action::AddToolchains`, and `refresh_sdk_step` flips the SDK step
+back to pending on a pick so the checklist agrees with the button. The dashboard's
+`s` (`App::open_sdk_toolchains_shortcut`, gated on `Capability::WorkspaceSync`
+beside `m`, before the focus dispatch so it works from any pane) opens that picker
+over the configured workspace directly; unconfigured, it logs and opens nothing.
+Adding it forced the MicroPython `s` (save a captured run's output) to declare
+`Capability::Run`, which it always depended on and never stated --- the
+duplicate-footer-label test is what caught the collision. `west sdk
+list` runs after the install; `west sdk list` runs *after* it
+as the confirmation, because that command reads the CMake user package registry
+and dies with `FATAL ERROR: No Zephyr SDK installed.` until one is --- it lists
+what is installed, never what is available, and nothing enumerates the toolchain
+names beforehand, so the picker offers the curated `steps::TOOLCHAINS` anchored
+to the checkout's `SDK_VERSION` (a stale name fails loudly: west validates and
+prints the list it accepts). The `-t` invocation is one flag carrying every
+name, last on the line --- west declares it `nargs="+"`, not `append`, so a
+repeated `-t` silently keeps only the final name. Picking is required
+(`Installer::sdk_ready`) --- with no `-t` west passes `-t all`, 35 toolchains and
+several GB unprompted --- but it is a question about the *last* step and must
+never gate the eleven before it: `can_start()` deliberately does **not** include
+it (doing so froze the panel before `Find Python 3.12` ever ran). Unanswered, the
+button reads `▶ Pick SDK toolchains` and opens the picker; `s` answers it too.
+The button's label, enabled state and effect all come from one
+`Installer::action()` --- the split between `ui::install`'s label and
+`on_install_key`'s dispatch is precisely how a dimmed button with no action
+behind it got shipped. `Action::Adopt`/`InstallSdk` are checked *before* the
+prerequisite gate, since neither adopting nor `west sdk install` needs cmake or
+dtc; `ui::install::state_line` mirrors that order or it contradicts the button
+beside it. An adopted workspace missing only its bundle runs
+`Installer::start_sdk_only`, which enters at the `SdkInstall` index rather than
+`next_step()` --- on an installed tree that answers 0 and would re-run
+everything. A step
+that fails is fatal unless `Step::optional()` (only the SDK confirmation), and
+the auto-advance searches `next_step_from(index + 1)` --- `next_step` reports
+failures so `Retry` can resume them, and searching from 0 would re-run the
+failure forever. A fatal stop still calls `App::salvage_installation`, which
+records the workspace when `install_state` says it is already `Complete`, so a
+late failure never discards a good `west init` + `west update`. `esc` is ignored while a step runs --- `Stop` is the way out. A finished
+run writes `[zephyr] workspace` (+ `sdk`), re-resolves, and chains into the
+projects-folder picker. Its four-state row grammar (`✓ ⚠ ✗ □`) is the shared
+`ui::workspace::marked_row`, which `checklist_row` now delegates to. The **Project files**
 pane (the old workspace pane, `src/ui/workspace.rs`) is the project's own listing, whole:
 its title carries the walked path (`Project files: proj/src/`, never truncating the
 prefix), and the body is the list --- no action menu: `Enter` descends into a
@@ -548,6 +648,13 @@ ordering. Tests reference them by **absolute path** (`env!("CARGO_MANIFEST_DIR")
 browser at them with `Browser::set_tool_path`; nothing mutates `PATH`, so tests stay parallel-safe.
 Add fakes for `esptool`, `west`, `cmake` and `ninja` the same way. Hardware tests stay separate and
 explicitly documented.
+
+**A fake must reproduce the tool, not the belief about it.** The `west` fixture once treated
+`sdk install -d DIR` as "install into DIR" — which is what the flag *looks* like it means, and
+what the code under test assumed — so a completely broken invocation passed the suite for a
+whole round while failing on real hardware. Where a flag's meaning is load-bearing, read the
+tool's source before writing the fake, and make the fake **reject** the wrong form (that
+`west` now exits 1 on `-d`, the way real west does) so reintroducing it breaks a test.
 
 If you change a fixture's canned sizes or digest, `tests/files_view.rs` asserts against them — the
 `same.py` digest there is the real sha256 of the local fixture's contents, which is what makes the

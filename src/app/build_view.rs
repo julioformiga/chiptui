@@ -213,6 +213,9 @@ impl App {
                     confirm: false,
                 });
             }
+            // Nothing runs from this row: it asks where to install, and
+            // the installer's own confirm asks whether to.
+            BuildAction::InstallZephyr => self.open_install_picker(),
         }
     }
 

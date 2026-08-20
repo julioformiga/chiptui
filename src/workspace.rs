@@ -366,6 +366,12 @@ pub enum DirPurpose {
     /// MicroPython project pins no environment of its own, so there is no
     /// project-level half to honor.
     MpyProjects,
+    /// "Where should Zephyr be installed?" --- the only purpose that
+    /// accepts a directory *without* an installation in it, because
+    /// producing one is the point. The accepted folder is the parent: the
+    /// workspace itself is created as `zephyr/` inside it (see
+    /// [`crate::app::App::open_installer`]).
+    Install,
 }
 
 /// The directory picker's rows for `path`: "use this directory" first (the

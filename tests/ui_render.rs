@@ -542,8 +542,13 @@ fn the_declared_minimum_fits_the_whole_dashboard() {
     let frame = render(&mut app, 80, 32);
     let lines: Vec<&str> = frame.lines().collect();
 
+    // Six buttons, whichever half of the shared environment row is
+    // showing: this fixture has no workspace, so the first is `Install
+    // Zephyr` --- the row `Update Zephyr` becomes once one resolves. The
+    // count is what the minimum was measured against, so the assertion is
+    // on the count as much as on the labels.
     for label in [
-        "Update Zephyr",
+        "Install Zephyr",
         "Menuconfig",
         "Clean",
         "Build",
@@ -555,6 +560,15 @@ fn the_declared_minimum_fits_the_whole_dashboard() {
             "the `{label}` button is clipped at the declared minimum:\n{frame}"
         );
     }
+    assert_eq!(
+        app.build
+            .as_ref()
+            .unwrap()
+            .actions(&app.manager.capabilities())
+            .len(),
+        6,
+        "a seventh button would not fit the declared minimum"
+    );
 
     // Not merely visible: the stack's own bottom rule has to follow the
     // last button, or the group is drawn a row short of its frame.

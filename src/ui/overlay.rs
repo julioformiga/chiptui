@@ -1,5 +1,7 @@
 //! Modal layers: help and manual backend selection.
 
+use std::path::{Path, PathBuf};
+
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Flex, Layout, Rect};
 use ratatui::style::{Modifier, Style, Stylize};
@@ -9,6 +11,7 @@ use ratatui::widgets::{Block, BorderType, Clear, List, ListItem, ListState, Para
 use crate::app::help::{self, HelpSection};
 use crate::app::{App, FileAction, Overlay, PickerOption, ThemeChoice, ViewerSource, ViewerState};
 use crate::backend::BackendKind;
+use crate::backend::zephyr::workspace::InstallState;
 use crate::browser::SyncPlan;
 use crate::highlight::{self, TokenKind};
 use crate::ui::{Palette, muted_style, selection_style};
@@ -31,6 +34,44 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
         // `message` is the literal command preview the caller built; which
         // action it belongs to lives on the panel, un-consumed, so the
         // dialog can name it (`FlashPanel::pending`).
+        // `reason` is state the decline path needs, not something to draw
+        // --- see `draw_install_offer`.
+        Overlay::ConfirmInstallHere { dir, confirm, .. } => {
+            draw_install_offer(frame, area, app, &dir, confirm, palette);
+        }
+        Overlay::ZephyrInstall => {
+            // Published like the log pane's height, so `PageUp`/`PageDown`
+            // scroll by exactly the rows that were drawn.
+            app.install_viewport = super::install::output_viewport(area);
+            if let Some(installer) = &app.installer {
+                super::install::draw(frame, area, installer, app.home_dir(), app.ticks, palette);
+            }
+        }
+        Overlay::SdkToolchains { selected } => draw_sdk_toolchains(frame, area, app, selected, palette),
+        Overlay::Confirm { message, confirm } if app.install_confirm_pending => draw_confirm_dialog(
+            frame,
+            area,
+            "Install Zephyr here?",
+            vec![
+                Line::from(
+                    app.installer
+                        .as_ref()
+                        .map(|installer| installer.root.display().to_string())
+                        .unwrap_or_default()
+                        .fg(palette.warning)
+                        .bold(),
+                ),
+                Line::from(
+                    "Downloads the Zephyr sources and toolchain into it (several GB). Nothing existing is overwritten."
+                        .fg(palette.fg),
+                ),
+                Line::from(""),
+                Line::from(shorten_tail(&message, DESTRUCTIVE_BUDGET).fg(palette.muted)),
+            ],
+            confirm,
+            (DESTRUCTIVE_WIDTH, 10),
+            palette,
+        ),
         Overlay::Confirm { message, confirm } => {
             match app.flash.as_ref().and_then(|flash| flash.pending()) {
                 Some(crate::flash::FlashAction::EraseFlash) => draw_destructive(
@@ -1008,6 +1049,157 @@ fn chip_target(app: &App) -> String {
 /// this directory" first, the parent, then the subdirectories. The
 /// validation error (with the install guide) sits under the list when an
 /// accepted directory was not a Zephyr installation.
+/// What the installer would do with the folder the picker just refused,
+/// as the offer's title, its consequence, and the target it acts on.
+///
+/// The target is the same one [`crate::app::App::open_installer`] derives
+/// --- `<dir>/zephyr`, or `dir` itself when it already carries a `.west/`
+/// to resume --- and the wording follows what is actually there, because
+/// "install" is only one of three honest answers. A complete installation
+/// nested in a `zephyr/` subdirectory is the case the picker cannot accept
+/// on its own (it validates the directory it was given, not its children),
+/// and the one that used to be a dead end.
+fn install_offer(dir: &Path) -> (&'static str, &'static str, PathBuf) {
+    let target = if dir.join(".west").is_dir() {
+        dir.to_path_buf()
+    } else {
+        dir.join("zephyr")
+    };
+    let (title, consequence) = match crate::backend::zephyr::workspace::install_state(&target) {
+        InstallState::Complete => (
+            "Use the installation in here?",
+            "Records it as the Zephyr installation. Nothing is downloaded or changed.",
+        ),
+        InstallState::Partial => (
+            "Finish the installation in here?",
+            "Resumes it from wherever it stopped. Nothing already there is overwritten.",
+        ),
+        InstallState::Absent => (
+            "Install Zephyr in here?",
+            "Opens the installer, which checks this machine's prerequisites and asks again before it downloads anything.",
+        ),
+    };
+    (title, consequence, target)
+}
+
+fn draw_install_offer(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    dir: &Path,
+    confirm: bool,
+    palette: Palette,
+) {
+    let (title, consequence, target) = install_offer(dir);
+    // The picker's refusal is deliberately *not* repeated here. It is about
+    // the folder that was accepted, while this question is about the target
+    // under it --- so on the adopt path the two flatly contradict each other
+    // ("... is not a Zephyr installation" under "Use the installation in
+    // here?"). The refusal belongs to the picker, which is where declining
+    // puts it back.
+    let lines = vec![
+        Line::from(
+            shorten_tail(
+                &crate::ui::tilde_path(&target, app.home_dir()),
+                DESTRUCTIVE_BUDGET,
+            )
+            .fg(palette.warning)
+            .bold(),
+        ),
+        Line::from(consequence.fg(palette.fg)),
+    ];
+    draw_confirm_dialog(
+        frame,
+        area,
+        title,
+        lines,
+        confirm,
+        (DESTRUCTIVE_WIDTH, 9),
+        palette,
+    );
+}
+
+/// The SDK toolchain pick.
+///
+/// The names are [`crate::install::steps::TOOLCHAINS`], a curated constant,
+/// because nothing can enumerate them before an SDK is installed --- see
+/// that constant's docs. The title carries the workspace's own
+/// `SDK_VERSION`, so the list is at least anchored to the release it will
+/// be asked for.
+fn draw_sdk_toolchains(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    selected: usize,
+    palette: Palette,
+) {
+    let Some(installer) = &app.installer else {
+        return;
+    };
+    let toolchains = crate::install::steps::TOOLCHAINS;
+    let title = match crate::install::steps::sdk_version(&installer.root) {
+        Some(version) => format!("SDK toolchains — SDK_VERSION {version}"),
+        None => "SDK toolchains".to_string(),
+    };
+    let popup = centered(area, 56, area.height.saturating_sub(4));
+    frame.render_widget(Clear, popup);
+    let block = modal(&title, palette);
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+    let [list_area, footer_area] =
+        Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(inner);
+
+    // Three states, because "already unpacked in the SDK" is a different
+    // fact from "about to be installed": a dim ✓ for what is there, a live
+    // ✓ for what this run would add. Picking something already installed is
+    // allowed and simply costs nothing --- `pending_toolchains` drops it.
+    let installed = installer.installed_toolchains();
+    let items: Vec<ListItem> = toolchains
+        .iter()
+        .map(|name| {
+            let here = installed.iter().any(|have| have == name);
+            let picked = installer.picked_toolchains.iter().any(|p| p == name);
+            let (mark, style) = if here {
+                ("✓ ", muted_style(palette))
+            } else if picked {
+                ("✓ ", Style::new().fg(palette.success).bold())
+            } else {
+                ("  ", Style::new())
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled(mark, style),
+                Span::styled(
+                    (*name).to_string(),
+                    if here {
+                        muted_style(palette)
+                    } else {
+                        Style::new().fg(palette.fg)
+                    },
+                ),
+            ]))
+        })
+        .collect();
+    let mut state = ListState::default().with_selected(Some(selected));
+    frame.render_stateful_widget(
+        List::new(items).highlight_style(selection_style(palette)),
+        list_area,
+        &mut state,
+    );
+    // Nothing picked is not a default here: `west sdk install` with no `-t`
+    // pulls all 35 toolchains, so the installer refuses to start instead.
+    let footer = if !installed.is_empty() {
+        "space: toggle · enter: done — dim ✓ is already installed"
+    } else if installer.picked_toolchains.is_empty() {
+        "space: toggle · enter: done — pick at least one"
+    } else {
+        "space: toggle · enter: done"
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(footer.fg(palette.muted))),
+        footer_area,
+    );
+}
+
 fn draw_dir_picker(
     frame: &mut Frame,
     area: Rect,
@@ -1021,6 +1213,7 @@ fn draw_dir_picker(
         crate::workspace::DirPurpose::Installation => "Where is the Zephyr installation?",
         crate::workspace::DirPurpose::Projects => "Where are your Zephyr projects?",
         crate::workspace::DirPurpose::MpyProjects => "Where are your MicroPython projects?",
+        crate::workspace::DirPurpose::Install => "Where should Zephyr be installed?",
     };
     let height = 18u16;
     let width = 72u16;
@@ -1051,7 +1244,16 @@ fn draw_dir_picker(
         .map(|row| match row.kind {
             crate::workspace::DirRowKind::Use => ListItem::new(Line::from(vec![
                 Span::styled("→ ", Style::new().fg(palette.accent)),
-                "use this directory".fg(palette.fg).bold(),
+                // The installer creates `zephyr/` *inside* the accepted
+                // folder, so the row has to say where things land --- "use
+                // this directory" would read as "install into it directly".
+                if purpose == crate::workspace::DirPurpose::Install {
+                    "install into zephyr/ inside this directory"
+                        .fg(palette.fg)
+                        .bold()
+                } else {
+                    "use this directory".fg(palette.fg).bold()
+                },
             ])),
             crate::workspace::DirRowKind::Parent | crate::workspace::DirRowKind::Dir => {
                 ListItem::new(Line::from(Span::styled(
@@ -1920,7 +2122,7 @@ fn draw_sync_preview(
     );
 }
 
-fn modal(title: &str, palette: Palette) -> Block<'static> {
+pub(super) fn modal(title: &str, palette: Palette) -> Block<'static> {
     Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(Style::new().fg(palette.accent))

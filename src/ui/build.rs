@@ -151,6 +151,11 @@ fn draw_rows(
                     .enabled(app.build_action_enabled(*action))
                     .selected(selected),
             ),
+            crate::build::BuildAction::InstallZephyr => buttons.push(
+                Button::new("⇩ Install Zephyr")
+                    .enabled(app.build_action_enabled(*action))
+                    .selected(selected),
+            ),
             crate::build::BuildAction::Stop => unreachable!("Stop is drawn as the footer box"),
         }
     }

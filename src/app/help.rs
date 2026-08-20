@@ -321,7 +321,7 @@ const DASHBOARD_NAVIGATION: [HelpBinding; 10] = [
     ),
 ];
 
-const DASHBOARD_COMMANDS: [HelpBinding; 20] = [
+const DASHBOARD_COMMANDS: [HelpBinding; 21] = [
     action(
         "r",
         "re-detect, reload, or rename (file list)",
@@ -496,6 +496,19 @@ const DASHBOARD_COMMANDS: [HelpBinding; 20] = [
             When::Always,
         )],
     ),
+    action(
+        "s",
+        "add or update the SDK's toolchains",
+        KeyCode::Char('s'),
+        &[site(
+            "s",
+            "toolchains",
+            54,
+            ANY_FOCUS,
+            &[Capability::WorkspaceSync],
+            When::Always,
+        )],
+    ),
     shifted(
         "shift+r",
         "restart the device (soft-reset)",
@@ -519,12 +532,16 @@ const DASHBOARD_COMMANDS: [HelpBinding; 20] = [
         "s",
         "save the run output to a file",
         KeyCode::Char('s'),
+        // Declares the capability it actually depends on: a *captured run*
+        // is `Capability::Run`'s output. Without it the site claimed `s`
+        // for every backend, which collided with the SDK-toolchain shortcut
+        // that a workspace backend puts on the same key.
         &[site(
             "s",
             "save output",
             62,
             &[Focus::Logs],
-            &[],
+            &[Capability::Run],
             When::RunView,
         )],
     ),
@@ -998,7 +1015,7 @@ mod tests {
         assert_eq!(
             footer_keys(View::Dashboard, &ctx(zephyr(), Focus::Build)),
             vec![
-                "tab", "ctrl+p", "↑/↓", "enter", "d", "o", "t", "x", "m", "shift+p", "?", "q",
+                "tab", "ctrl+p", "↑/↓", "enter", "d", "o", "t", "x", "m", "s", "shift+p", "?", "q",
             ]
         );
 
@@ -1008,7 +1025,7 @@ mod tests {
             footer_keys(View::Dashboard, &ctx(zephyr(), Focus::Workspace)),
             vec![
                 "tab", "ctrl+p", "↑/↓", "enter", "v", "del", "a", "r", "d", "o", "t", "x", "m",
-                "shift+p", "?", "q",
+                "s", "shift+p", "?", "q",
             ]
         );
 
@@ -1016,7 +1033,7 @@ mod tests {
         assert_eq!(
             footer_keys(View::Dashboard, &ctx(zephyr(), Focus::Project)),
             vec![
-                "tab", "ctrl+p", "↑/↓", "enter", "d", "o", "t", "x", "m", "shift+p", "?", "q",
+                "tab", "ctrl+p", "↑/↓", "enter", "d", "o", "t", "x", "m", "s", "shift+p", "?", "q",
             ]
         );
     }

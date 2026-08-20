@@ -1,0 +1,6 @@
+#!/bin/sh
+# Fake `pip`, reached as `<workspace>/.venv/bin/pip` --- the fake `python3`
+# puts it there when it "creates" the venv.
+printf 'Collecting west\n'
+printf 'Successfully installed west-1.2.0\n'
+exit 0

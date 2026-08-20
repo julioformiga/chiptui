@@ -247,6 +247,7 @@ impl App {
                     DirPurpose::Installation => self.accept_workspace_dir(path),
                     DirPurpose::Projects => self.accept_projects_dir(path),
                     DirPurpose::MpyProjects => self.accept_mpy_projects_dir(path),
+                    DirPurpose::Install => self.accept_install_dir(path),
                 },
                 Some(crate::workspace::DirRowKind::Parent) => {
                     let Some(parent) = path.parent().map(Path::to_path_buf) else {
@@ -291,7 +292,7 @@ impl App {
     /// its `chiptui.toml`, everyone else answers once, machine-wide. Shared
     /// by both accept paths so the two halves of the environment can never
     /// end up in different files.
-    fn settings_target(
+    pub(super) fn settings_target(
         &self,
         root: &Path,
         project_settings: Option<&crate::settings::ZephyrSettings>,
@@ -338,14 +339,12 @@ impl App {
                 self.overlay = None;
                 self.refresh_workspace_resolution();
             }
-            Resolution::Invalid(message) => {
-                self.overlay = Some(Overlay::DirPicker {
-                    purpose: DirPurpose::Installation,
-                    path: dir,
-                    selected: 0,
-                    error: Some(message),
-                });
-            }
+            // The refusal and the way forward arrive together now: the
+            // offer states the reason and, declined, puts the picker back
+            // exactly as the refusal left it. Before this, a machine with
+            // no Zephyr --- or one wanting a *second* installation --- got
+            // only the reason and no way on.
+            Resolution::Invalid(message) => self.offer_install(dir, message),
             Resolution::NotConfigured => {}
         }
     }
@@ -407,14 +406,19 @@ impl App {
     /// Pushes the resolved workspace's west invocation (executable and
     /// environment) into the build panel, whose commands are where it
     /// matters.
-    pub(super) fn apply_west_env(&mut self) {
+    pub(crate) fn apply_west_env(&mut self) {
         let Some(workspace) = &self.workspace else {
             return;
         };
         let west_env = workspace.west_env();
+        // Which of the two environment rows the action stack offers is the
+        // same fact, arriving with the same refresh: `Update Zephyr` once
+        // an installation resolves, `Install Zephyr` while none does.
+        let installed = workspace.resolved.is_some();
         if let Some(panel) = &mut self.build {
             panel.set_tool_path(west_env.program.clone());
             panel.set_tool_env(west_env.env);
+            panel.workspace_installed = installed;
         }
     }
 

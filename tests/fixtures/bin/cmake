@@ -1,0 +1,14 @@
+#!/bin/sh
+# Fake `cmake` for ChipTUI's installer prerequisite check.
+#
+# Only `--version` matters here: the installer asks every prerequisite for
+# its version and parses the first dotted number out of the answer.
+case "$1" in
+    --version)
+        printf 'cmake version 3.31.2\n'
+        printf '\nCMake suite maintained and supported by Kitware (kitware.com/cmake).\n'
+        exit 0
+        ;;
+esac
+printf 'fake cmake: %s\n' "$*"
+exit 0

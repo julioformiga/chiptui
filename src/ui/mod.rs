@@ -13,6 +13,7 @@ mod button;
 mod files;
 mod flash;
 pub mod home;
+mod install;
 mod monitor;
 mod overlay;
 mod panels;

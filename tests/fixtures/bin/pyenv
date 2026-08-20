@@ -1,0 +1,54 @@
+#!/bin/sh
+# Fake `pyenv` for ChipTUI's Zephyr installer.
+#
+# The installer never trusts pyenv's shims: it asks `pyenv root` and builds
+# an absolute interpreter path under it. So this fixture has to behave like
+# a real prefix rather than just print --- `install` actually creates the
+# interpreter that the venv step will then execute.
+#
+# The prefix is `$PWD/.fake-pyenv`, and every installer command runs with
+# the workspace root as its working directory, so each test gets its own
+# without any environment variable to set (which would not be safe across
+# parallel tests sharing a process).
+FIXTURES=$(cd "$(dirname "$0")" && pwd)
+ROOT="$PWD/.fake-pyenv"
+
+case "$1" in
+    --version)
+        printf 'pyenv 2.4.7\n'
+        exit 0
+        ;;
+    root)
+        printf '%s\n' "$ROOT"
+        exit 0
+        ;;
+    install)
+        if [ "$2" = "--list" ]; then
+            printf 'Available versions:\n'
+            printf '  3.11.9\n'
+            printf '  3.12.1\n'
+            printf '  3.12.13\n'
+            printf '  3.12.0rc1\n'
+            printf '  3.13.2\n'
+            printf '  pypy3.12-7.3.16\n'
+            exit 0
+        fi
+        shift
+        [ "$1" = "--skip-existing" ] && shift
+        version="$1"
+        mkdir -p "$ROOT/versions/$version/bin"
+        # A shim onto the fake python3: the installer will run this exact
+        # path to build the venv.
+        printf '#!/bin/sh\nexec "%s/python3" "$@"\n' "$FIXTURES" \
+            > "$ROOT/versions/$version/bin/python"
+        chmod +x "$ROOT/versions/$version/bin/python"
+        printf 'Installed Python-%s to %s/versions/%s\n' "$version" "$ROOT" "$version"
+        exit 0
+        ;;
+    local)
+        printf '%s\n' "$2" > .python-version
+        exit 0
+        ;;
+esac
+printf 'fake pyenv: %s\n' "$*"
+exit 0

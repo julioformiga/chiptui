@@ -256,14 +256,48 @@ impl App {
                     move |app, confirm| {
                         app.overlay = Some(Overlay::Confirm { message, confirm });
                     },
-                    Self::confirm_flash_action,
+                    // The shared confirm serves two askers; the installer
+                    // flags its own so the flash panel's `pending` is not
+                    // consulted for a question it never asked.
                     |app| {
-                        if let Some(flash) = &mut app.flash {
+                        if app.install_confirm_pending() {
+                            app.start_install();
+                        } else {
+                            app.confirm_flash_action();
+                        }
+                    },
+                    |app| {
+                        if app.install_confirm_pending() {
+                            app.cancel_install();
+                        } else if let Some(flash) = &mut app.flash {
                             flash.cancel_pending();
                         }
                     },
                 );
             }
+            Overlay::ConfirmInstallHere {
+                dir,
+                reason,
+                confirm,
+            } => {
+                let accepted = dir.clone();
+                let declined = (dir.clone(), reason.clone());
+                self.dispatch_confirm(
+                    key.code,
+                    confirm,
+                    move |app, confirm| {
+                        app.overlay = Some(Overlay::ConfirmInstallHere {
+                            dir,
+                            reason,
+                            confirm,
+                        });
+                    },
+                    move |app| app.open_installer(accepted),
+                    move |app| app.decline_install_offer(declined.0, declined.1),
+                );
+            }
+            Overlay::ZephyrInstall => self.on_install_key(key),
+            Overlay::SdkToolchains { selected } => self.on_sdk_toolchains_key(key, selected),
             Overlay::FirmwarePicker { selected } => {
                 let count = self
                     .flash

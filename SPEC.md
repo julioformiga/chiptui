@@ -577,6 +577,145 @@ itself. Status reads are files, not subprocesses: the
 Zephyr version comes from `zephyr/VERSION`, the SDK version from
 `sdk_version`.
 
+#### Installing Zephyr
+
+A machine with no installation at all is a fifth answer the picker used to
+have no room for: it could only refuse. The **installer** is that answer.
+It is reached from the `Install Zephyr` button --- the row `Update Zephyr`
+becomes while nothing is resolved, since the two are mutually exclusive ---
+or with `i` from the picker that just refused a folder. Either door asks
+*where* first, and creates the workspace as `zephyr/` inside the accepted
+folder (a folder that already carries a `.west/` is resumed in place
+instead, never nested inside a second one).
+
+What it runs is the [getting started
+guide](https://docs.zephyrproject.org/latest/develop/getting_started/index.html),
+in order, through the ordinary process manager, with the output streaming
+into the modal that shows it. What it does **not** do is install anything
+system-wide. The distinction is the whole design:
+
+-   **Prerequisites are reported, never installed.** `cmake` (≥ 3.28.0),
+    `dtc` (≥ 1.4.6) and `pyenv` are queried for their versions, compared
+    against Zephyr's documented minimums, and shown as a checklist. A row
+    that fails names the command that would fix it --- one line per package
+    manager the machine actually has (`pacman`, `apt`, `dnf`, `zypper`,
+    `brew`), or the upstream page when none is recognised. While a failing
+    row remains, the sequence cannot start: the action button is dimmed and
+    `Enter` on it does nothing. `r` re-checks.
+-   **The system Python is reported but never blocks.** It is shown with a
+    `⚠` when it is not 3.12, because the workspace's interpreter does not
+    come from it: the installer pins its own through pyenv. Blocking on a
+    row the installer exists to satisfy would be a checkbox nobody could
+    tick.
+-   **Python is pinned, not assumed.** `pyenv install --list` picks the
+    newest 3.12.x (pre-releases and alternative implementations excluded),
+    `pyenv install --skip-existing` builds it and `pyenv local` writes
+    `.python-version`. The venv is then created by that interpreter's
+    *absolute* path, read from `pyenv root` --- `python3` off `PATH` only
+    honours the pin through pyenv's shims, which may not be installed.
+-   **Nothing is overwritten, and nothing is repeated.** Each step's result
+    is detected from the filesystem (`.python-version`, `.venv/bin/west`,
+    `.west/`, `zephyr/VERSION`, a `zephyr-sdk-*` directory), so a run
+    interrupted by a failure, a `Stop` or a reboot resumes exactly where it
+    stopped. `west packages pip --install` and `west zephyr-export` are the
+    two exceptions: neither leaves a marker in the workspace, and both are
+    idempotent, so they always run.
+-   **The SDK is optional and selective, and its toolchains are a curated
+    list.** Nothing can enumerate them beforehand: `west sdk list` reads the
+    CMake user package registry and answers only once an SDK is *installed*
+    (on a fresh machine it exits with `FATAL ERROR: No Zephyr SDK
+    installed.`), and the valid names come from the GitHub release assets
+    that `west sdk install` fetches for itself. So the picker offers a
+    constant list, anchored to the workspace's own `SDK_VERSION`, and a
+    stale name fails loudly --- `west sdk install` validates every one and
+    dies printing the list it accepts. Picking is **required** --- with no
+    `-t`, west passes `-t all` and pulls 35 toolchains, several GB, with no
+    prompt --- but it is a question about the *last* step, so it never holds
+    up the eleven before it: unanswered, the action button reads
+    `Pick SDK toolchains` and opens the picker. `s` skips the SDK outright,
+    which answers the question just as well. The bundle is placed with
+    `-b <workspace root>` (absolute), which produces
+    `<root>/zephyr-sdk-<version>` --- **not** `-d`, whose argument is the SDK
+    directory's final *name* and which breaks `setup.sh` (see below). The
+    step runs in the manifest checkout for the same reason the guide's `cd`
+    does --- so west resolves the workspace and reads
+    `${ZEPHYR_BASE}/SDK_VERSION` --- and `west sdk list` runs after it, as
+    the confirmation it can actually be.
+-   **The bundle detection is version-aware, and so is the toolchain
+    detection.** The workspace pins its SDK version, and a bundle names
+    itself with the version it is, so `<root>/zephyr-sdk-<pinned>` is the
+    only one that counts --- a Zephyr version bump leaves the SDK step
+    pending again rather than letting a build quietly use the wrong
+    toolchains. Inside a bundle, what is *installed* is the directories
+    under `gnu/` (the older layout keeps them in the bundle root), not the
+    list of what the bundle offers.
+-   **A toolchain can be added later, and `s` is the way there.** From the
+    dashboard, `s` opens the toolchain picker over the configured
+    installation directly --- the errand is routine (a new board needs a
+    target the bundle was not unpacked with) and the path question the
+    installer would otherwise re-ask is already answered in the config.
+    Without a resolved installation the key invents nothing: it says so and
+    points at `Zephyr path`. Picking a toolchain an installed SDK does not
+    carry turns the action into `Add SDK toolchains`, and the command asks
+    west only for the names that are absent. That costs a
+    `setup.sh -t` per toolchain and no download of the bundle: with the
+    version already registered, `west sdk install` reports it is using the
+    existing SDK and goes straight to setup. The picker marks what is
+    already there, so the two are never confused.
+-   **The action button is one decision.** Its label, whether it is enabled,
+    and what `Enter` does all come from a single answer to "what is this
+    button now" --- start, pick toolchains, retry, adopt, install the SDK,
+    stop. Only two states are inert, and both have their explanation already
+    on screen: an unanswered prerequisite, and nothing left to run.
+-   **A running installation is not left by reflex.** `esc` closes the modal
+    only while nothing runs; `Stop` is the way out of a running step, and it
+    is on screen.
+-   **A failure costs only what it has to.** A step whose result nothing
+    downstream needs --- the SDK confirmation --- is marked and stepped over
+    rather than stopping the run. And when a step *does* stop the run, what
+    already succeeded is still recorded: if `west init` and `west update`
+    left a valid workspace, `[zephyr] workspace` is written anyway, with the
+    log saying which step still needs to run. The modal stays open on the
+    failed step, which `Retry` resumes from.
+
+One confirmation covers the whole sequence, naming the target folder, the
+cost (several GB) and the literal first command. A finished installation is
+persisted the same way every environment answer is --- `[zephyr] workspace`,
+plus `[zephyr] sdk` when a bundle landed --- and the flow continues into the
+projects-folder question below, but only while that question is still open.
+
+##### A second installation, and adopting an existing one
+
+`Zephyr path` is always answerable --- that is how the answer is *changed* ---
+so it is also how a machine that already has Zephyr installs another one
+somewhere else. Accepting a directory the installation check refuses no longer
+just states the reason: it offers the way forward, and the offer says what is
+actually at the target rather than always the word "install".
+
+-   nothing there --- *Install Zephyr in here?*
+-   `.west/` without its checkout --- *Finish the installation in here?* The
+    installer resumes it in place; a folder that already carries a `.west/` is
+    the workspace, never the parent of a second one nested inside it.
+-   a complete installation in the folder's `zephyr/` --- *Use the installation
+    in here?* The picker validates the directory it was given and not its
+    children, so this is the one case it cannot accept on its own. Answering
+    yes opens the installer in **adopt** mode: the checklist is shown as
+    evidence, the action reads `Use this installation`, and it records the
+    location without running a single command. An installation missing only
+    its SDK bundle --- skipped, or its step failed --- is adopted the same
+    way but offers `Install the SDK`, which records the location first and
+    then runs that one step; without it, skipping the SDK once made the
+    installation impossible to finish. Adopting is deliberately not gated on
+    the prerequisites --- those gate *building* Zephyr, not writing down
+    where an existing one lives.
+
+Declining any of these returns to the picker with the refusal still on screen.
+
+A second installation replaces the first in the config: someone who just
+installed Zephyr somewhere means to use it. The switch is named in the log
+(`Zephyr installation switched from A to B`) rather than left to be noticed in
+the pane.
+
 #### Projects folder and project selection
 
 Applications can live anywhere too, unrelated to the installation. Which
@@ -614,7 +753,7 @@ The optional keys, shared by both config levels:
 [zephyr]
 workspace = "~/zephyrproject"
 projects = "~/zephyrapps"
-# sdk = "~/zephyr-sdk-0.17.1"
+# sdk = "~/zephyr-sdk-0.17.1"   # written by the installer when it installs one
 # west = "/custom/venv/bin/west"
 ```
 
@@ -623,6 +762,7 @@ projects = "~/zephyrapps"
 The initial backend should support:
 
 -   environment resolution (workspace/venv/SDK, above);
+-   installing the environment when there is none (the installer above);
 -   projects folder and project selection (the gate above);
 -   board selection;
 -   shield selection (optional, `--shield`);

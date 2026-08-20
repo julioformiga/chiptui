@@ -1548,6 +1548,18 @@ fn an_unconfigured_pane_shows_the_open_checklist_and_dim_buttons() {
         !app.build_action_enabled(chiptui::build::BuildAction::UpdateZephyr),
         "west update has nothing to run against yet"
     );
+    // With nothing resolved, the environment row is the *other* half of
+    // its slot: there is nothing to update, and installing is what the
+    // user actually needs.
+    assert_eq!(
+        app.build
+            .as_ref()
+            .unwrap()
+            .actions(&app.manager.capabilities())
+            .first(),
+        Some(&chiptui::build::BuildAction::InstallZephyr),
+        "an unresolved workspace offers Install, not Update"
+    );
 
     // The checklist asks, the buttons stay visible but dim --- the state
     // explains itself without a separate guidance block.
@@ -1561,8 +1573,8 @@ fn an_unconfigured_pane_shows_the_open_checklist_and_dim_buttons() {
         "the second question must show:\n{frame}"
     );
     assert!(
-        frame.contains("↻ Update Zephyr"),
-        "the button must stay visible:\n{frame}"
+        frame.contains("⇩ Install Zephyr"),
+        "the environment button must stay visible:\n{frame}"
     );
 }
 
@@ -1643,10 +1655,17 @@ fn a_wrong_directory_is_rejected_with_the_install_guide() {
 
     app.maybe_open_workspace_picker();
 
-    // Accept the home itself: not an installation (no .west/).
+    // Accept the home itself: not an installation (no .west/). The
+    // rejection now arrives with a way forward on top of it --- install one
+    // here --- so declining that offer is what reveals the picker again.
     app.handle(key(KeyCode::Enter));
+    assert!(
+        matches!(app.overlay, Some(Overlay::ConfirmInstallHere { .. })),
+        "a refused directory must offer to become an installation"
+    );
+    app.handle(key(KeyCode::Char('n')));
     let Overlay::DirPicker { error, .. } = app.overlay.clone().unwrap() else {
-        panic!("a rejection must keep the picker open");
+        panic!("declining the offer must leave the picker open");
     };
     let error = error.expect("the rejection must explain itself");
     assert!(error.contains(".west"), "names the marker: {error}");

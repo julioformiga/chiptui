@@ -254,6 +254,15 @@ pub enum BuildAction {
     /// environment the workspace pane's checklist resolves --- before any
     /// project action below it has something to run against.
     UpdateZephyr,
+    /// `Install Zephyr` --- the row [`Self::UpdateZephyr`] becomes while no
+    /// installation is resolved. The two are mutually exclusive by nature
+    /// (there is nothing to update before there is something installed, and
+    /// nothing to install once there is), so they share one row rather than
+    /// each taking their own: the stack stays six buttons, which is the
+    /// height `ui::MIN_HEIGHT` was measured against. Opens the directory
+    /// picker rather than running anything --- the installation itself is
+    /// [`crate::install::Installer`]'s.
+    InstallZephyr,
 }
 
 impl BuildAction {
@@ -268,9 +277,19 @@ impl BuildAction {
     /// The lifecycle targets the conventional `build` directory inside the
     /// project --- no directory picker.
     pub fn list(caps: &Capabilities, running: bool) -> Vec<Self> {
+        Self::list_for(caps, running, true)
+    }
+
+    /// [`Self::list`] with the workspace's state: `installed` picks which
+    /// of the two environment rows the first slot carries.
+    pub fn list_for(caps: &Capabilities, running: bool, installed: bool) -> Vec<Self> {
         let mut actions = Vec::with_capacity(BuildKind::ALL.len() + 5);
         if caps.contains(crate::backend::Capability::WorkspaceSync) {
-            actions.push(Self::UpdateZephyr);
+            actions.push(if installed {
+                Self::UpdateZephyr
+            } else {
+                Self::InstallZephyr
+            });
         }
         actions.push(Self::Menuconfig);
         actions.extend(BuildKind::ALL.iter().map(|kind| Self::Build(*kind)));
@@ -292,6 +311,11 @@ pub struct BuildPanel {
     /// `build` until the user picks another, so parallel board
     /// configurations do not keep erasing each other.
     pub build_dir: String,
+    /// Whether a Zephyr installation is resolved, pushed in by
+    /// [`crate::app::App::refresh_workspace_resolution`]. The panel does not
+    /// resolve anything itself --- it only needs the fact to know whether
+    /// its first row offers `Update Zephyr` or `Install Zephyr`.
+    pub workspace_installed: bool,
     /// The board commands target: from the CMake cache until the user picks
     /// one or a saved answer loads (both outrank, and outlive, cache reads).
     pub board: Option<BoardChoice>,
@@ -333,6 +357,7 @@ impl BuildPanel {
             origin: BoardOrigin::Cache,
         });
         Self {
+            workspace_installed: false,
             root,
             build_dir: DEFAULT_BUILD_DIR.to_string(),
             board,
@@ -456,7 +481,7 @@ impl BuildPanel {
 
     /// Rows the action list shows --- see [`BuildAction::list`].
     pub fn actions(&self, caps: &crate::backend::Capabilities) -> Vec<BuildAction> {
-        BuildAction::list(caps, self.is_busy())
+        BuildAction::list_for(caps, self.is_busy(), self.workspace_installed)
     }
 
     /// The action at `index` in the drawn list, mirroring the layout
@@ -709,7 +734,7 @@ impl BuildPanel {
         // `Stop` now trails the list, drawn as the half-width box in the
         // pane's bottom-right corner: land the cursor on it, so cancelling
         // is one Enter away.
-        self.cursor = BuildAction::list(caps, true).len() - 1;
+        self.cursor = BuildAction::list_for(caps, true, self.workspace_installed).len() - 1;
         true
     }
 
@@ -718,7 +743,7 @@ impl BuildPanel {
     /// followed by a build, so that is where the cursor waits it out).
     /// A no-op when the list does not show the action.
     pub fn focus_action(&mut self, caps: &Capabilities, action: BuildAction) {
-        if let Some(index) = BuildAction::list(caps, self.is_busy())
+        if let Some(index) = BuildAction::list_for(caps, self.is_busy(), self.workspace_installed)
             .iter()
             .position(|candidate| *candidate == action)
         {
@@ -1091,6 +1116,8 @@ mod tests {
         // a destructive action --- no matter which command had run.
         let dir = fixture_dir("keep-cursor");
         let mut panel = BuildPanel::new(&dir, UtcOffset::UTC);
+        // `west update` only exists as a row once an installation resolves.
+        panel.workspace_installed = true;
         let caps = crate::backend::Capabilities::from_slice(&[
             crate::backend::Capability::Build,
             crate::backend::Capability::Clean,
@@ -1400,6 +1427,10 @@ mod tests {
     #[test]
     fn workspace_sync_leads_the_buttons_and_stop_trails_them_when_running() {
         let mut panel = BuildPanel::new("/nonexistent", UtcOffset::UTC);
+        // With an installation resolved --- which is what makes the first
+        // row `Update Zephyr` rather than the `Install Zephyr` that shares
+        // its slot.
+        panel.workspace_installed = true;
         // Zephyr's real set: `west update`, menuconfig, the lifecycle,
         // flash --- the project/board questions live in the workspace pane.
         let zephyr = crate::backend::Capabilities::from_slice(&[

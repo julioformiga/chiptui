@@ -263,21 +263,46 @@ pub fn install_check(
     origin: WorkspaceOrigin,
     settings: &ZephyrSettings,
 ) -> Resolution {
-    if !dir.join(".west").is_dir() {
-        return Resolution::Invalid(format!(
+    match install_state(&dir) {
+        InstallState::Absent => Resolution::Invalid(format!(
             "{} is not a Zephyr installation (no .west/ directory) — install guide: {GETTING_STARTED}",
             dir.display()
-        ));
-    }
-    let manifest_path = manifest_path(&dir);
-    if !dir.join(&manifest_path).is_dir() {
-        return Resolution::Invalid(format!(
+        )),
+        InstallState::Partial => Resolution::Invalid(format!(
             "{} is a west workspace but has no {} checkout (west update?) — install guide: {GETTING_STARTED}",
             dir.display(),
-            manifest_path
-        ));
+            manifest_path(&dir)
+        )),
+        InstallState::Complete => Resolution::Single(from_settings(input, dir, origin, settings)),
     }
-    Resolution::Single(from_settings(input, dir, origin, settings))
+}
+
+/// How far along a directory is towards being a Zephyr installation.
+///
+/// The two predicates [`install_check`] judges by, without the message or
+/// the [`Workspace`] it builds --- the installer needs the same answer to
+/// word its offer ("install", "finish", "use") and to decide whether it has
+/// anything to run at all. One definition of "is this an installation",
+/// shared, rather than a second copy of `.west/`-and-checkout next door.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstallState {
+    /// Nothing here: no `.west/`.
+    Absent,
+    /// `west init` ran but the manifest was never checked out --- an
+    /// interrupted `west update`, which is resumable.
+    Partial,
+    /// A usable installation.
+    Complete,
+}
+
+pub fn install_state(dir: &Path) -> InstallState {
+    if !dir.join(".west").is_dir() {
+        return InstallState::Absent;
+    }
+    if !dir.join(manifest_path(dir)).is_dir() {
+        return InstallState::Partial;
+    }
+    InstallState::Complete
 }
 
 /// Builds the [`Workspace`] for a validated `dir`, layering the explicit

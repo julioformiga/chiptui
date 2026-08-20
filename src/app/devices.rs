@@ -183,12 +183,12 @@ impl App {
                 panel.set_shield(Some(shield.clone()));
             }
         }
-        if let Some(workspace) = &self.workspace {
-            let west_env = workspace.west_env();
-            panel.set_tool_path(west_env.program.clone());
-            panel.set_tool_env(west_env.env);
-        }
         self.build = Some(panel);
+        // One place seeds a panel from the resolved environment --- the
+        // west invocation *and* which of the two environment rows the
+        // action stack offers. Duplicating it here is how the second fact
+        // got missed the first time.
+        self.apply_west_env();
         // The workspace pane's embedded file list starts on the same root
         // the build panel just claimed --- the checklist's `Project path`
         // answer and "what files does this pane show" are the same fact.

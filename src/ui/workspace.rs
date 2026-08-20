@@ -117,13 +117,64 @@ fn draw_files_section(
     super::files::render_list(frame, area, items, cursor, focused, palette);
 }
 
+/// The four states a checklist row's mark can carry. `Open` is the dim
+/// `□` that says *this needs defining*; `Warn` is the state the Project
+/// pane never had and the installer's prerequisite list needs --- an
+/// answer that is not what was recommended but does not stop anything
+/// (the system Python, when pyenv will provide 3.12 anyway). Keeping it in
+/// the shared grammar is what stops the installer from inventing a second
+/// row vocabulary next to this one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RowMark {
+    Done,
+    Warn,
+    Broken,
+    Open,
+}
+
+impl RowMark {
+    /// The glyph and its color. All four are plain BMP characters --- no
+    /// Private Use Area, which `tests/no_private_use_glyphs.rs` enforces.
+    fn span(self, palette: Palette) -> Span<'static> {
+        match self {
+            Self::Done => Span::styled("✓", Style::new().fg(palette.success).bold()),
+            Self::Warn => Span::styled("⚠", Style::new().fg(palette.warning).bold()),
+            Self::Broken => Span::styled("✗", Style::new().fg(palette.error).bold()),
+            Self::Open => Span::styled("□", muted_style(palette)),
+        }
+    }
+}
+
+/// One checklist row in the shared grammar: `mark`, a space, the label
+/// padded to `label_width`, a space, then the answer. The value is a whole
+/// [`Line`], so a row whose answer needs several styled spans (the Project
+/// pane's target row) uses the same shape. `label_width` is the one thing
+/// that varies: the panes agree on 13 ([`checklist_row`]), the installer's
+/// step list needs more room for its sentences.
+pub(crate) fn marked_row(
+    mark: RowMark,
+    label_width: usize,
+    label: &str,
+    value: Line<'static>,
+    palette: Palette,
+) -> Line<'static> {
+    let mut spans = vec![
+        mark.span(palette),
+        Span::raw(" "),
+        Span::styled(
+            format!("{label:<label_width$}"),
+            Style::new().fg(palette.fg).bold(),
+        ),
+        Span::raw(" "),
+    ];
+    spans.extend(value.spans);
+    Line::from(spans)
+}
+
 /// One checklist row: `✓` when the answer exists, a dim `□` while the
-/// question is still open (the mark that says *this needs defining*), a
-/// red `✗` when a configured one failed validation --- then the label,
-/// then the answer itself. The value is a whole [`Line`], so a row whose
-/// answer needs several styled spans (the Project pane's target row) uses
-/// the same grammar. Shared with the project panel --- one checklist
-/// grammar across the rows.
+/// question is still open, a red `✗` when a configured one failed
+/// validation --- then the label, then the answer itself. Shared with the
+/// project panel --- one checklist grammar across the rows.
 pub(crate) fn checklist_row(
     done: bool,
     broken: bool,
@@ -131,21 +182,12 @@ pub(crate) fn checklist_row(
     value: Line<'static>,
     palette: Palette,
 ) -> Line<'static> {
-    let mark = if broken {
-        Span::styled("✗", Style::new().fg(palette.error).bold())
-    } else if done {
-        Span::styled("✓", Style::new().fg(palette.success).bold())
-    } else {
-        Span::styled("□", muted_style(palette))
+    let mark = match (broken, done) {
+        (true, _) => RowMark::Broken,
+        (false, true) => RowMark::Done,
+        (false, false) => RowMark::Open,
     };
-    let mut spans = vec![
-        mark,
-        Span::raw(" "),
-        Span::styled(format!("{label:<13}"), Style::new().fg(palette.fg).bold()),
-        Span::raw(" "),
-    ];
-    spans.extend(value.spans);
-    Line::from(spans)
+    marked_row(mark, LABEL_WIDTH, label, value, palette)
 }
 
 /// The right-hand side of a checklist row: the answer when there is one,
@@ -175,8 +217,12 @@ pub(crate) fn answer_value(
 /// The merged Board · Shield row needs the room most: its two names and
 /// their separator share this budget.
 pub(crate) fn value_budget(width: u16) -> usize {
-    (width as usize).saturating_sub(16).max(8)
+    (width as usize).saturating_sub(LABEL_WIDTH + 3).max(8)
 }
+
+/// The label column both panes share: `Projects base` is the longest of
+/// them.
+pub(crate) const LABEL_WIDTH: usize = 13;
 
 /// The muted key a pane's pinned last line labels itself with (`state`,
 /// `last`, `env`), in the same 6 columns across both panes.

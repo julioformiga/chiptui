@@ -1,0 +1,24 @@
+#!/bin/sh
+# Fake `python3`. Two roles: the prerequisite version query, and creating
+# the venv --- which really does write `.venv/bin/{pip,west}`, so the steps
+# after it execute the same absolute paths the installer derives rather
+# than an override the test injected.
+FIXTURES=$(cd "$(dirname "$0")" && pwd)
+case "$1" in
+    --version)
+        printf 'Python 3.11.9\n'
+        exit 0
+        ;;
+    -m)
+        if [ "$2" = "venv" ]; then
+            venv="$3"
+            mkdir -p "$venv/bin"
+            cp "$FIXTURES/pip" "$venv/bin/pip"
+            cp "$FIXTURES/west" "$venv/bin/west"
+            chmod +x "$venv/bin/pip" "$venv/bin/west"
+            exit 0
+        fi
+        ;;
+esac
+printf 'fake python3: %s\n' "$*"
+exit 0

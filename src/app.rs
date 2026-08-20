@@ -32,6 +32,7 @@ use crate::device::{DevicePath, DeviceState};
 use crate::event::AppEvent;
 use crate::files::SyncStatus;
 use crate::flash::FlashPanel;
+use crate::install::Installer;
 use crate::logs::LogStore;
 use crate::process::{ProcessId, ProcessManager};
 use crate::project::{DetectionOutcome, DetectionSource, ProjectManager};
@@ -41,6 +42,7 @@ pub mod devices;
 pub mod file_browser;
 pub mod flash_view;
 pub mod help;
+mod install_view;
 pub mod overlay;
 pub mod probe;
 pub mod project_view;
@@ -367,6 +369,36 @@ pub enum Overlay {
     /// Yes/No, because "restart" has two honest flavors with different
     /// tradeoffs (see [`Self::apply_restore_device_script`]).
     RestoreDeviceScript { selected: usize },
+    /// The Zephyr installer: prerequisites, the sequence, and the running
+    /// step's output. Carries nothing at all --- every piece of its state
+    /// lives on [`App::installer`], which is what lets the panel keep a
+    /// process and an output buffer while the overlay value is rebuilt on
+    /// each keystroke.
+    ZephyrInstall,
+    /// The SDK toolchain pick, opened from the installer and returning to
+    /// it: the names `west sdk list` reported, multi-selected with space.
+    /// An empty pick installs the whole bundle.
+    SdkToolchains { selected: usize },
+    /// The installation picker refused a directory --- and this is the way
+    /// forward from that refusal: install one there, finish a half-built
+    /// one, or adopt a complete one sitting in its `zephyr/` subdirectory.
+    /// Carries the *picked* folder; the target under it and the wording
+    /// are derived at draw time from what is actually there
+    /// (`ui::overlay::install_offer`).
+    ///
+    /// `reason` is the refusal this offer answers. It is shown under the
+    /// question *and* is what restores the picker on decline: the overlay
+    /// slot is one deep, so an offer that covers the picker has to carry
+    /// enough to put it back.
+    ///
+    /// Its own variant rather than the shared [`Self::Confirm`], whose one
+    /// slot is already multiplexed between the flash panel's pending
+    /// action and the installer's start question.
+    ConfirmInstallHere {
+        dir: std::path::PathBuf,
+        reason: String,
+        confirm: bool,
+    },
 }
 
 /// One action offered by [`Overlay::FileActions`] for the entry under the
@@ -741,6 +773,23 @@ pub struct App {
     /// WorkspaceSync`]): which west workspace/venv/SDK the commands run
     /// against, plus `west update`.
     pub workspace: Option<crate::workspace::WorkspacePanel>,
+    /// The Zephyr installer, created when the user picks a folder to
+    /// install into and dropped once the installation is persisted. Holds
+    /// its own process slot and output buffer --- the overlay that draws it
+    /// carries no state at all.
+    pub installer: Option<crate::install::Installer>,
+    /// Tool overrides waiting for an installer to exist (the panel is
+    /// created long after `bootstrap`). The test seam for `pyenv` and the
+    /// prerequisite queries; empty in every real run.
+    installer_tool_paths: Vec<(&'static str, String)>,
+    /// Rows of installer output the last frame drew, published by the
+    /// renderer so page scrolling matches the drawn height --- the same
+    /// contract [`Self::log_viewport`] has for the log pane.
+    pub install_viewport: usize,
+    /// Whether the open `Overlay::Confirm` is the installer's. The shared
+    /// confirm is otherwise the flash panel's, which reads its action from
+    /// `FlashPanel::pending`.
+    pub(crate) install_confirm_pending: bool,
     /// The Project pane's cursor, over its checklist rows (the environment
     /// questions that moved out of the workspace pane into row 1).
     pub project_cursor: usize,
@@ -915,6 +964,10 @@ impl App {
             flash: None,
             build: None,
             workspace: None,
+            installer: None,
+            installer_tool_paths: Vec::new(),
+            install_viewport: 0,
+            install_confirm_pending: false,
             project_cursor: 0,
             board_segment: true,
             device_pane_tab: DevicePaneTab::default(),
@@ -1533,6 +1586,8 @@ impl App {
             }
         }
 
+        self.install_on_process(event);
+
         if let Some(mut build) = self.build.take() {
             let caps = self.manager.capabilities();
             let notices = build.on_process(event, &caps);
@@ -1873,6 +1928,9 @@ impl App {
                 .workspace
                 .as_ref()
                 .is_some_and(|workspace| workspace.resolved.is_some()),
+            // The row that exists precisely because nothing is resolved:
+            // it is the one environment action with no prerequisite.
+            crate::build::BuildAction::InstallZephyr => true,
         }
     }
 
@@ -2047,6 +2105,26 @@ impl App {
             }
             KeyCode::Char('m') if self.manager.capabilities().contains(Capability::Monitor) => {
                 self.open_monitor();
+                return;
+            }
+            // The SDK's toolchains, without walking the whole installer
+            // flow to reach them: adding one to an existing SDK is a
+            // routine errand (a new board needs a target the bundle was
+            // not unpacked with), and it used to cost five keystrokes of
+            // navigation through questions that were already answered.
+            //
+            // Placed here, before the focus dispatch, so it works from
+            // whichever pane holds the cursor --- like `m`. The
+            // MicroPython `s` (save a captured run's output) is guarded by
+            // `is_run_view` further down and belongs to a backend without
+            // this capability, so the two never both apply.
+            KeyCode::Char('s')
+                if self
+                    .manager
+                    .capabilities()
+                    .contains(Capability::WorkspaceSync) =>
+            {
+                self.open_sdk_toolchains_shortcut();
                 return;
             }
             // Capital so it never collides with plain `r` (re-detect / reload
@@ -2226,6 +2304,25 @@ impl App {
                         ("esc", "close"),
                     ]
                 }
+            }
+            Some(Overlay::ZephyrInstall) => {
+                if self.installer.as_ref().is_some_and(Installer::is_busy) {
+                    vec![("enter", "stop"), ("j/k", "scroll output")]
+                } else {
+                    vec![
+                        ("enter", "install"),
+                        ("r", "re-check"),
+                        ("s", "skip SDK"),
+                        ("t", "toolchains"),
+                        ("esc", "close"),
+                    ]
+                }
+            }
+            Some(Overlay::ConfirmInstallHere { .. }) => {
+                vec![("←/→", "choose"), ("enter", "confirm"), ("esc", "cancel")]
+            }
+            Some(Overlay::SdkToolchains { .. }) => {
+                vec![("↑/↓", "select"), ("space", "toggle"), ("enter", "done")]
             }
             Some(Overlay::FileViewer) => vec![
                 ("↑/↓", "scroll"),

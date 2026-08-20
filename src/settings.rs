@@ -392,6 +392,14 @@ pub fn save_projects(config: &Path, dir: &Path) -> std::io::Result<()> {
     save_zephyr_key(config, "projects", &dir.display().to_string())
 }
 
+/// Writes `[zephyr] sdk` --- the SDK bundle's directory, exported as
+/// `ZEPHYR_SDK_INSTALL_DIR` and read for the Project pane's version badge.
+/// Written only by the installer, which is the only thing that knows where
+/// a bundle just landed; a hand-installed SDK is configured by hand.
+pub fn save_sdk(config: &Path, dir: &Path) -> std::io::Result<()> {
+    save_zephyr_key(config, "sdk", &dir.display().to_string())
+}
+
 /// Reads `[micropython] projects` from the user config, raw --- `~` is left
 /// for the caller to expand against a home it may have redirected. User
 /// config only: a MicroPython project pins no environment of its own, so
