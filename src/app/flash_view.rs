@@ -171,21 +171,14 @@ impl App {
 
     /// Runs the row the actions tab's cursor sits on: an esptool action
     /// through the same gate the menu always used (firmware pick or
-    /// confirmation first, `SPEC.md` §15), the two online-firmware entries
-    /// as their dialogs, `Stop` as a cancel.
+    /// confirmation first, `SPEC.md` §15), the online-firmware search as
+    /// its dialog, `Stop` as a cancel.
     fn run_flash_pane_action(&mut self, action: FlashPaneAction) {
         match action {
             FlashPaneAction::Stop => self.stop_flash(),
             FlashPaneAction::Run(action) => self.trigger_flash_action(action),
             FlashPaneAction::SearchOnline => {
                 self.search_online();
-                self.show_flash_dialog();
-            }
-            FlashPaneAction::CustomUrl => {
-                if let Some(flash) = &mut self.flash {
-                    flash.custom_url.clear();
-                    flash.screen = FlashScreen::CustomUrl;
-                }
                 self.show_flash_dialog();
             }
         }
@@ -249,7 +242,7 @@ impl App {
         else {
             self.flash = Some(flash);
             self.logs
-                .warn("no chip known yet --- run 'chip information' or pick one in Options first");
+                .warn("no chip known yet --- connect the board or pick one in Options first");
             return;
         };
         let vendor = self

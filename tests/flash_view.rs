@@ -399,7 +399,7 @@ fn the_flash_menu_flags_destructive_actions() {
     let mut app = app_with_flash(&project);
     let frame = render(&mut app, 110, 24);
 
-    assert!(frame.contains("erase flash"), "{frame}");
+    assert!(frame.contains("Erase flash"), "{frame}");
     assert!(frame.contains("confirm"), "{frame}");
 }
 
@@ -409,8 +409,8 @@ fn the_flash_menu_shows_an_icon_per_action() {
     let mut app = app_with_flash(&project);
     let frame = render(&mut app, 110, 24);
 
-    assert!(frame.contains("⌫ erase flash"), "{frame}");
-    assert!(frame.contains("⇪ write / flash firmware"), "{frame}");
+    assert!(frame.contains("⌫ Erase flash"), "{frame}");
+    assert!(frame.contains("⇪ Write / flash firmware"), "{frame}");
 }
 
 #[test]
@@ -511,7 +511,7 @@ fn the_flash_dialog_is_layered_over_the_dashboard_not_a_replacement_for_it() {
         "the dashboard panes must stay visible behind the flash dialog:\n{frame}"
     );
     assert!(
-        frame.contains("Flash") && frame.contains("chip information"),
+        frame.contains("Flash") && frame.contains("Chip information"),
         "the flash menu must render as a dialog on top:\n{frame}"
     );
 }
@@ -749,17 +749,21 @@ fn x_switches_the_device_pane_to_the_actions_tab() {
     assert_eq!(app.focus, Focus::FilesDevice);
     assert!(app.device_actions_tab_active());
 
-    // 8 stacked buttons cost 2N+1 rows plus the reserved three-row footer:
-    // the row needs 22+ rows of its own, so render tall enough to fit.
+    // 6 stacked buttons cost 2N+1 rows plus the reserved three-row footer:
+    // the row needs 16+ rows of its own, so render tall enough to fit.
     let frame = render(&mut app, 110, 40);
     assert!(
         frame.contains("Project actions • Device files"),
         "missing the pane's tab strip:\n{frame}"
     );
-    assert!(frame.contains("◆ chip information"), "{frame}");
-    assert!(frame.contains("⇪ write / flash firmware"), "{frame}");
+    assert!(frame.contains("▦ Flash information"), "{frame}");
+    assert!(frame.contains("⇪ Write / flash firmware"), "{frame}");
     assert!(frame.contains("⇩ Search firmware online"), "{frame}");
-    assert!(frame.contains("✎ Firmware URL"), "{frame}");
+    // The chip identity is read in the background of every device
+    // selection, and a direct URL is pasted from the search window: neither
+    // is a button here.
+    assert!(!frame.contains("Chip information"), "{frame}");
+    assert!(!frame.contains("Firmware URL"), "{frame}");
     assert!(
         frame.contains("no command yet"),
         "the reserved state line before any run:\n{frame}"
@@ -801,7 +805,10 @@ fn the_actions_tab_keeps_focus_and_parks_the_cursor_on_stop() {
     let project = Project::new("pane-run");
     let mut app = app_in_actions_tab(&project);
 
-    app.handle(key(KeyCode::Enter)); // chip information, read-only
+    for _ in 0..4 {
+        app.handle(key(KeyCode::Down)); // Reset, read-only
+    }
+    app.handle(key(KeyCode::Enter));
     let flash = app.flash.as_ref().unwrap();
     assert!(flash.is_busy(), "the action started");
     assert_eq!(
@@ -826,12 +833,12 @@ fn the_actions_tab_keeps_focus_and_parks_the_cursor_on_stop() {
     assert_eq!(app.focus, Focus::FilesDevice);
     assert_eq!(
         app.flash.as_ref().unwrap().pane_cursor,
-        0,
+        4,
         "a finished command lands back on its own row"
     );
     let frame = render(&mut app, 110, 40);
     assert!(
-        frame.contains("chip information ok in"),
+        frame.contains("Reset ok in"),
         "the report line names the finished run:\n{frame}"
     );
     assert!(!frame.contains("■ Stop"), "{frame}");
@@ -842,8 +849,7 @@ fn erase_from_the_actions_tab_still_confirms_with_the_literal_command() {
     let project = Project::new("pane-erase");
     let mut app = app_in_actions_tab(&project);
 
-    app.handle(key(KeyCode::Down));
-    app.handle(key(KeyCode::Down)); // erase flash
+    app.handle(key(KeyCode::Down)); // Erase flash
     app.handle(key(KeyCode::Enter));
 
     match &app.overlay {
@@ -876,7 +882,7 @@ fn the_search_button_opens_the_online_window_as_a_dialog() {
         flash.cycle_chip(true);
         flash.cycle_chip(true); // Esp32, matching the curl fixture
     }
-    for _ in 0..6 {
+    for _ in 0..5 {
         app.handle(key(KeyCode::Down)); // Search firmware online
     }
     app.handle(key(KeyCode::Enter));
@@ -1048,13 +1054,22 @@ fn leaving_a_dialog_returns_to_the_pane_that_hosts_the_menu() {
     // them, with the dialog's own footer to match.
     let project = Project::new("pane-esc");
     let mut app = app_in_actions_tab(&project);
+    {
+        let flash = app.flash.as_mut().unwrap();
+        flash.set_curl_tool_path(fake_curl());
+        flash.cycle_chip(true);
+        flash.cycle_chip(true); // Esp32, matching the curl fixture
+    }
 
-    for _ in 0..7 {
-        app.handle(key(KeyCode::Down)); // Firmware URL
+    for _ in 0..5 {
+        app.handle(key(KeyCode::Down)); // Search firmware online
     }
     app.handle(key(KeyCode::Enter));
     assert_eq!(app.view, View::Flash);
-    assert_eq!(app.flash.as_ref().unwrap().screen, FlashScreen::CustomUrl);
+    assert_eq!(
+        app.flash.as_ref().unwrap().screen,
+        FlashScreen::OnlineBoards
+    );
 
     app.handle(key(KeyCode::Esc));
     assert_eq!(app.view, View::Dashboard, "back is the pane, not a menu");
@@ -1074,7 +1089,7 @@ fn a_refused_search_opens_no_dialog_from_the_tab() {
     let project = Project::new("pane-search-refused");
     let mut app = app_in_actions_tab(&project);
 
-    for _ in 0..6 {
+    for _ in 0..5 {
         app.handle(key(KeyCode::Down)); // Search firmware online
     }
     app.handle(key(KeyCode::Enter));
@@ -1107,8 +1122,8 @@ fn the_arrows_create_the_flash_panel_the_tab_draws() {
     // The row is sized to the button stack, so the buttons are actually
     // there to press --- a panel-less tab collapsed row 2 to its borders.
     let frame = render(&mut app, 110, 40);
-    assert!(frame.contains("◆ chip information"), "{frame}");
-    assert!(frame.contains("✎ Firmware URL"), "{frame}");
+    assert!(frame.contains("▦ Flash information"), "{frame}");
+    assert!(frame.contains("⇩ Search firmware online"), "{frame}");
     assert!(frame.contains("no command yet"), "{frame}");
 }
 
@@ -1125,7 +1140,7 @@ fn the_tab_names_a_running_fetch_and_stops_it() {
         flash.cycle_chip(true);
         flash.cycle_chip(true); // Esp32, matching the curl fixture
     }
-    for _ in 0..6 {
+    for _ in 0..5 {
         app.handle(key(KeyCode::Down)); // Search firmware online
     }
     app.handle(key(KeyCode::Enter));

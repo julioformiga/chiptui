@@ -75,8 +75,11 @@ so on the files side they give up their directory meaning (Backspace still ascen
 `Enter`'s menu descends); the local pane keeps its arrows, and an untabbed device pane
 (no flash capability) does too. The tab renders the esptool menu as
 the *same* stacked-button widget the Zephyr build pane uses (`ui::flash::draw_actions_pane`:
-one button per `FlashPanel::pane_actions` row --- the six esptool actions plus `⇩ Search
-firmware online` and `✎ Firmware URL`, the menu's old `s`/`u` keys as buttons --- over the
+one button per `FlashPanel::pane_actions` row --- the esptool actions, capitalized like the
+build pane's, plus `⇩ Search firmware online`, the menu's old `s` key as a button; the chip
+identity every device selection already queries in the background gets no button of its own
+(`ChipInfo` is filtered out of the pane rows, though the dialog menu still lists it), and a
+direct download URL is pasted with `u` from the search windows --- over the
 same reserved three-row footer, `■ Stop` as its own half-width box while a command runs,
 the state line with a live counter/last report), row 2 sized to the stack while the tab is
 showing (`row2_content_height`). A started command keeps focus on the pane with the cursor

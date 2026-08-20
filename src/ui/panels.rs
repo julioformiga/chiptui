@@ -471,13 +471,13 @@ fn device_content(app: &App, width: usize, palette: Palette) -> Vec<Line<'static
     // esptool Flash menu of its own, but its board may still be an esptool
     // one --- Zephyr runs on ESP32s --- so the background identity query
     // fills this pane for any backend; only the empty-state wording depends
-    // on whether the user could also run the query by hand ('x').
+    // on whether the user has a Project actions tab to reach ('x').
     let esptool_flash_view =
         caps.contains(Capability::DeviceInfo) || caps.contains(Capability::EraseFlash);
     let Some(flash) = app.flash.as_ref() else {
         return pad_info(vec![
             if esptool_flash_view {
-                Line::from("press 'x' to open Project actions and query the device")
+                Line::from("no device data yet --- press 'x' for Project actions")
             } else {
                 Line::from("no device information for this project")
             }
@@ -489,7 +489,7 @@ fn device_content(app: &App, width: usize, palette: Palette) -> Vec<Line<'static
         return pad_info(vec![
             if esptool_flash_view {
                 Line::from(
-                    "no device data yet --- run chip or flash information from Project actions",
+                    "no device data yet --- connect a board, or run Flash information from Project actions",
                 )
             } else {
                 Line::from("no device information for this project")

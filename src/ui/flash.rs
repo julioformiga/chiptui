@@ -432,7 +432,6 @@ fn draw_action_rows(frame: &mut Frame, area: Rect, flash: &FlashPanel, palette: 
                 Button::new(format!("{} {}", action.icon(), action.label()))
             }
             FlashPaneAction::SearchOnline => Button::new("⇩ Search firmware online"),
-            FlashPaneAction::CustomUrl => Button::new("✎ Firmware URL"),
             FlashPaneAction::Stop => unreachable!("Stop is drawn as the footer box"),
         }
         .enabled(enabled)

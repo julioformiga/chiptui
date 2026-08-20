@@ -62,13 +62,13 @@ impl FlashAction {
 
     pub const fn label(self) -> &'static str {
         match self {
-            Self::ChipInfo => "chip information",
-            Self::FlashInfo => "flash information",
-            Self::EraseFlash => "erase flash",
-            Self::WriteFlash => "write / flash firmware",
-            Self::VerifyFlash => "verify flash",
-            Self::Reset => "reset",
-            Self::ReadFlash => "identify firmware",
+            Self::ChipInfo => "Chip information",
+            Self::FlashInfo => "Flash information",
+            Self::EraseFlash => "Erase flash",
+            Self::WriteFlash => "Write / flash firmware",
+            Self::VerifyFlash => "Verify flash",
+            Self::Reset => "Reset",
+            Self::ReadFlash => "Identify firmware",
         }
     }
 
@@ -99,20 +99,18 @@ impl FlashAction {
 }
 
 /// One row of the device pane's **Project actions** tab (the tab the
-/// flash menu became): an esptool action, the two online-firmware
-/// entries, or --- appended exactly while a command runs, never a row of
-/// the stack --- `Stop`. The same shape [`crate::build::BuildAction`]
-/// gives the build pane, so the two panes read identically.
+/// flash menu became): an esptool action, the online-firmware search, or
+/// --- appended exactly while a command runs, never a row of the stack ---
+/// `Stop`. The same shape [`crate::build::BuildAction`] gives the build
+/// pane, so the two panes read identically.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FlashPaneAction {
     Run(FlashAction),
     /// Searches micropython.org/download/ for the known chip
     /// (`FlashPanel::search_online`), as a button instead of the menu's
-    /// old `s` key.
+    /// old `s` key. A direct download URL has no button of its own: the
+    /// search results' `u` key is the way to [`FlashScreen::CustomUrl`].
     SearchOnline,
-    /// Free-text entry for a direct firmware download URL, the menu's old
-    /// `u` key.
-    CustomUrl,
     Stop,
 }
 
@@ -449,18 +447,23 @@ impl FlashPanel {
         }
     }
 
-    /// The button rows the device pane's Project actions tab shows: every
-    /// esptool menu action in its order, then the two online-firmware
-    /// entries (search, direct URL), with `Stop` appended exactly while a
-    /// command runs --- drawn as its own half-width box, never a stack row,
-    /// like the build pane's own `Stop`.
+    /// The button rows the device pane's Project actions tab shows: the
+    /// esptool menu actions in their order, then the online-firmware
+    /// search, with `Stop` appended exactly while a command runs --- drawn
+    /// as its own half-width box, never a stack row, like the build pane's
+    /// own `Stop`.
+    ///
+    /// [`FlashAction::ChipInfo`] is not among them: the identity it reads
+    /// is already asked in the background of every device selection
+    /// ([`Self::query_device_info`]) and shown in the Device info pane, so
+    /// a button for it would only re-run work the pane has done.
     pub fn pane_actions(&self) -> Vec<FlashPaneAction> {
         let mut rows: Vec<FlashPaneAction> = FlashAction::ALL
             .iter()
+            .filter(|action| **action != FlashAction::ChipInfo)
             .map(|action| FlashPaneAction::Run(*action))
             .collect();
         rows.push(FlashPaneAction::SearchOnline);
-        rows.push(FlashPaneAction::CustomUrl);
         if self.is_busy() {
             rows.push(FlashPaneAction::Stop);
         }
