@@ -124,7 +124,30 @@ so the whole UI follows the active theme; the Monitor's fake terminal cursor kee
 video on purpose, being the terminal's cursor rather than a selection), which stay
 visible but dimmed until their answers exist (`WorkspacePanel::action_enabled`,
 `App::build_action_enabled`) --- Enter on a dimmed row is a no-op; rows carry no trailing
-text (the confirm overlays quote the literal commands, `SPEC.md` §15, not the rows). The
+text (the confirm overlays quote the literal commands, `SPEC.md` §15, not the rows).
+
+Dimming has **two** rules, not one. `ui::content_style` is the *selection* rule --- an unfocused
+pane's content goes `Modifier::DIM`, which is what makes the column the cursor sits in obvious ---
+and belongs only to panes whose content is a list the cursor walks (the file columns, the Project
+checklist). Panes that carry *output* (the Log feed, the Monitor console) use `ui::output_style`
+instead: dimmed only while a dialog owns the screen (`ui::dashboard_behind_dialog`), never merely
+because another pane holds the cursor. A log entry does not become less worth reading when the
+cursor moves, and the dashboard deliberately parks focus on the build pane while a command streams
+(the Monitor tab is *shown*, the cursor waits on `Stop`) --- so dimming on focus alone dimmed
+exactly what the user was watching, for the whole length of the build. Their focus indicator is the
+pane border and the tab strip. `tests/ui_render.rs`'s
+`output_panes_dim_behind_a_dialog_but_never_for_focus_alone` locks both halves.
+
+Every destructive confirmation shares one grammar (`SPEC.md` §15, `ui::overlay::Destructive`):
+title = the action as a question, target = *what it happens to* in the warning color (board and
+port, workspace path, project and build dir --- `board_target`/`chip_target`, which say
+`no board selected` rather than inventing one), consequence = what is lost in a plain sentence,
+then the literal command muted underneath. It covers `west flash`, `west build -t clean`,
+`west update` and esptool's erase/write (`FlashPanel::pending` is what lets the shared
+`Overlay::Confirm` name the action it is asking about). `No` is the default in all of them, and
+`destructive_confirmations_name_the_action_the_target_and_the_cost` locks the shape.
+
+The
 header's `project` field is the project question's other half (`App::header_project`):
 empty while the root is not a buildable application, then the picked project's folder name
 (the MicroPython pick answers it too). Row 1 itself is a fixed height: both

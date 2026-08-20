@@ -582,6 +582,176 @@ fn the_declared_minimum_fits_the_whole_dashboard() {
     );
 }
 
+/// Output panes carry what the user is *reading*, so they never dim merely
+/// because the cursor sits on another pane --- and the dashboard
+/// deliberately parks focus on the build pane while a command streams, so
+/// dimming on focus alone would dim exactly what is being watched. Behind a
+/// dialog they dim like everything else: there the dashboard is context.
+#[test]
+fn output_panes_dim_behind_a_dialog_but_never_for_focus_alone() {
+    use ratatui::style::Modifier;
+
+    /// Cells of row 3 (the Log/Monitor pane) that carry `DIM`, and those
+    /// that do not --- blanks ignored, they carry no text either way.
+    fn row_three_dim(app: &mut App, width: u16, height: u16) -> (usize, usize) {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test terminal");
+        terminal
+            .draw(|frame| chiptui::ui::draw(frame, app))
+            .expect("draw succeeds");
+        let rendered = terminal.backend().to_string();
+        let strip = rendered
+            .lines()
+            .position(|line| line.contains("Log"))
+            .expect("row 3's tab strip") as u16;
+        let buffer = terminal.backend().buffer().clone();
+        let (mut dim, mut lit) = (0, 0);
+        for y in (strip + 1)..height.saturating_sub(1) {
+            for x in 1..width.saturating_sub(1) {
+                let cell = &buffer[(x, y)];
+                if cell.symbol().trim().is_empty() {
+                    continue;
+                }
+                if cell.modifier.contains(Modifier::DIM) {
+                    dim += 1;
+                } else {
+                    lit += 1;
+                }
+            }
+        }
+        (dim, lit)
+    }
+
+    let mut app = app_with_backend(BackendKind::Zephyr);
+    app.logs
+        .info("a log entry worth reading while a build runs");
+
+    // The cursor is on another pane --- the state a running build puts the
+    // user in. The feed stays lit.
+    app.focus = Focus::Build;
+    let (dim, lit) = row_three_dim(&mut app, 100, 40);
+    assert!(
+        lit > 0 && dim == 0,
+        "the log feed dims while another pane holds the cursor: {dim} dim, {lit} lit"
+    );
+
+    // Focused: unchanged, still lit.
+    app.focus = Focus::Logs;
+    let (dim, lit) = row_three_dim(&mut app, 100, 40);
+    assert!(
+        lit > 0 && dim == 0,
+        "the focused log feed must not dim either: {dim} dim, {lit} lit"
+    );
+
+    // Behind a dialog the whole dashboard is context, this pane included.
+    app.overlay = Some(chiptui::app::OVERLAY_HELP);
+    let (dim, _) = row_three_dim(&mut app, 100, 40);
+    assert!(dim > 0, "the dashboard must dim behind a dialog");
+}
+
+/// `SPEC.md` §4.5 asks for *clear* confirmation of destructive actions.
+/// Clear means three things a bare "Run <command>?" never said: which
+/// action it is (the title), *what it happens to* (the target --- with two
+/// boards plugged in, a dialog that names neither is answered blind), and
+/// what is lost. The literal command stays quoted underneath (§15).
+#[test]
+fn destructive_confirmations_name_the_action_the_target_and_the_cost() {
+    use chiptui::backend::BuildKind;
+    use chiptui::backend::micropython::esptool::{ChipFamily, DeviceDetails};
+    use chiptui::build::BuildAction;
+    use chiptui::flash::FlashAction;
+
+    // --- `west flash`: the board and the port it is plugged into ---
+    let mut app = header_fixture("confirm-flash");
+    app.build
+        .as_mut()
+        .expect("a build panel")
+        .set_picked("esp32c3_devkitm");
+    app.overlay = Some(Overlay::ConfirmBuild {
+        action: BuildAction::Flash,
+        confirm: false,
+    });
+    let frame = render(&mut app, 100, 34);
+    assert!(
+        frame.contains("Flash the board?"),
+        "the title must name the action, not say `Confirm`:\n{frame}"
+    );
+    assert!(
+        frame.contains("esp32c3_devkitm on /dev/ttyACM0"),
+        "the dialog must name the board and port it writes to:\n{frame}"
+    );
+    assert!(
+        frame.contains("Overwrites the firmware currently on it."),
+        "the dialog must state what is lost:\n{frame}"
+    );
+    assert!(
+        frame.contains("west flash"),
+        "the literal command stays quoted:\n{frame}"
+    );
+
+    // --- `west build -t clean`: the project and the directory ---
+    let mut app = header_fixture("confirm-clean");
+    app.overlay = Some(Overlay::ConfirmBuild {
+        action: BuildAction::Build(BuildKind::Clean),
+        confirm: false,
+    });
+    let frame = render(&mut app, 100, 34);
+    assert!(
+        frame.contains("Clean the build?"),
+        "the title must name the action:\n{frame}"
+    );
+    assert!(
+        frame.contains("esp32c3_oled · build/"),
+        "the dialog must name the directory it empties:\n{frame}"
+    );
+    assert!(
+        frame.contains("west build -t clean"),
+        "the literal command stays quoted:\n{frame}"
+    );
+
+    // --- esptool erase: the chip the background query already read ---
+    let mut app = header_fixture("confirm-erase");
+    let mut flash = FlashPanel::new(std::env::temp_dir());
+    flash.details = DeviceDetails {
+        family: Some(ChipFamily::Esp32S3),
+        ..DeviceDetails::default()
+    };
+    flash.request_confirmation(FlashAction::EraseFlash);
+    app.flash = Some(flash);
+    app.overlay = Some(Overlay::Confirm {
+        message: "esptool --port /dev/ttyACM0 erase-flash".to_string(),
+        confirm: false,
+    });
+    let frame = render(&mut app, 100, 34);
+    assert!(
+        frame.contains("Erase the flash?"),
+        "the title must name the action:\n{frame}"
+    );
+    assert!(
+        frame.contains("ESP32-S3 on /dev/ttyACM0"),
+        "the dialog must name the chip it erases:\n{frame}"
+    );
+    assert!(
+        frame.contains("firmware and filesystem alike"),
+        "erasing everything must say so:\n{frame}"
+    );
+
+    // Nothing invented when the answers are missing: an unknown target
+    // says it is unknown rather than reading as a confirmed board.
+    let mut app = app_with_backend(BackendKind::MicroPython);
+    let mut flash = FlashPanel::new(std::env::temp_dir());
+    flash.request_confirmation(FlashAction::EraseFlash);
+    app.flash = Some(flash);
+    app.overlay = Some(Overlay::Confirm {
+        message: "esptool erase-flash".to_string(),
+        confirm: false,
+    });
+    let frame = render(&mut app, 100, 34);
+    assert!(
+        frame.contains("no board selected"),
+        "an unknown target must be named as unknown:\n{frame}"
+    );
+}
+
 #[test]
 fn a_too_small_terminal_degrades_instead_of_panicking() {
     let mut app = app_with_backend(BackendKind::Zephyr);

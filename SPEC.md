@@ -1017,7 +1017,20 @@ Potentially destructive operations:
 -   clean operations that remove build artifacts;
 -   workspace updates that rewrite shared checkouts (`west update`).
 
-These should have appropriate confirmation.
+These should have appropriate confirmation, and every one of them follows
+the same four-part grammar --- a dialog titled `Confirm` over a bare command
+line satisfies none of it:
+
+-   the **title** names the action as a question (`Erase the flash?`);
+-   the **target** names what it happens to, in the warning colour: the
+    board and its port, the workspace path, the project and its build
+    directory. With two boards plugged in, a dialog naming neither is
+    answered blind. What is unknown is said (`no board selected`), never
+    filled in;
+-   the **consequence** says what is lost, in one plain sentence;
+-   the **command** itself is quoted underneath, muted.
+
+`No` is the default in all of them.
 
 Never automatically erase flash as part of a normal flash operation
 unless explicitly configured and confirmed.

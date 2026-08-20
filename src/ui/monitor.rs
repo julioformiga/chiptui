@@ -22,7 +22,7 @@ use crate::flash::{OptionsField, RunState};
 use crate::logs::wrap_rows;
 use crate::ui::flash::{field_label, field_value};
 use crate::ui::{
-    Palette, content_style, dashboard_focused, draw_scrollbar, muted_style, pane_border,
+    Palette, dashboard_focused, draw_scrollbar, muted_style, output_style, pane_border,
 };
 
 /// Chip + offset, always meaningful for `WriteFlash`/`VerifyFlash` on the
@@ -124,7 +124,7 @@ fn draw_device_monitor(
     frame.render_widget(
         Paragraph::new(message.fg(palette.muted))
             .block(block)
-            .style(content_style(focused)),
+            .style(output_style(app)),
         area,
     );
 }
@@ -282,6 +282,10 @@ fn render_console(
     palette: Palette,
 ) {
     let (inner, viewport, width) = layout;
+    // Read before the mutable borrow below: the console dims behind a
+    // dialog like every other pane, but never merely because the cursor
+    // sits elsewhere (see [`crate::ui::output_style`]).
+    let style = output_style(app);
     let rows: usize = doc.iter().map(|line| wrap_rows(&plain(line), width)).sum();
     app.monitor_view = MonitorView {
         rows,
@@ -299,6 +303,7 @@ fn render_console(
     frame.render_widget(
         Paragraph::new(visible)
             .block(block)
+            .style(style)
             .wrap(Wrap { trim: false }),
         area,
     );

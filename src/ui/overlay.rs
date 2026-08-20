@@ -28,8 +28,39 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
             draw_device_picker(frame, area, app, selected, palette)
         }
         Overlay::ThemePicker { selected } => draw_theme_picker(frame, area, app, selected, palette),
+        // `message` is the literal command preview the caller built; which
+        // action it belongs to lives on the panel, un-consumed, so the
+        // dialog can name it (`FlashPanel::pending`).
         Overlay::Confirm { message, confirm } => {
-            draw_confirm(frame, area, &message, confirm, palette)
+            match app.flash.as_ref().and_then(|flash| flash.pending()) {
+                Some(crate::flash::FlashAction::EraseFlash) => draw_destructive(
+                    frame,
+                    area,
+                    Destructive {
+                        title: "Erase the flash?",
+                        target: chip_target(app),
+                        consequence: "Erases the whole chip — firmware and filesystem alike.",
+                        command: message,
+                    },
+                    confirm,
+                    palette,
+                ),
+                Some(crate::flash::FlashAction::WriteFlash) => draw_destructive(
+                    frame,
+                    area,
+                    Destructive {
+                        title: "Write the firmware?",
+                        target: chip_target(app),
+                        consequence: "Overwrites the firmware currently on it.",
+                        command: message,
+                    },
+                    confirm,
+                    palette,
+                ),
+                // Any other confirmation still routed through this overlay
+                // keeps the plain single-line form.
+                _ => draw_confirm(frame, area, &message, confirm, palette),
+            }
         }
         Overlay::ConfirmBuild {
             action: crate::build::BuildAction::UpdateZephyr,
@@ -53,15 +84,24 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
                         .map(|command| command.to_string())
                 })
                 .unwrap_or_else(|| "this action".to_string());
-            let quoted = shorten_tail(&command, 63);
-            let lines = vec![
-                Line::from("Run this in the shared workspace?".fg(palette.warning)),
-                Line::from(quoted).fg(palette.fg),
-                Line::from(
-                    "It rewrites the checkouts every project in it shares.".fg(palette.muted),
-                ),
-            ];
-            draw_confirm_dialog(frame, area, "Confirm", lines, confirm, (72, 8), palette);
+            let target = app
+                .workspace
+                .as_ref()
+                .and_then(|panel| panel.dir())
+                .map(|dir| crate::ui::tilde_path(dir, app.home_dir()))
+                .unwrap_or_else(|| "the shared workspace".to_string());
+            draw_destructive(
+                frame,
+                area,
+                Destructive {
+                    title: "Update the workspace?",
+                    target,
+                    consequence: "Rewrites the checkouts every project in it shares.",
+                    command,
+                },
+                confirm,
+                palette,
+            );
         }
         Overlay::ConfirmBuild { action, confirm } => {
             // The message is derived, not stored: whatever the panel would
@@ -70,7 +110,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
             // included) regularly exceeds one dialog line, so it is
             // shortened from the left --- its tail, not its /tmp prefix,
             // is its identity.
-            let message = app
+            let command = app
                 .build
                 .as_ref()
                 .and_then(|panel| {
@@ -87,10 +127,38 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
                     }
                 })
                 .unwrap_or_else(|| "this action".to_string());
-            draw_confirm(
+            let (title, target, consequence) = match action {
+                crate::build::BuildAction::Flash => (
+                    "Flash the board?",
+                    board_target(app),
+                    "Overwrites the firmware currently on it.",
+                ),
+                // The one build kind that reaches this overlay.
+                _ => (
+                    "Clean the build?",
+                    app.build
+                        .as_ref()
+                        .map(|panel| {
+                            let project = panel
+                                .root
+                                .file_name()
+                                .map(|name| name.to_string_lossy().into_owned())
+                                .unwrap_or_else(|| panel.root.display().to_string());
+                            format!("{project} · {}/", panel.build_dir)
+                        })
+                        .unwrap_or_else(|| "this project".to_string()),
+                    "Removes the built artifacts. The configuration stays.",
+                ),
+            };
+            draw_destructive(
                 frame,
                 area,
-                &format!("Run {}?", shorten_tail(&message, 60)),
+                Destructive {
+                    title,
+                    target,
+                    consequence,
+                    command,
+                },
                 confirm,
                 palette,
             );
@@ -836,6 +904,104 @@ fn draw_project_setup(frame: &mut Frame, area: Rect, selected: usize, palette: P
 fn draw_confirm(frame: &mut Frame, area: Rect, message: &str, confirm: bool, palette: Palette) {
     let lines = vec![Line::from(message.to_string().fg(palette.warning))];
     draw_confirm_dialog(frame, area, "Confirm", lines, confirm, (70, 7), palette);
+}
+
+/// One destructive confirmation, in the grammar all of them share.
+///
+/// `SPEC.md` §4.5 asks for *clear* confirmation of destructive actions, and
+/// a dialog titled "Confirm" over a bare command line is not that: it names
+/// no target, so with two boards plugged in the user confirms in the dark,
+/// and it states no consequence, so "clean" and "erase the whole chip" read
+/// with identical weight. The four fields below are what a confirmation
+/// owes the reader:
+///
+/// * `title` --- the action, as a question (`Erase the flash?`).
+/// * `target` --- *what it happens to*, in the warning colour: the board and
+///   its port, the workspace path, the project. This is the field the old
+///   dialogs were missing entirely.
+/// * `consequence` --- what is lost, in one plain sentence.
+/// * `command` --- the literal command, quoted in muted (`SPEC.md` §15:
+///   never hide what runs behind a paraphrase). Shortened from the *left*
+///   when it is too long: a command's tail is its identity, its `/tmp`
+///   prefix is not.
+///
+/// `No` stays the default everywhere ([`draw_confirm_dialog`]).
+struct Destructive {
+    title: &'static str,
+    target: String,
+    consequence: &'static str,
+    command: String,
+}
+
+/// Columns the destructive dialog occupies, and the budget its quoted
+/// command gets inside them (the borders and a column of padding each side).
+const DESTRUCTIVE_WIDTH: u16 = 72;
+const DESTRUCTIVE_BUDGET: usize = DESTRUCTIVE_WIDTH as usize - 4;
+
+fn draw_destructive(
+    frame: &mut Frame,
+    area: Rect,
+    dialog: Destructive,
+    confirm: bool,
+    palette: Palette,
+) {
+    let lines = vec![
+        Line::from(
+            shorten_tail(&dialog.target, DESTRUCTIVE_BUDGET)
+                .fg(palette.warning)
+                .bold(),
+        ),
+        Line::from(dialog.consequence.fg(palette.fg)),
+        Line::from(""),
+        Line::from(shorten_tail(&dialog.command, DESTRUCTIVE_BUDGET).fg(palette.muted)),
+    ];
+    // Four content rows over the three-row button block, plus the borders.
+    draw_confirm_dialog(
+        frame,
+        area,
+        dialog.title,
+        lines,
+        confirm,
+        (DESTRUCTIVE_WIDTH, 9),
+        palette,
+    );
+}
+
+/// The board a project command acts on, named the way the user recognizes
+/// it: the board target plus the port it is plugged into, whichever of the
+/// two is known. Never invents one --- an unanswered target says so, which
+/// is itself worth reading before a flash.
+fn board_target(app: &App) -> String {
+    let board = app
+        .build
+        .as_ref()
+        .and_then(|panel| panel.board_name())
+        .map(str::to_string);
+    let port = app.devices.selected_port().map(str::to_string);
+    match (board, port) {
+        (Some(board), Some(port)) => format!("{board} on {port}"),
+        (Some(board), None) => format!("{board} — no port selected"),
+        (None, Some(port)) => format!("the board on {port}"),
+        (None, None) => "no board selected".to_string(),
+    }
+}
+
+/// The chip an `esptool` command acts on: what the background identity
+/// query already read, plus the port. Same rule as [`board_target`] ---
+/// what is unknown is said, not filled in.
+fn chip_target(app: &App) -> String {
+    let chip = app
+        .flash
+        .as_ref()
+        .and_then(|flash| flash.details.family)
+        .map(|family| family.label().to_string());
+    let port = app.devices.selected_port().map(str::to_string);
+    match (chip, port) {
+        (Some(chip), Some(port)) => format!("{chip} on {port}"),
+        (Some(chip), None) => format!("{chip} — no port selected"),
+        (None, Some(port)) => format!("the board on {port}"),
+        (None, None) => "no board selected".to_string(),
+    }
 }
 
 /// Installation-directory selection: a real filesystem browser --- "use

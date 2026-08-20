@@ -15,8 +15,8 @@ use crate::flash::RunState;
 use crate::logs::{Level, PREFIX_WIDTH};
 use crate::project::DetectionOutcome;
 use crate::ui::{
-    Palette, SPINNER, content_style, dashboard_focused, muted_style, pane_block, pane_border,
-    tilde_path,
+    Palette, SPINNER, content_style, dashboard_focused, muted_style, output_style, pane_block,
+    pane_border, tilde_path,
 };
 
 /// Row 1's fixed content height: the Project and the Device info panes
@@ -679,9 +679,7 @@ pub fn draw_logs(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette)
         .collect();
 
     frame.render_widget(
-        Paragraph::new(lines)
-            .block(block)
-            .style(content_style(focused)),
+        Paragraph::new(lines).block(block).style(output_style(app)),
         area,
     );
 

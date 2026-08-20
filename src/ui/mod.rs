@@ -407,18 +407,46 @@ fn dashboard_focused(app: &App, focus: Focus) -> bool {
     app.view == View::Dashboard && app.focus == focus && app.overlay.is_none()
 }
 
+/// Whether a dialog currently owns the screen --- the flash view, or any
+/// overlay over the dashboard. The whole dashboard reads as dimmed then,
+/// output panes included: what the user is answering is the dialog, and
+/// everything behind it is context.
+fn dashboard_behind_dialog(app: &App) -> bool {
+    app.view != View::Dashboard || app.overlay.is_some()
+}
+
 /// Style for a dashboard pane's content: unchanged when focused, dimmed
 /// otherwise. Ratatui has no dedicated "darken the background" primitive ---
 /// a terminal buffer has no compositing/alpha to blend against, so this is
 /// the closest equivalent: `Modifier::DIM` set at the widget level, which
 /// cascades onto every already-colored `Span` drawn inside instead of
 /// requiring each one to know about focus.
+///
+/// This is the *selection* rule, and it belongs to panes whose content is a
+/// list the cursor walks (the file columns, the Project checklist): dimming
+/// the ones the cursor has left is what makes the live one obvious. Panes
+/// that carry output use [`output_style`] instead.
 fn content_style(focused: bool) -> Style {
     if focused {
         Style::default()
     } else {
         Style::new().add_modifier(Modifier::DIM)
     }
+}
+
+/// Style for an *output* pane's content --- the Log feed and the Monitor
+/// console: dimmed only while a dialog owns the screen, never merely
+/// because another pane holds the cursor.
+///
+/// A log entry does not become less worth reading when the cursor moves to
+/// the build pane, and the dashboard deliberately parks focus *there* while
+/// a command streams (`BuildPanel`'s rule: the Monitor tab is shown, the
+/// cursor waits on `Stop`). Dimming on focus alone therefore dims exactly
+/// what the user is watching, for the whole length of the build. The focus
+/// indicator stays where it belongs --- the pane's border and its tab strip
+/// (`pane_border`, `panels::draw_log_tabs`).
+fn output_style(app: &App) -> Style {
+    content_style(!dashboard_behind_dialog(app))
 }
 
 /// Renders `path` for display, collapsing a `home` prefix to `~` (the form

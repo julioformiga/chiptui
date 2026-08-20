@@ -737,6 +737,13 @@ impl FlashPanel {
         self.pending_action.take()
     }
 
+    /// The action awaiting the confirmation overlay, without consuming it:
+    /// the overlay is redrawn every frame and has to name what it is
+    /// asking about (`SPEC.md` §15).
+    pub fn pending(&self) -> Option<FlashAction> {
+        self.pending_action
+    }
+
     pub fn cancel_pending(&mut self) {
         self.pending_action = None;
     }
