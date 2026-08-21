@@ -191,9 +191,21 @@ fn restore_raw() -> io::Result<()> {
         LeaveAlternateScreen,
         Show
     );
+    // Belt and suspenders: `Pop` asks the terminal to restore whatever sat
+    // on its own keyboard-enhancement *stack* below the level chiptui
+    // pushed --- which trusts the terminal's stack bookkeeping to be
+    // correct. Traced live against a real terminal: pushing then popping
+    // this exact flag set with nothing else involved (no chiptui, just raw
+    // `printf`) left it stuck reporting every keystroke as a Kitty CSI-u
+    // sequence, i.e. `Pop` alone does not reliably work. `CSI = 0 ; 1 u`
+    // sets the *currently active* flags to zero directly, sidestepping
+    // whatever the stack thinks it holds --- harmless on a terminal that
+    // never turned the protocol on (an unrecognized escape sequence is
+    // simply ignored, same as `Pop` above).
+    let clear_kb_flags = write!(stdout, "\x1b[=0;1u");
     let raw = disable_raw_mode();
     stdout.flush()?;
-    leave.and(raw)
+    leave.and(clear_kb_flags).and(raw)
 }
 
 fn install_panic_hook() {

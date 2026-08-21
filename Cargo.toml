@@ -12,7 +12,24 @@ description = "Terminal UI for embedded development workflows"
 # `SPEC.md`'s "architecture should remain portable to macOS and Windows".
 portable-pty = "0.9.0"
 # Crossterm is used through `ratatui::crossterm` rather than as a direct
-# dependency, so the backend and the terminal driver can never drift apart.
+# `use` anywhere in this crate, so the backend and the terminal driver can
+# never drift apart --- but this line still names it, purely to turn on
+# `use-dev-tty` (Cargo unifies it into the one crossterm `ratatui` already
+# pulls in, at the same resolved version). Its *default* event source
+# (`event/source/unix/mio.rs`) has a real, externally-reported bug: on a
+# closed/EOF'd tty fd, `UnixInternalEventSource::try_read`'s inner read loop
+# never breaks on `read_count == 0` or on a non-`WouldBlock`/`Interrupted`
+# error, so it spins one thread at 100% CPU *forever* --- confirmed live
+# against this exact binary (a controlling terminal torn out from under a
+# running session pinned it at 96% CPU, unkillable except by `SIGKILL`,
+# which bypasses `TerminalGuard`'s `Drop`/panic-hook restore entirely and is
+# exactly how a user ends up with a shell stuck in raw mode with the Kitty
+# keyboard protocol still enabled). `use-dev-tty` swaps in
+# `event/source/unix/tty.rs`, whose equivalent loop does break on
+# `read_count == 0`, so the same condition surfaces as a real `io::Error`
+# from `draw`/`next_event` instead of an unrecoverable hang --- letting
+# `run()`'s normal `Err(err) => break Err(err)` path reach `guard.restore()`.
+crossterm = { version = "0.29", features = ["use-dev-tty"] }
 ratatui = "0.30.2"
 # Backs the app-wide color theme (default: Tokyo Night, overridable via `[ui]
 # theme` in the user config --- see settings.rs). `default-features = false`

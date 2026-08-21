@@ -399,7 +399,19 @@ impl ProcessManager {
                         break;
                     }
                     Ok(None) => thread::sleep(POLL_INTERVAL),
-                    Err(_) => break,
+                    Err(source) => {
+                        // Matches `supervise`'s own handling of the same
+                        // error: without a `Finished` event the entry in
+                        // `running` is never removed, so `is_running(id)`
+                        // stays true forever and the panel that started this
+                        // PTY is stuck reporting "busy".
+                        let _ = tx.send(ProcessEvent::Finished {
+                            id,
+                            outcome: Outcome::SpawnFailed(source.to_string()),
+                            duration: started.elapsed(),
+                        });
+                        break;
+                    }
                 }
             }
         });
