@@ -2380,7 +2380,7 @@ impl App {
             return;
         }
 
-        // The device pane's Project actions tab: its own grammar (buttons,
+        // The device pane's Actions tab: its own grammar (buttons,
         // not a listing), so it takes the keys before the browser does.
         if self.focus == Focus::FilesDevice && self.device_actions_tab_active() {
             self.on_flash_pane_key(key);

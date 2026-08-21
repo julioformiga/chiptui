@@ -37,7 +37,7 @@ when the comparison verdict marks the file as differing or same-size-unchecked.
 menu: it descends into a directory directly (a no-op on a file), mirroring `←`/Backspace going back up
 — only `Enter` opens the menu. `a` creates a new
 entry in the focused pane inline — a trailing `/` on the typed name makes it a directory
-(`Browser::request_mkdir`/`request_touch`). The local pane is titled `Project files: name/path`
+(`Browser::request_mkdir`/`request_touch`). The local pane is titled `Local Files: name/path`
 (`Browser::local_root`, re-rooted by `set_local_root`): MicroPython makes the project a
 question too (`Capability::ProjectSelect`) --- `[micropython] projects` in the user config
 (`settings::mpy_projects_raw`/`save_mpy_projects`) answers the Projects base row, a pick
@@ -47,7 +47,7 @@ report `Dependencies` (`requirements.txt`/`manifest.py` presence in the project 
 `Script` (whether the board is believed to be running user code right now,
 `DeviceState::script_state()`). The board's MicroPython version itself, parsed off the REPL
 banner by `device::micropython_version` --- fed by the probe and the monitor, dropped with the
-board on disconnect/switch --- rides the Device info pane's `Firmware` row instead (see below),
+board on disconnect/switch --- rides the Device Info pane's `Firmware` row instead (see below),
 appended to the `MicroPython` label. Editing a device file downloads it to a scratch temp file
 (`browser::edit_download_path`), never the project tree — the point is to prove a change on the
 device first; `Download` is the separate, explicit step for landing a confirmed-good result in the
@@ -59,11 +59,11 @@ script runs (`Overlay::ConfirmInterruptDevice`), and an accepted interruption en
 restore prompt (`Overlay::RestoreDeviceScript`: hard reset, `import main`, or leave stopped).
 
 Row 2 is capability-driven now: a backend that can build without a device filesystem (Zephyr)
-claims the *whole* row with a **Project files | Project actions** pair (`maybe_scan_devices`/
+claims the *whole* row with a **Local Files | Actions** pair (`maybe_scan_devices`/
 `ensure_browser_scanning` skip the browser entirely for such a backend — listing/editing the
 project's own sources is the user's editor's job; MicroPython's dual-pane browser and its
 capability-gated `FileAction::for_entry` menu are unchanged, except that its device pane is
-a *tabbed* pane for a backend that can also flash: a `Project actions • Device files` strip
+a *tabbed* pane for a backend that can also flash: an `Actions • Device Files` strip
 drawn on the pane's border the way row 3's Log/Monitor/Terminal strip is, the *active* tab's status
 riding the strip's right edge: the walked device path plus the running-script flag for the
 files tab, the flag alone for the actions tab (no listing to locate there, but a running
@@ -110,15 +110,15 @@ leaves it on `FlashScreen::Menu`, which is the pane itself, so nothing opens) an
 out of one returns to the pane (`leave_flash_screen`) rather than to that now-hostless
 menu --- the dialog form of the menu survives only for a backend with no pane to host it;
 the Erase/Write confirmations are exactly as before. The environment's
-prerequisites moved *up* into row 1's **Project pane**, which is the checklist now:
+prerequisites moved *up* into row 1's **Environment pane**, which is the checklist now:
 `Zephyr path`, `Projects base`, `Project path`, `Board · Shield` (the last two answered by
 the build panel but asked here; `←`/`→` on the merged target row switch which half `Enter`
 acts on --- `App::board_segment`) for Zephyr, `Projects base`/`Project path`/`Dependencies`/
 `Script` for MicroPython (`src/app/project_view.rs`, `App::project_rows`). The pane is
 navigable but deliberately off the `Tab` tour: `ctrl+p` enters it (toggle: a second press
 returns to wherever focus was; the cursor lands on the first question still open), `Tab`
-re-enters the tour at its first stop. The operation buttons they gate live in the **Project
-actions** pane --- a small custom widget (`src/ui/button.rs`: one stacked
+re-enters the tour at its first stop. The operation buttons they gate live in the **Actions**
+pane --- a small custom widget (`src/ui/button.rs`: one stacked
 group sharing a rounded border, a centered icon label per row, a `├─┤` divider between each
 pair --- N buttons cost 2N+1 lines, and `draw_dashboard`'s `row2_content_height` sizes row 2
 to that content (the log pane, which scrolls, takes the remainder; a device pane with a
@@ -139,7 +139,7 @@ text (the confirm overlays quote the literal commands, `SPEC.md` §15, not the r
 
 Dimming has **two** rules, not one. `ui::content_style` is the *selection* rule --- an unfocused
 pane's content goes `Modifier::DIM`, which is what makes the column the cursor sits in obvious ---
-and belongs only to panes whose content is a list the cursor walks (the file columns, the Project
+and belongs only to panes whose content is a list the cursor walks (the file columns, the Environment
 checklist). Panes that carry *output* (the Log feed, the Monitor console) use `ui::output_style`
 instead: dimmed only while a dialog owns the screen (`ui::dashboard_behind_dialog`), never merely
 because another pane holds the cursor. A log entry does not become less worth reading when the
@@ -201,7 +201,7 @@ and `BackendRegistry::tool_status(kind, located)` judges those files with
 execute bit) a `PATH` lookup uses --- while every unlocated tool keeps the `PATH` answer.
 `PATH` lookups skip empty entries, which mean the cwd; that makes the *report* stricter
 than `execvp`, never the reverse.
-`west update` lives as a button in the Project actions pane, enabled once the
+`west update` lives as a button in the Actions pane, enabled once the
 installation resolves, under `Capability::WorkspaceSync`. Pressing it no
 longer runs `west update` outright: it opens `Overlay::UpdateZephyrChoice`,
 a two-row menu (same j/k/arrows-and-Enter shape as `Overlay::RestoreDeviceScript`)
@@ -310,9 +310,9 @@ records the workspace when `install_state` says it is already `Complete`, so a
 late failure never discards a good `west init` + `west update`. `esc` is ignored while a step runs --- `Stop` is the way out. A finished
 run writes `[zephyr] workspace` (+ `sdk`), re-resolves, and chains into the
 projects-folder picker. Its four-state row grammar (`✓ ⚠ ✗ □`) is the shared
-`ui::workspace::marked_row`, which `checklist_row` now delegates to. The **Project files**
+`ui::workspace::marked_row`, which `checklist_row` now delegates to. The **Local Files**
 pane (the old workspace pane, `src/ui/workspace.rs`) is the project's own listing, whole:
-its title carries the walked path (`Project files: proj/src/`, never truncating the
+its title carries the walked path (`Local Files: proj/src/`, never truncating the
 prefix), and the body is the list --- no action menu: `Enter` descends into a
 directory and opens a text file straight in `$EDITOR`, `v` views one in the viewer, `Del`
 asks through `Overlay::ConfirmDelete` (default No), and a binary/unknown entry ignores both
@@ -343,7 +343,7 @@ executed directly — a venv console script embeds its interpreter path, so no a
 needed) plus per-command env (`ZEPHYR_BASE` always, so an app outside the workspace still
 finds it; `ZEPHYR_SDK_INSTALL_DIR`/`PATH`/`VIRTUAL_ENV` when applicable —
 `process::Command::env`). The **project panel** (`src/build.rs`, `src/ui/build.rs`,
-`src/app/build_view.rs`, titled "Project actions") is buttons only --- no checklist rows
+`src/app/build_view.rs`, titled "Actions") is buttons only --- no checklist rows
 (the board answer comes from the build dir's CMake cache (`cached_board` ---
 `<build-dir>/zephyr/CMakeCache.txt`, falling
 back to the sysbuild top-level cache; a hand-picked board is session state no finished
@@ -402,7 +402,7 @@ re-derives both answers for the project switched to (`App::set_project_root`). `
 (`west flash`, the board's own
 runner from `runner.yml` — never a hard-coded programmer) sits last under
 `Capability::Flash`, always behind `Overlay::ConfirmBuild` (destructive); the dashboard's `x`
-routes a build-panel backend there instead of esptool's dialog, and the "Device info" pane shows
+routes a build-panel backend there instead of esptool's dialog, and the "Device Info" pane shows
 esptool's report for any backend whose board answers the background `chip-id` query (Zephyr
 included; without an answer it falls back to its honest placeholder).
 The Zephyr monitor is wired too: `m` runs `west monitor [--port P]` (`Backend::monitor_command`)
@@ -425,7 +425,7 @@ is complete; debug/signing remain Roadmap items.
 The dashboard has a **declared minimum of 80x32** (`ui::MIN_WIDTH`/`MIN_HEIGHT`), and it is
 measured rather than aspirational: the Zephyr action stack is six buttons (one rule per edge,
 a divider between each pair, plus the always-reserved three-row footer = 18 rows with the
-pane's borders), which leaves row 3 four content rows of log, and the Device info pane's chip
+pane's borders), which leaves row 3 four content rows of log, and the Device Info pane's chip
 line drops its crystal/revision suffixes rather than wrapping so the `Firmware` row keeps its
 place in the fixed four. `tests/ui_render.rs`'s `the_declared_minimum_fits_the_whole_dashboard`
 locks all three; a seventh button breaks it, which is the point --- growing row 2 means moving
@@ -690,7 +690,7 @@ These are the decisions that shape most code, and getting them wrong causes wide
   case-insensitive banner strings — MicroPython-on-Zephyr reads as Zephyr, the structural
   truth — then the `esp_app_desc_t` magic `0xABCD5432` scanned in the *app* region names a
   plain ESP-IDF app; bootloader bytes never classify anything, since the ESP-IDF bootloader
-  is shared by all three firmwares), and the answer lands on its own row of the Device info
+  is shared by all three firmwares), and the answer lands on its own row of the Device Info
   pane, directly under the MAC, as `Firmware: MicroPython|Zephyr|ESP-IDF`
   (`DeviceDetails::firmware`) --- the verdict carries the version the *same read* found
   (`firmware_id::version`: the `MicroPython v1.28.0 on …` / `*** Booting Zephyr OS build

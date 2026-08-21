@@ -26,7 +26,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
         return;
     };
     let focused = dashboard_focused(app, Focus::Build);
-    let block = pane_block("Project actions", focused, palette);
+    let block = pane_block("Actions", focused, palette);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 

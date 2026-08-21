@@ -114,7 +114,7 @@ fn draw_local(
     };
     // The prefix never truncates --- only the path shortens, from the left.
     let block = pane_block(
-        &format!("Project files: {}", shorten(&title, area.width)),
+        &format!("Local Files: {}", shorten(&title, area.width)),
         focused,
         palette,
     );
@@ -168,12 +168,12 @@ fn draw_device(
     let focused = dashboard_focused(app, Focus::FilesDevice);
     // The running-script flag rides along in the title rather than the body:
     // it explains why an overlay may appear, without claiming list space.
-    let mut title = format!("Device files: {}", browser.device_path);
+    let mut title = format!("Device Files: {}", browser.device_path);
     if app.devices.script_state() == ScriptState::Running {
         title.push_str(" · script running");
     }
     // A backend that can flash or erase gets the pane the flash menu moved
-    // into: the border row carries the `Project actions • Device files`
+    // into: the border row carries the `Actions • Device Files`
     // tab strip (row 3's grammar) and the walked path rides the strip's
     // right edge as the active tab's status; anything else keeps the
     // plain titled pane the pane has always been.
@@ -197,7 +197,7 @@ fn draw_device(
 }
 
 /// The tab strip over the device pane's own top border (the same Ratatui
-/// `Tabs` pattern row 3 uses): `Project actions • Device files`, the
+/// `Tabs` pattern row 3 uses): `Actions • Device Files`, the
 /// active tab bold and underlined --- cyan while the pane holds focus,
 /// like every focused pane. At the strip's right edge rides the *active*
 /// tab's status: for the files tab the walked device path with the
@@ -229,7 +229,7 @@ fn draw_device_tabs(frame: &mut Frame, pane: Rect, app: &App, browser: &Browser,
 
     let titles = vec![
         Line::from(Span::styled(
-            "Project actions",
+            "Actions",
             if actions_tab {
                 active_style
             } else {
@@ -237,7 +237,7 @@ fn draw_device_tabs(frame: &mut Frame, pane: Rect, app: &App, browser: &Browser,
             },
         )),
         Line::from(Span::styled(
-            "Device files",
+            "Device Files",
             if actions_tab {
                 inactive_style
             } else {
@@ -597,9 +597,9 @@ fn truncate(name: &str, max: usize) -> String {
     format!("{kept}…")
 }
 
-/// Shortens the pane title from the left: 15 is "Project files: ".len().
+/// Shortens the pane title from the left: 13 is "Local Files: ".len().
 fn shorten(path: &str, width: u16) -> String {
-    truncate_start(path, (width as usize).saturating_sub(15))
+    truncate_start(path, (width as usize).saturating_sub(13))
 }
 
 #[cfg(test)]

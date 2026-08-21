@@ -250,7 +250,7 @@ pub struct FlashPanel {
     pub firmware_dir: PathBuf,
     /// Cursor into [`FlashAction::ALL`].
     pub cursor: usize,
-    /// Cursor into the Project actions tab's rows
+    /// Cursor into the Actions tab's rows
     /// ([`FlashPanel::pane_actions`]) --- the pane the flash menu became,
     /// navigated like the build pane's list.
     pub pane_cursor: usize,
@@ -454,7 +454,7 @@ impl FlashPanel {
         }
     }
 
-    /// The button rows the device pane's Project actions tab shows: the
+    /// The button rows the device pane's Actions tab shows: the
     /// esptool menu actions in their order, then the online-firmware
     /// search, with `Stop` appended exactly while a command runs --- drawn
     /// as its own half-width box, never a stack row, like the build pane's

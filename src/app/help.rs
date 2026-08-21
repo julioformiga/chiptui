@@ -100,7 +100,7 @@ pub enum When {
     /// A specific flash-view screen; `None` is the flash view without a
     /// panel (its fallback footer).
     Screen(Option<FlashScreen>),
-    /// The device pane is showing its **Project actions** tab (the flash
+    /// The device pane is showing its **Actions** tab (the flash
     /// menu's new home) and holds focus.
     ActionsTab,
     /// The device pane is *not* showing the actions tab --- the files
@@ -123,7 +123,7 @@ pub struct Context {
     pub run_view: bool,
     pub log_tab: LogTab,
     pub flash_screen: Option<FlashScreen>,
-    /// Whether the device pane's Project actions tab is showing and
+    /// Whether the device pane's Actions tab is showing and
     /// focused (see [`When::ActionsTab`]).
     pub actions_tab: bool,
     /// Whether the device pane has a tab strip at all (see
@@ -240,8 +240,15 @@ const DASHBOARD_NAVIGATION: [HelpBinding; 10] = [
     ),
     sited(
         "ctrl+p",
-        "focus the Project pane (off the tab tour)",
-        &[site("ctrl+p", "project", 1, ANY_FOCUS, &[], When::Always)],
+        "focus the Environment pane (off the tab tour)",
+        &[site(
+            "ctrl+p",
+            "environment",
+            1,
+            ANY_FOCUS,
+            &[],
+            When::Always,
+        )],
     ),
     sited(
         "↑ ↓ / k j",
@@ -379,7 +386,7 @@ const DASHBOARD_COMMANDS: [HelpBinding; 22] = [
     ),
     action(
         "x",
-        "open the device pane's Project actions tab",
+        "open the device pane's Actions tab",
         KeyCode::Char('x'),
         &[site(
             "x",
@@ -1009,7 +1016,7 @@ mod tests {
             files,
             vec![
                 ("tab", "focus"),
-                ("ctrl+p", "project"),
+                ("ctrl+p", "environment"),
                 ("enter", "menu"),
                 ("→", "descend"),
                 ("←/bksp", "up"),

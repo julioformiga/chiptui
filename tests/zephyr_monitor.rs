@@ -165,7 +165,7 @@ fn the_chip_identity_is_queried_even_on_the_zephyr_backend() {
 
     let frame = render(&mut app, 110, 32);
     assert!(
-        frame.contains("Device info"),
+        frame.contains("Device Info"),
         "the pane must exist for a build backend too:\n{frame}"
     );
     assert!(frame.contains("ESP32"), "missing chip identity:\n{frame}");

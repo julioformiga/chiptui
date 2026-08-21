@@ -928,14 +928,14 @@ fn the_browser_renders_both_panes_with_comparison_markers() {
     let frame = render(&mut app, 132, 32);
 
     assert!(
-        frame.contains("Project files:"),
+        frame.contains("Local Files:"),
         "missing local pane:\n{frame}"
     );
     assert!(
         // A flash-capable backend renders the device pane as a tabbed pane:
         // the strip names both tabs, with the walked device path riding
         // the strip's right edge as the files tab's status.
-        frame.contains("Project actions • Device files"),
+        frame.contains("Actions • Device Files"),
         "missing device pane tab strip:\n{frame}"
     );
     assert!(
@@ -988,9 +988,9 @@ fn the_device_strip_shows_a_walked_path_but_not_the_root() {
         let frame = render(app, 132, 32);
         frame
             .lines()
-            .find(|line| line.contains("Project actions \u{2022} Device files"))
+            .find(|line| line.contains("Actions \u{2022} Device Files"))
             .unwrap()
-            .split("Device files")
+            .split("Device Files")
             .nth(1)
             .unwrap()
             .to_string()
@@ -1040,7 +1040,7 @@ fn the_device_tab_strip_keeps_the_focused_pane_top_border_accent() {
         let row: String = (0..132)
             .map(|x| buffer[(x, y)].symbol().to_string())
             .collect();
-        let start = row.find("Project actions").expect("the strip's text") as u16;
+        let start = row.find("Actions").expect("the strip's text") as u16;
         (start..132)
             .map(|x| buffer[(x, y)].clone())
             .filter(|cell| cell.symbol() == "\u{2500}")
@@ -1050,7 +1050,7 @@ fn the_device_tab_strip_keeps_the_focused_pane_top_border_accent() {
 
     let project = Project::new("tab-strip");
     let mut app = app_in_browser(&project);
-    let needle = "Project actions \u{2022} Device files";
+    let needle = "Actions \u{2022} Device Files";
 
     app.focus = Focus::FilesDevice;
     let rules = top_rules(&mut app, needle);

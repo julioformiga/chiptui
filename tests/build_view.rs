@@ -877,7 +877,7 @@ fn the_workspace_file_section_titles_with_the_project_and_offers_the_parent_row(
 
     // At the root the pane's title carries the project's own name… (140
     // columns: the fixture's generated name is long, and the
-    // "Project files: " prefix eats 15 of them.)
+    // "Local Files: " prefix eats 13 of them.)
     let project = root.file_name().unwrap().to_string_lossy().into_owned();
     let frame = render(&mut app, 140, 32);
     assert!(
@@ -1339,7 +1339,7 @@ fn x_routes_a_build_backend_to_west_flash_and_micropython_to_the_actions_tab() {
     );
     assert_ne!(app.view, View::Flash);
 
-    // MicroPython: `x` opens the device pane's Project actions tab --- the
+    // MicroPython: `x` opens the device pane's Actions tab --- the
     // esptool menu's new home --- not a dialog.
     let mut app = App::new(std::env::temp_dir());
     app.bootstrap();
@@ -1381,7 +1381,7 @@ fn the_workspace_pane_resolves_from_project_config_and_runs_update() {
     let unresolved = render(&mut app, 100, 32);
     let row2 = unresolved
         .lines()
-        .position(|l| l.contains("Project files"))
+        .position(|l| l.contains("Local Files"))
         .expect("the project-files pane renders before resolution");
 
     let home = root.join("home");
@@ -1424,10 +1424,7 @@ fn the_workspace_pane_resolves_from_project_config_and_runs_update() {
     );
 
     let frame = render(&mut app, 100, 32);
-    assert!(
-        frame.contains("Project files"),
-        "the pane renders:\n{frame}"
-    );
+    assert!(frame.contains("Local Files"), "the pane renders:\n{frame}");
     assert!(frame.contains("zephyrproject"), "the path shows:\n{frame}");
     assert!(
         frame.contains("zephyr 4.1"),
@@ -1438,7 +1435,7 @@ fn the_workspace_pane_resolves_from_project_config_and_runs_update() {
         "the badge carries no label --- the values name themselves:\n{frame}"
     );
     assert_eq!(
-        frame.lines().position(|l| l.contains("Project files")),
+        frame.lines().position(|l| l.contains("Local Files")),
         Some(row2),
         "the versions badge must not shift row 2:\n{frame}"
     );

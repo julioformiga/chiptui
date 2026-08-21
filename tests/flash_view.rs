@@ -856,7 +856,7 @@ fn x_switches_the_device_pane_to_the_actions_tab() {
     // the row needs 16+ rows of its own, so render tall enough to fit.
     let frame = render(&mut app, 110, 40);
     assert!(
-        frame.contains("Project actions • Device files"),
+        frame.contains("Actions • Device Files"),
         "missing the pane's tab strip:\n{frame}"
     );
     assert!(frame.contains("▦ Flash information"), "{frame}");
@@ -973,7 +973,7 @@ fn the_two_device_tabs_hold_the_same_row_height() {
         let frame = render(app, 110, 40);
         let device = frame
             .lines()
-            .position(|line| line.contains("Project actions • Device files"))
+            .position(|line| line.contains("Actions • Device Files"))
             .expect("the device pane's strip");
         let log = frame
             .lines()
@@ -1378,7 +1378,7 @@ fn the_strip_carries_each_tabs_own_status() {
     let actions = render(&mut app, 110, 40);
     let strip = actions
         .lines()
-        .find(|line| line.contains("Project actions • Device files"))
+        .find(|line| line.contains("Actions • Device Files"))
         .unwrap()
         .to_string();
     assert!(strip.contains("script running"), "{strip}");
@@ -1391,7 +1391,7 @@ fn the_strip_carries_each_tabs_own_status() {
     let files = render(&mut app, 110, 40);
     let strip = files
         .lines()
-        .find(|line| line.contains("Project actions • Device files"))
+        .find(|line| line.contains("Actions • Device Files"))
         .unwrap()
         .to_string();
     assert!(

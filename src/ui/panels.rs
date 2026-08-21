@@ -52,9 +52,7 @@ fn pad_info(mut lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
 /// content row.
 pub fn draw_project(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
     let focused = dashboard_focused(app, Focus::Project);
-    // The pane's own shortcut rides the title --- it is the one pane off
-    // the `Tab` tour, so its way in must be visible where the pane is.
-    let block = pane_block("Project (ctrl+p)", focused, palette);
+    let block = pane_block("Environment", focused, palette);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -451,7 +449,7 @@ fn shorten_start_owned(text: &str, budget: usize) -> String {
 /// instead of repeating it. Like the Project pane it is informational only and
 /// never holds focus.
 pub fn draw_detection(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
-    let block = pane_block("Device info", false, palette);
+    let block = pane_block("Device Info", false, palette);
     let lines = device_content(app, area.width as usize, palette);
     frame.render_widget(
         Paragraph::new(lines)
@@ -472,7 +470,7 @@ fn device_content(app: &App, width: usize, palette: Palette) -> Vec<Line<'static
     // esptool Flash menu of its own, but its board may still be an esptool
     // one --- Zephyr runs on ESP32s --- so the background identity query
     // fills this pane for any backend; only the empty-state wording depends
-    // on whether the user has a Project actions tab to reach ('x').
+    // on whether the user has an Actions tab to reach ('x').
     let esptool_flash_view =
         caps.contains(Capability::DeviceInfo) || caps.contains(Capability::EraseFlash);
     let Some(flash) = app.flash.as_ref() else {

@@ -234,7 +234,7 @@ fn zephyr_shows_the_workspace_and_build_panes_in_row_two() {
     let frame = render(&mut app, 100, 32);
 
     assert!(
-        frame.contains("Project files:"),
+        frame.contains("Local Files:"),
         "missing the project-files pane:\n{frame}"
     );
     assert!(
@@ -246,7 +246,7 @@ fn zephyr_shows_the_workspace_and_build_panes_in_row_two() {
         "the project checklist must ask for the project:\n{frame}"
     );
     assert!(
-        frame.contains("Project actions"),
+        frame.contains("Actions"),
         "the project panel must be titled as the actions pane:\n{frame}"
     );
     assert!(
@@ -258,11 +258,11 @@ fn zephyr_shows_the_workspace_and_build_panes_in_row_two() {
         "the separator must divide checklist from buttons:\n{frame}"
     );
     assert!(
-        !frame.contains("Device files:"),
+        !frame.contains("Device Files:"),
         "the dual-pane browser's device title must not render for a build backend:\n{frame}"
     );
     assert!(
-        !frame.contains("Device files:"),
+        !frame.contains("Device Files:"),
         "no device pane may render without a filesystem:\n{frame}"
     );
     // The embedded file list is titled with the project's own name (the
@@ -284,7 +284,7 @@ fn dashboard_shows_the_file_browser_in_row_two_for_a_filesystem_backend() {
     let frame = render(&mut app, 100, 32);
 
     assert!(
-        frame.contains("Project files:"),
+        frame.contains("Local Files:"),
         "missing the local file pane:\n{frame}"
     );
     assert!(
@@ -424,7 +424,7 @@ fn device_pane_shows_chip_details_once_esptool_has_reported_them() {
 
     let frame = render(&mut app, 100, 32);
     assert!(
-        frame.contains("Device info"),
+        frame.contains("Device Info"),
         "missing pane title:\n{frame}"
     );
     assert!(frame.contains("ESP32-S3"), "missing chip family:\n{frame}");
