@@ -638,10 +638,34 @@ These are the decisions that shape most code, and getting them wrong causes wide
   (`BuildPanel::take_flash_finished` → `App::reidentify_firmware_after_build_flash`): it
   invalidates the same state and re-arms the read directly, because no listing ever drives the
   Zephyr side — the new verdict arrives on its own once the port frees. The features row is
-  truncated to one line and the crystal
+  one line and the crystal
   rides
   the chip's own row, so the MAC and Firmware rows keep their fixed place in the pane's
-  four rows.
+  four rows (whose labels are all capitalized — `Chip`/`Crystal`/`Features` beside the `MAC`
+  and `Firmware` that always were). That row no longer *truncates* esptool's list, though — a
+  plain ESP32's real line (`Wi-Fi, BT, Dual Core + LP Core, 240MHz, Coding Scheme None`, copied
+  verbatim from an installed esptool's `targets/esp32.py::get_chip_features` — `AGENTS.md`'s
+  "reproduce the tool, not the belief about it" caught a fabricated version of this exact line
+  reordering the row on a real board) runs well past the 27 columns the row has at `MIN_WIDTH`,
+  so the head was all that ever showed and an ESP32-S3's PSRAM never did.
+  `esptool::features::compact` (`src/backend/micropython/esptool/features.rs`) re-expresses it
+  as priority-ordered entries instead — radios first (`WiFi`/`WiFi6` from esptool's hyphenated
+  `Wi-Fi`/`Wi-Fi 6`; `BT` plain or `BLE5` from esptool's own single already-merged `BT`/`BT 5
+  (LE)` token — never two separate tokens to merge; `15.4` for `IEEE802.15.4`), then cores and
+  clock fused into one (`Dual Core + LP Core` + `240MHz` → `2x240MHz`, the LP-core detail
+  dropped), then embedded memory (`4MB` bare for flash, `PSRAM8MB` named so two sizes are not a
+  riddle, the vendor part number dropped), then anything unrecognised verbatim and muted — and
+  `ui::panels::features_spans` drops whole entries off the *tail* until they fit, the rule the
+  chip line above already follows with its suffixes. So a narrow row loses the `Coding Scheme`
+  trivia, never the radios. The shortening is deliberately **verbal, never a glyph**: an icon
+  per feature was built and reverted — a symbol standing in for `WiFi` costs the reader more
+  than the three columns it saves, and there is no non-PUA character for Bluetooth at all. It
+  also keeps every generated entry ASCII, which is what makes the pane's `chars()` budget exact
+  (there is no `unicode-width` in this crate, so a wide glyph would count one and draw two);
+  `only_ascii_is_ever_generated` locks that. Nothing is lost to the compaction:
+  `FlashPanel::complete` logs the raw line whole (`chip features: …`, only when it *changed* —
+  every esptool command that reaches the board reprints the same banner), the pairing
+  `short_version` and the Firmware row already use.
 
 ## Testing
 

@@ -6,6 +6,7 @@
 //! [`commands`] builds invocations, [`parse`] reads their output.
 
 pub mod commands;
+pub mod features;
 pub mod parse;
 
 /// ESP chip families with a flash offset commonly used in practice.

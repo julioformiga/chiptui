@@ -6,6 +6,12 @@
 # be exercised end to end without a board attached. `--port`/`--chip` are
 # global options that may appear before the sub-command in either order, so
 # matching is done by substring rather than a fixed argument shape.
+#
+# The `Features:` line is copied verbatim from an installed esptool v5.3.1's
+# `targets/esp32.py::get_chip_features` --- `Wi-Fi` is hyphenated and `BT`
+# never carries a version on a plain ESP32, both real esptool quirks a
+# fabricated line got wrong once (`AGENTS.md`'s "reproduce the tool, not the
+# belief about it").
 
 args="$*"
 
@@ -22,7 +28,7 @@ case "$args" in
         printf 'Serial port /dev/ttyUSB0\n'
         printf 'Detecting chip type... ESP32\n'
         printf 'Chip is ESP32-D0WD (revision 3)\n'
-        printf 'Features: WiFi, BT, Dual Core, 240MHz, VRef calibration in efuse, Coding Scheme None\n'
+        printf 'Features: Wi-Fi, BT, Dual Core + LP Core, 240MHz, Coding Scheme None\n'
         printf 'Crystal is 40MHz\n'
         printf 'MAC: 24:6f:28:12:34:56\n'
         printf 'Chip ID: 0x1234567890ab\n'
@@ -32,7 +38,7 @@ case "$args" in
         printf 'esptool v5.3.1\n'
         printf 'Detecting chip type... ESP32\n'
         printf 'Chip is ESP32-D0WD (revision 3)\n'
-        printf 'Features: WiFi, BT, Dual Core, 240MHz, VRef calibration in efuse, Coding Scheme None\n'
+        printf 'Features: Wi-Fi, BT, Dual Core + LP Core, 240MHz, Coding Scheme None\n'
         printf 'Crystal is 40MHz\n'
         printf 'MAC: 24:6f:28:12:34:56\n'
         printf 'Manufacturer: 5e\n'

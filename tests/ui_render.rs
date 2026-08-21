@@ -486,7 +486,7 @@ fn device_details_arriving_do_not_shift_the_dashboard() {
     flash.details = DeviceDetails {
         family: Some(ChipFamily::Esp32S3),
         revision: Some("3".to_string()),
-        features: Some("WiFi, BLE".to_string()),
+        features: Some("Wi-Fi, BT 5 (LE), Dual Core + LP Core, 240MHz".to_string()),
         crystal_mhz: Some("40MHz".to_string()),
         mac: Some("24:6f:28:12:34:56".to_string()),
         ..DeviceDetails::default()
@@ -557,7 +557,14 @@ fn the_declared_minimum_fits_the_whole_dashboard() {
     flash.details = DeviceDetails {
         family: Some(ChipFamily::Esp32S3),
         revision: Some("3".to_string()),
-        features: Some("WiFi, BLE, Dual Core, 240MHz".to_string()),
+        // esptool's real ESP32-S3 line (`esptool/targets/esp32s3.py`'s
+        // `get_chip_features`, flash and PSRAM both fitted): 97 characters
+        // against the 27 this row has at the minimum width.
+        features: Some(
+            "Wi-Fi, BT 5 (LE), Dual Core + LP Core, 240MHz, Embedded Flash 8MB (XMC), \
+             Embedded PSRAM 8MB (AP_3v3)"
+                .to_string(),
+        ),
         crystal_mhz: Some("40MHz".to_string()),
         mac: Some("24:6f:28:12:34:56".to_string()),
         firmware: Some(FirmwareVerdict::Firmware(
@@ -615,6 +622,23 @@ fn the_declared_minimum_fits_the_whole_dashboard() {
     assert!(
         frame.contains("Firmware:") && frame.contains("Zephyr v4.0.0"),
         "the firmware row was pushed out of the Device info pane:\n{frame}"
+    );
+
+    // And the features row says something at this width. Truncating the raw
+    // list got as far as `Wi-Fi, BT 5 (LE), Dual Core…`; compacting fits
+    // every identifying fact whole, with the PSRAM size dropped off the
+    // tail rather than a `…` standing in for it.
+    let features_row = lines
+        .iter()
+        .find(|line| line.contains("Features:"))
+        .expect("the features row renders");
+    assert!(
+        features_row.contains("WiFi, BLE5, 2x240MHz, 8MB"),
+        "the features row was not compacted:\n{frame}"
+    );
+    assert!(
+        !features_row.contains('…'),
+        "the features row still truncates at the declared minimum:\n{frame}"
     );
 
     // And row 3 still has something to show.

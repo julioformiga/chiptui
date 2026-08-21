@@ -156,7 +156,7 @@ mod tests {
              Serial port /dev/ttyUSB0\n\
              Detecting chip type... ESP32\n\
              Chip is ESP32-D0WD (revision 3)\n\
-             Features: WiFi, BT, Dual Core, 240MHz, VRef calibration in efuse, Coding Scheme None\n\
+             Features: Wi-Fi, BT, Dual Core + LP Core, 240MHz, Coding Scheme None\n\
              Crystal is 40MHz\n\
              MAC: 24:6f:28:12:34:56\n";
         let details = parse_device_details(stdout);
@@ -164,7 +164,7 @@ mod tests {
         assert_eq!(details.revision.as_deref(), Some("3"));
         assert_eq!(
             details.features.as_deref(),
-            Some("WiFi, BT, Dual Core, 240MHz, VRef calibration in efuse, Coding Scheme None")
+            Some("Wi-Fi, BT, Dual Core + LP Core, 240MHz, Coding Scheme None")
         );
         assert_eq!(details.crystal_mhz.as_deref(), Some("40MHz"));
         assert_eq!(details.mac.as_deref(), Some("24:6f:28:12:34:56"));

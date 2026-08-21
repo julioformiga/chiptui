@@ -9,6 +9,7 @@ use ratatui::widgets::{Paragraph, Tabs, Wrap};
 
 use crate::app::{App, Focus, LogTab, MonitorSource, ProjectRow};
 use crate::backend::Capability;
+use crate::backend::micropython::esptool::features;
 use crate::device::ScriptState;
 use crate::firmware_id::{FirmwareVerdict, FlashFirmware};
 use crate::flash::RunState;
@@ -506,7 +507,7 @@ fn device_content(app: &App, width: usize, palette: Palette) -> Vec<Line<'static
     if details.family.is_none()
         && let Some(crystal) = &details.crystal_mhz
     {
-        lines.push(field("crystal", crystal.clone(), palette));
+        lines.push(field("Crystal", crystal.clone(), palette));
     }
     if let Some(family) = details.family {
         // One row, always --- the same rule the features line below
@@ -539,7 +540,7 @@ fn device_content(app: &App, width: usize, palette: Palette) -> Vec<Line<'static
         };
 
         let mut spans = vec![
-            label_span("chip", palette),
+            label_span("Chip", palette),
             Span::styled(
                 truncate_end(&name, budget),
                 Style::new().fg(palette.success).bold(),
@@ -553,13 +554,21 @@ fn device_content(app: &App, width: usize, palette: Palette) -> Vec<Line<'static
         }
         lines.push(Line::from(spans));
     }
-    if let Some(features) = &details.features {
+    if let Some(raw) = &details.features {
         // One row, always: a wrapped features line would push the MAC and
-        // firmware rows below past the pane's fixed [`INFO_ROWS`] height,
-        // and the feature list's head --- WiFi, BT,
-        // Dual Core --- is its identity anyway.
+        // firmware rows below past the pane's fixed [`INFO_ROWS`] height.
+        // esptool's own list does not remotely fit one --- a plain ESP32
+        // reports 74 characters against the 27 this row has at the minimum
+        // width --- so [`features::compact`] re-expresses it, most
+        // identifying first, and [`features_spans`] drops whole entries off
+        // the tail. The raw line is not lost: it reaches the Log pane
+        // (`FlashPanel::complete`), the pairing [`short_version`] and the
+        // Firmware row already use.
         let budget = width.saturating_sub(2 + LABEL_WIDTH);
-        lines.push(field("features", truncate_end(features, budget), palette));
+        let items = features::compact(raw);
+        if !items.is_empty() {
+            lines.push(Line::from(features_spans(&items, budget, palette)));
+        }
     }
     if let Some(mac) = &details.mac {
         lines.push(Line::from(vec![
@@ -935,6 +944,53 @@ fn truncate_end(text: &str, max: usize) -> String {
 /// whole; only the Firmware row's fixed line is shortened.
 fn short_version(version: &str) -> &str {
     version.split('-').next().unwrap_or(version)
+}
+
+/// What separates two feature entries, muted like the chip line's own ` · `
+/// crystal suffix. esptool's own separator, and a column shorter than the
+/// ` · ` the rest of this pane uses --- on a row this tight that column is
+/// worth more than the consistency.
+const FEATURE_SEPARATOR: &str = ", ";
+
+/// Columns `items` occupy once joined by [`FEATURE_SEPARATOR`].
+fn features_width(items: &[features::Item]) -> usize {
+    items.iter().map(features::Item::width).sum::<usize>()
+        + FEATURE_SEPARATOR.chars().count() * items.len().saturating_sub(1)
+}
+
+/// The features row: entries in [`features::compact`]'s priority order,
+/// dropped **whole** off the tail until they fit `budget`.
+///
+/// The same rule the chip line above follows with its crystal and revision
+/// suffixes, for the same reason --- half an entry says less than none --- and
+/// with the same last resort: only when the leading entry alone overruns does
+/// anything truncate. An entry esptool printed but this build does not
+/// recognise is muted, so what a narrow row loses is the trivia, not the
+/// radios.
+fn features_spans(items: &[features::Item], budget: usize, palette: Palette) -> Vec<Span<'static>> {
+    let mut shown = items.len();
+    while shown > 1 && features_width(&items[..shown]) > budget {
+        shown -= 1;
+    }
+
+    let mut spans = vec![label_span("Features", palette)];
+    for (index, item) in items[..shown].iter().enumerate() {
+        if index > 0 {
+            spans.push(Span::styled(FEATURE_SEPARATOR, muted_style(palette)));
+        }
+        let style = if item.muted {
+            muted_style(palette)
+        } else {
+            Style::new().fg(palette.fg)
+        };
+        let text = if shown == 1 {
+            truncate_end(&item.text, budget)
+        } else {
+            item.text.clone()
+        };
+        spans.push(Span::styled(text, style));
+    }
+    spans
 }
 
 fn field(label: &str, value: String, palette: Palette) -> Line<'static> {

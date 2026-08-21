@@ -1023,8 +1023,22 @@ impl FlashPanel {
             self.chip = ChipGuess::Detected(family);
             self.apply_default_offset(family);
         }
+        let known_features = self.details.features.clone();
         self.details
             .merge(parse::parse_device_details(&running.stdout));
+        // The Device info pane's features row is a compacted, one-line form of
+        // this (`esptool::features`), so the full list --- vendor part
+        // numbers, efuse calibration and all --- is published here instead.
+        // Only when it changed: every esptool command that reaches the board
+        // prints the same banner, so an unguarded line would repeat on every
+        // chip-id, flash-id, read-flash and erase-flash.
+        if let Some(features) = &self.details.features
+            && known_features.as_ref() != Some(features)
+        {
+            update
+                .notices
+                .push((Level::Info, format!("chip features: {features}")));
+        }
         if let Some(dest) = &running.probe_dest {
             if running.hunt_version {
                 self.apply_version_from(dest, update);
@@ -1763,6 +1777,37 @@ mod tests {
     }
 
     #[test]
+    fn the_full_feature_list_reaches_the_log_once_per_change() {
+        const FULL: &str = "chip features: Wi-Fi, BT, Dual Core + LP Core, 240MHz, \
+                            Coding Scheme None";
+
+        let fixture = Fixture::new("features-log");
+        let mut panel = FlashPanel::new(&fixture.root);
+        panel.set_tool_path(fake_esptool());
+        let mut processes = ProcessManager::new();
+
+        // The Device info pane shows only a compacted form of this line
+        // (`esptool::features`), so the whole list belongs in the log.
+        panel.run(FlashAction::ChipInfo, &mut processes, None);
+        let notices = settle_collecting(&mut panel, &mut processes);
+        assert!(
+            notices.iter().any(|line| line == FULL),
+            "the raw feature list never reached the log: {notices:?}"
+        );
+
+        // `flash-id` reaches the board too and reprints the same banner ---
+        // every esptool command that connects does. The line must not repeat.
+        panel.run(FlashAction::FlashInfo, &mut processes, None);
+        let notices = settle_collecting(&mut panel, &mut processes);
+        assert!(
+            !notices
+                .iter()
+                .any(|line| line.starts_with("chip features:")),
+            "an unchanged feature list repeated in the log: {notices:?}"
+        );
+    }
+
+    #[test]
     fn query_firmware_identity_identifies_from_the_read() {
         use crate::firmware_id::FlashFirmware;
 
@@ -2063,6 +2108,26 @@ mod tests {
 
         assert!(!panel.is_busy(), "command never completed");
         last
+    }
+
+    /// Same as [`settle`], but returns *every* notice produced along the way.
+    /// [`settle`] keeps only the last update, which cannot answer whether a
+    /// line was emitted once or on every command.
+    fn settle_collecting(panel: &mut FlashPanel, processes: &mut ProcessManager) -> Vec<String> {
+        use std::time::Instant;
+
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut notices = Vec::new();
+
+        while panel.is_busy() && Instant::now() < deadline {
+            for event in processes.drain() {
+                notices.extend(panel.on_process(&event).notices.into_iter().map(|(_, m)| m));
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        assert!(!panel.is_busy(), "command never completed");
+        notices
     }
 
     /// Same as [`settle`], but drains through [`FlashPanel::on_curl_process`].
