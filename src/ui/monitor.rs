@@ -235,7 +235,7 @@ fn draw_run_output(frame: &mut Frame, area: Rect, app: &mut App, focused: bool, 
 /// owns the border row), but with the rightmost content column reserved for
 /// the scrollbar --- always, so wrapped lines do not reflow the moment the
 /// console outgrows the pane (the same rule the Log pane follows).
-fn console_block(focused: bool, palette: Palette) -> Block<'static> {
+pub(crate) fn console_block(focused: bool, palette: Palette) -> Block<'static> {
     pane_border(focused, palette).padding(Padding::right(1))
 }
 
@@ -245,7 +245,7 @@ fn console_block(focused: bool, palette: Palette) -> Block<'static> {
 /// counter must agree with it).
 type ConsoleLayout = (Rect, usize, usize);
 
-fn console_layout(block: &Block<'_>, area: Rect) -> ConsoleLayout {
+pub(crate) fn console_layout(block: &Block<'_>, area: Rect) -> ConsoleLayout {
     let inner = block.inner(area);
     let budget = inner.height.max(1) as usize;
     let width = inner.width.max(1) as usize;
@@ -257,7 +257,6 @@ fn console_layout(block: &Block<'_>, area: Rect) -> ConsoleLayout {
     };
     (with_gutter, budget, width)
 }
-
 /// A `Line`'s content as plain text, for wrap counting.
 fn plain(line: &Line<'_>) -> String {
     line.spans
@@ -272,7 +271,7 @@ fn plain(line: &Line<'_>) -> String {
 /// (tail while following, top-anchored otherwise), draws the paragraph, and
 /// the scrollbar at the window's position. Every console goes through here,
 /// which is what makes them all scroll identically.
-fn render_console(
+pub(crate) fn render_console(
     frame: &mut Frame,
     area: Rect,
     block: Block<'static>,
@@ -339,7 +338,7 @@ fn window_console<'a>(
 /// a stand-in terminal cursor, since the Monitor is a pane, not the real
 /// screen. The char under the cursor is highlighted; at end of line a
 /// reverse-video blank extends the line by one cell.
-fn cursor_line(text: &str, col: usize) -> Line<'static> {
+pub(crate) fn cursor_line(text: &str, col: usize) -> Line<'static> {
     // `LineConsole` keeps `col` on a char boundary and within the line;
     // `min` only guards a first empty chunk before any text arrived.
     let col = col.min(text.len());

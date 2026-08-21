@@ -64,7 +64,7 @@ claims the *whole* row with a **Project files | Project actions** pair (`maybe_s
 project's own sources is the user's editor's job; MicroPython's dual-pane browser and its
 capability-gated `FileAction::for_entry` menu are unchanged, except that its device pane is
 a *tabbed* pane for a backend that can also flash: a `Project actions • Device files` strip
-drawn on the pane's border the way row 3's Log/Monitor strip is, the *active* tab's status
+drawn on the pane's border the way row 3's Log/Monitor/Terminal strip is, the *active* tab's status
 riding the strip's right edge: the walked device path plus the running-script flag for the
 files tab, the flag alone for the actions tab (no listing to locate there, but a running
 script gates every esptool action). `x`
@@ -73,7 +73,7 @@ opening a dialog; `ctrl+←/→` is a **dashboard-wide chord** (`App::switch_str
 handled in `on_dashboard_key` before every pane dispatch, like `m`): it switches the tabs
 of the pane holding focus when that pane has a strip, the device pane's strip when one
 exists beside a pane without its own (the local files pane flips the device pane without
-giving up the cursor), and row 3's Log • Monitor strip otherwise (the Zephyr row) — one
+giving up the cursor), and row 3's Log • Monitor • Terminal strip otherwise (the Zephyr row) — one
 keypress flips exactly one strip, never two. Plain `←/→` join the switch only on the
 actions side (its stacked buttons take `↑/↓` alone); on the files side they keep their
 directory meaning (descend/ascend, `Enter`'s menu descends), the same grammar the local
@@ -538,16 +538,21 @@ These are the decisions that shape most code, and getting them wrong causes wide
   entries. The Monitor tab scrolls the same way (`App::monitor_scroll`), across its four
   consoles — anchored to the *top* of the document so live output never shifts a scrolled view,
   gutter reserved via block padding, one `render_console`/`window_console` path doing the row
-  windowing. Row 3 is one bordered pane whose top border carries the Log/Monitor tab strip
+  windowing. Row 3 is one bordered pane whose top border carries the Log/Monitor/Terminal
+  tab strip
   (the Ratatui `Tabs` example pattern, `panels::draw_log_tabs`, drawn *after* the pane so it sits on
   the border; `symbols::DOT` divider, the active tab underlined and bold --- cyan when focused,
-  default color otherwise --- vs the dim inactive one). At the
+  default color otherwise --- vs the dim inactive one; `Terminal` is always offered --- a local
+  shell is a UI affordance, not a backend operation --- while `Monitor` needs
+  `Capability::Monitor`; `App::switch_log_tab` steps one tab per press, clamped, a no-op at
+  the ends). At the
   strip's right edge rides the active tab's status (a leading space keeps the dashes off it): for
   Monitor, the source's title with a live icon
   and the output's row count — an animated spinner (`ui::SPINNER`, keyed off `App::ticks`) while a
   command runs, a green ✓ (red ✗ on failure) for the last finished one — plus `↑N` (rows below the
-  view) once the user leaves the tail, mirroring Log's indicator; for Log, the entry count
-  (plus `↑N` while scrolled). The panes themselves are untitled (`pane_border`). Rendering is
+  view) once the user leaves the tail, mirroring Log's indicator; for Terminal, the shell's name,
+  a spinner while it runs and the same count/indicator; for Log, the entry count
+   (plus `↑N` while scrolled). The panes themselves are untitled (`pane_border`). Rendering is
   otherwise a pure function of `App`.
 - **Processes** (`src/process/`): `spawn` returns immediately; a supervisor thread plus two reader
   threads push `ProcessEvent`s into one channel that `main.rs` drains each frame. Two non-obvious
@@ -576,6 +581,21 @@ These are the decisions that shape most code, and getting them wrong causes wide
   append-per-char renderer shows as literal `[K` garbage. `LineConsole` keeps the cursor position
   and escape-parser state across PTY chunks and edits the current line accordingly; sequences it
   does not implement (colors, OSC) are consumed, never rendered.
+- **The Terminal tab is the user's own shell** (`src/app/terminal.rs`, `src/ui/terminal.rs`):
+  row 3's third tab spawns `$SHELL` (`/bin/sh` fallback) in a PTY (the same `spawn_pty` the
+  monitor uses, cwd = the project root) the moment the tab is entered — entering it is the
+  whole start gesture — and re-uses the Monitor's console machinery (`LineConsole`, the shared
+  `render_console`, `monitor_scroll`, the reverse-video cursor cell). While the tab holds
+  focus the shell owns the keyboard exactly like the device monitor does (`is_terminal_active`,
+  checked in `on_key` before everything else, so `ctrl+c` reaches the shell's foreground job
+  instead of quitting); `ctrl+]` — the monitor's own chord, which crossterm relabels Ctrl+5,
+  and which a shell has no use for — *detaches*: the shell keeps running and streaming into
+  the tab while the keyboard returns (`terminal_detached`; switching back re-attaches, a
+  clamped strip step never does, so `→` on the Terminal tab is a no-op). The shell's own
+  `exit`/`ctrl+d` finishes the process, frees the keyboard and leaves the `[shell …]`
+  transcript scrollable; entering the tab again starts a fresh session, transcript cleared.
+  `App::set_terminal_tool` is the test seam pointing the tab at a fake instead of the
+  developer's real shell.
 - **A running script is never interrupted silently** (`src/app/probe.rs`, `Browser::set_interrupt_gate`):
   mpremote Ctrl-C's whatever is executing to enter raw REPL for *any* device command, so before
   the first listing on a selected port ChipTUI opens a short `mpremote repl` PTY and classifies

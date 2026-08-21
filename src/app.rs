@@ -46,6 +46,7 @@ mod install_view;
 pub mod overlay;
 pub mod probe;
 pub mod project_view;
+pub mod terminal;
 pub mod workspace_view;
 
 /// Which screen is showing.
@@ -120,6 +121,10 @@ pub enum LogTab {
     #[default]
     Log,
     Monitor,
+    /// The user's own shell, running in a PTY. Not capability-gated: a
+    /// local shell is a UI affordance, not a backend operation, so every
+    /// backend's row 3 offers it.
+    Terminal,
 }
 
 /// Which tab the device pane (row 2's right half) is showing for a backend
@@ -876,6 +881,26 @@ pub struct App {
     monitor_console: LineConsole,
     pending_monitor: Option<PendingMonitor>,
 
+    /// The Terminal tab's shell session, spawned in a PTY like the device
+    /// monitor (`src/app/terminal.rs`).
+    pub terminal_process: Option<ProcessId>,
+    /// Accumulated lines from the shell's PTY.
+    pub terminal_output: Vec<String>,
+    /// VT interpretation of the shell's raw output (cursor position and
+    /// escape-sequence state), mirroring [`Self::monitor_console`].
+    terminal_console: LineConsole,
+    /// The running shell's name (`bash`, `sh`, ...) for the tab strip's
+    /// status line. Empty before the first session.
+    pub terminal_program: String,
+    /// Set by `ctrl+]`: the shell keeps running and streaming into the tab,
+    /// but the keyboard returns to the dashboard. Switching back to the
+    /// Terminal tab re-attaches.
+    terminal_detached: bool,
+    /// The command the Terminal tab spawns instead of `$SHELL` --- the test
+    /// seam that keeps the suite off the developer's real shell (the same
+    /// role `Browser::set_tool_path` plays for mpremote).
+    terminal_tool: Option<crate::process::Command>,
+
     /// Active or last-finished `mpremote run` session, shown in the Monitor
     /// tab under [`MonitorSource::Run`]. Spawned in a PTY so Ctrl+C can
     /// interrupt the script on the device.
@@ -1016,6 +1041,12 @@ impl App {
             device_monitor_output: Vec::new(),
             monitor_console: LineConsole::new(),
             pending_monitor: None,
+            terminal_process: None,
+            terminal_output: Vec::new(),
+            terminal_console: LineConsole::new(),
+            terminal_program: String::new(),
+            terminal_detached: false,
+            terminal_tool: None,
             run_process: None,
             run_output: Vec::new(),
             run_console: LineConsole::new(),
@@ -1537,6 +1568,27 @@ impl App {
                 );
                 return;
             }
+            // The Terminal tab's shell (PTY): raw output arrives as bytes, and
+            // its exit frees the keyboard the way the monitor's does.
+            crate::process::ProcessEvent::Output { id, text }
+                if Some(*id) == self.terminal_process =>
+            {
+                self.terminal_console.feed(&mut self.terminal_output, text);
+                return;
+            }
+            crate::process::ProcessEvent::Finished {
+                id,
+                outcome,
+                duration: _,
+            } if Some(*id) == self.terminal_process => {
+                self.terminal_process = None;
+                self.terminal_detached = false;
+                self.terminal_console.push_line(
+                    &mut self.terminal_output,
+                    format!("[shell {}]", outcome.summary()),
+                );
+                return;
+            }
             // Run session (PTY): streamed output arrives as raw bytes.
             crate::process::ProcessEvent::Output { id, text } if Some(*id) == self.run_process => {
                 self.run_console.feed(&mut self.run_output, text);
@@ -1824,6 +1876,26 @@ impl App {
             return;
         }
 
+        // The Terminal tab's shell owns the keyboard exactly like the device
+        // monitor does: every keystroke becomes bytes in its PTY. One
+        // escape, and it is the monitor's own chord --- `ctrl+]`, the byte
+        // crossterm relabels Ctrl+5. For mpremote it is the *exit* key; a
+        // shell has no use for 0x1d, so the same chord becomes *detach*
+        // instead: the shell keeps running (and streaming into the tab)
+        // while the keyboard returns to the dashboard.
+        if self.is_terminal_active() {
+            if key.modifiers.contains(KeyModifiers::CONTROL)
+                && matches!(key.code, KeyCode::Char(']') | KeyCode::Char('5'))
+            {
+                self.terminal_detached = true;
+                return;
+            }
+            if let Some((id, bytes)) = self.terminal_process.zip(key_to_bytes(key)) {
+                self.processes.write_stdin(id, &bytes);
+            }
+            return;
+        }
+
         // Ctrl+C during an active run sends a KeyboardInterrupt (0x03) to the
         // device script instead of quitting the TUI.
         if self.is_run_active()
@@ -1923,13 +1995,47 @@ impl App {
         }
     }
 
+    /// The tabs row 3 offers: `Log` always, `Monitor` when the backend can
+    /// monitor, `Terminal` always (a local shell is not a backend
+    /// capability, so nothing gates it).
+    fn available_log_tabs(&self) -> Vec<LogTab> {
+        let mut tabs = vec![LogTab::Log];
+        if self.manager.capabilities().contains(Capability::Monitor) {
+            tabs.push(LogTab::Monitor);
+        }
+        tabs.push(LogTab::Terminal);
+        tabs
+    }
+
+    /// Steps row 3's strip one tab per press, clamped at the ends --- the
+    /// same shape the two-tab strip had (Left on Log stays on Log). A
+    /// clamped step is a *no-op*: re-selecting the tab the strip is already
+    /// on would re-attach a detached shell, so it must not happen.
     fn switch_log_tab(&mut self, forward: bool) {
-        if forward {
-            if self.manager.capabilities().contains(Capability::Monitor) {
-                self.log_tab = LogTab::Monitor;
-            }
+        let tabs = self.available_log_tabs();
+        let index = tabs
+            .iter()
+            .position(|tab| *tab == self.log_tab)
+            .unwrap_or(0);
+        let next = if forward {
+            (index + 1).min(tabs.len() - 1)
         } else {
-            self.log_tab = LogTab::Log;
+            index.saturating_sub(1)
+        };
+        if next != index {
+            self.select_log_tab(tabs[next]);
+        }
+    }
+
+    fn select_log_tab(&mut self, tab: LogTab) {
+        if tab == LogTab::Terminal {
+            // Entering the Terminal tab is the start gesture for its shell
+            // (and the re-attach point after a `ctrl+]` detach) --- it never
+            // moves focus, so the ctrl chord can flip this strip from
+            // another pane without giving up the cursor.
+            self.show_terminal_tab();
+        } else {
+            self.log_tab = tab;
         }
     }
 
@@ -2279,15 +2385,13 @@ impl App {
                 self.detect();
                 self.maybe_open_project_setup();
             }
-            // Plain arrows on the Log • Monitor strip: nothing competes
-            // with them in row 3, so they keep the strip to themselves ---
-            // the ctrl chord (which reaches this strip from panes without
-            // one of their own) is intercepted earlier, above.
-            KeyCode::Left if self.focus == Focus::Logs => self.log_tab = LogTab::Log,
-            KeyCode::Right if self.focus == Focus::Logs => {
-                if self.manager.capabilities().contains(Capability::Monitor) {
-                    self.log_tab = LogTab::Monitor;
-                }
+            // Plain arrows on the row 3 strip: nothing competes with them
+            // there, so they keep the strip to themselves, stepping one tab
+            // per press among the tabs this backend offers --- the ctrl
+            // chord (which reaches this strip from panes without one of
+            // their own) is intercepted earlier, above.
+            KeyCode::Left | KeyCode::Right if self.focus == Focus::Logs => {
+                self.switch_log_tab(key.code == KeyCode::Right);
             }
             KeyCode::Up | KeyCode::Char('k') => self.move_cursor(-1),
             KeyCode::Down | KeyCode::Char('j') => self.move_cursor(1),
@@ -2302,7 +2406,7 @@ impl App {
     /// Page size for the focused pane.
     fn page(&self) -> usize {
         match self.focus {
-            Focus::Logs if self.log_tab == LogTab::Monitor => self.monitor_view.viewport.max(1),
+            Focus::Logs if self.log_tab != LogTab::Log => self.monitor_view.viewport.max(1),
             Focus::Logs => self.log_viewport.max(1),
             _ => 5,
         }
@@ -2321,7 +2425,7 @@ impl App {
                     self.logs.scroll_down(delta as usize);
                 }
             }
-            Focus::Logs if self.log_tab == LogTab::Monitor => {
+            Focus::Logs if self.log_tab != LogTab::Log => {
                 if delta < 0 {
                     self.monitor_scroll_up(delta.unsigned_abs());
                 } else {
@@ -2340,7 +2444,7 @@ impl App {
             Focus::Logs if self.log_tab == LogTab::Log => {
                 self.logs.scroll_up(usize::MAX, self.log_viewport);
             }
-            Focus::Logs if self.log_tab == LogTab::Monitor => {
+            Focus::Logs if self.log_tab != LogTab::Log => {
                 self.monitor_scroll.following = false;
                 self.monitor_scroll.offset = 0;
             }
@@ -2351,7 +2455,7 @@ impl App {
     fn jump_to_end(&mut self) {
         match self.focus {
             Focus::Logs if self.log_tab == LogTab::Log => self.logs.scroll_to_bottom(),
-            Focus::Logs if self.log_tab == LogTab::Monitor => {
+            Focus::Logs if self.log_tab != LogTab::Log => {
                 self.monitor_scroll = MonitorScroll::default();
             }
             _ => {}
@@ -2372,6 +2476,16 @@ impl App {
         // generic Ctrl+letter handling).
         if self.is_monitor_active() {
             return vec![("ctrl+]", "exit REPL/monitor"), ("type", "send to device")];
+        }
+        // The same truth for the Terminal tab's shell: while it owns the
+        // keyboard only two escapes exist --- the shell's own exit (`ctrl+d`
+        // or typing `exit`) and the detach chord.
+        if self.is_terminal_active() {
+            return vec![
+                ("ctrl+d", "exit shell"),
+                ("ctrl+]", "detach"),
+                ("type", "send to shell"),
+            ];
         }
         match self.overlay {
             Some(Overlay::Help { filtering, .. }) => {
@@ -2686,6 +2800,206 @@ mod tests {
         }));
         assert!(app.device_monitor_process.is_none());
         assert_eq!(app.monitor_cursor(), None);
+    }
+
+    /// A live-enough Terminal-tab session: the fake `slow` executable owns
+    /// the shell slot (never the developer's real `$SHELL`), and the app
+    /// sits where `is_terminal_active` is true.
+    fn app_in_terminal() -> (App, ProcessId) {
+        let mut app = app();
+        app.set_terminal_tool(crate::process::Command::new(format!(
+            "{}/tests/fixtures/bin/slow",
+            env!("CARGO_MANIFEST_DIR")
+        )));
+        app.focus = Focus::Logs;
+        app.show_terminal_tab();
+        let id = app.terminal_process.expect("the shell session started");
+        (app, id)
+    }
+
+    #[test]
+    fn entering_the_terminal_tab_starts_a_shell() {
+        let (mut app, _id) = app_in_terminal();
+        assert_eq!(app.log_tab, LogTab::Terminal);
+        assert!(app.terminal_process.is_some());
+        assert_eq!(app.terminal_program, "slow");
+        assert!(app.is_terminal_active());
+
+        // The fake's banner lands in the transcript through the PTY arm.
+        let id = app.terminal_process.unwrap();
+        app.handle(AppEvent::Process(crate::process::ProcessEvent::Output {
+            id,
+            text: "user@board:~$ ".to_string(),
+        }));
+        assert_eq!(app.terminal_output, vec!["user@board:~$ ".to_string()]);
+        assert_eq!(app.terminal_cursor(), Some(14));
+        app.processes.cancel(id);
+    }
+
+    #[test]
+    fn the_terminal_tab_is_reachable_without_the_monitor_capability() {
+        // No backend at all: the strip still steps onto Terminal, because a
+        // local shell is not a backend operation.
+        let mut app = app();
+        app.set_terminal_tool(crate::process::Command::new(format!(
+            "{}/tests/fixtures/bin/slow",
+            env!("CARGO_MANIFEST_DIR")
+        )));
+        app.focus = Focus::Logs;
+        app.handle(key(KeyCode::Right));
+        assert_eq!(app.log_tab, LogTab::Terminal);
+        assert!(app.terminal_process.is_some());
+        app.processes.cancel(app.terminal_process.unwrap());
+    }
+
+    #[test]
+    fn stepping_the_strip_lands_on_every_offered_tab() {
+        // MicroPython offers all three tabs; the steps walk them and clamp
+        // at the ends, one tab per press.
+        let mut app = App::new(std::env::temp_dir());
+        app.detect();
+        app.manager.set_override(Some(BackendKind::MicroPython));
+        app.set_terminal_tool(crate::process::Command::new(format!(
+            "{}/tests/fixtures/bin/slow",
+            env!("CARGO_MANIFEST_DIR")
+        )));
+        app.focus = Focus::Logs;
+
+        app.handle(key(KeyCode::Right));
+        assert_eq!(app.log_tab, LogTab::Monitor);
+        app.handle(key(KeyCode::Right));
+        assert_eq!(app.log_tab, LogTab::Terminal);
+        // Landing on the tab handed the keyboard to the shell, so the
+        // remaining steps detach first --- exactly what a user stepping
+        // back off the tab does with ctrl+].
+        app.terminal_detached = true;
+        // Clamped at the end, never wrapping.
+        app.handle(key(KeyCode::Right));
+        assert_eq!(app.log_tab, LogTab::Terminal);
+        app.handle(key(KeyCode::Left));
+        assert_eq!(app.log_tab, LogTab::Monitor);
+        app.handle(key(KeyCode::Left));
+        assert_eq!(app.log_tab, LogTab::Log);
+        app.handle(key(KeyCode::Left));
+        assert_eq!(app.log_tab, LogTab::Log);
+        if let Some(id) = app.terminal_process {
+            app.processes.cancel(id);
+        }
+    }
+
+    #[test]
+    fn ctrl_c_reaches_the_shell_instead_of_quitting() {
+        let (mut app, id) = app_in_terminal();
+        app.handle(AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('c'),
+            KeyModifiers::CONTROL,
+        )));
+        assert!(
+            !app.should_quit(),
+            "ctrl+c belongs to the shell's foreground job"
+        );
+        app.processes.cancel(id);
+    }
+
+    #[test]
+    fn ctrl_right_bracket_detaches_the_shell_without_ending_it() {
+        let (mut app, id) = app_in_terminal();
+
+        // Crossterm relabels the raw 0x1d byte as Ctrl+5; both spellings
+        // must detach.
+        app.handle(AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('5'),
+            KeyModifiers::CONTROL,
+        )));
+        assert!(!app.is_terminal_active(), "the keyboard is back");
+        assert!(
+            app.terminal_process.is_some(),
+            "detaching must not kill the shell"
+        );
+        assert_eq!(app.terminal_cursor(), None);
+
+        // The dashboard owns the keys again: `q` quits, instead of being
+        // typed into the PTY.
+        app.handle(key(KeyCode::Char('q')));
+        assert!(app.should_quit());
+        app.should_quit = false;
+
+        // Returning to the tab re-attaches the still-running shell.
+        app.show_terminal_tab();
+        assert!(app.is_terminal_active());
+        assert_eq!(app.terminal_process, Some(id), "no respawn happened");
+        app.processes.cancel(id);
+    }
+
+    #[test]
+    fn a_finished_shell_frees_the_keyboard_and_keeps_its_transcript() {
+        let (mut app, id) = app_in_terminal();
+        app.handle(AppEvent::Process(crate::process::ProcessEvent::Finished {
+            id,
+            outcome: crate::process::Outcome::Success,
+            duration: Duration::ZERO,
+        }));
+        assert!(app.terminal_process.is_none());
+        assert!(!app.is_terminal_active());
+        assert_eq!(
+            app.terminal_output.last().map(String::as_str),
+            Some("[shell ok]"),
+            "the transcript stays behind with the exit line"
+        );
+
+        // Entering the tab again starts a fresh shell, transcript and all.
+        app.show_terminal_tab();
+        let new_id = app.terminal_process.expect("a fresh shell started");
+        assert_ne!(new_id, id);
+        assert!(
+            app.terminal_output.is_empty(),
+            "the new session starts clean"
+        );
+        app.processes.cancel(new_id);
+    }
+
+    #[test]
+    fn a_detached_shell_detaches_across_its_exit() {
+        // A shell that exits while detached must not come back attached.
+        let (mut app, id) = app_in_terminal();
+        app.handle(AppEvent::Key(KeyEvent::new(
+            KeyCode::Char(']'),
+            KeyModifiers::CONTROL,
+        )));
+        app.handle(AppEvent::Process(crate::process::ProcessEvent::Finished {
+            id,
+            outcome: crate::process::Outcome::Failed { code: Some(1) },
+            duration: Duration::ZERO,
+        }));
+        assert!(app.terminal_process.is_none());
+        assert!(!app.terminal_detached);
+    }
+
+    #[test]
+    fn the_terminal_tab_scrolls_its_transcript_like_the_monitor() {
+        let mut app = app();
+        app.focus = Focus::Logs;
+        // No live shell: the tab shows a finished transcript, whose scroll
+        // grammar is the Monitor's.
+        app.log_tab = LogTab::Terminal;
+        app.monitor_view = MonitorView {
+            rows: 10,
+            viewport: 4,
+            width: 40,
+        };
+        app.handle(key(KeyCode::Up));
+        assert!(!app.monitor_scroll.following, "up leaves the tail");
+        assert_eq!(app.monitor_scroll.offset, 5, "one row above the tail");
+        app.handle(key(KeyCode::End));
+        assert!(app.monitor_scroll.following, "end re-pins to the tail");
+    }
+
+    #[test]
+    fn the_footer_names_the_terminal_sessions_escapes() {
+        let (mut app, id) = app_in_terminal();
+        let keys: Vec<&str> = app.shortcuts().iter().map(|(key, _)| *key).collect();
+        assert!(keys.contains(&"ctrl+d") && keys.contains(&"ctrl+]"));
+        app.processes.cancel(id);
     }
 
     #[test]

@@ -158,6 +158,46 @@ fn cancelling_stops_a_running_process() {
 }
 
 #[test]
+fn a_pty_child_runs_in_the_commands_working_directory() {
+    // The Terminal tab's shell reaches its project directory through this
+    // path: `spawn_pty` must honour `Command::current_dir`, not just the
+    // program and arguments.
+    let mut processes = ProcessManager::new();
+    let dir = std::env::temp_dir()
+        .join(format!("chiptui-pty-cwd-{}", std::process::id()))
+        .canonicalize()
+        .unwrap_or_else(|_| std::env::temp_dir());
+    std::fs::create_dir_all(&dir).unwrap();
+    let dir = dir.canonicalize().expect("the temp dir exists");
+
+    let id = processes
+        .spawn_pty(
+            Command::new("/bin/sh")
+                .arg("-c")
+                .arg("pwd")
+                .current_dir(&dir),
+            Duration::from_secs(10),
+        )
+        .expect("the pty opened");
+    let events = run_to_completion(&mut processes, id);
+
+    assert_eq!(outcome(&events), &Outcome::Success);
+    let output: String = events
+        .iter()
+        .filter_map(|event| match event {
+            ProcessEvent::Output { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    let expected = dir.display().to_string();
+    assert!(
+        output.trim().contains(&expected),
+        "the pty child must land in the given cwd; pwd printed {output:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn arguments_are_passed_without_a_shell() {
     let mut processes = ProcessManager::new();
     // If this went through a shell, `;` would split the command and the

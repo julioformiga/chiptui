@@ -17,6 +17,7 @@ mod install;
 mod monitor;
 mod overlay;
 mod panels;
+mod terminal;
 mod workspace;
 
 use std::path::Path;
@@ -183,12 +184,14 @@ fn draw_dashboard(frame: &mut Frame, body: Rect, app: &mut App, palette: Palette
         panels::draw_no_filesystem(frame, row2, app, palette);
     }
 
-    // Row 3 is one bordered pane for the whole width: the Log/Monitor tab
-    // strip lives on the pane's own top border (`SPEC.md` §11), like the
-    // Ratatui `Tabs` example, and the selected tab's body fills the pane.
+    // Row 3 is one bordered pane for the whole width: the Log/Monitor/
+    // Terminal tab strip lives on the pane's own top border (`SPEC.md`
+    // §11), like the Ratatui `Tabs` example, and the selected tab's body
+    // fills the pane.
     match app.log_tab {
         LogTab::Log => panels::draw_logs(frame, row3, app, palette),
         LogTab::Monitor => monitor::draw(frame, row3, app, palette),
+        LogTab::Terminal => terminal::draw(frame, row3, app, palette),
     }
     panels::draw_log_tabs(frame, row3, app, palette);
 }

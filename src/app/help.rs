@@ -10,7 +10,7 @@
 //! activates the row by replaying its key (`HelpBinding::event`) once the
 //! help has closed, so the list doubles as a launcher. Help follows the
 //! screen (see [`View`]) and narrows under a `/` filter (the same grammar
-//! the board picker uses): the dashboard alone lists twenty-eight rows, so
+//! the board picker uses): the dashboard alone lists thirty-two rows, so
 //! search is the way through them.
 //!
 //! The descriptions are part of the data, not the rendering: each is
@@ -325,24 +325,17 @@ const DASHBOARD_NAVIGATION: [HelpBinding; 10] = [
     ),
     sited(
         "← / →",
-        "switch the Log and Monitor tabs (ctrl+←/→ elsewhere)",
+        "switch the Log, Monitor and Terminal tabs",
         &[
-            site(
-                "←/→",
-                "log/monitor",
-                60,
-                &[Focus::Logs],
-                &[Capability::Monitor],
-                When::Always,
-            ),
+            site("←/→", "tabs", 60, &[Focus::Logs], &[], When::Always),
             // Panes with no strip of their own and no device pane beside
             // them (the Zephyr row): the chord lands on row 3's strip.
             site(
                 "ctrl+←/→",
-                "log/monitor",
+                "tabs",
                 61,
                 &[Focus::Workspace, Focus::Build, Focus::Project],
-                &[Capability::Monitor],
+                &[],
                 When::DeviceStrip(false),
             ),
         ],
@@ -361,7 +354,7 @@ const DASHBOARD_NAVIGATION: [HelpBinding; 10] = [
     ),
 ];
 
-const DASHBOARD_COMMANDS: [HelpBinding; 21] = [
+const DASHBOARD_COMMANDS: [HelpBinding; 22] = [
     action(
         "r",
         "re-detect, reload, or rename (file list)",
@@ -535,6 +528,10 @@ const DASHBOARD_COMMANDS: [HelpBinding; 21] = [
             &[Capability::Monitor],
             When::Always,
         )],
+    ),
+    binding(
+        "terminal (tab)",
+        "the Terminal tab runs your shell (ctrl+] detaches)",
     ),
     action(
         "s",
@@ -1200,7 +1197,7 @@ mod tests {
                     for device_strip in [false, true] {
                         for run_active in [false, true] {
                             for run_view in [false, true] {
-                                for log_tab in [LogTab::Log, LogTab::Monitor] {
+                                for log_tab in [LogTab::Log, LogTab::Monitor, LogTab::Terminal] {
                                     let mut context = ctx(caps, focus);
                                     context.actions_tab = actions_tab;
                                     context.device_strip = device_strip;

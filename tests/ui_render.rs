@@ -294,7 +294,7 @@ fn dashboard_shows_the_file_browser_in_row_two_for_a_filesystem_backend() {
 }
 
 #[test]
-fn row_three_shows_a_log_monitor_tab_strip() {
+fn row_three_shows_a_log_monitor_terminal_tab_strip() {
     let mut app = app_with_backend(BackendKind::MicroPython);
     let frame = render(&mut app, 100, 32);
 
@@ -303,6 +303,42 @@ fn row_three_shows_a_log_monitor_tab_strip() {
         frame.contains("Monitor"),
         "missing the Monitor tab:\n{frame}"
     );
+    assert!(
+        frame.contains("Terminal"),
+        "missing the Terminal tab:\n{frame}"
+    );
+}
+
+#[test]
+fn the_terminal_tab_renders_its_shell_session() {
+    // The fake stands in for `$SHELL`, so the test never starts the
+    // developer's real shell.
+    let mut app = app_with_backend(BackendKind::MicroPython);
+    app.set_terminal_tool(chiptui::process::Command::new(format!(
+        "{}/tests/fixtures/bin/slow",
+        env!("CARGO_MANIFEST_DIR")
+    )));
+    app.focus = Focus::Logs;
+    app.show_terminal_tab();
+    let id = app.terminal_process.expect("the shell session started");
+
+    let frame = render(&mut app, 100, 32);
+    assert!(
+        frame.contains("Terminal"),
+        "the strip still names the tab:\n{frame}"
+    );
+    assert!(
+        frame.contains("(shell starting)"),
+        "a live session with no output yet says so:\n{frame}"
+    );
+
+    // The strip's status line names the shell it is running.
+    assert!(
+        frame.contains("slow"),
+        "the status names the shell program:\n{frame}"
+    );
+
+    app.processes.cancel(id);
 }
 
 #[test]

@@ -710,15 +710,18 @@ fn draw_log_scrollbar(frame: &mut Frame, inner: Rect, app: &App, palette: Palett
 }
 
 /// Row 3's tab strip, drawn over the pane's own top border like the Ratatui
-/// `Tabs` example: ` Log • Monitor `. `Monitor` is omitted entirely when the
-/// backend has no `Capability::Monitor` --- capability-gated, never
-/// backend-kind-gated (`AGENTS.md` §3). The active tab's status rides the
-/// pane's *bottom* border right edge instead (the same spot
+/// `Tabs` example: ` Log • Monitor • Terminal `. `Monitor` is omitted
+/// entirely when the backend has no `Capability::Monitor` ---
+/// capability-gated, never backend-kind-gated (`AGENTS.md` §3); `Terminal`
+/// (the user's own shell, `src/app/terminal.rs`) is always offered, because
+/// a local shell is not a backend operation. The active tab's status rides
+/// the pane's *bottom* border right edge instead (the same spot
 /// `draw_versions_badge` uses on the Project pane): for Monitor, the
 /// source's title, a live icon (an animated spinner while a command runs, a
 /// green check --- red cross on failure --- for the last finished one) and
-/// the output's row count; for Log, the entry count and, while scrolled,
-/// how far up the view sits.
+/// the output's row count; for Terminal, the shell's name, a spinner while
+/// it runs and the same count; for Log, the entry count and, while
+/// scrolled, how far up the view sits.
 pub fn draw_log_tabs(frame: &mut Frame, pane: Rect, app: &App, palette: Palette) {
     // The strip spans the border row between the corners; drawn after the
     // pane's own widgets so it sits on top of the border.
@@ -749,30 +752,39 @@ pub fn draw_log_tabs(frame: &mut Frame, pane: Rect, app: &App, palette: Palette)
     };
     let inactive_style = muted_style(palette);
 
-    let monitor = vec![Span::styled(
-        "Monitor",
-        if app.log_tab == LogTab::Monitor {
+    let mut titles = vec![Line::from(Span::styled(
+        "Log",
+        if app.log_tab == LogTab::Log {
             active_style
         } else {
             inactive_style
         },
-    )];
-
-    let titles = vec![
-        Line::from(Span::styled(
-            "Log",
-            if app.log_tab == LogTab::Log {
+    ))];
+    let mut monitor_slot = 1;
+    if has_monitor {
+        titles.push(Line::from(Span::styled(
+            "Monitor",
+            if app.log_tab == LogTab::Monitor {
                 active_style
             } else {
                 inactive_style
             },
-        )),
-        Line::from(monitor),
-    ];
+        )));
+        monitor_slot = 2;
+    }
+    titles.push(Line::from(Span::styled(
+        "Terminal",
+        if app.log_tab == LogTab::Terminal {
+            active_style
+        } else {
+            inactive_style
+        },
+    )));
 
     let selected_index = match app.log_tab {
         LogTab::Log => Some(0),
         LogTab::Monitor => has_monitor.then_some(1),
+        LogTab::Terminal => Some(monitor_slot),
     };
 
     // The selection style lives on the titles themselves; the highlight
@@ -815,7 +827,46 @@ fn tab_status(app: &App, palette: Palette) -> Line<'static> {
             Line::from(text).fg(palette.muted)
         }
         LogTab::Monitor => monitor_status(app, palette),
+        LogTab::Terminal => terminal_status(app, palette),
     }
+}
+
+/// The Terminal tab's status: the shell's name with a spinner while it
+/// runs, and the transcript's row count --- the same shape
+/// [`monitor_status`] gives the Monitor tab (a shell has no "finished"
+/// verdict worth an icon; its exit is announced in the transcript itself).
+fn terminal_status(app: &App, palette: Palette) -> Line<'static> {
+    let mut spans = vec![Span::raw(" ")];
+    if app.terminal_process.is_some() {
+        spans.push(Span::styled(
+            SPINNER[(app.ticks as usize) % SPINNER.len()].to_string(),
+            Style::new().fg(palette.warning),
+        ));
+        spans.push(Span::raw(" "));
+    }
+    let title = if app.terminal_program.is_empty() {
+        "Shell".to_string()
+    } else {
+        app.terminal_program.clone()
+    };
+    spans.push(Span::styled(title, muted_style(palette)));
+    spans.push(Span::styled(
+        format!(" ({})", app.monitor_view.rows),
+        muted_style(palette),
+    ));
+    // The scrolled indicator Log and Monitor show, same meaning: `↑N` with
+    // the rows below the view, only once the user leaves the tail.
+    if !app.monitor_scroll.following {
+        let below = app
+            .monitor_view
+            .rows
+            .saturating_sub(app.monitor_view.viewport + app.monitor_scroll.offset);
+        spans.push(Span::styled(
+            format!(" \u{2191}{below}"),
+            muted_style(palette),
+        ));
+    }
+    Line::from(spans)
 }
 
 /// The Monitor tab's status: the source's title with its live icon and the

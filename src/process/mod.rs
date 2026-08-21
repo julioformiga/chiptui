@@ -279,6 +279,17 @@ impl ProcessManager {
 
         let mut cmd = portable_pty::CommandBuilder::new(command.program());
         cmd.args(command.args_slice());
+        // The structured command's whole setting: a working directory and
+        // environment overrides belong to the child as much as the program
+        // does (the Terminal tab's shell asks for the project root this
+        // way). portable-pty inherits the parent environment for anything
+        // not named here, `TERM` included --- what a terminal child wants.
+        if let Some(cwd) = command.cwd() {
+            cmd.cwd(cwd);
+        }
+        for (key, value) in command.envs_slice() {
+            cmd.env(key, value);
+        }
 
         let started = Instant::now();
         let mut child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;

@@ -899,7 +899,7 @@ one-line contextual shortcut footer:
 │  (or, when the backend declares no Capability::Filesystem,    │
 │   a single full-width placeholder pane)                       │
 ├───────────────────────────────────────────────────────────────┤
-│ Log │ Monitor                                                 │
+│ Log │ Monitor │ Terminal                                     │
 ├───────────────────────────────────────────────────────────────┤
 │ Contextual keyboard shortcuts                                 │
 └───────────────────────────────────────────────────────────────┘
@@ -955,12 +955,20 @@ one-line contextual shortcut footer:
   listing of the environment itself for such a backend --- editing the project's own
   sources beyond the list is the user's editor's job; otherwise a single full-width
   placeholder while no pane exists yet.
-- **Row 3** --- a one-line `Log`/`Monitor` tab strip over the selected tab's body, full width.
-  `Left`/`Right` switch tabs while row 3 has focus. `Log` is the rolling status/notice feed
+- **Row 3** --- a one-line `Log`/`Monitor`/`Terminal` tab strip over the selected tab's
+  body, full width. `Left`/`Right` switch tabs while row 3 has focus, one step per press
+  and clamped at the ends. `Log` is the rolling status/notice feed
   (unchanged). `Monitor` shows whichever live process output the user last asked for: a
   running or just-finished flash/erase command (`esptool`), or a live device serial session
-  once one exists. The `Monitor` tab itself only appears for a backend with
-  `Capability::Monitor`.
+  once one exists; the tab itself only appears for a backend with
+  `Capability::Monitor`. `Terminal` runs the user's own shell (`$SHELL`, `/bin/sh` as
+  fallback) in a PTY inside the project directory --- always offered, because a local
+  shell is a UI affordance, not a backend operation. Entering the tab starts the shell;
+  while the tab holds focus the shell owns the keyboard (`ctrl+c` interrupts the shell's
+  foreground command instead of quitting ChipTUI), `ctrl+]` detaches --- the shell keeps
+  running and streaming into the tab while the keyboard returns to the dashboard --- and
+  the shell's own `exit`/`ctrl+d` ends the session, leaving its transcript behind for
+  scrolling like any other console.
 
 The Flash view's options and online screens are dialogs layered over the dimmed dashboard
 for choosing and configuring an action, never full-screen replacements. Starting an action
