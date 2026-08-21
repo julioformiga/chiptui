@@ -208,10 +208,7 @@ impl App {
             }
             BuildAction::Menuconfig => self.start_menuconfig(),
             BuildAction::UpdateZephyr => {
-                self.overlay = Some(Overlay::ConfirmBuild {
-                    action,
-                    confirm: false,
-                });
+                self.overlay = Some(Overlay::UpdateZephyrChoice { selected: 0 });
             }
             // Nothing runs from this row: it asks where to install, and
             // the installer's own confirm asks whether to.

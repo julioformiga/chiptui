@@ -147,7 +147,7 @@ fn draw_rows(
                     .selected(selected),
             ),
             crate::build::BuildAction::UpdateZephyr => buttons.push(
-                Button::new("↻ Update Zephyr")
+                Button::new("↻ Update Zephyr/SDK")
                     .enabled(app.build_action_enabled(*action))
                     .selected(selected),
             ),

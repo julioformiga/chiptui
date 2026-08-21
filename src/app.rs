@@ -369,6 +369,14 @@ pub enum Overlay {
     /// Yes/No, because "restart" has two honest flavors with different
     /// tradeoffs (see [`Self::apply_restore_device_script`]).
     RestoreDeviceScript { selected: usize },
+    /// The choice menu in front of the `Update Zephyr/SDK` button: whether
+    /// to pull the shared workspace (`west update`) or add/update SDK
+    /// toolchains. Same shape as [`Self::RestoreDeviceScript`] --- a small
+    /// list, `j`/`k`/arrows to move, `Enter` to pick --- except `Esc` here
+    /// is a plain cancel, not itself a choice: giving up on "what to
+    /// update" has no implicit action the way giving up on "how to
+    /// restore" does.
+    UpdateZephyrChoice { selected: usize },
     /// The Zephyr installer: prerequisites, the sequence, and the running
     /// step's output. Carries nothing at all --- every piece of its state
     /// lives on [`App::installer`], which is what lets the panel keep a
@@ -2377,7 +2385,8 @@ impl App {
                 | Overlay::FirmwarePicker { .. }
                 | Overlay::ProjectSetup { .. }
                 | Overlay::FileActions { .. }
-                | Overlay::RestoreDeviceScript { .. },
+                | Overlay::RestoreDeviceScript { .. }
+                | Overlay::UpdateZephyrChoice { .. },
             ) => {
                 vec![("↑/↓", "select"), ("enter", "apply"), ("esc", "cancel")]
             }

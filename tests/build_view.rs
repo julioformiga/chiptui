@@ -1445,10 +1445,16 @@ fn the_workspace_pane_resolves_from_project_config_and_runs_update() {
         "the detection source no longer has a field:\n{frame}"
     );
 
-    // Enter on the Update Zephyr button confirms first (it rewrites the
-    // shared workspace) --- it leads the Project actions pane now, the
-    // list's first row.
+    // Enter on the Update Zephyr/SDK button asks what to update first --- it
+    // leads the Project actions pane now, the list's first row. Picking
+    // "Update Zephyr" (the default, row 0) confirms next, since it rewrites
+    // the shared workspace.
     app.focus = Focus::Build;
+    app.handle(key(KeyCode::Enter));
+    assert!(matches!(
+        app.overlay,
+        Some(Overlay::UpdateZephyrChoice { selected: 0 })
+    ));
     app.handle(key(KeyCode::Enter));
     assert!(matches!(
         app.overlay,
@@ -1477,6 +1483,39 @@ fn the_workspace_pane_resolves_from_project_config_and_runs_update() {
     );
     assert!(finished);
     assert!(app.build.as_ref().unwrap().last.as_ref().unwrap().ok);
+}
+
+#[test]
+fn the_update_choice_menu_routes_to_the_sdk_toolchain_picker() {
+    // The other branch of the choice menu: picking "Update / add SDK
+    // toolchains" must land on the same picker the `s` shortcut opens,
+    // never on the `west update` confirm.
+    let (mut app, root) = zephyr_app("ws-sdk", None);
+    let home = root.join("home");
+    let ws = workspace_under(&home, "zephyrproject");
+    std::fs::write(
+        root.join("chiptui.toml"),
+        format!("[zephyr]\nworkspace = \"{}\"\n", ws.display()),
+    )
+    .unwrap();
+    app.workspace = None;
+    app.build = None;
+    app.maybe_scan_devices();
+    assert!(app.workspace.as_ref().unwrap().resolved.is_some());
+
+    app.focus = Focus::Build;
+    app.handle(key(KeyCode::Enter));
+    assert!(matches!(
+        app.overlay,
+        Some(Overlay::UpdateZephyrChoice { selected: 0 })
+    ));
+    app.handle(key(KeyCode::Down));
+    assert!(matches!(
+        app.overlay,
+        Some(Overlay::UpdateZephyrChoice { selected: 1 })
+    ));
+    app.handle(key(KeyCode::Enter));
+    assert!(matches!(app.overlay, Some(Overlay::SdkToolchains { .. })));
 }
 
 #[test]

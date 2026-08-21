@@ -842,6 +842,30 @@ impl App {
                     },
                 );
             }
+            Overlay::UpdateZephyrChoice { selected } => {
+                const COUNT: usize = 2;
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('q') => self.overlay = None,
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        self.overlay = Some(Overlay::UpdateZephyrChoice {
+                            selected: (selected + COUNT - 1) % COUNT,
+                        });
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        self.overlay = Some(Overlay::UpdateZephyrChoice {
+                            selected: (selected + 1) % COUNT,
+                        });
+                    }
+                    KeyCode::Enter if selected == 0 => {
+                        self.overlay = Some(Overlay::ConfirmBuild {
+                            action: BuildAction::UpdateZephyr,
+                            confirm: false,
+                        });
+                    }
+                    KeyCode::Enter => self.open_sdk_toolchains_shortcut(),
+                    _ => {}
+                }
+            }
             Overlay::RestoreDeviceScript { selected } => {
                 const COUNT: usize = 3;
                 match key.code {

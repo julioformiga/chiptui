@@ -190,11 +190,16 @@ and `BackendRegistry::tool_status(kind, located)` judges those files with
 execute bit) a `PATH` lookup uses --- while every unlocated tool keeps the `PATH` answer.
 `PATH` lookups skip empty entries, which mean the cwd; that makes the *report* stricter
 than `execvp`, never the reverse.
-`west update` (confirm-gated --- it rewrites the shared workspace,
-through `Overlay::ConfirmWorkspace`) lives as a button in the Project
-actions pane, enabled once the
-installation resolves, under `Capability::WorkspaceSync`; it
-runs through the build panel's one process slot into the Monitor tab. That
+`west update` lives as a button in the Project actions pane, enabled once the
+installation resolves, under `Capability::WorkspaceSync`. Pressing it no
+longer runs `west update` outright: it opens `Overlay::UpdateZephyrChoice`,
+a two-row menu (same j/k/arrows-and-Enter shape as `Overlay::RestoreDeviceScript`)
+asking whether to update Zephyr itself or the SDK/toolchains --- picking
+"Update Zephyr" leads into the existing confirm (`Overlay::ConfirmBuild`,
+which rewrites the shared checkouts and runs through the build panel's one
+process slot into the Monitor tab), picking "Update / add SDK toolchains"
+calls the same `App::open_sdk_toolchains_shortcut` the dashboard `s` key
+uses, landing on `Overlay::SdkToolchains` instead. That
 button's slot is *shared*: with nothing resolved it reads `⇩ Install Zephyr`
 instead (`BuildAction::list_for`, keyed off `BuildPanel::workspace_installed`,
 pushed in by `apply_west_env` --- the one place a panel is seeded from the
