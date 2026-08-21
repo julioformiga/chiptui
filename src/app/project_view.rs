@@ -1,5 +1,6 @@
 //! Project-pane driving: row 1's checklist rows (the environment questions
-//! that moved out of the workspace pane), the `ctrl+p` way in, and the
+//! that moved out of the workspace pane), the shortcuts overlay's way in
+//! (`ctrl+k`, then the pane's `e` letter), and the
 //! MicroPython half of the project state machine --- the projects folder
 //! (`[micropython] projects`, user config) and the session-only project
 //! pick that re-roots the file browser's local pane. Split out of `app.rs`
@@ -49,8 +50,8 @@ impl App {
         Vec::new()
     }
 
-    /// Whether a row's question is still open --- the state `ctrl+p`'s
-    /// cursor lands on (the first one). An *invalid* configured answer
+    /// Whether a row's question is still open --- the state the Project
+    /// pane's entry cursor lands on (the first one). An *invalid* configured answer
     /// counts as open too: it needs fixing, not celebrating.
     pub(super) fn project_row_open(&self, row: ProjectRow) -> bool {
         match row {

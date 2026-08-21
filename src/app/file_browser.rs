@@ -22,7 +22,7 @@ use super::{
 
 impl App {
     /// Handles a key while [`super::Focus::FilesLocal`]/[`super::Focus::FilesDevice`] holds
-    /// focus. `Tab`/`BackTab`, `o`, `x`, `?` and `d` are dashboard-wide and
+    /// focus. `Tab`/`BackTab`, `x`, `?` and `d` are dashboard-wide and
     /// already handled by [`App::on_dashboard_key`] before this is reached,
     /// so only the file browser's own navigation remains here.
     ///

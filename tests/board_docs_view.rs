@@ -32,6 +32,13 @@ fn key_event(code: KeyCode, modifiers: KeyModifiers) -> AppEvent {
     AppEvent::Key(KeyEvent::new(code, modifiers))
 }
 
+/// The Project pane's way in: the shortcuts overlay (`ctrl+k`), then the
+/// pane's `e` letter.
+fn enter_project_pane(app: &mut App) {
+    app.handle(key_event(ctrl('k'), KeyModifiers::CONTROL));
+    app.handle(key(KeyCode::Char('e')));
+}
+
 /// A Zephyr app in a temp directory whose build panel runs the fake west
 /// (see `tests/build_view.rs`; same shape, minus what those tests already
 /// cover).
@@ -59,7 +66,7 @@ fn picker_app(tag: &str) -> App {
 
 /// Opens the board picker through the Project pane's Board · Shield row.
 fn open_board_picker(app: &mut App) {
-    app.handle(key_event(ctrl('p'), KeyModifiers::CONTROL));
+    enter_project_pane(app);
     for _ in 0..3 {
         app.handle(key(KeyCode::Down));
     }
@@ -68,7 +75,7 @@ fn open_board_picker(app: &mut App) {
 
 /// Opens the shield picker: the same row, shield segment.
 fn open_shield_picker(app: &mut App) {
-    app.handle(key_event(ctrl('p'), KeyModifiers::CONTROL));
+    enter_project_pane(app);
     for _ in 0..3 {
         app.handle(key(KeyCode::Down));
     }

@@ -254,9 +254,10 @@ When detection concludes `Unknown` or `Ambiguous`, no project-local
 configuration file (below) is present and the registry does not name the
 directory, the UI should ask which project type this directory is, offering
 the currently supported backends (today: MicroPython, Zephyr). This is not
-the same prompt as the manual override below: it fires automatically once,
-right after detection, instead of waiting for the user to invoke an override
-action.
+the same answer as the project-local `chiptui.toml` override below: it
+fires automatically once, right after detection, instead of waiting for a
+file the user has to write. (Re-running detection --- the Log pane's `r` ---
+offers it again.)
 
 Once the user answers, two things happen, neither needing its own
 confirmation --- both are part of answering the prompt (§3: explicit, never
@@ -305,8 +306,10 @@ The file is named `chiptui.toml` and lives at the project root. ChipTUI
 reads it and lets it win over everything else --- it is the most specific
 answer there is, it travels with the project, and it can be committed so a
 team shares it. ChipTUI does not create it: the persisted counterpart of the
-automatic prompt is the registry entry (§13), and the manual override action
-stays session-only. Writing this file is the user's decision, made by
+automatic prompt is the registry entry (§13), and the file is the one manual
+override --- there is no dashboard action that swaps the backend of a session
+anymore; a session that started on the wrong backend switches projects
+(`shift+p`) instead. Writing this file is the user's decision, made by
 putting it there.
 
 ## 8. Device Management
@@ -908,9 +911,9 @@ one-line contextual shortcut footer:
 - **Row 1** --- Project and Device, side by side, both a fixed four content rows (shorter
   content is padded with blanks) so the rows below never shift when a workspace resolves or
   device details accumulate. The Project pane is the checklist the environment's questions
-  live in --- navigable through `ctrl+p` (a deliberate detour off the `Tab` tour: the pane
-  holds questions, not work; `Tab` leaves it back onto the tour, a second `ctrl+p` returns
-  to wherever focus was, and the cursor lands on the first question still open). Zephyr asks
+  live in --- navigable through the shortcuts overlay's `e` letter (`ctrl+k`; a deliberate
+  detour off the `Tab` tour: the pane holds questions, not work; `Tab` leaves it back onto the
+  tour, and the cursor lands on the first question still open). Zephyr asks
   `Zephyr path`, `Projects base`, `Project path`, then `Board` with its optional `Shield`
   riding the same line (`←`/`→` switch which half `Enter` acts on); MicroPython (under
   `ProjectSelect`) asks `Projects base` (`[micropython] projects`) and `Project path` (a

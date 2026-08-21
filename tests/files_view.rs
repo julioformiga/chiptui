@@ -843,28 +843,37 @@ fn a_second_scan_request_does_not_rescan_an_existing_browser() {
 }
 
 #[test]
-fn overriding_to_a_filesystem_backend_via_the_picker_scans_for_a_device() {
+fn answering_the_project_setup_prompt_for_a_filesystem_backend_scans_for_a_device() {
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-    let mut app = App::new(std::env::temp_dir());
+    let root = std::env::temp_dir().join(format!("chiptui-files-setup-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("home")).unwrap();
+
+    let mut app = App::new(&root);
+    // Answering the prompt records the project in the user config, so the
+    // home must be redirected before it is answered.
+    app.set_home_dir(root.join("home"));
     app.bootstrap();
     assert!(
         app.browser.is_none(),
         "an unrecognized project has no filesystem to scan for yet"
     );
 
-    // 'o' -> down to the first real backend (MicroPython) -> enter.
+    // The prompt opens on the unknown project; MicroPython is its first
+    // row, so Enter answers it outright.
     let key = |code| AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE));
-    app.handle(key(KeyCode::Char('o')));
-    app.handle(key(KeyCode::Down));
+    app.maybe_open_project_setup();
     app.handle(key(KeyCode::Enter));
 
     assert_eq!(app.manager.override_kind(), Some(BackendKind::MicroPython));
     assert!(
         app.browser.is_some(),
-        "picking a backend with Capability::Filesystem should scan immediately, \
+        "answering a backend with Capability::Filesystem should scan immediately, \
          not wait for 'f'"
     );
+
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -923,8 +932,8 @@ fn app_in_browser(project: &Project) -> App {
 fn the_browser_renders_both_panes_with_comparison_markers() {
     let project = Project::new("render");
     let mut app = app_in_browser(&project);
-    // 132 columns: the footer's middle-dropping fits every hint including
-    // the new ctrl+p row at smaller widths.
+    // 132 columns: the footer's middle-dropping fits every hint at smaller
+    // widths.
     let frame = render(&mut app, 132, 32);
 
     assert!(frame.contains("Files:"), "missing local pane:\n{frame}");
@@ -1148,9 +1157,8 @@ fn dashboard_help_describes_file_browser_keys_when_a_files_pane_is_focused() {
     );
     assert!(shortcuts.contains(&"tab"));
     assert!(
-        shortcuts.contains(&"o"),
-        "backend override stays reachable --- files are a focus, not a \
-         separate screen to leave"
+        !shortcuts.contains(&"o"),
+        "the backend picker is gone: files are a focus, not a separate screen to leave"
     );
 
     app.overlay = Some(Overlay::Help {

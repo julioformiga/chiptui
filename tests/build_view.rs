@@ -30,6 +30,13 @@ fn key_event(code: KeyCode, modifiers: KeyModifiers) -> AppEvent {
     AppEvent::Key(KeyEvent::new(code, modifiers))
 }
 
+/// The Project pane's way in: the shortcuts overlay (`ctrl+k`), then the
+/// pane's `e` letter.
+fn enter_project_pane(app: &mut App) {
+    app.handle(key_event(ctrl('k'), KeyModifiers::CONTROL));
+    app.handle(key(KeyCode::Char('e')));
+}
+
 /// A Zephyr app in a temp directory: a real project layout so the panel has
 /// a root, with a CMakeCache claiming a board when the test wants one.
 fn zephyr_app(tag: &str, board: Option<&str>) -> (App, std::path::PathBuf) {
@@ -488,9 +495,9 @@ fn switching_to_micropython_hides_the_panel_and_reclamps_focus() {
     let (mut app, _root) = zephyr_app("switch", None);
     app.focus = Focus::Build;
 
-    // The real path: the picker applies the override and re-clamps.
-    app.handle(key(KeyCode::Char('o')));
-    app.handle(key(KeyCode::Up)); // Zephyr -> MicroPython (wrapping past Automatic)
+    // The real path: the empty-project prompt's answer applies the backend
+    // and re-clamps (MicroPython is the prompt's first row).
+    app.overlay = Some(Overlay::ProjectSetup { selected: 0 });
     app.handle(key(KeyCode::Enter));
 
     assert_eq!(app.manager.selected_kind(), Some(BackendKind::MicroPython));
@@ -509,9 +516,9 @@ fn the_board_picker_fetches_filters_and_picks_for_the_session() {
     app.build.as_mut().unwrap().set_tool_path(fake("west"));
     app.focus = Focus::Build;
 
-    // The Board row lives in the Project pane (ctrl+p's checklist), below
-    // the other three questions.
-    app.handle(key_event(ctrl('p'), KeyModifiers::CONTROL));
+    // The Board row lives in the Project pane (the environment
+    // checklist), below the other three questions.
+    enter_project_pane(&mut app);
     for _ in 0..3 {
         app.handle(key(KeyCode::Down));
     }
@@ -602,7 +609,7 @@ fn the_shield_picker_lists_picks_and_clears_for_the_session() {
     // configuration flag the answers produce.
     let (mut app, root) = zephyr_app("shield", None);
     app.build.as_mut().unwrap().set_tool_path(fake("west"));
-    app.handle(key_event(ctrl('p'), KeyModifiers::CONTROL));
+    enter_project_pane(&mut app);
 
     // The Board · Shield row is the fourth question; `→` switches the row's
     // segment to the shield half, which Enter then acts on.
@@ -679,7 +686,7 @@ fn the_shield_picker_lists_picks_and_clears_for_the_session() {
 
     // The row shows the answer, and the (none) row clears it. (Focus never
     // left the Project pane's target row, and its segment is still the
-    // shield half --- ctrl+p is a toggle, and a second press would leave.)
+    // shield half --- the `e` letter is a no-op while already focused.)
     let frame = render(&mut app, 100, 32);
     assert!(
         frame.contains("nrf7002ek"),
@@ -714,7 +721,7 @@ fn board_and_shield_picks_are_saved_and_reloaded_with_the_project() {
     let config = root.join("home/.config/chiptui/config.toml");
 
     // Pick a board through the picker (three downs to the target row).
-    app.handle(key_event(ctrl('p'), KeyModifiers::CONTROL));
+    enter_project_pane(&mut app);
     for _ in 0..3 {
         app.handle(key(KeyCode::Down));
     }
@@ -1186,7 +1193,7 @@ fn del_on_a_workspace_directory_asks_before_removing_it_recursively() {
 fn a_boardless_filter_match_enter_picks_nothing_and_esc_changes_nothing() {
     let (mut app, _root) = zephyr_app("picker-esc", Some("nrf52840dk/nrf52840"));
     app.build.as_mut().unwrap().set_tool_path(fake("west"));
-    app.handle(key_event(ctrl('p'), KeyModifiers::CONTROL));
+    enter_project_pane(&mut app);
 
     for _ in 0..3 {
         app.handle(key(KeyCode::Down));
@@ -1218,7 +1225,8 @@ fn a_boardless_filter_match_enter_picks_nothing_and_esc_changes_nothing() {
     );
 
     // …and Esc leaves the cache answer untouched either way. (Focus never
-    // left the Project pane: a second ctrl+p would toggle away.)
+    // left the Project pane: the `e` letter is a no-op while already
+    // focused.)
     for _ in 0..3 {
         app.handle(key(KeyCode::Down));
     }
@@ -1239,7 +1247,7 @@ fn a_missing_west_explains_itself_in_the_picker() {
         .as_mut()
         .unwrap()
         .set_tool_path("/nonexistent/west");
-    app.handle(key_event(ctrl('p'), KeyModifiers::CONTROL));
+    enter_project_pane(&mut app);
 
     for _ in 0..3 {
         app.handle(key(KeyCode::Down));
@@ -1746,9 +1754,9 @@ fn a_configured_but_broken_location_reports_the_guide_and_still_lets_you_choose(
     // context, the chooser is one Enter away.
     assert!(app.overlay.is_none());
 
-    // Enter opens the directory picker from the pane (ctrl+p lands on the
-    // first open question, which an invalid location still is).
-    app.handle(key_event(ctrl('p'), KeyModifiers::CONTROL));
+    // Enter opens the directory picker from the pane (the `e` letter lands
+    // on the first open question, which an invalid location still is).
+    enter_project_pane(&mut app);
     app.handle(key(KeyCode::Enter));
     assert!(matches!(app.overlay, Some(Overlay::DirPicker { .. })));
 }

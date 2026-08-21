@@ -46,7 +46,8 @@ fn pad_info(mut lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
 /// For a backend that asks any (Zephyr: installation, projects folder,
 /// project, target; MicroPython: projects folder, project, plus the
 /// dependencies and script reports), the pane is the checklist those questions moved
-/// into --- navigable through `ctrl+p`, never part of the `Tab` tour. A
+/// into --- navigable through the shortcuts overlay's `e` letter
+/// (`ctrl+k`), never part of the `Tab` tour. A
 /// backend that asks nothing falls back to plain detection info (root and
 /// type). The environment's versions ride the pane's bottom border (right
 /// edge, like the Log tab's status rides the top), so they never cost a
@@ -362,7 +363,7 @@ fn detection_fallback(app: &App, width: usize, palette: Palette) -> Vec<Line<'st
                 .join(" / ");
             lines.push(field_styled(
                 "type",
-                format!("ambiguous: {names} --- press 'o' to choose"),
+                format!("ambiguous: {names}"),
                 Style::new().fg(palette.warning),
                 palette,
             ));

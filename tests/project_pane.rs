@@ -1,4 +1,5 @@
-//! The Project pane (row 1): `ctrl+p`'s way in and out, the MicroPython
+//! The Project pane (row 1): the shortcuts overlay's way in (`ctrl+k`, then
+//! the pane's `e` letter), the MicroPython
 //! project questions (projects folder, project pick, dependencies report,
 //! script report), and the re-rooting a pick performs on the file browser's
 //! local side. The Zephyr rows' flows are covered by `build_view.rs`; this
@@ -19,6 +20,13 @@ fn key(code: KeyCode) -> AppEvent {
 
 fn ctrl(c: char) -> AppEvent {
     AppEvent::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL))
+}
+
+/// The Project pane's way in: the shortcuts overlay (`ctrl+k`), then the
+/// pane's `e` letter.
+fn enter_project_pane(app: &mut App) {
+    app.handle(ctrl('k'));
+    app.handle(key(KeyCode::Char('e')));
 }
 
 fn render(app: &mut App, width: u16, height: u16) -> String {
@@ -73,13 +81,12 @@ fn zephyr_app(tag: &str) -> (App, PathBuf) {
 }
 
 #[test]
-fn ctrl_p_lands_on_the_first_open_question_and_toggles_back() {
-    let (mut app, _root) = zephyr_app("toggle");
+fn the_shortcut_letter_lands_on_the_first_open_question() {
+    let (mut app, _root) = zephyr_app("enter");
     app.place_startup_focus();
-    let before = app.focus;
-    assert_ne!(before, Focus::Project);
+    assert_ne!(app.focus, Focus::Project);
 
-    app.handle(ctrl('p'));
+    enter_project_pane(&mut app);
     assert_eq!(app.focus, Focus::Project);
     assert_eq!(
         app.project_cursor, 0,
@@ -91,15 +98,16 @@ fn ctrl_p_lands_on_the_first_open_question_and_toggles_back() {
     assert!(matches!(app.overlay, Some(Overlay::DirPicker { .. })));
     app.handle(key(KeyCode::Esc));
 
-    // The second press is the way back out.
-    app.handle(ctrl('p'));
-    assert_eq!(app.focus, before);
+    // The letter pressed again is a no-op: focus is already there, and the
+    // way out is the Tab tour, not a second press.
+    enter_project_pane(&mut app);
+    assert_eq!(app.focus, Focus::Project);
 }
 
 #[test]
 fn tab_leaves_the_project_pane_at_the_tours_first_stop() {
     let (mut app, _root) = zephyr_app("leave");
-    app.handle(ctrl('p'));
+    enter_project_pane(&mut app);
     assert_eq!(app.focus, Focus::Project);
 
     app.handle(key(KeyCode::Tab));
@@ -109,7 +117,7 @@ fn tab_leaves_the_project_pane_at_the_tours_first_stop() {
         "Tab re-enters the tour at its first stop"
     );
 
-    app.handle(ctrl('p'));
+    enter_project_pane(&mut app);
     app.handle(key(KeyCode::BackTab));
     assert_eq!(
         app.focus,
@@ -192,9 +200,9 @@ fn choosing_a_micropython_projects_folder_saves_and_chains_to_the_picker() {
     let home = root.join("home");
     std::fs::create_dir_all(home.join("mpy-apps/blink")).unwrap();
 
-    // ctrl+p lands on the first open question --- the projects folder ---
-    // and Enter opens its picker, which starts on "use this directory".
-    app.handle(ctrl('p'));
+    // The `e` letter lands on the first open question --- the projects
+    // folder --- and Enter opens its picker, which starts on "use this directory".
+    enter_project_pane(&mut app);
     app.handle(key(KeyCode::Enter));
     let Overlay::DirPicker { purpose, path, .. } = app.overlay.clone().unwrap() else {
         panic!("the projects-folder question opens the directory picker");
@@ -241,7 +249,7 @@ fn picking_a_micropython_project_reroots_the_local_pane() {
     // The folder is answered and no pick is pending a question mark, so
     // the cursor starts at the top; one Down reaches the project row,
     // whose Enter opens the picker over the folder's subdirectories.
-    app.handle(ctrl('p'));
+    enter_project_pane(&mut app);
     app.handle(key(KeyCode::Down));
     app.handle(key(KeyCode::Enter));
     assert!(matches!(

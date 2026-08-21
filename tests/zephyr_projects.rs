@@ -77,17 +77,24 @@ fn app_dir(parent: &std::path::Path, name: &str, with_cmake: bool) -> std::path:
 }
 
 /// The checklist's `Project path` row --- it lives in the Project pane
-/// (ctrl+p's checklist), two rows below the folder question: Enter opens
-/// the project flow (the projects-folder question when nothing is
+/// (the environment checklist), two rows below the folder question: Enter
+/// opens the project flow (the projects-folder question when nothing is
 /// configured, the project picker when one is).
 fn press_project_row(app: &mut App) {
-    app.handle(AppEvent::Key(ratatui::crossterm::event::KeyEvent::new(
-        KeyCode::Char('p'),
-        ratatui::crossterm::event::KeyModifiers::CONTROL,
-    )));
+    enter_project_pane(app);
     app.handle(key(KeyCode::Down));
     app.handle(key(KeyCode::Down));
     app.handle(key(KeyCode::Enter));
+}
+
+/// The Project pane's way in: the shortcuts overlay (`ctrl+k`), then the
+/// pane's `e` letter.
+fn enter_project_pane(app: &mut App) {
+    app.handle(AppEvent::Key(ratatui::crossterm::event::KeyEvent::new(
+        KeyCode::Char('k'),
+        ratatui::crossterm::event::KeyModifiers::CONTROL,
+    )));
+    app.handle(key(KeyCode::Char('e')));
 }
 
 /// The `Build` button --- fifth row of the panel's list (Update Zephyr,
@@ -269,12 +276,9 @@ fn choosing_the_folder_in_the_picker_persists_it_and_chains_to_the_project() {
     app_dir(&apps, "blinky", true);
 
     // Project pane, unresolved: [Zephyr path, Projects base, ...] --- one
-    // Down reaches the projects-folder row (ctrl+p lands on the first open
-    // question, which the installation is).
-    app.handle(AppEvent::Key(ratatui::crossterm::event::KeyEvent::new(
-        KeyCode::Char('p'),
-        ratatui::crossterm::event::KeyModifiers::CONTROL,
-    )));
+    // Down reaches the projects-folder row (entering the pane lands on the
+    // first open question, which the installation is).
+    enter_project_pane(&mut app);
     app.handle(key(KeyCode::Down));
     app.handle(key(KeyCode::Enter));
     assert!(matches!(
@@ -385,8 +389,8 @@ fn a_project_switch_applies_the_new_projects_saved_board_and_shield() {
     assert_eq!(app.build.as_ref().unwrap().board_name(), None);
 
     // Switch to beta: its saved answers apply, cache-independent. (The
-    // pane's cursor never left the Project path row, and ctrl+p is a
-    // toggle --- a second press would leave the pane.)
+    // pane's cursor never left the Project path row, and the `e` letter is
+    // a no-op while the pane already holds focus.)
     app.handle(key(KeyCode::Enter)); // reopen the picker
     app.handle(key(KeyCode::Down)); // alpha -> beta
     app.handle(key(KeyCode::Enter));

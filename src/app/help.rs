@@ -232,23 +232,11 @@ const FILES: &[Focus] = &[Focus::FilesLocal, Focus::FilesDevice];
 /// rows, 50..=59 the dashboard-wide commands, 60..=69 the Logs extras,
 /// 70..=72 the tail every context keeps. Flash screens reuse the same
 /// bands per screen (their sites never co-match).
-const DASHBOARD_NAVIGATION: [HelpBinding; 11] = [
+const DASHBOARD_NAVIGATION: [HelpBinding; 10] = [
     sited(
         "tab / shift+tab",
         "move focus between panes",
         &[site("tab", "focus", 0, ANY_FOCUS, &[], When::Always)],
-    ),
-    sited(
-        "ctrl+p",
-        "focus the Environment pane (off the tab tour)",
-        &[site(
-            "ctrl+p",
-            "environment",
-            1,
-            ANY_FOCUS,
-            &[],
-            When::Always,
-        )],
     ),
     // Help-only: the footer's width budget is already tight at the
     // minimum terminal size, and this binding needs no footer chip to be
@@ -366,7 +354,7 @@ const DASHBOARD_NAVIGATION: [HelpBinding; 11] = [
     ),
 ];
 
-const DASHBOARD_COMMANDS: [HelpBinding; 22] = [
+const DASHBOARD_COMMANDS: [HelpBinding; 21] = [
     action(
         "r",
         "re-detect, reload, or rename (file list)",
@@ -376,12 +364,6 @@ const DASHBOARD_COMMANDS: [HelpBinding; 22] = [
             site("r", "rename", 15, &[Focus::Workspace], &[], When::Always),
             site("r", "re-detect", 10, &[Focus::Logs], &[], When::Always),
         ],
-    ),
-    action(
-        "o",
-        "override the detected backend",
-        KeyCode::Char('o'),
-        &[site("o", "backend", 50, ANY_FOCUS, &[], When::Always)],
     ),
     action(
         "t",
@@ -1021,7 +1003,6 @@ mod tests {
             files,
             vec![
                 ("tab", "focus"),
-                ("ctrl+p", "environment"),
                 ("enter", "menu"),
                 ("→", "descend"),
                 ("←/bksp", "up"),
@@ -1031,7 +1012,6 @@ mod tests {
                 ("shift+s", "sync"),
                 ("h", "hidden"),
                 ("d", "scan devices"),
-                ("o", "backend"),
                 ("t", "theme"),
                 ("x", "flash"),
                 ("m", "monitor/REPL"),
@@ -1055,8 +1035,8 @@ mod tests {
         assert_eq!(
             footer_keys(View::Dashboard, &logs),
             vec![
-                "tab", "ctrl+p", "r", "d", "o", "t", "x", "m", "shift+r", "←/→", "ctrl+c", "s",
-                "↑/↓", "shift+p", "?", "q",
+                "tab", "r", "d", "t", "x", "m", "shift+r", "←/→", "ctrl+c", "s", "↑/↓", "shift+p",
+                "?", "q",
             ]
         );
 
@@ -1072,11 +1052,9 @@ mod tests {
             footer_keys(View::Dashboard, &ctx(zephyr(), Focus::Build)),
             vec![
                 "tab",
-                "ctrl+p",
                 "↑/↓",
                 "enter",
                 "d",
-                "o",
                 "t",
                 "x",
                 "m",
@@ -1094,7 +1072,6 @@ mod tests {
             footer_keys(View::Dashboard, &ctx(zephyr(), Focus::Workspace)),
             vec![
                 "tab",
-                "ctrl+p",
                 "↑/↓",
                 "enter",
                 "v",
@@ -1102,7 +1079,6 @@ mod tests {
                 "a",
                 "r",
                 "d",
-                "o",
                 "t",
                 "x",
                 "m",
@@ -1119,11 +1095,9 @@ mod tests {
             footer_keys(View::Dashboard, &ctx(zephyr(), Focus::Project)),
             vec![
                 "tab",
-                "ctrl+p",
                 "↑/↓",
                 "enter",
                 "d",
-                "o",
                 "t",
                 "x",
                 "m",

@@ -1,7 +1,7 @@
 //! Device discovery and selection: scanning for a board, the device picker,
-//! and applying a backend choice (manual override or the empty-project
-//! prompt) --- the moments that can make a device or a filesystem-capable
-//! backend newly available. Split out of `app.rs` since these are the
+//! and applying the empty-project prompt's backend choice --- the moments
+//! that can make a device or a filesystem-capable backend newly available.
+//! Split out of `app.rs` since these are the
 //! handful of places that decide *which* device/backend `App` is talking to,
 //! as opposed to what to do once one is chosen.
 
@@ -13,7 +13,7 @@ use crate::device::{DiscoveryState, ScriptState};
 use crate::firmware_id::{FirmwareVerdict, FlashFirmware};
 
 use super::flash_view::{FirmwareCheck, FirmwareHold};
-use super::{App, DevicePaneTab, LogTab, MonitorSource, Overlay, PickerOption};
+use super::{App, DevicePaneTab, LogTab, MonitorSource, Overlay};
 
 impl App {
     /// Ensures row 2's panes exist and the right scans start, without
@@ -25,7 +25,7 @@ impl App {
     /// not re-issuing a scan that already ran).
     ///
     /// Called from three places: `main.rs` right after startup, and
-    /// [`App::apply_project_setup`]/[`App::apply_picker`] --- any moment the
+    /// [`App::apply_project_setup`] --- any moment the
     /// selected backend could change what row 2 can show.
     /// Deliberately **not** called from [`App::bootstrap`] itself, for
     /// the same reason [`App::maybe_open_project_setup`] is not: many existing
@@ -614,56 +614,8 @@ impl App {
         });
     }
 
-    pub(super) fn open_picker(&mut self) {
-        let current = self.manager.override_kind();
-        let selected = PickerOption::all()
-            .iter()
-            .position(|option| match (option, current) {
-                (PickerOption::Automatic, None) => true,
-                (PickerOption::Backend(kind), Some(active)) => *kind == active,
-                _ => false,
-            })
-            .unwrap_or(0);
-        self.overlay = Some(Overlay::BackendPicker { selected });
-    }
-
-    pub(super) fn apply_picker(&mut self, selected: usize) {
-        let Some(option) = PickerOption::all().get(selected).copied() else {
-            return;
-        };
-        match option {
-            PickerOption::Automatic => {
-                self.manager.set_override(None);
-                match self.manager.selected_kind() {
-                    Some(kind) => self
-                        .logs
-                        .info(format!("override cleared; detection selects {kind}")),
-                    None => self
-                        .logs
-                        .warn("override cleared; detection did not identify a backend"),
-                }
-            }
-            PickerOption::Backend(kind) => {
-                self.manager.set_override(Some(kind));
-                self.logs.info(format!("backend overridden to {kind}"));
-                self.ensure_workspace_panel();
-                self.report_tools();
-            }
-        }
-        // The pane the old backend showed is not this backend's pane: the
-        // actions tab belongs to a device pane that may not even exist for
-        // the one being switched to, so the tab starts over with it.
-        self.device_pane_tab = DevicePaneTab::Files;
-        // A switch away from a backend with no filesystem (e.g. Zephyr) never
-        // created a browser to scan with; a switch onto one should not still
-        // be sitting on "not scanned" just because it happened via the
-        // picker instead of at startup.
-        self.maybe_scan_devices();
-        self.clamp_focus();
-    }
-
     /// Applies the empty-project prompt's answer (`SPEC.md` §7): an
-    /// in-session override exactly like [`App::apply_picker`], the backend's
+    /// in-session override, the backend's
     /// own starting layout written into the directory, and the answer itself
     /// recorded in the user config so the directory needs no prompt on later
     /// runs --- and so the home screen lists it.

@@ -10,7 +10,7 @@ use crate::build::BuildAction;
 use crate::device::ScriptState;
 
 use super::help::{self, HelpSection};
-use super::{App, FileAction, Overlay, PendingEdit, PickerOption, ThemeChoice, View, ViewerSource};
+use super::{App, FileAction, Overlay, PendingEdit, ThemeChoice, View, ViewerSource};
 
 impl App {
     /// Shared key handling for every Yes/No confirm overlay
@@ -187,26 +187,6 @@ impl App {
                     }
                 }
             }
-            Overlay::BackendPicker { selected } => match key.code {
-                KeyCode::Esc | KeyCode::Char('q') => self.overlay = None,
-                KeyCode::Up | KeyCode::Char('k') => {
-                    let count = PickerOption::all().len();
-                    self.overlay = Some(Overlay::BackendPicker {
-                        selected: (selected + count - 1) % count,
-                    });
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    let count = PickerOption::all().len();
-                    self.overlay = Some(Overlay::BackendPicker {
-                        selected: (selected + 1) % count,
-                    });
-                }
-                KeyCode::Enter => {
-                    self.overlay = None;
-                    self.apply_picker(selected);
-                }
-                _ => {}
-            },
             Overlay::ThemePicker { selected } => {
                 let count = ThemeChoice::all().len();
                 match key.code {

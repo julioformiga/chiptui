@@ -115,8 +115,8 @@ prerequisites moved *up* into row 1's **Environment pane**, which is the checkli
 the build panel but asked here; `←`/`→` on the merged target row switch which half `Enter`
 acts on --- `App::board_segment`) for Zephyr, `Projects base`/`Project path`/`Dependencies`/
 `Script` for MicroPython (`src/app/project_view.rs`, `App::project_rows`). The pane is
-navigable but deliberately off the `Tab` tour: `ctrl+p` enters it (toggle: a second press
-returns to wherever focus was; the cursor lands on the first question still open), `Tab`
+navigable but deliberately off the `Tab` tour: the shortcuts overlay's `e` letter (`ctrl+k`)
+enters it (the cursor lands on the first question still open), `Tab`
 re-enters the tour at its first stop. The operation buttons they gate live in the **Actions**
 pane --- a small custom widget (`src/ui/button.rs`: one stacked
 group sharing a rounded border, a centered icon label per row, a `├─┤` divider between each

@@ -418,7 +418,7 @@ impl App {
             .cloned()
         else {
             self.logs
-                .warn("no Zephyr installation configured — answer Zephyr path first (ctrl+p)");
+                .warn("no Zephyr installation configured — answer Zephyr path first (ctrl+k, e)");
             return;
         };
         // The resolved directory *is* the workspace root (it carries

@@ -32,7 +32,8 @@ use crate::process::Command;
 /// One row of the Project pane's checklist (row 1), for a backend that
 /// maintains a shared environment. The environment's state itself lives in
 /// [`WorkspacePanel`]; these rows are its questions, rendered and walked by
-/// the Project pane (`ctrl+p`), executed through [`App::run_workspace_action`].
+/// the Project pane (the shortcuts overlay's `e` letter), executed through
+/// [`App::run_workspace_action`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkspaceAction {
     /// Opens the directory picker over the filesystem: the user knows

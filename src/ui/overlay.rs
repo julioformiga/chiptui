@@ -9,7 +9,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph};
 
 use crate::app::help::{self, HelpSection};
-use crate::app::{App, FileAction, Overlay, PickerOption, ThemeChoice, ViewerSource, ViewerState};
+use crate::app::{App, FileAction, Overlay, ThemeChoice, ViewerSource, ViewerState};
 use crate::backend::BackendKind;
 use crate::backend::zephyr::workspace::InstallState;
 use crate::browser::SyncPlan;
@@ -26,7 +26,6 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
             filtering,
             selected,
         } => draw_help(frame, area, app, &filter, filtering, selected, palette),
-        Overlay::BackendPicker { selected } => draw_picker(frame, area, app, selected, palette),
         Overlay::DevicePicker { selected } => {
             draw_device_picker(frame, area, app, selected, palette)
         }
@@ -2195,50 +2194,6 @@ fn fit(text: &str, budget: usize) -> String {
     let mut shortened: String = text.chars().take(budget - 1).collect();
     shortened.push('…');
     shortened
-}
-
-fn draw_picker(frame: &mut Frame, area: Rect, app: &App, selected: usize, palette: Palette) {
-    let options = PickerOption::all();
-    let active = app.manager.override_kind();
-
-    let items: Vec<ListItem> = options
-        .iter()
-        .map(|option| {
-            let current = match option {
-                PickerOption::Automatic => active.is_none(),
-                PickerOption::Backend(kind) => active == Some(*kind),
-            };
-            let mut spans = vec![Span::styled(
-                format!(" {} ", option.label()),
-                Style::new().fg(palette.fg),
-            )];
-            if current {
-                spans.push(Span::styled("(active)", muted_style(palette)));
-            }
-            // Detection's own opinion, so an override is an informed choice.
-            if let PickerOption::Backend(kind) = option
-                && let Some(detection) = app.manager.detection()
-            {
-                spans.push(Span::styled(
-                    format!("  {:.2}", detection.confidence_of(*kind)),
-                    Style::new().fg(palette.accent),
-                ));
-            }
-            ListItem::new(Line::from(spans))
-        })
-        .collect();
-
-    let popup = centered(area, 48, options.len() as u16 + 2);
-    let mut state = ListState::default().with_selected(Some(selected));
-
-    frame.render_widget(Clear, popup);
-    frame.render_stateful_widget(
-        List::new(items)
-            .block(modal("Backend", palette))
-            .highlight_style(selection_style(palette)),
-        popup,
-        &mut state,
-    );
 }
 
 /// The theme picker: `Auto` first, then every `ratatui_themes::ThemeName`,

@@ -918,14 +918,6 @@ fn overlays_draw_above_the_dashboard() {
         "help body missing:\n{help}"
     );
 
-    app.overlay = Some(Overlay::BackendPicker { selected: 0 });
-    let picker = render(&mut app, 100, 32);
-    assert!(picker.contains("Automatic"), "picker missing:\n{picker}");
-    assert!(
-        picker.contains("MicroPython"),
-        "picker options missing:\n{picker}"
-    );
-
     app.overlay = Some(Overlay::ProjectSetup { selected: 0 });
     let setup = render(&mut app, 100, 32);
     assert!(
@@ -970,7 +962,7 @@ fn selected_rows_carry_the_themes_selection_background() {
     // the highlight, or switching it leaves selections looking unchanged.
     let mut app = app_with_backend(BackendKind::MicroPython);
     app.maybe_scan_devices();
-    app.overlay = Some(Overlay::BackendPicker { selected: 0 });
+    app.overlay = Some(Overlay::ThemePicker { selected: 0 });
 
     let mut terminal = Terminal::new(TestBackend::new(100, 32)).expect("test terminal");
     let palette = app.theme_palette();

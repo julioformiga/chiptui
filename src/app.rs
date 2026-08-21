@@ -67,8 +67,8 @@ pub enum View {
 /// The Project pane (row 1) holds the checklist the environment questions
 /// moved into, so it *is* navigable --- but it deliberately stays off the
 /// `Tab` tour (the tour walks the working panes; the questions are a
-/// detour): `ctrl+p` enters it (and toggles back out to wherever focus
-/// was), `Tab` leaves it onto the tour's first stop. `FilesLocal`/
+/// detour): the shortcuts overlay's `e` letter (`ctrl+k`) enters it, `Tab`
+/// leaves it onto the tour's first stop. `FilesLocal`/
 /// `FilesDevice` are the dashboard's two file-browser columns; each is its
 /// own stop so `Tab` walks all columns in one consistent tour instead of a
 /// separate sub-focus inside the files row. `Build` is the build panel a
@@ -226,8 +226,6 @@ pub enum Overlay {
         filtering: bool,
         selected: usize,
     },
-    /// Manual backend selection (`AGENTS.md` §4: detection must be overridable).
-    BackendPicker { selected: usize },
     /// Serial device selection (`SPEC.md` §8: never guess which board).
     DevicePicker { selected: usize },
     /// The color theme picker (`t`): `Auto` first, then every
@@ -245,9 +243,8 @@ pub enum Overlay {
     /// `firmware/`.
     FirmwarePicker { selected: usize },
     /// Empty or unrecognized project: asks which backend this directory is
-    /// (`SPEC.md` §7). Unlike [`Overlay::BackendPicker`] this fires
-    /// automatically, offers no "Automatic" row (detection already failed to
-    /// conclude one), and persists the choice to `chiptui.toml`.
+    /// (`SPEC.md` §7). It fires automatically (detection could not conclude
+    /// a backend) and persists the choice to `chiptui.toml`.
     ProjectSetup { selected: usize },
     /// A firmware download would overwrite a file already in `firmware/`;
     /// needs explicit confirmation before running (`SPEC.md` §15 applied to
@@ -690,29 +687,6 @@ pub struct PendingMonitor {
     pub command: crate::process::Command,
 }
 
-/// One entry of the backend picker.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PickerOption {
-    /// Trust detection.
-    Automatic,
-    Backend(BackendKind),
-}
-
-impl PickerOption {
-    pub fn all() -> Vec<PickerOption> {
-        std::iter::once(PickerOption::Automatic)
-            .chain(BackendKind::ALL.iter().copied().map(PickerOption::Backend))
-            .collect()
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Automatic => "Automatic (use detection)",
-            Self::Backend(kind) => kind.display_name(),
-        }
-    }
-}
-
 /// One row of the theme picker. Every `Named` row is a fixed theme that
 /// applies to all projects alike; `Auto` is the one answer that depends on
 /// the session --- it follows the active backend, so a Zephyr project
@@ -854,10 +828,6 @@ pub struct App {
     /// Which tab the device pane shows ([`DevicePaneTab`]); only meaningful
     /// while [`Self::device_actions_tab_available`] holds.
     pub device_pane_tab: DevicePaneTab,
-    /// Where `ctrl+p` returns to when it toggles the Project pane's focus
-    /// away --- the pane is a detour off the `Tab` tour, and the way back
-    /// is where the detour started.
-    focus_before_project: Option<Focus>,
     /// The MicroPython projects folder (`[micropython] projects`, user
     /// config) --- the same question Zephyr's `[zephyr] projects` answers,
     /// resolved once per session.
@@ -1061,7 +1031,6 @@ impl App {
             project_cursor: 0,
             board_segment: true,
             device_pane_tab: DevicePaneTab::default(),
-            focus_before_project: None,
             mpy_projects: None,
             mpy_projects_invalid: None,
             mpy_root: None,
@@ -1248,13 +1217,12 @@ impl App {
                             .map(|kind| kind.display_name())
                             .collect::<Vec<_>>()
                             .join(", ");
-                        self.logs.warn(format!(
-                            "ambiguous project at {root}: {names} --- press 'o' to choose a backend"
-                        ));
+                        self.logs
+                            .warn(format!("ambiguous project at {root}: {names}"));
                     }
                     DetectionOutcome::Unknown => {
                         self.logs.warn(format!(
-                            "no known project found in {searched} director{} from {root} --- press 'o' to select a backend",
+                            "no known project found in {searched} director{} from {root}",
                             if searched == 1 { "y" } else { "ies" }
                         ));
                     }
@@ -2161,11 +2129,7 @@ impl App {
     /// right sub-tab too.
     fn apply_shortcut_target(&mut self, target: ShortcutTarget) {
         match target {
-            ShortcutTarget::Project => {
-                if self.focus != Focus::Project {
-                    self.toggle_project_focus();
-                }
-            }
+            ShortcutTarget::Project => self.focus_project(),
             ShortcutTarget::FilesLocal => self.focus = Focus::FilesLocal,
             ShortcutTarget::Workspace => self.focus = Focus::Workspace,
             ShortcutTarget::DeviceFiles => {
@@ -2201,7 +2165,7 @@ impl App {
     }
 
     /// The shortcuts overlay's own key handling, checked before every other
-    /// dashboard binding (like `ctrl+p`/`ctrl+←/→`): opening it, closing it,
+    /// dashboard binding (like `ctrl+←/→`): opening it, closing it,
     /// and resolving a letter to a jump. Returns whether the key was
     /// consumed here --- when it was not, `on_dashboard_key` dispatches
     /// normally.
@@ -2383,31 +2347,21 @@ impl App {
                 }
             }
         };
-        if self.focus == Focus::Project {
-            self.focus_before_project = None;
-        }
         self.focus = order[next];
     }
 
-    /// `ctrl+p`: the Project pane's own way in (and back out). Entering
-    /// saves where focus was (the toggle's way back) and lands the cursor
-    /// on the first question still open --- the pane exists to answer what
-    /// is missing, so that is where the user is put. A pane with no rows
-    /// (no backend selected) is not entered at all: there is nothing to
-    /// walk.
-    pub fn toggle_project_focus(&mut self) {
-        if self.focus == Focus::Project {
-            let back = self
-                .focus_before_project
-                .take()
-                .unwrap_or_else(|| self.fallback_pane());
-            self.focus = back;
+    /// The Project pane's way in: jumped to by the shortcuts overlay's `e`
+    /// letter (`ctrl+k`), with `Tab` re-entering the tour at its first stop
+    /// (the pane is a detour, so the tour is the way back out). Entering
+    /// lands the cursor on the first question still open --- the pane exists
+    /// to answer what is missing, so that is where the user is put. A pane
+    /// with no rows (no backend selected) is not entered at all: there is
+    /// nothing to walk, and a letter pressed while already inside is a
+    /// no-op.
+    pub fn focus_project(&mut self) {
+        if self.focus == Focus::Project || self.project_rows().is_empty() {
             return;
         }
-        if self.project_rows().is_empty() {
-            return;
-        }
-        self.focus_before_project = Some(self.focus);
         self.focus = Focus::Project;
         self.project_cursor = self.first_open_project_row();
     }
@@ -2471,13 +2425,6 @@ impl App {
                 self.step_focus(false);
                 return;
             }
-            // The Project pane's way in, visible in the footer beside the
-            // tab tour it deliberately stands outside of. Crossterm labels
-            // the byte 0x10 this way, like every Ctrl+letter.
-            KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.toggle_project_focus();
-                return;
-            }
             // The strip chord is dashboard-wide: from *any* pane it
             // switches the tabs of the pane in focus when that pane has a
             // strip, the device pane's strip when one exists beside a pane
@@ -2490,10 +2437,6 @@ impl App {
             // merely joins the plain arrows nothing competes with there.
             KeyCode::Left | KeyCode::Right if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.switch_strip_tabs(key.code == KeyCode::Right);
-                return;
-            }
-            KeyCode::Char('o') => {
-                self.open_picker();
                 return;
             }
             KeyCode::Char('t') => {
@@ -2816,8 +2759,7 @@ impl App {
                 vec![("type", "package"), ("enter", "install"), ("esc", "cancel")]
             }
             Some(
-                Overlay::BackendPicker { .. }
-                | Overlay::DevicePicker { .. }
+                Overlay::DevicePicker { .. }
                 | Overlay::ThemePicker { .. }
                 | Overlay::FirmwarePicker { .. }
                 | Overlay::ProjectSetup { .. }
@@ -3259,7 +3201,7 @@ mod tests {
         for overlay in [
             None,
             Some(OVERLAY_HELP),
-            Some(Overlay::BackendPicker { selected: 0 }),
+            Some(Overlay::ThemePicker { selected: 0 }),
         ] {
             let mut app = app();
             app.overlay = overlay;
@@ -3440,18 +3382,33 @@ mod tests {
         assert_eq!(app.focus, Focus::Logs);
 
         // A backend switch away from MicroPython while its device column is
-        // focused, through the picker --- the real path that re-clamps.
-        app.manager.set_override(Some(BackendKind::MicroPython));
-        app.focus = Focus::FilesDevice;
-        app.handle(key(KeyCode::Char('o')));
-        app.handle(key(KeyCode::Down)); // to Zephyr
-        app.handle(key(KeyCode::Enter));
-        assert_eq!(app.manager.selected_kind(), Some(BackendKind::Zephyr));
+        // focused: answering the empty-project prompt (`apply_project_setup`)
+        // is the real path that re-clamps.
+        let home = std::env::temp_dir().join(format!("chiptui-clamp-home-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("chiptui-clamp-root-{}", std::process::id()));
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&root).unwrap();
+        let _ = std::fs::remove_dir_all(&empty_dev);
+        let mut switch = App::new(&root);
+        switch.set_home_dir(&home);
+        switch.set_serial_dir(&empty_dev);
+        switch.detect();
+        switch.manager.set_override(Some(BackendKind::MicroPython));
+        switch.maybe_scan_devices();
+        switch.focus = Focus::FilesDevice;
+        let zephyr = BackendKind::ALL
+            .iter()
+            .position(|kind| *kind == BackendKind::Zephyr)
+            .unwrap();
+        switch.apply_project_setup(zephyr);
+        assert_eq!(switch.manager.selected_kind(), Some(BackendKind::Zephyr));
         assert_eq!(
-            app.focus,
+            switch.focus,
             Focus::Workspace,
             "clamping must land on the workspace pane, the row's first stop"
         );
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]
@@ -3651,37 +3608,6 @@ mod tests {
     }
 
     #[test]
-    fn picker_applies_and_clears_the_override() {
-        let mut app = app();
-        app.handle(key(KeyCode::Char('o')));
-        assert_eq!(app.overlay, Some(Overlay::BackendPicker { selected: 0 }));
-
-        // Move to the first real backend and apply it.
-        app.handle(key(KeyCode::Down));
-        app.handle(key(KeyCode::Enter));
-        assert_eq!(app.overlay, None);
-        assert_eq!(app.manager.override_kind(), Some(BackendKind::MicroPython));
-
-        // Re-opening starts on the active override, and Automatic clears it.
-        app.handle(key(KeyCode::Char('o')));
-        assert_eq!(app.overlay, Some(Overlay::BackendPicker { selected: 1 }));
-        app.handle(key(KeyCode::Up));
-        app.handle(key(KeyCode::Enter));
-        assert_eq!(app.manager.override_kind(), None);
-    }
-
-    #[test]
-    fn picker_selection_wraps() {
-        let mut app = app();
-        app.handle(key(KeyCode::Char('o')));
-        app.handle(key(KeyCode::Up));
-        let last = PickerOption::all().len() - 1;
-        assert_eq!(app.overlay, Some(Overlay::BackendPicker { selected: last }));
-        app.handle(key(KeyCode::Down));
-        assert_eq!(app.overlay, Some(Overlay::BackendPicker { selected: 0 }));
-    }
-
-    #[test]
     fn log_scrolling_respects_the_reported_viewport() {
         let mut app = app();
         app.focus = Focus::Logs;
@@ -3791,7 +3717,7 @@ mod tests {
         let mut app = app();
         assert!(app.shortcuts().iter().any(|(key, _)| *key == "q"));
 
-        app.overlay = Some(Overlay::BackendPicker { selected: 0 });
+        app.overlay = Some(Overlay::ProjectSetup { selected: 0 });
         let keys: Vec<&str> = app.shortcuts().iter().map(|(key, _)| *key).collect();
         assert!(keys.contains(&"enter"));
         assert!(

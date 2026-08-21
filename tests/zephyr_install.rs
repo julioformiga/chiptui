@@ -760,13 +760,15 @@ fn the_modal_is_legible_at_the_declared_minimum() {
 // quietly write beside it.
 // ---------------------------------------------------------------------------
 
-/// The `Zephyr path` row: `ctrl+p` enters the Project pane's checklist with
-/// the cursor on the first open question, and this row is its first.
+/// The `Zephyr path` row: the shortcuts overlay's `e` letter (`ctrl+k`)
+/// enters the Project pane's checklist with the cursor on the first open
+/// question, and this row is its first.
 fn press_zephyr_path_row(app: &mut App) {
     app.handle(AppEvent::Key(KeyEvent::new(
-        KeyCode::Char('p'),
+        KeyCode::Char('k'),
         KeyModifiers::CONTROL,
     )));
+    app.handle(key(KeyCode::Char('e')));
     app.handle(key(KeyCode::Home));
     app.handle(key(KeyCode::Enter));
 }
