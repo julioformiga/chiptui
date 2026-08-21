@@ -650,12 +650,14 @@ These are the decisions that shape most code, and getting them wrong causes wide
   (`maybe_run_deferred_firmware_check`) — but not for a script believed running: by the time it
   is armed the chip query has already reset the board. Switching devices clears the old board's
   answer and re-arms the read; a successful erase/write-flash invalidates it
-  (`FlashUpdate::firmware_invalidated`) so the next listing re-identifies, and `r` on the device
-  pane (`reload_device_pane`) re-runs the identification whenever MicroPython is not confirmed —
-  the recovery path after re-flashing. The build panel's `west flash` re-identifies too
-  (`BuildPanel::take_flash_finished` → `App::reidentify_firmware_after_build_flash`): it
-  invalidates the same state and re-arms the read directly, because no listing ever drives the
-  Zephyr side — the new verdict arrives on its own once the port frees. The features row is
+  (`FlashUpdate::firmware_invalidated`) and re-identifies directly --- the same reload `west flash`
+  gets (`BuildPanel::take_flash_finished` and the esptool finish both funnel into
+  `App::reidentify_firmware_after_flash`): the stale verdict, the REPL-banner version, the probe
+  and the script belief are dropped and the read re-arms, because no listing is coming that would
+  re-ask on its own (the Zephyr side never has one; the MicroPython pane is usually already
+  listed) --- the new verdict arrives on its own once the port frees. `r` on the device pane
+  (`reload_device_pane`) still re-runs the identification whenever MicroPython is not confirmed —
+  the manual recovery path after re-flashing. The features row is
   one line and the crystal
   rides
   the chip's own row, so the MAC and Firmware rows keep their fixed place in the pane's

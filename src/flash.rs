@@ -369,7 +369,9 @@ pub struct FlashUpdate {
     pub background_firmware_read_finished: bool,
     /// An erase or write-flash just succeeded, so whatever firmware the
     /// identification read named is stale: the caller drops the verdict
-    /// (and its gate) so the next listing re-identifies.
+    /// (and its gate) and re-arms the read --- the same reload `west
+    /// flash` gets, so a new identification runs as soon as the port is
+    /// free.
     pub firmware_invalidated: bool,
 }
 

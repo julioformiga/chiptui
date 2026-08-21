@@ -16,7 +16,7 @@ use chiptui::browser::{Browser, PaneState};
 use chiptui::device::{DeviceInfo, ScriptState};
 use chiptui::event::AppEvent;
 use chiptui::firmware_id::{FirmwareVerdict, FlashFirmware};
-use chiptui::flash::FlashPanel;
+use chiptui::flash::{FlashAction, FlashPanel};
 use chiptui::process::ProcessManager;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -174,6 +174,100 @@ fn the_firmware_is_identified_before_the_first_listing() {
 
     // The read is once per port: nothing re-opens or re-asks anything.
     assert!(pump_until(&mut app, |app| app.overlay.is_none(), 5));
+}
+
+/// A write-flash rewrites the board, so the verdict the identification read
+/// produced is stale the moment the write finishes: like `west flash` on
+/// the Zephyr side, the identification re-arms and re-runs on its own once
+/// the port frees --- the pane must not sit on the old answer (or on
+/// `undefined`) until a manual `r` or a device reselect.
+#[test]
+fn a_write_flash_re_identifies_the_firmware_on_its_own() {
+    // One firmware candidate, so the panel has something to write without
+    // walking the options screen.
+    let dir = std::env::temp_dir().join(format!("chiptui-rewrite-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("app.bin"), b"x").unwrap();
+
+    let mut app = App::new(std::env::temp_dir());
+    app.bootstrap();
+    app.manager.set_override(Some(BackendKind::MicroPython));
+    let mut browser = Browser::new(std::env::temp_dir());
+    browser.set_tool_path(fake("mpremote"));
+    app.browser = Some(browser);
+    let mut flash = FlashPanel::new(&dir);
+    flash.set_tool_path(fake("esptool"));
+    app.flash = Some(flash);
+    app.maybe_scan_devices();
+    app.handle(key(KeyCode::Char('d')));
+
+    // The selection chain answers first: MicroPython v1.28.0.
+    assert!(pump_until(
+        &mut app,
+        |app| app
+            .flash
+            .as_ref()
+            .is_some_and(|flash| flash.details.firmware.is_some()),
+        20
+    ));
+    assert_eq!(
+        app.flash.as_ref().unwrap().details.firmware,
+        Some(FirmwareVerdict::Firmware(
+            FlashFirmware::MicroPython,
+            Some("v1.28.0".to_string())
+        ))
+    );
+
+    // Write a firmware over it, armed the way the write flow leaves the
+    // panel (file chosen, offset typed).
+    let port = app.devices.selected_port().unwrap().to_string();
+    let Some(mut flash) = app.flash.take() else {
+        unreachable!("the flash panel exists");
+    };
+    flash.discover_firmware();
+    assert!(flash.select_firmware(0), "the lone firmware is selectable");
+    flash.set_offset("0x1000".to_string());
+    let notices = flash.run(FlashAction::WriteFlash, &mut app.processes, Some(&port));
+    app.flash = Some(flash);
+    assert!(notices.is_empty(), "the write started: {notices:?}");
+
+    // The write is the only user-started command, so its report marks the
+    // finish. From there the verdict must come back with no user action at
+    // all: no `r`, no reselect, no re-opened browser.
+    assert!(pump_until(
+        &mut app,
+        |app| app
+            .flash
+            .as_ref()
+            .and_then(|flash| flash.last.as_ref())
+            .is_some_and(|report| report.ok),
+        20
+    ));
+    assert!(
+        app.logs
+            .visible(100)
+            .any(|entry| entry.message.contains("re-identifying its firmware")),
+        "the reload must say what it is doing"
+    );
+    assert!(pump_until(
+        &mut app,
+        |app| app
+            .flash
+            .as_ref()
+            .is_some_and(|flash| flash.details.firmware.is_some()),
+        20
+    ));
+    assert_eq!(
+        app.flash.as_ref().unwrap().details.firmware,
+        Some(FirmwareVerdict::Firmware(
+            FlashFirmware::MicroPython,
+            Some("v1.28.0".to_string())
+        )),
+        "the read really ran again after the write"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

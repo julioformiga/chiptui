@@ -1643,7 +1643,7 @@ impl App {
                 self.logs.push(level, message);
             }
             if flashed {
-                self.reidentify_firmware_after_build_flash();
+                self.reidentify_firmware_after_flash();
             }
         }
 
@@ -1673,23 +1673,13 @@ impl App {
             }
 
             // An erase or write-flash changed what the flash carries: the
-            // verdict that gated the listing is stale, and the next listing
-            // (`r`, or a device reselect) re-identifies instead of trusting
-            // it.
+            // verdict that gated the listing is as stale as the flash it
+            // was read from, so it gets the same reload `west flash` gets
+            // --- dropped and re-armed, a new identification running on
+            // its own once the port frees, rather than waiting for the
+            // next listing to re-ask.
             if update.firmware_invalidated {
-                self.firmware_check_port = None;
-                self.firmware_check = flash_view::FirmwareCheck::Idle;
-                if let Some(flash) = &mut self.flash {
-                    flash.clear_firmware_identity();
-                }
-                // The REPL-banner version belonged to whichever firmware sat
-                // on the flash before; a write/erase makes it as stale as
-                // the verdict above, and `probed_port`/the script belief
-                // must clear too or the probe that would re-read it never
-                // runs again on this same port.
-                self.mpy_version = None;
-                self.probed_port = None;
-                self.set_script_state(crate::device::ScriptState::Unknown);
+                self.reidentify_firmware_after_flash();
             }
             if firmware_read_finished {
                 self.firmware_check = flash_view::FirmwareCheck::Idle;

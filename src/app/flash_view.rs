@@ -742,16 +742,17 @@ impl App {
         }
     }
 
-    /// `west flash` just rewrote the device from the build panel: the
-    /// firmware the identification read named is as stale as the flash it
-    /// was read from. Unlike the esptool flow there is no device listing
-    /// coming that would re-ask the question on its own, so this
-    /// invalidates the old answer (the same fields
-    /// `FlashUpdate::firmware_invalidated` clears) and re-arms the read
-    /// directly --- a *new* identification runs as soon as the port is
-    /// free. A board that is not selected, or never answered the chip
-    /// query, keeps nothing to re-ask: `arm_firmware_check` refuses both.
-    pub(super) fn reidentify_firmware_after_build_flash(&mut self) {
+    /// The device's flash was just rewritten --- `west flash` from the
+    /// build panel, or an esptool write/erase from the flash panel --- so
+    /// the firmware the identification read named is as stale as the flash
+    /// it was read from. No device listing is coming that would re-ask the
+    /// question on its own, so this invalidates the old answer (the same
+    /// fields `FlashUpdate::firmware_invalidated` once cleared piecemeal)
+    /// and re-arms the read directly --- a *new* identification runs as
+    /// soon as the port is free. A board that is not selected, or never
+    /// answered the chip query, keeps nothing to re-ask:
+    /// `arm_firmware_check` refuses both.
+    pub(super) fn reidentify_firmware_after_flash(&mut self) {
         if self.devices.selected_port().is_none() {
             return;
         }
