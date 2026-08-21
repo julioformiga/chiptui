@@ -417,6 +417,35 @@ fn device_pane_names_erased_flash_as_no_firmware() {
     );
 }
 
+/// The Firmware row shows the version's semver-ish prefix only --- a dev
+/// build's git-describe suffix (`-N-gHASH`) is noise a fixed status line has
+/// no room for and the user has no use for at a glance.
+#[test]
+fn device_pane_shortens_a_git_describe_version() {
+    let mut app = app_with_backend(BackendKind::Zephyr);
+    let mut flash = FlashPanel::new(std::env::temp_dir());
+    flash.details = DeviceDetails {
+        family: Some(ChipFamily::Esp32C3),
+        mac: Some("24:6f:28:12:34:56".to_string()),
+        firmware: Some(FirmwareVerdict::Firmware(
+            chiptui::firmware_id::FlashFirmware::Zephyr,
+            Some("v4.4.0-11847-gc5dffcb7c9da".to_string()),
+        )),
+        ..DeviceDetails::default()
+    };
+    app.flash = Some(flash);
+
+    let frame = render(&mut app, 100, 32);
+    assert!(
+        frame.contains("Zephyr v4.4.0"),
+        "the shortened version must still show:\n{frame}"
+    );
+    assert!(
+        !frame.contains("11847"),
+        "the git-describe suffix must not reach the Firmware row:\n{frame}"
+    );
+}
+
 /// Row 2's top border carries its pane's title, so the line it sits on is
 /// where row 1 ends: the same line in every backend, because the Project
 /// and Device info panes are a fixed four content rows (`ui::panels`).

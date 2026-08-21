@@ -582,7 +582,7 @@ fn device_content(app: &App, width: usize, palette: Palette) -> Vec<Line<'static
                     _ => None,
                 });
                 let label = match version {
-                    Some(version) => format!("{} {version}", kind.label()),
+                    Some(version) => format!("{} {}", kind.label(), short_version(version)),
                     None => kind.label().to_string(),
                 };
                 (label, Style::new().fg(palette.success).bold())
@@ -928,6 +928,15 @@ fn truncate_end(text: &str, max: usize) -> String {
     format!("{head}…")
 }
 
+/// The version's display form: the semver-ish prefix only, cutting the
+/// git-describe suffix (`-N-gHASH`, `-N.gHASH`) a dev build's banner
+/// carries. `firmware_id::version()` keeps the full string --- the log line
+/// that reports it (`{kind} build {version}`, `src/flash.rs`) still gets it
+/// whole; only the Firmware row's fixed line is shortened.
+fn short_version(version: &str) -> &str {
+    version.split('-').next().unwrap_or(version)
+}
+
 fn field(label: &str, value: String, palette: Palette) -> Line<'static> {
     Line::from(vec![
         label_span(label, palette),
@@ -941,7 +950,7 @@ fn field_styled(label: &str, value: String, style: Style, palette: Palette) -> L
 
 #[cfg(test)]
 mod tests {
-    use super::truncate_start;
+    use super::{short_version, truncate_start};
 
     #[test]
     fn short_text_is_left_alone() {
@@ -969,5 +978,17 @@ mod tests {
         let truncated = truncate_start(path, 12);
         assert!(truncated.chars().count() <= 12);
         assert!(truncated.ends_with("blinky"));
+    }
+
+    #[test]
+    fn a_git_describe_suffix_is_cut() {
+        assert_eq!(short_version("v4.4.0-11847-gc5dffcb7c9da"), "v4.4.0");
+        assert_eq!(short_version("v1.25.0-123.g0123abcdef"), "v1.25.0");
+    }
+
+    #[test]
+    fn a_bare_version_is_left_alone() {
+        assert_eq!(short_version("v5.3.1"), "v5.3.1");
+        assert_eq!(short_version("v1"), "v1");
     }
 }

@@ -1057,9 +1057,17 @@ impl FlashPanel {
             }
             None => {
                 self.state = RunState::Succeeded;
-                update
-                    .notices
-                    .push((Level::Success, format!("{}: done", running.action.label())));
+                // The version hunt speaks for itself --- `apply_version_from`
+                // (above) already pushed a "build v…" notice when it found
+                // one, and pushes nothing when it did not ("a hunt that
+                // finds nothing changes nothing"). A generic "Identify
+                // firmware: done" here would just repeat the identification
+                // read's own line under the same action label.
+                if !running.hunt_version {
+                    update
+                        .notices
+                        .push((Level::Success, format!("{}: done", running.action.label())));
+                }
 
                 if running.action == FlashAction::EraseFlash {
                     update.notices.extend(self.discover_firmware());
@@ -1861,6 +1869,16 @@ mod tests {
             "the hunt's answer must reach the log: {:?}",
             update.notices
         );
+        assert!(
+            !update
+                .notices
+                .iter()
+                .any(|(_, message)| message == "Identify firmware: done"),
+            "the hunt's own \"Zephyr build …\" notice already reports its \
+             completion --- a generic \"Identify firmware: done\" would just \
+             repeat the identification read's line under the same label: {:?}",
+            update.notices
+        );
     }
 
     #[test]
@@ -1878,13 +1896,19 @@ mod tests {
         // The hunt runs against a window with no Zephyr banner (here: a
         // MicroPython board's): the verdict stays exactly as it was.
         assert!(panel.query_firmware_version(&mut processes, Some("/dev/ttyUSB0")));
-        settle(&mut panel, &mut processes);
+        let update = settle(&mut panel, &mut processes);
         assert_eq!(
             panel.details.firmware,
             Some(FirmwareVerdict::Firmware(FlashFirmware::Zephyr, None)),
             "a failed hunt must not re-judge the firmware or invent a version"
         );
         assert!(!panel.has_pending_version_hunt());
+        assert!(
+            update.notices.is_empty(),
+            "a hunt that changes nothing must say nothing --- not even a \
+             generic \"Identify firmware: done\": {:?}",
+            update.notices
+        );
     }
 
     #[test]
