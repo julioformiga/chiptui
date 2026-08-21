@@ -21,8 +21,8 @@ use crate::device::{DiscoveryState, ScriptState};
 use crate::files::SyncStatus;
 use crate::ui::panels::truncate_start;
 use crate::ui::{
-    Palette, SPINNER, content_style, dashboard_focused, muted_style, pane_block, pane_border,
-    selection_style,
+    Palette, SPINNER, border_style, content_style, dashboard_focused, muted_style, pane_block,
+    pane_border, selection_style,
 };
 
 pub fn draw(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
@@ -245,15 +245,21 @@ fn draw_device_tabs(frame: &mut Frame, pane: Rect, app: &App, browser: &Browser,
             },
         )),
     ];
+    // The base style is the border's (`border_style`), not the inactive
+    // label's: the strip paints the pane's whole top border row, which must
+    // keep reading as the frame it belongs to (accent while focused).
     let tabs = Tabs::new(titles)
         .select(Some(usize::from(!actions_tab)))
-        .style(inactive_style)
+        .style(border_style(focused, palette))
         .highlight_style(Style::new())
         .padding(" ", " ")
         .divider(symbols::DOT);
     frame.render_widget(tabs, strip);
 
-    let mut status = if actions_tab {
+    // The walked path rides the strip's right edge --- except at the root:
+    // every listing starts there, so a lone `/` at the pane's far end
+    // locates nothing and reads as a stray mark, not a path.
+    let mut status = if actions_tab || browser.device_path.is_root() {
         String::new()
     } else {
         browser.device_path.to_string()

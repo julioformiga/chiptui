@@ -974,6 +974,100 @@ fn the_browser_renders_both_panes_with_comparison_markers() {
     assert!(frame.contains("DIR"), "directories are marked:\n{frame}");
 }
 
+/// The device strip's right edge carries the walked path --- but not at the
+/// root: every listing starts there, so a lone `/` at the pane's far end
+/// would read as a stray mark rather than a path. A directory actually
+/// walked into is what the status exists to locate.
+#[test]
+fn the_device_strip_shows_a_walked_path_but_not_the_root() {
+    let project = Project::new("strip-path");
+    let mut app = app_in_browser(&project);
+    // The row carries the local pane's border too; the device strip is the
+    // part from its own tab label on.
+    let strip = |app: &mut App| {
+        let frame = render(app, 132, 32);
+        frame
+            .lines()
+            .find(|line| line.contains("Project actions \u{2022} Device files"))
+            .unwrap()
+            .split("Device files")
+            .nth(1)
+            .unwrap()
+            .to_string()
+    };
+
+    // Root: nothing after the label but border rules --- no path to locate.
+    let root = strip(&mut app);
+    assert!(
+        !root.contains('/'),
+        "the root needs no locating; a lone `/` reads as a stray mark: {root}"
+    );
+
+    // Walked into /lib: the path appears at the strip's right edge.
+    app.browser.as_mut().unwrap().device_path = chiptui::device::DevicePath::new("/lib");
+    let walked = strip(&mut app);
+    assert!(
+        walked
+            .trim_end_matches(['\u{2500}', '\u{256e}', ' ', '"'])
+            .ends_with("/lib"),
+        "a walked path must ride the strip's right edge: {walked}"
+    );
+}
+
+/// The device pane's tab strip draws over its top border row; the strip's
+/// base style must be the border's own color (`border_style`), so the
+/// focused pane's top edge keeps the frame's accent instead of being
+/// repainted muted by the inactive label style.
+#[test]
+fn the_device_tab_strip_keeps_the_focused_pane_top_border_accent() {
+    use ratatui::style::Color;
+
+    fn top_rules(app: &mut App, needle: &str) -> Vec<Color> {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(132, 32)).unwrap();
+        terminal
+            .draw(|frame| chiptui::ui::draw(frame, app))
+            .unwrap();
+        let rendered = terminal.backend().to_string();
+        let y = rendered
+            .lines()
+            .position(|line| line.contains(needle))
+            .expect("the device pane's strip row") as u16;
+        let buffer = terminal.backend().buffer().clone();
+        // Row 2 is split: the local pane's border shares this row, so only
+        // the rules from the strip's own text onward belong to the pane
+        // under test (the needle is ASCII, so its byte offset is its x).
+        let row: String = (0..132)
+            .map(|x| buffer[(x, y)].symbol().to_string())
+            .collect();
+        let start = row.find("Project actions").expect("the strip's text") as u16;
+        (start..132)
+            .map(|x| buffer[(x, y)].clone())
+            .filter(|cell| cell.symbol() == "\u{2500}")
+            .map(|cell| cell.fg)
+            .collect()
+    }
+
+    let project = Project::new("tab-strip");
+    let mut app = app_in_browser(&project);
+    let needle = "Project actions \u{2022} Device files";
+
+    app.focus = Focus::FilesDevice;
+    let rules = top_rules(&mut app, needle);
+    assert!(!rules.is_empty(), "the strip's row must carry border rules");
+    assert!(
+        rules.iter().all(|fg| *fg == app.theme_palette().accent),
+        "the focused top border must stay accent under the tab strip: {rules:?}"
+    );
+
+    app.focus = Focus::FilesLocal;
+    let rules = top_rules(&mut app, needle);
+    assert!(
+        rules.iter().all(|fg| *fg == app.theme_palette().muted),
+        "an unfocused top border must read muted: {rules:?}"
+    );
+}
+
 #[test]
 fn a_pending_listing_renders_a_spinner_not_a_frozen_pane() {
     let project = Project::new("spinner");

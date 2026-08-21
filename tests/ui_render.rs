@@ -1216,6 +1216,58 @@ fn the_log_and_monitor_tabs_live_on_the_panes_border_row() {
     assert_eq!(app.log_tab, LogTab::Monitor);
 }
 
+/// The tab strip draws over the pane's top border row, and the `Tabs`
+/// widget's base style is applied to *every* cell of that row --- the border
+/// rules included. That base style must be the border's own color
+/// (`border_style`), not the inactive label's muted: with the muted one the
+/// focused frame read accent everywhere except the top edge the strip
+/// repainted.
+#[test]
+fn the_tab_strip_keeps_the_focused_pane_top_border_accent() {
+    use ratatui::style::Color;
+
+    /// The fg colors the top-border rule cells (`─`) carry on the row that
+    /// holds `needle` --- the border row a tab strip draws over.
+    fn top_rules(app: &mut App, needle: &str) -> Vec<Color> {
+        let mut terminal = Terminal::new(TestBackend::new(100, 32)).expect("test terminal");
+        terminal
+            .draw(|frame| chiptui::ui::draw(frame, app))
+            .expect("draw succeeds");
+        let rendered = terminal.backend().to_string();
+        let y = rendered
+            .lines()
+            .position(|line| line.contains(needle))
+            .expect("the tab strip's row") as u16;
+        let buffer = terminal.backend().buffer().clone();
+        (1..99)
+            .map(|x| buffer[(x, y)].clone())
+            .filter(|cell| cell.symbol() == "\u{2500}")
+            .map(|cell| cell.fg)
+            .collect()
+    }
+
+    let mut app = app_with_backend(BackendKind::Zephyr);
+
+    // Focus elsewhere: the whole frame, the top border carried by the strip
+    // included, reads muted.
+    app.focus = Focus::Build;
+    let rules = top_rules(&mut app, "Log \u{2022} Monitor");
+    assert!(!rules.is_empty(), "the strip's row must carry border rules");
+    assert!(
+        rules.iter().all(|fg| *fg == app.theme_palette().muted),
+        "an unfocused top border must read muted: {rules:?}"
+    );
+
+    // The pane holds focus: the strip repaints the border row, so its rules
+    // must keep the frame's accent, not take the labels' muted.
+    app.focus = Focus::Logs;
+    let rules = top_rules(&mut app, "Log \u{2022} Monitor");
+    assert!(
+        rules.iter().all(|fg| *fg == app.theme_palette().accent),
+        "the focused top border must stay accent under the tab strip: {rules:?}"
+    );
+}
+
 #[test]
 fn the_monitor_tab_shows_the_running_command_with_a_spinner() {
     // While the build panel's command runs (build, clean, west update, SDK

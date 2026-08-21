@@ -1278,6 +1278,9 @@ fn the_strip_carries_each_tabs_own_status() {
     let mut app = app_in_actions_tab(&project);
     app.devices.set_devices(vec![device("/dev/ttyACM0")]);
     app.devices.set_script_state(ScriptState::Running);
+    // A walked path: the root needs no locating (its lone `/` would read as
+    // a stray mark), so the status only carries a path once one is walked.
+    app.browser.as_mut().unwrap().device_path = chiptui::device::DevicePath::new("/lib");
 
     let actions = render(&mut app, 110, 40);
     let strip = actions
@@ -1287,7 +1290,7 @@ fn the_strip_carries_each_tabs_own_status() {
         .to_string();
     assert!(strip.contains("script running"), "{strip}");
     assert!(
-        !strip.contains(" / "),
+        !strip.contains(" /lib"),
         "no device path to report on this tab: {strip}"
     );
 
@@ -1299,7 +1302,7 @@ fn the_strip_carries_each_tabs_own_status() {
         .unwrap()
         .to_string();
     assert!(
-        strip.contains("/ · script running"),
+        strip.contains("/lib · script running"),
         "the walked path comes back with it: {strip}"
     );
 }

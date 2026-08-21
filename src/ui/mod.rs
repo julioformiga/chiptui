@@ -470,18 +470,28 @@ fn pane_block(title: &str, focused: bool, palette: Palette) -> Block<'static> {
     pane_border(focused, palette).title(title_span(title, focused, palette))
 }
 
-/// An untitled bordered block that shows whether it holds focus: row 3's
-/// pane, whose border row belongs to the Log/Monitor tab strip (with the
-/// active tab's status at its right --- see `panels::draw_log_tabs`).
-pub(crate) fn pane_border(focused: bool, palette: Palette) -> Block<'static> {
-    let border = if focused {
+/// The color a pane's border carries: the theme's accent while the pane
+/// holds focus, muted otherwise. Shared by [`pane_border`] and the tab strips
+/// that draw *over* a pane's top border row (`panels::draw_log_tabs`,
+/// `files::draw_device_tabs`): a strip's base style paints every cell of that
+/// row --- the border rules included --- so it must restate the border's own
+/// colors or the focused frame reads accent everywhere except its top edge.
+pub(crate) fn border_style(focused: bool, palette: Palette) -> Style {
+    if focused {
         Style::new().fg(palette.accent)
     } else {
         Style::new().fg(palette.muted)
-    };
+    }
+}
+
+/// An untitled bordered block that shows whether it holds focus: row 3's
+/// pane, whose top border row belongs to the Log/Monitor tab strip and
+/// whose bottom border row carries the active tab's status at its right
+/// --- see `panels::draw_log_tabs`.
+pub(crate) fn pane_border(focused: bool, palette: Palette) -> Block<'static> {
     Block::bordered()
         .border_type(BorderType::Rounded)
-        .border_style(border)
+        .border_style(border_style(focused, palette))
 }
 
 fn title_span(title: &str, focused: bool, palette: Palette) -> Line<'static> {

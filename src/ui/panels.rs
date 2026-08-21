@@ -16,8 +16,8 @@ use crate::flash::RunState;
 use crate::logs::{Level, PREFIX_WIDTH};
 use crate::project::DetectionOutcome;
 use crate::ui::{
-    Palette, SPINNER, content_style, dashboard_focused, muted_style, output_style, pane_block,
-    pane_border, tilde_path,
+    Palette, SPINNER, border_style, content_style, dashboard_focused, muted_style, output_style,
+    pane_block, pane_border, tilde_path,
 };
 
 /// Row 1's fixed content height: the Project and the Device info panes
@@ -712,11 +712,13 @@ fn draw_log_scrollbar(frame: &mut Frame, inner: Rect, app: &App, palette: Palett
 /// Row 3's tab strip, drawn over the pane's own top border like the Ratatui
 /// `Tabs` example: ` Log • Monitor `. `Monitor` is omitted entirely when the
 /// backend has no `Capability::Monitor` --- capability-gated, never
-/// backend-kind-gated (`AGENTS.md` §3). At the strip's right edge rides the
-/// active tab's status: for Monitor, the source's title, a live icon (an
-/// animated spinner while a command runs, a green check --- red cross on
-/// failure --- for the last finished one) and the output's row count; for
-/// Log, the entry count and, while scrolled, how far up the view sits.
+/// backend-kind-gated (`AGENTS.md` §3). The active tab's status rides the
+/// pane's *bottom* border right edge instead (the same spot
+/// `draw_versions_badge` uses on the Project pane): for Monitor, the
+/// source's title, a live icon (an animated spinner while a command runs, a
+/// green check --- red cross on failure --- for the last finished one) and
+/// the output's row count; for Log, the entry count and, while scrolled,
+/// how far up the view sits.
 pub fn draw_log_tabs(frame: &mut Frame, pane: Rect, app: &App, palette: Palette) {
     // The strip spans the border row between the corners; drawn after the
     // pane's own widgets so it sits on top of the border.
@@ -774,23 +776,35 @@ pub fn draw_log_tabs(frame: &mut Frame, pane: Rect, app: &App, palette: Palette)
     };
 
     // The selection style lives on the titles themselves; the highlight
-    // style adds nothing.
+    // style adds nothing. The base style is the *border's* (`border_style`),
+    // not the inactive label's: the strip paints the whole border row, and
+    // an unfocused label color there would repaint the focused frame's top
+    // edge muted while the rest of it reads accent.
     let tabs = Tabs::new(titles)
         .select(selected_index)
-        .style(inactive_style)
+        .style(border_style(focused, palette))
         .highlight_style(Style::new())
         .padding(" ", " ")
         .divider(symbols::DOT);
 
     frame.render_widget(tabs, strip);
-    frame.render_widget(
-        Paragraph::new(tab_status(app, palette)).alignment(Alignment::Right),
-        strip,
-    );
+
+    if pane.width >= 4 {
+        let footer = Rect {
+            x: pane.x.saturating_add(1),
+            y: pane.bottom().saturating_sub(1),
+            width: pane.width.saturating_sub(2),
+            height: 1,
+        };
+        frame.render_widget(
+            Paragraph::new(tab_status(app, palette)).alignment(Alignment::Right),
+            footer,
+        );
+    }
 }
 
-/// The active tab's status, drawn at the strip's right edge. A leading
-/// space keeps the pane's border dashes from touching it.
+/// The active tab's status, drawn at the pane's bottom border right edge. A
+/// leading space keeps the pane's border dashes from touching it.
 fn tab_status(app: &App, palette: Palette) -> Line<'static> {
     match app.log_tab {
         LogTab::Log => {
