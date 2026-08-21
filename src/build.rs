@@ -778,6 +778,9 @@ impl BuildPanel {
         caps: &Capabilities,
     ) -> Vec<(Level, String)> {
         match event {
+            // Raw PTY bytes belong to the Terminal tab's emulator alone;
+            // build commands are piped.
+            ProcessEvent::Bytes { .. } => Vec::new(),
             ProcessEvent::Line { id, text, .. } => {
                 if self
                     .running

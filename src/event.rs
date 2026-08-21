@@ -18,6 +18,11 @@ pub const DEFAULT_TICK_RATE: Duration = Duration::from_millis(250);
 #[derive(Debug, Clone, PartialEq)]
 pub enum AppEvent {
     Key(KeyEvent),
+    /// A block of text pasted into the terminal, delivered whole because
+    /// bracketed paste is enabled (`crate::terminal::init`). Only the
+    /// Terminal tab's shell wants it --- everywhere else a paste is not a
+    /// gesture the dashboard has a meaning for.
+    Paste(String),
     Resize {
         width: u16,
         height: u16,
@@ -58,6 +63,10 @@ impl EventSource {
                     Event::Key(key) if key.kind == KeyEventKind::Press => {
                         return Ok(AppEvent::Key(key));
                     }
+                    // Bracketed paste arrives as one event instead of a
+                    // storm of keypresses, which is what lets the shell
+                    // tell a pasted command from a typed one.
+                    Event::Paste(text) => return Ok(AppEvent::Paste(text)),
                     Event::Resize(width, height) => return Ok(AppEvent::Resize { width, height }),
                     _ => continue,
                 }

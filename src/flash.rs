@@ -956,7 +956,9 @@ impl FlashPanel {
 
         match event {
             ProcessEvent::Started { .. } => return update,
-            ProcessEvent::Output { .. } => return update,
+            // Raw PTY bytes belong to the Terminal tab's emulator alone;
+            // esptool runs piped.
+            ProcessEvent::Output { .. } | ProcessEvent::Bytes { .. } => return update,
             ProcessEvent::Line { id, stream, text } => {
                 if let Some(running) = &mut self.in_flight
                     && running.id == *id
@@ -1371,7 +1373,9 @@ impl FlashPanel {
 
         match event {
             ProcessEvent::Started { .. } => return update,
-            ProcessEvent::Output { .. } => return update,
+            // Raw PTY bytes belong to the Terminal tab's emulator alone;
+            // esptool runs piped.
+            ProcessEvent::Output { .. } | ProcessEvent::Bytes { .. } => return update,
             ProcessEvent::Line { id, text, .. } => {
                 if let Some(running) = &mut self.in_flight_fetch
                     && running.id == *id

@@ -884,11 +884,12 @@ pub struct App {
     /// The Terminal tab's shell session, spawned in a PTY like the device
     /// monitor (`src/app/terminal.rs`).
     pub terminal_process: Option<ProcessId>,
-    /// Accumulated lines from the shell's PTY.
-    pub terminal_output: Vec<String>,
-    /// VT interpretation of the shell's raw output (cursor position and
-    /// escape-sequence state), mirroring [`Self::monitor_console`].
-    terminal_console: LineConsole,
+    /// The shell's terminal: a `vt100` cell grid fed the PTY's raw bytes.
+    /// Unlike [`Self::monitor_console`], which edits one line and drops
+    /// every attribute, this is a real emulator --- a shell prompt paints
+    /// itself in colour, redraws by moving the cursor, and full-screen
+    /// programs take over the alternate screen.
+    pub terminal: terminal::TerminalSession,
     /// The running shell's name (`bash`, `sh`, ...) for the tab strip's
     /// status line. Empty before the first session.
     pub terminal_program: String,
@@ -1042,8 +1043,7 @@ impl App {
             monitor_console: LineConsole::new(),
             pending_monitor: None,
             terminal_process: None,
-            terminal_output: Vec::new(),
-            terminal_console: LineConsole::new(),
+            terminal: terminal::TerminalSession::new(),
             terminal_program: String::new(),
             terminal_detached: false,
             terminal_tool: None,
@@ -1418,6 +1418,13 @@ impl App {
             AppEvent::Key(key) => self.on_key(key),
             // Ratatui re-renders from scratch each frame, so a resize only has
             // to invalidate what depends on the old geometry.
+            // A paste belongs to whatever owns the keyboard, and only the
+            // shell does: nothing else on the dashboard reads text.
+            AppEvent::Paste(text) => {
+                if self.is_terminal_active() {
+                    self.paste_into_terminal(&text);
+                }
+            }
             AppEvent::Resize { .. } => self.logs.scroll_to_bottom(),
             AppEvent::Tick => {
                 self.ticks = self.ticks.wrapping_add(1);
@@ -1568,12 +1575,14 @@ impl App {
                 );
                 return;
             }
-            // The Terminal tab's shell (PTY): raw output arrives as bytes, and
-            // its exit frees the keyboard the way the monitor's does.
-            crate::process::ProcessEvent::Output { id, text }
+            // The Terminal tab's shell (PTY): the emulator is fed the raw
+            // bytes --- decoding them per read chunk is what turns a
+            // powerline glyph straddling the boundary into U+FFFD. Its exit
+            // frees the keyboard the way the monitor's does.
+            crate::process::ProcessEvent::Bytes { id, data }
                 if Some(*id) == self.terminal_process =>
             {
-                self.terminal_console.feed(&mut self.terminal_output, text);
+                self.feed_terminal(data);
                 return;
             }
             crate::process::ProcessEvent::Finished {
@@ -1583,10 +1592,11 @@ impl App {
             } if Some(*id) == self.terminal_process => {
                 self.terminal_process = None;
                 self.terminal_detached = false;
-                self.terminal_console.push_line(
-                    &mut self.terminal_output,
-                    format!("[shell {}]", outcome.summary()),
-                );
+                // Written *through* the emulator, so the epitaph lands in
+                // the grid wherever the shell left the cursor --- CR before
+                // LF because the grid is a terminal, not a line list.
+                self.terminal
+                    .write(&format!("\r\n[shell {}]\r\n", outcome.summary()));
                 return;
             }
             // Run session (PTY): streamed output arrives as raw bytes.
@@ -1890,7 +1900,30 @@ impl App {
                 self.terminal_detached = true;
                 return;
             }
-            if let Some((id, bytes)) = self.terminal_process.zip(key_to_bytes(key)) {
+            // `shift+pgup`/`shift+pgdn` reach the scrollback, because plain
+            // PageUp now belongs to the shell like every other key. This is
+            // the same division a real terminal makes: the emulator keeps
+            // the shifted pair for its own history and never forwards it.
+            if key.modifiers.contains(KeyModifiers::SHIFT)
+                && matches!(key.code, KeyCode::PageUp | KeyCode::PageDown)
+            {
+                let page = self.page();
+                if key.code == KeyCode::PageUp {
+                    self.monitor_scroll_up(page);
+                } else {
+                    self.monitor_scroll_down(page);
+                }
+                return;
+            }
+            let application_cursor = self.terminal.screen().application_cursor();
+            if let Some((id, bytes)) = self
+                .terminal_process
+                .zip(terminal::terminal_key_bytes(key, application_cursor))
+            {
+                // Typing snaps back to the live screen, the way every
+                // terminal does: the output the keystroke provokes is the
+                // output the user wants to see.
+                self.monitor_scroll = MonitorScroll::default();
                 self.processes.write_stdin(id, &bytes);
             }
             return;
@@ -2380,6 +2413,16 @@ impl App {
             KeyCode::Char('s') if self.is_run_view() => {
                 self.save_run_output();
             }
+            // On the Terminal tab with no shell alive, `r` starts another
+            // without leaving the tab --- the recovery from a spawn failure
+            // (or from having exited the shell and wanting it back).
+            KeyCode::Char('r')
+                if self.focus == Focus::Logs
+                    && self.log_tab == LogTab::Terminal
+                    && self.terminal_process.is_none() =>
+            {
+                self.start_terminal_shell();
+            }
             KeyCode::Char('r') => {
                 self.logs.info("re-running project detection");
                 self.detect();
@@ -2484,6 +2527,7 @@ impl App {
             return vec![
                 ("ctrl+d", "exit shell"),
                 ("ctrl+]", "detach"),
+                ("shift+pgup", "scroll back"),
                 ("type", "send to shell"),
             ];
         }
@@ -2825,14 +2869,22 @@ mod tests {
         assert_eq!(app.terminal_program, "slow");
         assert!(app.is_terminal_active());
 
-        // The fake's banner lands in the transcript through the PTY arm.
+        // The fake's banner lands in the grid through the raw PTY arm, and
+        // the cursor follows it to the column the shell would type at.
         let id = app.terminal_process.unwrap();
-        app.handle(AppEvent::Process(crate::process::ProcessEvent::Output {
+        app.handle(AppEvent::Process(crate::process::ProcessEvent::Bytes {
             id,
-            text: "user@board:~$ ".to_string(),
+            data: b"user@board:~$ ".to_vec(),
         }));
-        assert_eq!(app.terminal_output, vec!["user@board:~$ ".to_string()]);
-        assert_eq!(app.terminal_cursor(), Some(14));
+        assert!(
+            app.terminal
+                .screen()
+                .contents()
+                .starts_with("user@board:~$"),
+            "the grid holds the banner: {:?}",
+            app.terminal.screen().contents()
+        );
+        assert_eq!(app.terminal_cursor(), Some((0, 14)));
         app.processes.cancel(id);
     }
 
@@ -2941,10 +2993,10 @@ mod tests {
         }));
         assert!(app.terminal_process.is_none());
         assert!(!app.is_terminal_active());
-        assert_eq!(
-            app.terminal_output.last().map(String::as_str),
-            Some("[shell ok]"),
-            "the transcript stays behind with the exit line"
+        assert!(
+            app.terminal.screen().contents().contains("[shell ok]"),
+            "the transcript stays behind with the exit line: {:?}",
+            app.terminal.screen().contents()
         );
 
         // Entering the tab again starts a fresh shell, transcript and all.
@@ -2952,8 +3004,9 @@ mod tests {
         let new_id = app.terminal_process.expect("a fresh shell started");
         assert_ne!(new_id, id);
         assert!(
-            app.terminal_output.is_empty(),
-            "the new session starts clean"
+            app.terminal.screen().contents().trim().is_empty(),
+            "the new session starts clean: {:?}",
+            app.terminal.screen().contents()
         );
         app.processes.cancel(new_id);
     }

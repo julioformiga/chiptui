@@ -536,7 +536,9 @@ These are the decisions that shape most code, and getting them wrong causes wide
   entries wrap with a hanging indent past the stamp (`logs::PREFIX_WIDTH`); scrolling, the clamp and
   the pane's scrollbar all count *visual* (post-wrap) lines, and the buffer is capped at 1_000
   entries. The Monitor tab scrolls the same way (`App::monitor_scroll`), across its four
-  consoles — anchored to the *top* of the document so live output never shifts a scrolled view,
+  consoles (the Terminal tab reuses that scroll *state* but not this renderer — its rows come
+  from a `vt100` scrollback, not a document) — anchored to the *top* of the document so live
+  output never shifts a scrolled view,
   gutter reserved via block padding, one `render_console`/`window_console` path doing the row
   windowing. Row 3 is one bordered pane whose top border carries the Log/Monitor/Terminal
   tab strip
@@ -550,8 +552,9 @@ These are the decisions that shape most code, and getting them wrong causes wide
   Monitor, the source's title with a live icon
   and the output's row count — an animated spinner (`ui::SPINNER`, keyed off `App::ticks`) while a
   command runs, a green ✓ (red ✗ on failure) for the last finished one — plus `↑N` (rows below the
-  view) once the user leaves the tail, mirroring Log's indicator; for Terminal, the shell's name,
-  a spinner while it runs and the same count/indicator; for Log, the entry count
+  view) once the user leaves the tail, mirroring Log's indicator; for Terminal, the shell's OSC
+  title when it set one (powerlevel10k puts the working directory there) and its program name
+  otherwise, a spinner while it runs and the same count/indicator; for Log, the entry count
    (plus `↑N` while scrolled). The panes themselves are untitled (`pane_border`). Rendering is
   otherwise a pure function of `App`.
 - **Processes** (`src/process/`): `spawn` returns immediately; a supervisor thread plus two reader
@@ -581,21 +584,54 @@ These are the decisions that shape most code, and getting them wrong causes wide
   append-per-char renderer shows as literal `[K` garbage. `LineConsole` keeps the cursor position
   and escape-parser state across PTY chunks and edits the current line accordingly; sequences it
   does not implement (colors, OSC) are consumed, never rendered.
-- **The Terminal tab is the user's own shell** (`src/app/terminal.rs`, `src/ui/terminal.rs`):
-  row 3's third tab spawns `$SHELL` (`/bin/sh` fallback) in a PTY (the same `spawn_pty` the
-  monitor uses, cwd = the project root) the moment the tab is entered — entering it is the
-  whole start gesture — and re-uses the Monitor's console machinery (`LineConsole`, the shared
-  `render_console`, `monitor_scroll`, the reverse-video cursor cell). While the tab holds
-  focus the shell owns the keyboard exactly like the device monitor does (`is_terminal_active`,
-  checked in `on_key` before everything else, so `ctrl+c` reaches the shell's foreground job
-  instead of quitting); `ctrl+]` — the monitor's own chord, which crossterm relabels Ctrl+5,
-  and which a shell has no use for — *detaches*: the shell keeps running and streaming into
-  the tab while the keyboard returns (`terminal_detached`; switching back re-attaches, a
-  clamped strip step never does, so `→` on the Terminal tab is a no-op). The shell's own
-  `exit`/`ctrl+d` finishes the process, frees the keyboard and leaves the `[shell …]`
-  transcript scrollable; entering the tab again starts a fresh session, transcript cleared.
-  `App::set_terminal_tool` is the test seam pointing the tab at a fake instead of the
-  developer's real shell.
+- **The Terminal tab is a terminal emulator, not a console** (`src/app/terminal.rs`,
+  `src/ui/terminal.rs`): row 3's third tab spawns `$SHELL` (`/bin/sh` fallback) in a PTY
+  (cwd = the project root) the moment the tab is entered — entering it is the whole start
+  gesture. It deliberately does **not** reuse the Monitor's machinery. `LineConsole` is a
+  single-line editor (`{ parse, col }`, implementing LF/CR/BS/`CSI K`/`CSI D`/`CSI C` and
+  dropping every SGR), which is right for MicroPython's readline redraw and wrong for a
+  shell: a real prompt — powerlevel10k, here — paints itself in 256 colours, redraws by
+  moving the cursor *up*, and places a right-hand segment with `CSI n C`; `vim`/`less`/
+  `htop` take the alternate screen. So the tab owns a `TerminalSession`: a `vt100::Parser`
+  cell grid fed the PTY's **raw bytes** (`ProcessEvent::Bytes`, selected by
+  `ProcessManager::spawn_pty_raw` — the decoded `Output` path's per-1 KiB
+  `from_utf8_lossy` turns any character straddling a read boundary into U+FFFD, and a
+  powerline separator is three bytes), rendered by `tui_term::widget::PseudoTerminal`.
+  **The palette deliberately does not reach the content**: every cell carries the shell's
+  own colour and an unstyled cell maps to `Color::Reset`, which is what the same shell
+  shows outside ChipTUI — `PseudoTerminal` ignores its own `.style()` anyway, so the
+  behind-a-dialog `DIM` is patched over the drawn cells afterwards. `vt100` is a screen
+  with no way to write back, so `CSI n`/`CSI c` (a prompt measuring itself sends `CSI 6 n`
+  and *blocks* on the answer) reach `TerminalCallbacks::unhandled_csi`, which composes
+  the reply that `App::feed_terminal` puts straight back into the PTY in the same turn —
+  the callbacks also carry the OSC title, which outranks the program name on the tab
+  strip. The pane sizes both halves to itself (`App::resize_terminal`, called every frame
+  from `ui::terminal::draw` and a no-op unless the size changed: the emulator's
+  `set_size` plus `ProcessManager::resize_pty`, which needs the PTY master kept alive in
+  `Running` — dropping it, as `spawn_pty` used to, puts SIGWINCH permanently out of
+  reach). Scrolling drives `Screen::set_scrollback` (1 000 rows; disabled under the
+  alternate screen, whose viewport belongs to the program). While the tab holds focus the
+  shell owns the keyboard (`is_terminal_active`, checked in `on_key` before everything
+  else, so `ctrl+c` reaches the shell's foreground job instead of quitting) through
+  `terminal::terminal_key_bytes` — a *second* encoder beside `key_to_bytes`, which stays
+  the monitor's: this one adds Meta as an ESC prefix (`alt+f`, `alt+backspace` — zsh's
+  word motions were unreachable), the editing cluster, F1–F12, xterm-modified arrows, and
+  DECCKM-aware arrows (`ESC O A` vs `ESC [ A`, read off `screen().application_cursor()`).
+  `shift+pgup`/`shift+pgdn` are kept by the pane for the scrollback the shell would
+  otherwise swallow, and any keystroke that does reach the shell snaps back to the tail.
+  Bracketed paste is enabled in `terminal::init`, delivered as `AppEvent::Paste` and
+  framed by `paste_into_terminal` only when the child asked for it. `ctrl+]` — the
+  monitor's own chord, which crossterm relabels Ctrl+5, and which a shell has no use for
+  — *detaches*: the shell keeps running and streaming into the tab while the keyboard
+  returns (`terminal_detached`; switching back re-attaches, a clamped strip step never
+  does, so `→` on the Terminal tab is a no-op). The shell's own `exit`/`ctrl+d` finishes
+  the process, frees the keyboard and writes the `[shell …]` epitaph *through* the
+  emulator so it lands in the grid; `r` starts another without leaving the tab, and
+  entering the tab again starts a fresh session, grid cleared. `App::set_terminal_tool`
+  is the test seam pointing the tab at a fake instead of the developer's real shell; the
+  child's `TERM` is pinned to `xterm-256color` (the honest promise for `vt100`'s
+  capability set — inheriting `xterm-ghostty` advertises protocols nothing here can
+  answer) with `COLORTERM=truecolor`, which survives end to end.
 - **A running script is never interrupted silently** (`src/app/probe.rs`, `Browser::set_interrupt_gate`):
   mpremote Ctrl-C's whatever is executing to enter raw REPL for *any* device command, so before
   the first listing on a selected port ChipTUI opens a short `mpremote repl` PTY and classifies

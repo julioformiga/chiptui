@@ -617,7 +617,9 @@ impl Installer {
                     self.finish_probe(*id, outcome);
                 }
             }
-            ProcessEvent::Started { .. } => {}
+            // Raw PTY bytes belong to the Terminal tab's emulator alone;
+            // the installer's steps are piped.
+            ProcessEvent::Started { .. } | ProcessEvent::Bytes { .. } => {}
         }
         update
     }

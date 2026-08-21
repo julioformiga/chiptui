@@ -844,10 +844,13 @@ fn terminal_status(app: &App, palette: Palette) -> Line<'static> {
         ));
         spans.push(Span::raw(" "));
     }
-    let title = if app.terminal_program.is_empty() {
-        "Shell".to_string()
-    } else {
-        app.terminal_program.clone()
+    // A shell that set a window title (powerlevel10k puts the working
+    // directory there) has said something more useful about itself than its
+    // own name; fall back to the name, then to a label.
+    let title = match app.terminal.title() {
+        Some(title) if !title.trim().is_empty() => title.to_string(),
+        _ if !app.terminal_program.is_empty() => app.terminal_program.clone(),
+        _ => "Shell".to_string(),
     };
     spans.push(Span::styled(title, muted_style(palette)));
     spans.push(Span::styled(

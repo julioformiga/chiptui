@@ -15,6 +15,7 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::cursor::{Hide, Show};
 use ratatui::crossterm::event::DisableMouseCapture;
+use ratatui::crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -47,7 +48,10 @@ pub fn init() -> Result<TerminalGuard> {
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    if let Err(source) = execute!(stdout, EnterAlternateScreen, Hide) {
+    // Bracketed paste makes a pasted block arrive as one event rather than
+    // a storm of keypresses --- the Terminal tab's shell needs the
+    // distinction (zsh runs every newline in an unbracketed paste).
+    if let Err(source) = execute!(stdout, EnterAlternateScreen, EnableBracketedPaste, Hide) {
         // Undo the half-applied setup before reporting.
         let _ = disable_raw_mode();
         return Err(source.into());
@@ -112,7 +116,13 @@ impl Drop for TerminalGuard {
 /// Used by the panic hook, where the guard is not reachable.
 fn restore_raw() -> io::Result<()> {
     let mut stdout = io::stdout();
-    let leave = execute!(stdout, DisableMouseCapture, LeaveAlternateScreen, Show);
+    let leave = execute!(
+        stdout,
+        DisableMouseCapture,
+        DisableBracketedPaste,
+        LeaveAlternateScreen,
+        Show
+    );
     let raw = disable_raw_mode();
     stdout.flush()?;
     leave.and(raw)

@@ -41,6 +41,17 @@ scraper = "0.27"
 html2text = "0.17"
 image = "0.25"
 ratatui-image = { version = "11", features = ["crossterm"] }
+# The Terminal tab is a real terminal emulator, not a line-oriented console:
+# the user's own shell (zsh + powerlevel10k here) redraws its prompt with
+# cursor motion, paints it in 256 colours and switches to the alternate
+# screen for full-screen programs --- none of which `console::LineConsole`
+# models (it edits one line and drops SGR). `vt100` is the cell grid and
+# escape-sequence engine; `tui-term` maps a `vt100::Screen` onto a ratatui
+# buffer with its colours intact (its own deps are `ratatui-core`/
+# `ratatui-widgets`, the crates ratatui 0.30 is built from). Both are
+# confined to that one tab --- every other console keeps `LineConsole`.
+vt100 = "0.16.2"
+tui-term = "0.3.4"
 
 [lints.clippy]
 all = { level = "deny", priority = -1 }

@@ -1,0 +1,16 @@
+#!/bin/sh
+# A canned powerlevel10k-shaped prompt frame, so the Terminal tab's rendering
+# can be asserted without starting a real zsh (`AGENTS.md` §Testing: the suite
+# never touches the developer's own shell).
+#
+# The shapes reproduced here are the ones captured from a real p10k
+# `nerdfont-v3` rainbow prompt, not a belief about it: a 256-colour segment
+# pair, the powerline separator between them, a right-hand segment placed by
+# CUF rather than by padding, and a second prompt line reached with CR/LF.
+# The separator is written as its octal UTF-8 bytes (\356\202\260 = U+E0B0)
+# rather than as a literal glyph, so this file stays plain ASCII.
+printf '\033[38;5;236;48;5;31m dev \033[38;5;31;48;5;236m\356\202\260\033[0m'
+printf '\033[40C\033[38;5;66m 12:34:56 \033[0m'
+printf '\r\n\033[38;5;76mOK\033[0m '
+# Hold the session open: the tab is asserted while the shell is still live.
+while : ; do sleep 1; done

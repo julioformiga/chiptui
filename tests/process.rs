@@ -264,3 +264,103 @@ fn output_written_just_before_exit_arrives_before_finished() {
     assert_eq!(stdout.last().map(String::as_str), Some("burst 499"));
     assert!(matches!(events.last(), Some(ProcessEvent::Finished { .. })));
 }
+
+/// A PTY child's exit code is as real as a piped one's. The PTY path used
+/// to collapse every failure to `Failed { code: None }`, which
+/// `Outcome::summary` reports as "terminated by signal" --- so a shell that
+/// simply exited 3 was described as having been killed.
+#[test]
+fn a_pty_child_reports_its_exit_code() {
+    let mut processes = ProcessManager::new();
+    let id = processes
+        .spawn_pty(
+            Command::new("/bin/sh").arg("-c").arg("exit 3"),
+            Duration::from_secs(10),
+        )
+        .expect("the pty opened");
+    let events = run_to_completion(&mut processes, id);
+    assert_eq!(outcome(&events), &Outcome::Failed { code: Some(3) });
+}
+
+/// A raw PTY reports bytes, not decoded text --- and that is what keeps a
+/// multi-byte character split across the reader's 1 KiB buffer intact.
+/// Decoding each chunk on its own replaces both halves with U+FFFD, which
+/// is exactly what happened to every powerline glyph in a shell prompt.
+#[test]
+fn a_raw_pty_hands_back_bytes_a_glyph_can_survive() {
+    let mut processes = ProcessManager::new();
+    let id = processes
+        .spawn_pty_raw(
+            // 1023 padding bytes, so the three-byte U+E0B0 straddles the
+            // 1024-byte boundary.
+            Command::new("/bin/sh")
+                .arg("-c")
+                .arg("printf 'x%.0s' $(seq 1023); printf '\\356\\202\\260'"),
+            Duration::from_secs(10),
+            24,
+            80,
+        )
+        .expect("the pty opened");
+    let events = run_to_completion(&mut processes, id);
+
+    let raw: Vec<u8> = events
+        .iter()
+        .filter_map(|event| match event {
+            ProcessEvent::Bytes { data, .. } => Some(data.clone()),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    let text = String::from_utf8(raw).expect("raw bytes reassemble into valid UTF-8");
+    assert!(
+        text.contains('\u{e0b0}'),
+        "the separator crossed the read boundary whole"
+    );
+    assert!(!text.contains('\u{fffd}'), "nothing was replaced");
+}
+
+/// Resizing reaches the child as a real window change. Without the PTY's
+/// master kept alive there is nothing to resize through, and a shell keeps
+/// laying out its prompt against 80 columns forever.
+#[test]
+fn a_pty_child_is_told_when_its_window_changes() {
+    let mut processes = ProcessManager::new();
+    let id = processes
+        .spawn_pty_raw(
+            Command::new("/bin/sh")
+                .arg("-c")
+                .arg("trap 'stty size' WINCH; stty size; while :; do sleep 0.05; done"),
+            Duration::from_secs(20),
+            10,
+            40,
+        )
+        .expect("the pty opened");
+
+    let collect = |processes: &mut ProcessManager, needle: &str| {
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        let mut seen = String::new();
+        while std::time::Instant::now() < deadline {
+            for event in processes.drain() {
+                if let ProcessEvent::Bytes { data, .. } = event {
+                    seen.push_str(&String::from_utf8_lossy(&data));
+                }
+            }
+            if seen.contains(needle) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        false
+    };
+
+    assert!(
+        collect(&mut processes, "10 40"),
+        "the child opened at the size it was given"
+    );
+    processes.resize_pty(id, 24, 100);
+    assert!(
+        collect(&mut processes, "24 100"),
+        "the resize reached the child as a SIGWINCH"
+    );
+    processes.cancel(id);
+}

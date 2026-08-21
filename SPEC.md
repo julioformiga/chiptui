@@ -963,12 +963,17 @@ one-line contextual shortcut footer:
   once one exists; the tab itself only appears for a backend with
   `Capability::Monitor`. `Terminal` runs the user's own shell (`$SHELL`, `/bin/sh` as
   fallback) in a PTY inside the project directory --- always offered, because a local
-  shell is a UI affordance, not a backend operation. Entering the tab starts the shell;
-  while the tab holds focus the shell owns the keyboard (`ctrl+c` interrupts the shell's
-  foreground command instead of quitting ChipTUI), `ctrl+]` detaches --- the shell keeps
-  running and streaming into the tab while the keyboard returns to the dashboard --- and
-  the shell's own `exit`/`ctrl+d` ends the session, leaving its transcript behind for
-  scrolling like any other console.
+  shell is a UI affordance, not a backend operation. It is a *terminal*, not a console:
+  the pane is an emulated screen, so the user's own prompt arrives with its colours,
+  its glyphs and its layout intact, and full-screen programs (`vim`, `less`, `htop`)
+  work. The pane sizes the emulator and the child to itself, so a prompt that places a
+  right-hand segment by column lands where it means to. Entering the tab starts the
+  shell; while the tab holds focus the shell owns the keyboard (`ctrl+c` interrupts the
+  shell's foreground command instead of quitting ChipTUI, and every editing, function
+  and Meta key reaches its line editor), `shift+pgup`/`shift+pgdn` reach the scrollback
+  the shell would otherwise consume, `ctrl+]` detaches --- the shell keeps running and
+  streaming into the tab while the keyboard returns to the dashboard --- and the shell's
+  own `exit`/`ctrl+d` ends the session, leaving its screen behind for scrolling.
 
 The Flash view's options and online screens are dialogs layered over the dimmed dashboard
 for choosing and configuring an action, never full-screen replacements. Starting an action

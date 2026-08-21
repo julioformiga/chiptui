@@ -327,9 +327,16 @@ fn the_terminal_tab_renders_its_shell_session() {
         frame.contains("Terminal"),
         "the strip still names the tab:\n{frame}"
     );
+    // A live session with no output yet is a blank grid, not a message ---
+    // the pane is a terminal now, and a terminal that has printed nothing
+    // shows nothing but its cursor.
     assert!(
-        frame.contains("(shell starting)"),
-        "a live session with no output yet says so:\n{frame}"
+        !frame.contains("shell not running"),
+        "a live session is not the spawn-failed state:\n{frame}"
+    );
+    assert!(
+        frame.contains('\u{2588}'),
+        "the shell's cursor block marks where typing lands:\n{frame}"
     );
 
     // The strip's status line names the shell it is running.

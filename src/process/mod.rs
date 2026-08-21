@@ -116,6 +116,15 @@ pub enum ProcessEvent {
         id: ProcessId,
         text: String,
     },
+    /// Raw PTY output, undecoded. A terminal emulator has to see the bytes:
+    /// [`Self::Output`]'s per-chunk `from_utf8_lossy` turns any multi-byte
+    /// character straddling a read boundary into U+FFFD, which is exactly
+    /// what a powerline glyph is. Emitted instead of [`Self::Output`] by a
+    /// PTY spawned raw (see [`ProcessManager::spawn_pty_raw`]).
+    Bytes {
+        id: ProcessId,
+        data: Vec<u8>,
+    },
     Finished {
         id: ProcessId,
         outcome: Outcome,
@@ -129,10 +138,16 @@ impl ProcessEvent {
             Self::Started { id, .. }
             | Self::Line { id, .. }
             | Self::Output { id, .. }
+            | Self::Bytes { id, .. }
             | Self::Finished { id, .. } => *id,
         }
     }
 }
+
+/// The size a PTY opens at when nobody asks for one: the conventional
+/// terminal, which is what a line-oriented child (mpremote's REPL, the
+/// script probe) sees today and has no opinion about.
+const DEFAULT_PTY_SIZE: (u16, u16) = (24, 80);
 
 /// Handle on a running child.
 ///
@@ -141,6 +156,13 @@ impl ProcessEvent {
 struct Running {
     cancelled: Arc<AtomicBool>,
     stdin_writer: Option<Box<dyn std::io::Write + Send>>,
+    /// The PTY's master end, kept alive so the child can be told its window
+    /// changed size ([`ProcessManager::resize_pty`]). Dropping it right
+    /// after `spawn_pty` --- which is what used to happen --- leaves the
+    /// cloned reader and taken writer working but puts `MasterPty::resize`
+    /// permanently out of reach, so the child believes in 80 columns
+    /// forever. `None` for a piped child, which has no window.
+    master: Option<Box<dyn portable_pty::MasterPty>>,
 }
 
 pub struct ProcessManager {
@@ -198,6 +220,7 @@ impl ProcessManager {
             Running {
                 cancelled: Arc::clone(&cancelled),
                 stdin_writer: None,
+                master: None,
             },
         );
 
@@ -256,8 +279,34 @@ impl ProcessManager {
         id
     }
 
-    /// Starts `command` inside a pseudo-terminal (PTY) and returns its ID.
+    /// Starts `command` inside a pseudo-terminal (PTY) and returns its ID,
+    /// at the conventional 24x80 with output decoded into
+    /// [`ProcessEvent::Output`] --- what a line-oriented consumer
+    /// ([`crate::console::LineConsole`]) wants.
     pub fn spawn_pty(&mut self, command: Command, timeout: Duration) -> Result<ProcessId, String> {
+        self.spawn_pty_with(command, timeout, DEFAULT_PTY_SIZE, false)
+    }
+
+    /// The same, but sized to a real pane and reporting *raw* bytes
+    /// ([`ProcessEvent::Bytes`]) --- what a terminal emulator wants, since
+    /// decoding per read chunk mangles any character split across one.
+    pub fn spawn_pty_raw(
+        &mut self,
+        command: Command,
+        timeout: Duration,
+        rows: u16,
+        cols: u16,
+    ) -> Result<ProcessId, String> {
+        self.spawn_pty_with(command, timeout, (rows.max(1), cols.max(1)), true)
+    }
+
+    fn spawn_pty_with(
+        &mut self,
+        command: Command,
+        timeout: Duration,
+        (rows, cols): (u16, u16),
+        raw: bool,
+    ) -> Result<ProcessId, String> {
         let id = ProcessId(self.next_id);
         self.next_id += 1;
 
@@ -270,8 +319,8 @@ impl ProcessManager {
         let pty_system = portable_pty::native_pty_system();
         let pair = pty_system
             .openpty(portable_pty::PtySize {
-                rows: 24,
-                cols: 80,
+                rows,
+                cols,
                 pixel_width: 0,
                 pixel_height: 0,
             })
@@ -306,11 +355,12 @@ impl ProcessManager {
             Running {
                 cancelled: Arc::clone(&cancelled),
                 stdin_writer: Some(writer),
+                master: Some(pair.master),
             },
         );
 
         let tx = self.tx.clone();
-        let reader_thread = thread::spawn(move || pump_pty(reader, id, &tx, &readers));
+        let reader_thread = thread::spawn(move || pump_pty(reader, id, &tx, &readers, raw));
 
         let tx = self.tx.clone();
         thread::spawn(move || {
@@ -331,7 +381,12 @@ impl ProcessManager {
                         let outcome = kill_reason.unwrap_or(if status.success() {
                             Outcome::Success
                         } else {
-                            Outcome::Failed { code: None }
+                            // The exit code is as real on a PTY child as on a
+                            // piped one (`supervise` keeps it); reporting
+                            // `None` here read as "terminated by signal".
+                            Outcome::Failed {
+                                code: i32::try_from(status.exit_code()).ok(),
+                            }
                         });
                         if !outcome.was_killed() {
                             let _ = reader_thread.join();
@@ -350,6 +405,20 @@ impl ProcessManager {
         });
 
         Ok(id)
+    }
+
+    /// Tells a PTY child its window changed size (the SIGWINCH a shell and
+    /// every full-screen program redraw on). A no-op for a piped child or
+    /// one that has already finished.
+    pub fn resize_pty(&mut self, id: ProcessId, rows: u16, cols: u16) {
+        if let Some(master) = self.running.get(&id).and_then(|r| r.master.as_ref()) {
+            let _ = master.resize(portable_pty::PtySize {
+                rows: rows.max(1),
+                cols: cols.max(1),
+                pixel_width: 0,
+                pixel_height: 0,
+            });
+        }
     }
 
     pub fn write_stdin(&mut self, id: ProcessId, data: &[u8]) {
@@ -490,14 +559,28 @@ fn pump_pty<R: Read>(
     id: ProcessId,
     tx: &Sender<ProcessEvent>,
     readers: &AtomicUsize,
+    raw: bool,
 ) {
     let mut buffer = [0u8; 1024];
     loop {
         match source.read(&mut buffer) {
             Ok(0) => break, // EOF
             Ok(n) => {
-                let text = String::from_utf8_lossy(&buffer[..n]).into_owned();
-                if tx.send(ProcessEvent::Output { id, text }).is_err() {
+                // Raw consumers parse the bytes themselves; decoding here
+                // would replace any character straddling the 1 KiB boundary
+                // with U+FFFD before they ever saw it.
+                let event = if raw {
+                    ProcessEvent::Bytes {
+                        id,
+                        data: buffer[..n].to_vec(),
+                    }
+                } else {
+                    ProcessEvent::Output {
+                        id,
+                        text: String::from_utf8_lossy(&buffer[..n]).into_owned(),
+                    }
+                };
+                if tx.send(event).is_err() {
                     break;
                 }
             }
