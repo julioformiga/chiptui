@@ -1258,8 +1258,10 @@ fn a_missing_west_explains_itself_in_the_picker() {
     );
     assert!(failed, "the failed spawn never reported");
     let frame = render(&mut app, 100, 32);
+    // The explanation wraps with the modal's width, so the assertion is
+    // wrap-agnostic: both halves of the sentence must be on screen.
     assert!(
-        frame.contains("is west on PATH?"),
+        frame.contains("is west on") && frame.contains("PATH?"),
         "the picker must explain the failure:\n{frame}"
     );
 }

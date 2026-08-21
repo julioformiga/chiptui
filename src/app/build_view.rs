@@ -48,12 +48,14 @@ impl App {
 
     /// Opens the board picker, kicking off the background `west boards`
     /// fetch on first open (the list is slow to produce and useless until
-    /// asked for).
+    /// asked for), plus the docs index that enriches it.
     pub(super) fn open_board_picker(&mut self) {
         self.overlay = Some(Overlay::BoardPicker {
             input: String::new(),
             selected: 0,
+            scroll: 0,
         });
+        self.docs.ensure_index(&self.docs_label());
         let Some(backend) = self.manager.backend() else {
             return;
         };
@@ -64,6 +66,56 @@ impl App {
             let label = command.to_string();
             panel.start_boards_fetch(command, &mut self.processes);
             self.logs.info(format!("fetching the board list ({label})"));
+        }
+    }
+
+    /// The docs release the pickers enrich their lists from: the resolved
+    /// workspace's own version when it names one, `latest` otherwise --- the
+    /// board/shield *list* stays `west boards` (what this tree can build);
+    /// only the enrichment is online, and it should match the tree.
+    pub fn docs_label(&self) -> String {
+        self.workspace
+            .as_ref()
+            .and_then(|panel| panel.zephyr_version())
+            .unwrap_or_else(|| crate::board_docs::LATEST.to_string())
+    }
+
+    /// The tick's watch over an open picker: the selected row's docs id
+    /// arms (and then fires) the debounced picture/details fetch. Runs every
+    /// tick so a late-arriving index still enriches the row already under
+    /// the cursor without a special case.
+    pub(crate) fn drive_docs_selection(&mut self) {
+        let id = self.picker_selection_doc_id();
+        let ticks = self.ticks;
+        self.docs.note_selection(id.as_deref(), ticks);
+        self.docs.drive(ticks);
+    }
+
+    /// The docs entry id the open picker's cursor rests on: a board's
+    /// qualified west name reduced to its docs id, a shield's name as-is,
+    /// `None` without a picker (or on the shield picker's `(none)` row).
+    fn picker_selection_doc_id(&self) -> Option<String> {
+        match &self.overlay {
+            Some(Overlay::BoardPicker {
+                input, selected, ..
+            }) => {
+                let panel = self.build.as_ref()?;
+                let boards = panel.filtered_boards(input);
+                let board = boards.get(*selected)?;
+                Some(crate::board_docs::board_doc_id(&board.name).to_string())
+            }
+            Some(Overlay::ShieldPicker {
+                input, selected, ..
+            }) => {
+                if *selected == 0 {
+                    return None;
+                }
+                let panel = self.build.as_ref()?;
+                let shields = panel.filtered_shields(input);
+                let shield = shields.get(*selected - 1)?;
+                Some(shield.name.clone())
+            }
+            _ => None,
         }
     }
 
@@ -127,7 +179,9 @@ impl App {
         self.overlay = Some(Overlay::ShieldPicker {
             input: String::new(),
             selected: 0,
+            scroll: 0,
         });
+        self.docs.ensure_index(&self.docs_label());
         let Some(backend) = self.manager.backend() else {
             return;
         };

@@ -7,6 +7,7 @@
 
 pub mod app;
 pub mod backend;
+pub mod board_docs;
 pub mod browser;
 pub mod build;
 pub mod console;

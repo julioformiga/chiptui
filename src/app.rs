@@ -249,18 +249,30 @@ pub enum Overlay {
         confirm: bool,
     },
     /// The board picker: a filterable `west boards` list, fetched in the
-    /// background the first time it opens. The boards themselves live in
+    /// background the first time it opens, enriched from the Zephyr docs
+    /// index (picture + detail text for the row under the cursor ---
+    /// [`App::docs`]). The boards themselves live in
     /// [`App::build`] ([`crate::build::BuildPanel::boards`]) like the
     /// viewer's content lives in `App::viewer` --- an overlay holds only
     /// what a keypress changes, so rebuilding it per key never re-clones
-    /// the list. `input` is the filter text.
-    BoardPicker { input: String, selected: usize },
+    /// the list. `input` is the filter text; `scroll` the details pane's
+    /// line offset (pgup/pgdn).
+    BoardPicker {
+        input: String,
+        selected: usize,
+        scroll: u16,
+    },
     /// The shield picker: the same filterable list grammar over `west
     /// shields`, with a leading `(none)` row --- the shield is optional, and
     /// that row is how an existing pick gets cleared. The list itself lives
     /// in [`App::build`] ([`crate::build::BuildPanel::shields`]) like the
-    /// boards do. `input` is the filter text.
-    ShieldPicker { input: String, selected: usize },
+    /// boards do. `input` is the filter text; `scroll` the details pane's
+    /// line offset (pgup/pgdn).
+    ShieldPicker {
+        input: String,
+        selected: usize,
+        scroll: u16,
+    },
     /// The installation-directory picker: a real filesystem browser (no
     /// discovery guesses --- the user knows where their Zephyr lives).
     /// `error` holds the validation message when an accepted directory
@@ -764,10 +776,19 @@ pub struct App {
     /// Height of the log pane, published by the renderer so page-scrolling and
     /// clamping match what is actually on screen.
     pub log_viewport: usize,
+    /// Height of the docs pane inside the board/shield pickers, published by
+    /// the renderer the same way: page-scrolling the details moves by the
+    /// rows that were actually drawn.
+    pub docs_viewport: usize,
     /// Ticks observed, used for the "detecting" spinner and as a liveness hint.
     pub ticks: u64,
     /// External commands. Owned here so every view shares one drain point.
     pub processes: ProcessManager,
+    /// The board/shield pickers' documentation half: the docs.zephyrproject
+    /// index, per-entry pictures and detail text that enrich the west lists
+    /// ([`crate::board_docs`]). Drained and applied like process events,
+    /// driven from the tick's selection watch.
+    pub docs: crate::board_docs::BoardDocs,
     pub devices: DeviceState,
     /// Created the first time the file browser is opened.
     pub browser: Option<Browser>,
@@ -965,8 +986,10 @@ impl App {
             monitor_view: MonitorView::default(),
             overlay: None,
             log_viewport: 1,
+            docs_viewport: 1,
             ticks: 0,
             processes: ProcessManager::new(),
+            docs: crate::board_docs::BoardDocs::new(),
             devices: DeviceState::new(),
             browser: None,
             flash: None,
@@ -1379,8 +1402,21 @@ impl App {
                     self.drive_held_root_listing();
                 }
                 self.drive_held_root_listing();
+                // The board/shield pickers' documentation fetches: whatever
+                // row the cursor rests on is the one whose picture and
+                // details are worth fetching, debounced by the tick.
+                self.drive_docs_selection();
             }
             AppEvent::Process(event) => self.on_process(&event),
+            AppEvent::Docs(event) => {
+                if let Some((level, message)) = self.docs.apply(event) {
+                    match level {
+                        crate::logs::Level::Error => self.logs.error(message),
+                        crate::logs::Level::Warn => self.logs.warn(message),
+                        _ => self.logs.info(message),
+                    }
+                }
+            }
         }
     }
 
@@ -2349,12 +2385,14 @@ impl App {
             Some(Overlay::BoardPicker { .. }) => vec![
                 ("type", "filter"),
                 ("↑/↓", "select"),
+                ("pgup/pgdn", "scroll the docs pane"),
                 ("enter", "pick (saved for this project)"),
                 ("esc", "cancel"),
             ],
             Some(Overlay::ShieldPicker { .. }) => vec![
                 ("type", "filter"),
                 ("↑/↓", "select"),
+                ("pgup/pgdn", "scroll the docs pane"),
                 ("enter", "pick / (none) clears"),
                 ("esc", "cancel"),
             ],

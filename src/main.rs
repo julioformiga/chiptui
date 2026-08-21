@@ -49,6 +49,12 @@ fn run() -> Result<()> {
     let mut guard = terminal::init()?;
     let mut events = EventSource::new(TICK_RATE);
 
+    // Probed before the TUI takes over: ratatui-image's query talks to the
+    // terminal directly, which would fight crossterm's raw mode afterwards.
+    // Halfblocks render everywhere, so a failed probe degrades the board
+    // pictures' fidelity, never blocks startup.
+    let image_picker = ratatui_image::picker::Picker::from_query_stdio()
+        .unwrap_or_else(|_| ratatui_image::picker::Picker::halfblocks());
     // The two screens alternate for as long as the user keeps switching
     // projects: the home screen names one, the dashboard runs it, and
     // dropping the dashboard is what cancels its commands and frees the
@@ -60,11 +66,13 @@ fn run() -> Result<()> {
                 Ok(None) => break Ok(()),
                 Err(err) => break Err(err),
             },
-            Route::Open(dir) => match project_loop(&mut guard, &mut events, dir, offset) {
-                Ok(true) => route = Route::Home,
-                Ok(false) => break Ok(()),
-                Err(err) => break Err(err),
-            },
+            Route::Open(dir) => {
+                match project_loop(&mut guard, &mut events, dir, offset, image_picker.clone()) {
+                    Ok(true) => route = Route::Home,
+                    Ok(false) => break Ok(()),
+                    Err(err) => break Err(err),
+                }
+            }
         }
     };
 
@@ -114,9 +122,19 @@ fn project_loop(
     events: &mut EventSource,
     dir: PathBuf,
     offset: time::UtcOffset,
+    image_picker: ratatui_image::picker::Picker,
 ) -> Result<bool> {
     let mut app = App::new(dir);
     app.logs.set_offset(offset);
+    // The board/shield pickers' online enrichment, wired exactly once per
+    // project session: the HTTP transport, the re-fetchable disk cache
+    // under the app's own directory conventions, and the terminal-probed
+    // image protocol. Tests leave all three unset, which keeps the pickers
+    // fully offline.
+    app.docs.set_fetch(chiptui::board_docs::http_fetch());
+    app.docs
+        .set_cache_dir(chiptui::settings::default_cache_dir(app.home_dir()));
+    app.docs.set_image_picker(image_picker);
     app.bootstrap();
     // Whatever named the backend --- the registry, a `chiptui.toml`, or the
     // evidence --- this is the one place the project is recorded as opened,
@@ -147,6 +165,10 @@ fn event_loop(
         // worst-case latency for a streamed line is one tick.
         for event in app.processes.drain() {
             app.handle(AppEvent::Process(event));
+        }
+        // Board-docs fetches land the same way, on their own channel.
+        for event in app.docs.drain() {
+            app.handle(AppEvent::Docs(event));
         }
 
         let event = events.next_event()?;

@@ -357,6 +357,19 @@ pub fn config_dir_in(home: &Path) -> PathBuf {
     home.join(".config")
 }
 
+/// The cache directory for re-fetchable data (the board docs' index,
+/// pictures and page text): `$XDG_CACHE_HOME/chiptui`, or
+/// `<home>/.cache/chiptui` when XDG names nothing absolute. Config this is
+/// not --- everything under it can be deleted and will simply be fetched
+/// again.
+pub fn default_cache_dir(home: &Path) -> PathBuf {
+    std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .filter(|dir| dir.is_absolute())
+        .unwrap_or_else(|| home.join(".cache"))
+        .join("chiptui")
+}
+
 /// The user config's location inside a resolved config directory. This is
 /// the path the unresolved-workspace pane tells the user about, so it must
 /// be the one the app actually reads.

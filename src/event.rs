@@ -15,7 +15,7 @@ use crate::error::Result;
 /// Cadence of [`AppEvent::Tick`] when the terminal is idle.
 pub const DEFAULT_TICK_RATE: Duration = Duration::from_millis(250);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum AppEvent {
     Key(KeyEvent),
     Resize {
@@ -27,6 +27,10 @@ pub enum AppEvent {
     /// Output or completion of an external command. Produced by
     /// [`crate::process::ProcessManager`], not by the terminal.
     Process(crate::process::ProcessEvent),
+    /// A board-docs fetch finished (the pickers' online enrichment).
+    /// Produced by [`crate::board_docs::BoardDocs`]' worker threads, drained
+    /// by the binary's loop beside the process events.
+    Docs(crate::board_docs::DocsEvent),
 }
 
 pub struct EventSource {

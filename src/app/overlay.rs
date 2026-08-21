@@ -406,11 +406,17 @@ impl App {
                     |_| {},
                 );
             }
-            Overlay::BoardPicker { input, selected } => {
+            Overlay::BoardPicker {
+                input,
+                selected,
+                scroll,
+            } => {
                 // The list the cursor walks is the *filtered* one, so every
                 // filter change re-clamps `selected` against the length the
                 // changed filter produces (typing can only shrink it, but
-                // backspace grows it too).
+                // backspace grows it too). A new row (filter or cursor)
+                // restarts the details pane from its top; only pgup/pgdn
+                // move it deliberately.
                 let rebuild = |app: &mut Self, input: String, mut selected: usize| {
                     if let Some(panel) = app.build.as_ref() {
                         let count = panel.filtered_boards(&input).len();
@@ -418,7 +424,11 @@ impl App {
                         // than an impossible index; `apply` re-checks anyway.
                         selected = selected.min(count.saturating_sub(1));
                     }
-                    app.overlay = Some(Overlay::BoardPicker { input, selected });
+                    app.overlay = Some(Overlay::BoardPicker {
+                        input,
+                        selected,
+                        scroll: 0,
+                    });
                 };
                 let count = self
                     .build
@@ -449,6 +459,21 @@ impl App {
                         let selected = (selected + 1) % count;
                         rebuild(self, input, selected);
                     }
+                    // The details pane pages by the rows the renderer drew
+                    // (`docs_viewport`, the log pane's own contract).
+                    KeyCode::PageUp | KeyCode::PageDown => {
+                        let page = self.docs_viewport.max(1) as u16;
+                        let scroll = if key.code == KeyCode::PageUp {
+                            scroll.saturating_sub(page)
+                        } else {
+                            scroll.saturating_add(page)
+                        };
+                        self.overlay = Some(Overlay::BoardPicker {
+                            input,
+                            selected,
+                            scroll,
+                        });
+                    }
                     KeyCode::Enter => {
                         self.overlay = None;
                         self.apply_board_picker(&input, selected);
@@ -456,7 +481,11 @@ impl App {
                     _ => {}
                 }
             }
-            Overlay::ShieldPicker { input, selected } => {
+            Overlay::ShieldPicker {
+                input,
+                selected,
+                scroll,
+            } => {
                 // Same grammar as the board picker, over a list whose row 0
                 // is the `(none)` row --- the shield is optional, and that
                 // row is how it clears.
@@ -467,7 +496,11 @@ impl App {
                         .map(|panel| panel.filtered_shields(&input).len() + 1)
                         .unwrap_or(1);
                     selected = selected.min(count.saturating_sub(1));
-                    app.overlay = Some(Overlay::ShieldPicker { input, selected });
+                    app.overlay = Some(Overlay::ShieldPicker {
+                        input,
+                        selected,
+                        scroll: 0,
+                    });
                 };
                 let count = self
                     .build
@@ -493,6 +526,19 @@ impl App {
                     KeyCode::Down => {
                         let selected = (selected + 1) % count;
                         rebuild(self, input, selected);
+                    }
+                    KeyCode::PageUp | KeyCode::PageDown => {
+                        let page = self.docs_viewport.max(1) as u16;
+                        let scroll = if key.code == KeyCode::PageUp {
+                            scroll.saturating_sub(page)
+                        } else {
+                            scroll.saturating_add(page)
+                        };
+                        self.overlay = Some(Overlay::ShieldPicker {
+                            input,
+                            selected,
+                            scroll,
+                        });
                     }
                     KeyCode::Enter => {
                         self.overlay = None;

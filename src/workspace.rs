@@ -210,6 +210,13 @@ impl WorkspacePanel {
         self.resolved.as_ref().map(|workspace| &workspace.dir)
     }
 
+    /// The installation's Zephyr version (`zephyr/VERSION`), when one is
+    /// resolved --- the docs release the board/shield pickers enrich their
+    /// lists from, so the documentation matches the installed tree.
+    pub fn zephyr_version(&self) -> Option<String> {
+        self.resolved.as_ref().and_then(Workspace::zephyr_version)
+    }
+
     /// Re-roots the embedded file list to `dir` (the build panel's project
     /// root): resets the browsed path back to it and clears the file cursor
     /// --- a re-root is a fresh start, the same rule

@@ -6,7 +6,7 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Flex, Layout, Rect};
 use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Clear, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph};
 
 use crate::app::help::{self, HelpSection};
 use crate::app::{App, FileAction, Overlay, PickerOption, ThemeChoice, ViewerSource, ViewerState};
@@ -204,12 +204,16 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
                 palette,
             );
         }
-        Overlay::BoardPicker { input, selected } => {
-            draw_board_picker(frame, area, app, &input, selected, palette)
-        }
-        Overlay::ShieldPicker { input, selected } => {
-            draw_shield_picker(frame, area, app, &input, selected, palette)
-        }
+        Overlay::BoardPicker {
+            input,
+            selected,
+            scroll,
+        } => draw_board_picker(frame, area, app, &input, selected, scroll, palette),
+        Overlay::ShieldPicker {
+            input,
+            selected,
+            scroll,
+        } => draw_shield_picker(frame, area, app, &input, selected, scroll, palette),
         Overlay::DirPicker {
             purpose,
             path,
@@ -1577,26 +1581,23 @@ fn draw_firmware_picker(
 /// (`SPEC.md` §10 --- hundreds of targets make raw navigation useless, and
 /// the choice is saved with the project, so the header of the modal says
 /// where the current answer comes from instead of letting the user
-/// discover it from a changed file).
+/// discover it from a changed file). The row under the cursor is enriched
+/// from the Zephyr docs index: its picture and documentation page on the
+/// right, fetched in the background while the cursor rests (`App::docs`).
 fn draw_board_picker(
     frame: &mut Frame,
     area: Rect,
-    app: &App,
+    app: &mut App,
     input: &str,
     selected: usize,
+    scroll: u16,
     palette: Palette,
 ) {
     use crate::build::ListState as FetchState;
     use crate::ui::SPINNER;
 
-    // Fixed height: the list scrolls inside it (ListState keeps the
-    // selection visible), so the modal does not jump around as the filter
-    // changes.
-    let height = 20u16;
-    let width = 72u16;
-    let popup = centered(area, width, height);
-    frame.render_widget(Clear, popup);
-
+    // Everything borrowed from the panel is copied out before the shared
+    // body takes `app` mutably (the picture protocol lives there).
     let Some(panel) = app.build.as_ref() else {
         return;
     };
@@ -1619,23 +1620,6 @@ fn draw_board_picker(
         None => "Board (none set — the first build needs one)".to_string(),
     };
 
-    let [filter_area, hint_area, list_area] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Length(2),
-        Constraint::Min(1),
-    ])
-    .areas(modal(&title, palette).inner(popup));
-
-    frame.render_widget(modal(&title, palette), popup);
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("filter ", muted_style(palette)),
-            Span::styled(input.to_string(), Style::new().fg(palette.fg)),
-            Span::styled("▏", Style::new().fg(palette.accent)),
-        ])),
-        filter_area,
-    );
-
     let boards = panel.filtered_boards(input);
     let hint = match &panel.boards.state {
         FetchState::Idle | FetchState::Loading => {
@@ -1655,10 +1639,6 @@ fn draw_board_picker(
             )
         }
     };
-    frame.render_widget(
-        Paragraph::new(hint.fg(palette.muted)).wrap(ratatui::widgets::Wrap { trim: false }),
-        hint_area,
-    );
 
     let items: Vec<ListItem> = boards
         .iter()
@@ -1669,32 +1649,45 @@ fn draw_board_picker(
             ]))
         })
         .collect();
-    let mut state = ListState::default().with_selected(Some(selected));
-    frame.render_stateful_widget(
-        List::new(items).highlight_style(selection_style(palette)),
-        list_area,
-        &mut state,
+    let row = boards.get(selected);
+    let doc_id = row.map(|board| crate::board_docs::board_doc_id(&board.name).to_string());
+    let (fallback_name, fallback_desc) = row.map_or((String::new(), String::new()), |board| {
+        (board.name.clone(), board.description.clone())
+    });
+
+    draw_docs_picker(
+        frame,
+        area,
+        app,
+        palette,
+        title,
+        input,
+        selected,
+        scroll,
+        items,
+        hint,
+        doc_id.as_deref(),
+        &fallback_name,
+        &fallback_desc,
+        None,
     );
 }
 
 /// Shield selection: the same filter box over the `west shields` list, with
 /// a leading `(none)` row --- the shield is optional, and that row is how an
 /// existing answer is cleared (saved with the board, like a board pick).
+/// Enriched from the docs index exactly like the board picker.
 fn draw_shield_picker(
     frame: &mut Frame,
     area: Rect,
-    app: &App,
+    app: &mut App,
     input: &str,
     selected: usize,
+    scroll: u16,
     palette: Palette,
 ) {
     use crate::build::ListState as FetchState;
     use crate::ui::SPINNER;
-
-    let height = 20u16;
-    let width = 72u16;
-    let popup = centered(area, width, height);
-    frame.render_widget(Clear, popup);
 
     let Some(panel) = app.build.as_ref() else {
         return;
@@ -1704,23 +1697,6 @@ fn draw_shield_picker(
         Some(name) => format!("Shield ({name}) — pick to change, (none) to clear"),
         None => "Shield (none — optional)".to_string(),
     };
-
-    let [filter_area, hint_area, list_area] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Length(2),
-        Constraint::Min(1),
-    ])
-    .areas(modal(&title, palette).inner(popup));
-
-    frame.render_widget(modal(&title, palette), popup);
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("filter ", muted_style(palette)),
-            Span::styled(input.to_string(), Style::new().fg(palette.fg)),
-            Span::styled("▏", Style::new().fg(palette.accent)),
-        ])),
-        filter_area,
-    );
 
     let shields = panel.filtered_shields(input);
     let hint = match &panel.shields.state {
@@ -1741,10 +1717,6 @@ fn draw_shield_picker(
             )
         }
     };
-    frame.render_widget(
-        Paragraph::new(hint.fg(palette.muted)).wrap(ratatui::widgets::Wrap { trim: false }),
-        hint_area,
-    );
 
     // Row 0 is `(none)`: Enter there builds without a shield, which is the
     // answer the optionality of the whole question exists for.
@@ -1758,12 +1730,258 @@ fn draw_shield_picker(
             shield.description.clone().fg(palette.muted),
         ]))
     }));
+    // Row 0 has no docs entry to show; row N is shield N-1.
+    let row = if selected == 0 {
+        None
+    } else {
+        shields.get(selected - 1)
+    };
+    let doc_id = row.map(|shield| shield.name.clone());
+    let (fallback_name, fallback_desc) = row.map_or((String::new(), String::new()), |shield| {
+        (shield.name.clone(), shield.description.clone())
+    });
+
+    draw_docs_picker(
+        frame,
+        area,
+        app,
+        palette,
+        title,
+        input,
+        selected,
+        scroll,
+        items,
+        hint,
+        doc_id.as_deref(),
+        &fallback_name,
+        &fallback_desc,
+        Some("(none) — the shield is optional; there is nothing to look up"),
+    );
+}
+
+/// The shared body of the two pickers: the filter line and hint over a
+/// two-column layout --- the west list on the left, the docs enrichment
+/// (picture above, documentation text below) for the row under the cursor
+/// on the right. The panes degrade honestly: a target the index does not
+/// know, a board without a picture, an offline docs site --- each is a
+/// named state on the right, never a hole.
+#[allow(clippy::too_many_arguments)]
+fn draw_docs_picker(
+    frame: &mut Frame,
+    area: Rect,
+    app: &mut App,
+    palette: Palette,
+    title: String,
+    input: &str,
+    selected: usize,
+    scroll: u16,
+    items: Vec<ListItem>,
+    hint: String,
+    doc_id: Option<&str>,
+    fallback_name: &str,
+    fallback_desc: &str,
+    none_note: Option<&str>,
+) {
+    use crate::board_docs::IndexState;
+    use crate::ui::SPINNER;
+
+    // Fixed height: the list scrolls inside it (ListState keeps the
+    // selection visible), so the modal does not jump around as the filter
+    // changes.
+    let width = 88u16.min(area.width.saturating_sub(2));
+    let height = 28u16.min(area.height.saturating_sub(2));
+    let popup = centered(area, width, height);
+    frame.render_widget(Clear, popup);
+
+    let block = modal(&title, palette);
+    let [filter_area, hint_area, body_area] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(2),
+        Constraint::Min(1),
+    ])
+    .areas(block.inner(popup));
+    frame.render_widget(block, popup);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("filter ", muted_style(palette)),
+            Span::styled(input.to_string(), Style::new().fg(palette.fg)),
+            Span::styled("▏", Style::new().fg(palette.accent)),
+        ])),
+        filter_area,
+    );
+    frame.render_widget(
+        Paragraph::new(hint.fg(palette.muted)).wrap(ratatui::widgets::Wrap { trim: false }),
+        hint_area,
+    );
+
+    let [list_area, right_area] =
+        Layout::horizontal([Constraint::Length(34), Constraint::Min(1)]).areas(body_area);
     let mut state = ListState::default().with_selected(Some(selected));
     frame.render_stateful_widget(
         List::new(items).highlight_style(selection_style(palette)),
         list_area,
         &mut state,
     );
+
+    let image_height = (right_area.height / 3).clamp(5, 12);
+    let [image_area, details_area] =
+        Layout::vertical([Constraint::Length(image_height), Constraint::Min(1)]).areas(right_area);
+
+    let spinner = SPINNER[(app.ticks as usize) % SPINNER.len()];
+    let entry = doc_id.and_then(|id| app.docs.entry(id).cloned());
+    let index_state = app.docs.state().clone();
+    let image_title = entry
+        .as_ref()
+        .map(|entry| entry.name.clone())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| fallback_name.to_string());
+    let image_block = pane(&image_title, palette);
+    let image_inner = image_block.inner(image_area);
+    frame.render_widget(image_block, image_area);
+
+    let protocol = doc_id.and_then(|id| app.docs.protocol_for(id));
+    if let Some(protocol) = protocol {
+        frame.render_stateful_widget(ratatui_image::StatefulImage::new(), image_inner, protocol);
+    } else {
+        let note = match (&index_state, doc_id, &entry) {
+            (_, None, _) => none_note
+                .unwrap_or("no target under the cursor")
+                .to_string(),
+            (IndexState::Loading, _, _) => {
+                format!("{spinner} loading the docs index…")
+            }
+            (IndexState::Idle | IndexState::Failed(_), _, _) => "docs unavailable".to_string(),
+            (_, Some(_), None) => "not in the Zephyr docs index".to_string(),
+            _ => {
+                let id = doc_id.unwrap_or_default();
+                if !app.docs.entry_settled(id) {
+                    format!("{spinner} fetching the picture…")
+                } else {
+                    "no picture in the docs".to_string()
+                }
+            }
+        };
+        frame.render_widget(Paragraph::new(note.fg(palette.muted)), image_inner);
+    }
+
+    let details_block = pane("Details", palette);
+    let details_inner = details_block.inner(details_area);
+    frame.render_widget(details_block, details_area);
+
+    let mut lines: Vec<Line> = Vec::new();
+    match &entry {
+        Some(entry) => {
+            if !entry.vendor.is_empty() {
+                lines.push(labelled("Vendor", &entry.vendor, palette));
+            }
+            if !entry.arch.is_empty() {
+                lines.push(labelled("Arch", &entry.arch, palette));
+            }
+            if !lines.is_empty() {
+                lines.push(Line::from(""));
+            }
+            match doc_id.and_then(|id| app.docs.details.get(id)) {
+                Some(text) => {
+                    for line in wrap_words(text, details_inner.width as usize) {
+                        lines.push(Line::from(line));
+                    }
+                }
+                None => {
+                    let id = doc_id.unwrap_or_default();
+                    if app.docs.entry_settled(id) {
+                        lines.push(Line::from("no details in the docs".fg(palette.muted)));
+                    } else {
+                        lines.push(Line::from(
+                            format!("{spinner} fetching the details…").fg(palette.muted),
+                        ));
+                    }
+                }
+            }
+        }
+        None => {
+            if !fallback_desc.is_empty() {
+                lines.push(labelled("Description", fallback_desc, palette));
+            }
+            match &index_state {
+                IndexState::Loading => lines.push(Line::from(
+                    format!("{spinner} loading the docs index…").fg(palette.muted),
+                )),
+                // Idle is the never-wired (or test) state; Failed is a
+                // fetch that came back wrong. Both mean: no docs, and the
+                // pane says so rather than spinning forever.
+                IndexState::Idle | IndexState::Failed(_) => {
+                    lines.push(Line::from("docs unavailable (offline?)".fg(palette.muted)));
+                }
+                IndexState::Loaded if doc_id.is_some() => {
+                    lines.push(Line::from("not in the Zephyr docs index".fg(palette.muted)));
+                }
+                IndexState::Loaded => {
+                    if let Some(note) = none_note {
+                        lines.push(Line::from(note.fg(palette.muted)));
+                    }
+                }
+            }
+        }
+    }
+
+    // The pane scrolls over the rows that are actually drawn: the viewport
+    // is published for the key handler's paging, and the offset is clamped
+    // here, where the wrapped length is known.
+    app.docs_viewport = details_inner.height as usize;
+    let max_scroll = lines.len().saturating_sub(app.docs_viewport);
+    let start = (scroll as usize).min(max_scroll);
+    let visible = lines.split_off(start);
+    frame.render_widget(Paragraph::new(visible), details_inner);
+}
+
+/// A small inner pane of the picker modal: bordered and titled like the
+/// dashboard's panes, muted so the modal's own frame stays the loudest
+/// border.
+fn pane(title: &str, palette: Palette) -> Block<'_> {
+    Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::new().fg(palette.muted))
+        .title(format!(" {title} "))
+}
+
+/// One `Label value` row for the details pane: the label muted, the value
+/// plain.
+fn labelled(label: &str, value: &str, palette: Palette) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("{label} "), muted_style(palette)),
+        Span::raw(value.to_string()),
+    ])
+}
+
+/// Greedy word-wrap, the shape every scrolling pane here expects: rows in,
+/// rows out. Blank lines survive as empty rows (the docs pages separate
+/// sections with them); a word longer than the width is hard-split.
+fn wrap_words(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(4);
+    let mut lines = Vec::new();
+    for paragraph in text.split('\n') {
+        let mut current = String::new();
+        for word in paragraph.split_whitespace() {
+            let mut word = word;
+            while word.chars().count() > width {
+                let head: String = word.chars().take(width).collect();
+                lines.push(head.clone());
+                word = &word[head.len()..];
+            }
+            if current.is_empty() {
+                current.push_str(word);
+            } else if current.chars().count() + 1 + word.chars().count() <= width {
+                current.push(' ');
+                current.push_str(word);
+            } else {
+                lines.push(std::mem::take(&mut current));
+                current.push_str(word);
+            }
+        }
+        lines.push(current);
+    }
+    lines
 }
 
 /// Serial device selection. Reached automatically when a scan finds more than

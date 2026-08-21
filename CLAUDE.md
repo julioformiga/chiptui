@@ -368,7 +368,25 @@ says which); nothing is ever written into the project directory. The optional `S
 below (under `Capability::ShieldSelect`) opens `Overlay::ShieldPicker` over a background `west
 shields` fetch — same `ListFetch` machinery as boards — with a leading `(none)` row to clear the
 pick (the clearing persists too); the saved answer reaches only first-configuration builds as
-`--shield` (never an incremental build of an already-configured directory). A project switch
+`--shield` (never an incremental build of an already-configured directory). Both pickers are
+enlarged two-pane modals (`src/ui/overlay.rs`'s shared `draw_docs_picker`, a `scroll` field on the
+overlay variants for pgup/pgdn over the details pane): the west list on the left, and on the right
+the row under the cursor enriched from docs.zephyrproject.org — its picture rendered inline
+(`ratatui-image` + `image`; the terminal protocol is probed once in `main.rs` *before* the TUI
+takes over, `Picker::from_query_stdio` falling back to halfblocks) above its documentation text.
+The enrichment layer is `src/board_docs.rs` (`App::docs`): the boards index (one `a.board-card`
+per board/shield, joined onto west names by the *documentation directory* in the card href —
+`boards/<vendor>/<id>/` for boards, the prefix before the HWMv2 qualifier — never by display
+name), per-entry page text (`articleBody` flattened via `html2text`) and picture bytes, fetched by
+`reqwest` blocking on dedicated `std::thread`s and drained through `AppEvent::Docs` beside the
+process events. The release is the resolved workspace's own `zephyr/VERSION`
+(`WorkspacePanel::zephyr_version`), falling back to `/latest/` when that release has no published
+docs; everything lands in `$XDG_CACHE_HOME/chiptui/docs/<label>/` (raw HTML/bytes, no serde), so
+a later session costs no network. Selection fetches are debounced by the tick
+(`drive_docs_selection` → `BoardDocs::note_selection`/`drive`, ~250ms, one request for the row
+the cursor rests on), and every miss is a named state on the right pane (`not in the Zephyr docs
+index`, `no picture in the docs`, `docs unavailable`) — the west list is the spine and works
+fully offline (tests inject `BoardDocs::set_fetch` and never touch the network). A project switch
 re-derives both answers for the project switched to (`App::set_project_root`). `Flash`
 (`west flash`, the board's own
 runner from `runner.yml` — never a hard-coded programmer) sits last under
