@@ -358,6 +358,16 @@ impl Browser {
         self.clamp_cursors();
     }
 
+    /// Whether the browsed local directory no longer matches the listed
+    /// snapshot (the tick's auto-refresh asks before reloading, so an
+    /// unchanged directory costs nothing visible). A pane sitting on an
+    /// error always answers yes: the directory was unreadable at the last
+    /// attempt, so retrying is the only way an externally created or
+    /// repaired directory is ever picked up.
+    pub fn local_listing_changed(&self) -> bool {
+        self.local_error.is_some() || files::listing_changed(&self.local_entries, &self.local_path)
+    }
+
     /// Entries shown in the local pane, honouring the hidden-files toggle.
     pub fn visible_local(&self) -> Vec<&LocalEntry> {
         self.local_entries
@@ -1978,6 +1988,34 @@ mod tests {
 
         browser.reload_local();
         assert!(browser.local_error.is_some());
+    }
+
+    #[test]
+    fn an_external_local_change_is_detected_until_reloaded() {
+        let fixture = Fixture::new("watch");
+        let mut browser = Browser::new(&fixture.root);
+
+        assert!(!browser.local_listing_changed());
+        std::fs::write(fixture.root.join("added.py"), "x = 1\n").unwrap();
+        assert!(browser.local_listing_changed());
+
+        browser.reload_local();
+        assert!(!browser.local_listing_changed());
+        assert!(
+            browser
+                .local_entries
+                .iter()
+                .any(|entry| entry.name == "added.py")
+        );
+    }
+
+    #[test]
+    fn an_error_pane_always_retries_the_local_directory() {
+        let browser = Browser::new("/nonexistent-chiptui-path");
+        assert!(browser.local_error.is_some());
+        // Retrying is the only way a directory created or repaired outside
+        // the program is ever picked up from the error state.
+        assert!(browser.local_listing_changed());
     }
 
     #[test]

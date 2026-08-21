@@ -321,7 +321,12 @@ cursor --- any kind, via `Overlay::RenameEntry` pre-filled with the current name
 `fs::rename` on confirm (`App::rename_entry`; a `/` in the typed name is refused, since a
 rename must not silently become a move), and a below-root listing leads with a `[..]` parent row
 (`WorkspacePanel::parent_row`), selected after every descent, `Enter`/`→` on it stepping back
-up. The pane also owns the
+up. Both `Files:` panes (this one and the browser's local pane) refresh themselves when their
+directory changes *outside the program*: the tick polls once a second
+(`App::refresh_local_listings`, the hotplug cadence), comparing a fresh `readdir` against the
+drawn snapshot (`files::listing_changed` --- names, sizes, kinds; an unreadable directory is
+never a change, so a transient failure cannot blank the pane, while an error pane always retries)
+and swapping silently --- no log line, no cursor churn when nothing moved. The pane also owns the
 environment's second persisted fact: the **projects folder** (`[zephyr] projects`, resolved by
 `src/backend/zephyr/projects.rs` from the same two config levels, or picked through the same
 `DirPicker` with `DirPurpose::Projects` --- existence-only validation, saved via

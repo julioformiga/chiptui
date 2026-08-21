@@ -182,6 +182,34 @@ impl App {
         }
     }
 
+    /// Refreshes whichever local source is active when its directory
+    /// changed *outside the program* (another editor, a build, a sync
+    /// tool). Polled once a second (the cadence of
+    /// [`Self::check_device_hotplug`]): a `readdir` over an
+    /// embedded-project directory is cheap, and an unchanged listing is
+    /// dropped without a reload, so there is no cursor or redraw churn.
+    /// The swap itself is silent --- the pane just starts telling the
+    /// truth a second later, with no log line per external save.
+    pub(super) fn refresh_local_listings(&mut self) {
+        // only check every 4 ticks (1 second)
+        if !self.ticks.is_multiple_of(4) {
+            return;
+        }
+        if let Some(browser) = self
+            .browser
+            .as_mut()
+            .filter(|browser| browser.local_listing_changed())
+        {
+            browser.reload_local();
+        } else if let Some(panel) = self
+            .workspace
+            .as_mut()
+            .filter(|panel| panel.files_listing_changed())
+        {
+            panel.reload_files();
+        }
+    }
+
     /// Runs the action chosen from [`Overlay::FileActions`]. `name` is the
     /// entry's name in whichever directory `side` currently shows --- stable
     /// for the duration of the menu, since an open overlay routes every key

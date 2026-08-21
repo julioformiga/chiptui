@@ -252,6 +252,19 @@ impl WorkspacePanel {
             .min(self.files_row_count().saturating_sub(1));
     }
 
+    /// Whether the listed directory no longer matches the snapshot (the
+    /// tick's auto-refresh asks before reloading). With no files root the
+    /// pane has no listing to refresh; an error pane always answers yes,
+    /// so an externally created or repaired directory is retried into
+    /// view.
+    pub fn files_listing_changed(&self) -> bool {
+        if self.files_root.as_os_str().is_empty() {
+            return false;
+        }
+        self.files_error.is_some()
+            || crate::files::listing_changed(&self.files_entries, &self.files_path)
+    }
+
     /// Entries the file list shows.
     pub fn visible_files(&self) -> &[LocalEntry] {
         &self.files_entries
@@ -595,6 +608,39 @@ mod tests {
         panel.set_files_root(dir.join("missing"));
         assert!(panel.files_error.is_some());
         assert!(panel.visible_files().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn files_listing_changed_reports_external_changes() {
+        let dir = files_fixture("watch");
+        let mut panel = WorkspacePanel::new(Resolution::NotConfigured, "");
+        panel.set_files_root(&dir);
+
+        assert!(!panel.files_listing_changed());
+        std::fs::write(dir.join("README.md"), "hello\n").unwrap();
+        assert!(panel.files_listing_changed());
+
+        panel.reload_files();
+        assert!(!panel.files_listing_changed());
+        assert!(
+            panel
+                .files_entries
+                .iter()
+                .any(|entry| entry.name == "README.md")
+        );
+
+        // No root configured, no listing to watch.
+        let bare = WorkspacePanel::new(Resolution::NotConfigured, "");
+        assert!(!bare.files_listing_changed());
+
+        // An error pane keeps asking: a directory created or repaired
+        // outside the program is retried into view.
+        let mut missing = WorkspacePanel::new(Resolution::NotConfigured, "");
+        missing.set_files_root(dir.join("missing"));
+        assert!(missing.files_error.is_some());
+        assert!(missing.files_listing_changed());
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 

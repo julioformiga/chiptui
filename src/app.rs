@@ -1432,6 +1432,7 @@ impl App {
             AppEvent::Tick => {
                 self.ticks = self.ticks.wrapping_add(1);
                 self.check_device_hotplug();
+                self.refresh_local_listings();
                 self.tick_probe();
                 self.check_interrupt_gate();
                 self.maybe_offer_restore();
@@ -3940,6 +3941,45 @@ mod tests {
             root,
             "$EDITOR must open with the project's files, not the launch directory's"
         );
+    }
+
+    #[test]
+    fn a_tick_picks_up_an_external_local_change() {
+        let root = std::env::temp_dir().join(format!("chiptui-tick-watch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("main.py"), "print('hi')\n").unwrap();
+        let mut app = app();
+        app.browser = Some(Browser::new(&root));
+
+        // Four ticks is the once-a-second poll cadence.
+        for _ in 0..4 {
+            app.handle(AppEvent::Tick);
+        }
+        assert!(
+            !app.browser
+                .as_ref()
+                .unwrap()
+                .local_entries
+                .iter()
+                .any(|entry| entry.name == "added.py")
+        );
+
+        std::fs::write(root.join("added.py"), "x = 1\n").unwrap();
+        for _ in 0..4 {
+            app.handle(AppEvent::Tick);
+        }
+        assert!(
+            app.browser
+                .as_ref()
+                .unwrap()
+                .local_entries
+                .iter()
+                .any(|entry| entry.name == "added.py"),
+            "an external change must reach the Files pane without a keypress"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

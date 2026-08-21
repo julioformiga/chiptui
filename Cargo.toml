@@ -53,7 +53,10 @@ time = { version = "0.3", features = ["local-offset"] }
 # `scraper` reads the index cards, `html2text` flattens a board's doc page,
 # and `image` + `ratatui-image` decode and render each board's picture inside
 # the picker (the `crossterm` feature matches the ratatui backend).
-reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls"] }
+reqwest = { version = "0.13", default-features = false, features = [
+  "blocking",
+  "rustls",
+] }
 scraper = "0.27"
 html2text = "0.17"
 image = "0.25"
@@ -69,6 +72,13 @@ ratatui-image = { version = "11", features = ["crossterm"] }
 # confined to that one tab --- every other console keeps `LineConsole`.
 vt100 = "0.16.2"
 tui-term = "0.3.4"
+
+[profile.release]
+strip = true
+lto = "fat"
+codegen-units = 1
+opt-level = "z"
+panic = "abort"
 
 [lints.clippy]
 all = { level = "deny", priority = -1 }

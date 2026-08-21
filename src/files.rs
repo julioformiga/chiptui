@@ -51,6 +51,23 @@ fn sort_entries(entries: &mut [LocalEntry]) {
     });
 }
 
+/// Whether re-reading `path` would produce a different listing than
+/// `current`: names, sizes and kinds compared, which is exactly the state a
+/// Files pane draws. Used by the tick's auto-refresh so an unchanged
+/// directory costs one `readdir` and no redraw churn, and a directory that
+/// *changed outside the program* (another editor, a build step, a sync tool)
+/// is picked up on the next poll.
+///
+/// An unreadable directory reports `false`, not a change: a transient read
+/// failure (a parent mid-rename, a permissions blip) must not blank the pane
+/// --- the last good listing stays until a read succeeds again.
+pub fn listing_changed(current: &[LocalEntry], path: &Path) -> bool {
+    match read_dir(path) {
+        Ok(entries) => entries != current,
+        Err(_) => false,
+    }
+}
+
 /// Sorts a device listing the same way, so both panes read alike.
 pub fn sort_remote(entries: &mut [RemoteEntry]) {
     entries.sort_by(|a, b| {
@@ -332,6 +349,55 @@ mod tests {
             size: 0,
             is_dir: true,
         }
+    }
+
+    #[test]
+    fn listing_changed_compares_the_directory_against_the_snapshot() {
+        let dir = std::env::temp_dir().join(format!("chiptui-listing-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), b"x").unwrap();
+
+        let current = read_dir(&dir).unwrap();
+        assert!(!listing_changed(&current, &dir));
+
+        std::fs::write(dir.join("b.txt"), b"y").unwrap();
+        assert!(
+            listing_changed(&current, &dir),
+            "an external create is a change"
+        );
+
+        let reloaded = read_dir(&dir).unwrap();
+        assert!(!listing_changed(&reloaded, &dir));
+
+        std::fs::remove_file(dir.join("b.txt")).unwrap();
+        assert!(
+            listing_changed(&reloaded, &dir),
+            "an external delete is a change"
+        );
+
+        let before = read_dir(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), b"longer contents").unwrap();
+        assert!(
+            listing_changed(&before, &dir),
+            "a same-name size change is a change"
+        );
+        // A same-size content rewrite is not: the listing draws name, size
+        // and kind, and none of those rows moved.
+        let current = read_dir(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), b"other contents!").unwrap();
+        assert!(!listing_changed(&current, &dir));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_unreadable_directory_is_not_a_listing_change() {
+        let current = vec![local("a.txt", 1)];
+        assert!(!listing_changed(
+            &current,
+            Path::new("/nonexistent-chiptui-path")
+        ));
     }
 
     #[test]
