@@ -21,7 +21,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers, ModifierKeyCode};
 use time::OffsetDateTime;
 
 use crate::backend::zephyr::workspace::Workspace;
@@ -138,6 +138,26 @@ pub enum DevicePaneTab {
     #[default]
     Files,
     Actions,
+}
+
+/// One reachable target of the shortcuts overlay (`ctrl+k`, or a bare Ctrl
+/// press/release where the terminal's Kitty keyboard protocol answers ---
+/// [`App::keyboard_enhanced`]): the pane a letter jumps to. A separate
+/// enum from [`Focus`] because two letters (`a`/`d`) resolve differently
+/// depending on whether the device pane is tabbed, and `Environment` is
+/// deliberately off the `Tab` tour (`App::focus_order`) while still being a
+/// jump target here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShortcutTarget {
+    Project,
+    FilesLocal,
+    Workspace,
+    DeviceFiles,
+    DeviceActions,
+    Build,
+    Log,
+    Monitor,
+    Terminal,
 }
 
 /// Which live feed the Monitor tab is currently showing. Changed only at
@@ -983,6 +1003,19 @@ pub struct App {
     switch_requested: bool,
     should_quit: bool,
     last_port_count: Option<usize>,
+    /// Whether this terminal answered the Kitty keyboard protocol probe at
+    /// startup (`terminal::TerminalGuard::keyboard_enhanced`, plumbed in by
+    /// `main.rs`): decides whether the shortcuts overlay's bare-Ctrl gesture
+    /// is live, on top of the `ctrl+k` toggle every terminal gets.
+    /// [`Self::set_keyboard_enhanced`] is the test seam.
+    keyboard_enhanced: bool,
+    /// The shortcuts overlay is showing: every pane dims
+    /// (`ui::mod`'s `dashboard_focused`/`dashboard_behind_dialog`) except
+    /// the initial letter of each reachable one. Deliberately not an
+    /// [`Overlay`] --- it must not block the keyboard the way a modal does,
+    /// since letting go of Ctrl (or pressing anything unmapped) simply
+    /// closes it rather than requiring its own dismiss key.
+    pub shortcuts_overlay_active: bool,
 }
 
 /// A tool report with the two inputs it was computed from --- see
@@ -1067,6 +1100,8 @@ impl App {
             switch_requested: false,
             should_quit: false,
             last_port_count: None,
+            keyboard_enhanced: false,
+            shortcuts_overlay_active: false,
         }
     }
 
@@ -2072,6 +2107,161 @@ impl App {
         }
     }
 
+    /// The shortcuts overlay's live targets right now: which letter jumps
+    /// where, built fresh from whatever is actually visible --- the same
+    /// capability/visibility checks `focus_order`, `workspace_pane_visible`,
+    /// `build_pane_visible` and `device_actions_tab_available` already use,
+    /// never a fixed table (`AGENTS.md` §1: capabilities, not conditionals).
+    /// `Environment` is included even though it is off the `Tab` tour ---
+    /// the overlay's whole point is reaching panes a letter away, tour or
+    /// not.
+    fn shortcut_targets(&self) -> Vec<(char, ShortcutTarget)> {
+        let mut targets = Vec::new();
+        if !self.project_rows().is_empty() {
+            targets.push(('e', ShortcutTarget::Project));
+        }
+        let browser_row = !self.build_pane_visible_precondition();
+        if browser_row && self.browser.is_some() {
+            targets.push(('f', ShortcutTarget::FilesLocal));
+            if self.device_actions_tab_available() {
+                targets.push(('a', ShortcutTarget::DeviceActions));
+                targets.push(('d', ShortcutTarget::DeviceFiles));
+            } else if self.manager.capabilities().contains(Capability::Filesystem) {
+                targets.push(('d', ShortcutTarget::DeviceFiles));
+            }
+        }
+        if self.workspace_pane_visible() {
+            targets.push(('f', ShortcutTarget::Workspace));
+        }
+        if self.build_pane_visible() {
+            targets.push(('a', ShortcutTarget::Build));
+        }
+        targets.push(('l', ShortcutTarget::Log));
+        if self.manager.capabilities().contains(Capability::Monitor) {
+            targets.push(('m', ShortcutTarget::Monitor));
+        }
+        targets.push(('t', ShortcutTarget::Terminal));
+        targets
+    }
+
+    /// Whether `letter` is currently one of the shortcuts overlay's live
+    /// targets --- `ui::mod`'s `shortcut_letter` is the read side, deciding
+    /// whether a pane's title highlights it. Only ever `true` while the
+    /// overlay itself is up.
+    pub(crate) fn is_shortcut_active(&self, letter: char) -> bool {
+        self.shortcuts_overlay_active
+            && self
+                .shortcut_targets()
+                .iter()
+                .any(|(target_letter, _)| *target_letter == letter)
+    }
+
+    /// Jumps to a shortcut target: focuses its pane and, for the two that
+    /// share `Focus::FilesDevice`/`Focus::Logs` with a sibling, selects the
+    /// right sub-tab too.
+    fn apply_shortcut_target(&mut self, target: ShortcutTarget) {
+        match target {
+            ShortcutTarget::Project => {
+                if self.focus != Focus::Project {
+                    self.toggle_project_focus();
+                }
+            }
+            ShortcutTarget::FilesLocal => self.focus = Focus::FilesLocal,
+            ShortcutTarget::Workspace => self.focus = Focus::Workspace,
+            ShortcutTarget::DeviceFiles => {
+                self.focus = Focus::FilesDevice;
+                self.device_pane_tab = DevicePaneTab::Files;
+            }
+            ShortcutTarget::DeviceActions => {
+                self.focus = Focus::FilesDevice;
+                self.show_device_actions_tab();
+            }
+            ShortcutTarget::Build => self.focus = Focus::Build,
+            ShortcutTarget::Log => {
+                self.focus = Focus::Logs;
+                self.select_log_tab(LogTab::Log);
+            }
+            ShortcutTarget::Monitor => {
+                self.focus = Focus::Logs;
+                self.select_log_tab(LogTab::Monitor);
+            }
+            ShortcutTarget::Terminal => {
+                self.focus = Focus::Logs;
+                self.select_log_tab(LogTab::Terminal);
+            }
+        }
+    }
+
+    /// Test seam for `terminal::TerminalGuard::keyboard_enhanced` ---
+    /// `main.rs` calls the real probe once at startup; tests point this at
+    /// whichever branch of the hybrid trigger they want to exercise without
+    /// a real terminal.
+    pub fn set_keyboard_enhanced(&mut self, enhanced: bool) {
+        self.keyboard_enhanced = enhanced;
+    }
+
+    /// The shortcuts overlay's own key handling, checked before every other
+    /// dashboard binding (like `ctrl+p`/`ctrl+←/→`): opening it, closing it,
+    /// and resolving a letter to a jump. Returns whether the key was
+    /// consumed here --- when it was not, `on_dashboard_key` dispatches
+    /// normally.
+    ///
+    /// Deliberately not routed through `Overlay`/`on_overlay_key`: it must
+    /// stay dashboard-wide and must never swallow a key the way a modal
+    /// does --- letting go of Ctrl with no letter picked, or pressing
+    /// anything unmapped, just closes it.
+    fn handle_shortcuts_overlay_key(&mut self, key: KeyEvent) -> bool {
+        if self.shortcuts_overlay_active {
+            if key.kind == KeyEventKind::Release {
+                // The only Release that ever reaches here (`event.rs`'s
+                // filter lets through nothing else): Ctrl let go with no
+                // letter picked. Cancel.
+                self.shortcuts_overlay_active = false;
+                return true;
+            }
+            if let KeyCode::Char(c) = key.code
+                && let Some(target) = self
+                    .shortcut_targets()
+                    .into_iter()
+                    .find(|(letter, _)| *letter == c.to_ascii_lowercase())
+                    .map(|(_, target)| target)
+            {
+                self.shortcuts_overlay_active = false;
+                self.apply_shortcut_target(target);
+                return true;
+            }
+            // Esc, or any key with no mapped letter: close without acting
+            // --- a reflex "get me out of here" beats a stuck overlay.
+            self.shortcuts_overlay_active = false;
+            return true;
+        }
+
+        // The bare-Ctrl gesture: only ever a `Press` here, since a bare
+        // Ctrl `Release` with the overlay *not* already open cannot happen
+        // (the Press above always opens it first).
+        if self.keyboard_enhanced
+            && key.kind == KeyEventKind::Press
+            && matches!(
+                key.code,
+                KeyCode::Modifier(ModifierKeyCode::LeftControl | ModifierKeyCode::RightControl)
+            )
+        {
+            self.shortcuts_overlay_active = true;
+            return true;
+        }
+
+        // The toggle every terminal gets, Kitty-capable or not.
+        if key.kind == KeyEventKind::Press
+            && key.modifiers.contains(KeyModifiers::CONTROL)
+            && key.code == KeyCode::Char('k')
+        {
+            self.shortcuts_overlay_active = true;
+            return true;
+        }
+
+        false
+    }
+
     /// The header's `project` field. A backend that makes the project a
     /// question ([`Capability::ProjectSelect`]) answers it with the picked
     /// root --- the build panel's for Zephyr (and only once that root is a
@@ -2260,6 +2450,10 @@ impl App {
     }
 
     fn on_dashboard_key(&mut self, key: KeyEvent) {
+        if self.handle_shortcuts_overlay_key(key) {
+            return;
+        }
+
         match key.code {
             // `q` only. A reflex `Esc` ("close what is open") must not end
             // the session: with no overlay open it is a no-op here --- every
@@ -2530,6 +2724,11 @@ impl App {
                 ("shift+pgup", "scroll back"),
                 ("type", "send to shell"),
             ];
+        }
+        // The shortcuts overlay owns the footer while it is up: its own
+        // two-key grammar, not whatever the underlying pane would show.
+        if self.shortcuts_overlay_active {
+            return vec![("letter", "jump to pane"), ("esc", "close")];
         }
         match self.overlay {
             Some(Overlay::Help { filtering, .. }) => {

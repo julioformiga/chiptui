@@ -16,8 +16,9 @@ use crate::flash::RunState;
 use crate::logs::{Level, PREFIX_WIDTH};
 use crate::project::DetectionOutcome;
 use crate::ui::{
-    Palette, SPINNER, border_style, content_style, dashboard_focused, muted_style, output_style,
-    pane_block, pane_border, tilde_path,
+    Palette, SPINNER, border_style, content_style, dashboard_focused, highlighted_line,
+    muted_style, output_style, pane_block, pane_border, shortcut_highlight_style, shortcut_letter,
+    tilde_path,
 };
 
 /// Row 1's fixed content height: the Project and the Device info panes
@@ -52,7 +53,7 @@ fn pad_info(mut lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
 /// content row.
 pub fn draw_project(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
     let focused = dashboard_focused(app, Focus::Project);
-    let block = pane_block("Environment", focused, palette);
+    let block = pane_block("Environment", focused, palette, shortcut_letter(app, 'e'));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -449,7 +450,9 @@ fn shorten_start_owned(text: &str, budget: usize) -> String {
 /// instead of repeating it. Like the Project pane it is informational only and
 /// never holds focus.
 pub fn draw_detection(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
-    let block = pane_block("Device Info", false, palette);
+    // Never a shortcut target --- Device Info never holds focus, so the
+    // overlay dims it like everything else but highlights nothing here.
+    let block = pane_block("Device Info", false, palette, None);
     let lines = device_content(app, area.width as usize, palette);
     frame.render_widget(
         Paragraph::new(lines)
@@ -615,7 +618,7 @@ fn device_content(app: &App, width: usize, palette: Palette) -> Vec<Line<'static
 /// backend; the right half is the device pane under
 /// [`Capability::Filesystem`], else [`crate::ui::files`]'s placeholder.
 pub fn draw_no_filesystem(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
-    let block = pane_block("Files", false, palette);
+    let block = pane_block("Files", false, palette, None);
     let backend = app
         .manager
         .selected_kind()
@@ -740,8 +743,12 @@ pub fn draw_log_tabs(frame: &mut Frame, pane: Rect, app: &App, palette: Palette)
     // focus, and like every focused pane goes cyan while Logs holds focus;
     // the underline makes the selection unmistakable either way (a
     // background highlight would vanish against some color schemes when the
-    // pane is unfocused).
-    let active_style = if focused {
+    // pane is unfocused). While the shortcuts overlay is up, "which tab is
+    // active" stops mattering next to "which letter jumps here": every
+    // label goes uniformly muted, its own initial highlighted instead.
+    let active_style = if app.shortcuts_overlay_active {
+        muted_style(palette)
+    } else if focused {
         Style::new()
             .fg(palette.accent)
             .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
@@ -749,35 +756,42 @@ pub fn draw_log_tabs(frame: &mut Frame, pane: Rect, app: &App, palette: Palette)
         Style::new().add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
     };
     let inactive_style = muted_style(palette);
+    let highlight_style = shortcut_highlight_style(palette);
 
-    let mut titles = vec![Line::from(Span::styled(
+    let mut titles = vec![highlighted_line(
         "Log",
         if app.log_tab == LogTab::Log {
             active_style
         } else {
             inactive_style
         },
-    ))];
+        highlight_style,
+        shortcut_letter(app, 'l'),
+    )];
     let mut monitor_slot = 1;
     if has_monitor {
-        titles.push(Line::from(Span::styled(
+        titles.push(highlighted_line(
             "Monitor",
             if app.log_tab == LogTab::Monitor {
                 active_style
             } else {
                 inactive_style
             },
-        )));
+            highlight_style,
+            shortcut_letter(app, 'm'),
+        ));
         monitor_slot = 2;
     }
-    titles.push(Line::from(Span::styled(
+    titles.push(highlighted_line(
         "Terminal",
         if app.log_tab == LogTab::Terminal {
             active_style
         } else {
             inactive_style
         },
-    )));
+        highlight_style,
+        shortcut_letter(app, 't'),
+    ));
 
     let selected_index = match app.log_tab {
         LogTab::Log => Some(0),

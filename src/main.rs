@@ -126,6 +126,10 @@ fn project_loop(
 ) -> Result<bool> {
     let mut app = App::new(dir);
     app.logs.set_offset(offset);
+    // Decides which half of the shortcuts overlay's hybrid trigger is live:
+    // a bare Ctrl press/release where the terminal's Kitty keyboard
+    // protocol answered `terminal::init`'s probe, `ctrl+k` alone otherwise.
+    app.set_keyboard_enhanced(guard.keyboard_enhanced());
     // The board/shield pickers' online enrichment, wired exactly once per
     // project session: the HTTP transport, the re-fetchable disk cache
     // under the app's own directory conventions, and the terminal-probed

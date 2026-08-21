@@ -8,7 +8,7 @@
 
 use std::time::{Duration, Instant};
 
-use ratatui::crossterm::event::{self, Event, KeyEvent, KeyEventKind};
+use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, ModifierKeyCode};
 
 use crate::error::Result;
 
@@ -61,6 +61,25 @@ impl EventSource {
                     // Key *releases* and repeats are reported on some terminals;
                     // acting on them would fire every binding twice.
                     Event::Key(key) if key.kind == KeyEventKind::Press => {
+                        return Ok(AppEvent::Key(key));
+                    }
+                    // The one deliberate exception: a bare Ctrl release is
+                    // how the shortcuts overlay (`App::handle_shortcuts_overlay_key`)
+                    // knows the user let go without picking a letter. It only
+                    // ever arrives when the terminal's Kitty keyboard protocol
+                    // is on (`terminal::init`'s `PushKeyboardEnhancementFlags`),
+                    // and only for the modifier key itself --- every other
+                    // Release/Repeat stays discarded above, or every ordinary
+                    // binding would fire twice once the protocol reports them.
+                    Event::Key(key)
+                        if key.kind == KeyEventKind::Release
+                            && matches!(
+                                key.code,
+                                KeyCode::Modifier(
+                                    ModifierKeyCode::LeftControl | ModifierKeyCode::RightControl
+                                )
+                            ) =>
+                    {
                         return Ok(AppEvent::Key(key));
                     }
                     // Bracketed paste arrives as one event instead of a

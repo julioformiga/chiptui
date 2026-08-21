@@ -21,13 +21,14 @@ use crate::device::{DiscoveryState, ScriptState};
 use crate::files::SyncStatus;
 use crate::ui::panels::truncate_start;
 use crate::ui::{
-    Palette, SPINNER, border_style, content_style, dashboard_focused, muted_style, pane_block,
-    pane_border, selection_style,
+    Palette, SPINNER, border_style, content_style, dashboard_focused, highlighted_line,
+    muted_style, pane_block, pane_border, selection_style, shortcut_highlight_style,
+    shortcut_letter,
 };
 
 pub fn draw(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
     let Some(browser) = &app.browser else {
-        let block = pane_block("Files", false, palette);
+        let block = pane_block("Files", false, palette, None);
         frame.render_widget(
             Paragraph::new("the file listing has not started yet".fg(palette.muted)).block(block),
             area,
@@ -74,7 +75,7 @@ fn draw_no_device(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
         .manager
         .selected_kind()
         .map_or("this backend".to_string(), |kind| kind.to_string());
-    let block = pane_block("Device", false, palette);
+    let block = pane_block("Device", false, palette, None);
     frame.render_widget(
         Paragraph::new(format!("{backend}: no device filesystem").fg(palette.muted)).block(block),
         area,
@@ -117,6 +118,7 @@ fn draw_local(
         &format!("Files: {}", shorten(&title, area.width)),
         focused,
         palette,
+        shortcut_letter(app, 'f'),
     );
 
     if let Some(error) = &browser.local_error {
@@ -181,7 +183,7 @@ fn draw_device(
     let block = if tabbed {
         pane_border(focused, palette)
     } else {
-        pane_block(&title, focused, palette)
+        pane_block(&title, focused, palette, shortcut_letter(app, 'd'))
     };
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -217,7 +219,11 @@ fn draw_device_tabs(frame: &mut Frame, pane: Rect, app: &App, browser: &Browser,
     }
 
     let focused = dashboard_focused(app, Focus::FilesDevice);
-    let active_style = if focused {
+    // As in row 3's strip: while the shortcuts overlay is up, which tab is
+    // active stops mattering next to which letter jumps here.
+    let active_style = if app.shortcuts_overlay_active {
+        muted_style(palette)
+    } else if focused {
         Style::new()
             .fg(palette.accent)
             .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
@@ -225,25 +231,30 @@ fn draw_device_tabs(frame: &mut Frame, pane: Rect, app: &App, browser: &Browser,
         Style::new().add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
     };
     let inactive_style = muted_style(palette);
+    let highlight_style = shortcut_highlight_style(palette);
     let actions_tab = app.device_actions_tab_active();
 
     let titles = vec![
-        Line::from(Span::styled(
+        highlighted_line(
             "Actions",
             if actions_tab {
                 active_style
             } else {
                 inactive_style
             },
-        )),
-        Line::from(Span::styled(
+            highlight_style,
+            shortcut_letter(app, 'a'),
+        ),
+        highlighted_line(
             "Device Files",
             if actions_tab {
                 inactive_style
             } else {
                 active_style
             },
-        )),
+            highlight_style,
+            shortcut_letter(app, 'd'),
+        ),
     ];
     // The base style is the border's (`border_style`), not the inactive
     // label's: the strip paints the pane's whole top border row, which must

@@ -232,7 +232,7 @@ const FILES: &[Focus] = &[Focus::FilesLocal, Focus::FilesDevice];
 /// rows, 50..=59 the dashboard-wide commands, 60..=69 the Logs extras,
 /// 70..=72 the tail every context keeps. Flash screens reuse the same
 /// bands per screen (their sites never co-match).
-const DASHBOARD_NAVIGATION: [HelpBinding; 10] = [
+const DASHBOARD_NAVIGATION: [HelpBinding; 11] = [
     sited(
         "tab / shift+tab",
         "move focus between panes",
@@ -250,6 +250,11 @@ const DASHBOARD_NAVIGATION: [HelpBinding; 10] = [
             When::Always,
         )],
     ),
+    // Help-only: the footer's width budget is already tight at the
+    // minimum terminal size, and this binding needs no footer chip to be
+    // discoverable --- pressing Ctrl (or `ctrl+k`) reveals its own letters
+    // directly on the panes it jumps to.
+    binding("ctrl+k", "reveal pane letters; press one to jump"),
     sited(
         "↑ ↓ / k j",
         "navigate inside the focused pane",

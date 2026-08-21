@@ -420,7 +420,13 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
 /// which case both a pane's border (`pane_block`) and its content
 /// (`content_style`) should read as dimmed.
 fn dashboard_focused(app: &App, focus: Focus) -> bool {
-    app.view == View::Dashboard && app.focus == focus && app.overlay.is_none()
+    app.view == View::Dashboard
+        && app.focus == focus
+        && app.overlay.is_none()
+        // The shortcuts overlay dims *every* pane, the one that was
+        // focused included: its whole point is showing every reachable
+        // pane's initial at once, not just the cursor's.
+        && !app.shortcuts_overlay_active
 }
 
 /// Whether a dialog currently owns the screen --- the flash view, or any
@@ -428,7 +434,7 @@ fn dashboard_focused(app: &App, focus: Focus) -> bool {
 /// output panes included: what the user is answering is the dialog, and
 /// everything behind it is context.
 fn dashboard_behind_dialog(app: &App) -> bool {
-    app.view != View::Dashboard || app.overlay.is_some()
+    app.view != View::Dashboard || app.overlay.is_some() || app.shortcuts_overlay_active
 }
 
 /// Style for a dashboard pane's content: unchanged when focused, dimmed
@@ -480,9 +486,24 @@ pub(crate) fn tilde_path(path: &Path, home: &Path) -> String {
     }
 }
 
-/// A bordered block that shows whether it holds focus.
-fn pane_block(title: &str, focused: bool, palette: Palette) -> Block<'static> {
-    pane_border(focused, palette).title(title_span(title, focused, palette))
+/// A bordered block that shows whether it holds focus, and --- while the
+/// shortcuts overlay is up --- highlights `shortcut`'s letter in the title
+/// (`None` for a pane the overlay never targets, e.g. Device Info).
+fn pane_block(
+    title: &str,
+    focused: bool,
+    palette: Palette,
+    shortcut: Option<char>,
+) -> Block<'static> {
+    pane_border(focused, palette).title(title_span(title, focused, palette, shortcut))
+}
+
+/// `Some(letter)` only while the shortcuts overlay is up and `letter` is
+/// currently one of its live targets (`App::is_shortcut_active`) --- a pane
+/// whose jump would not actually do anything (e.g. Environment with every
+/// question already answered) never claims a highlight nobody can act on.
+fn shortcut_letter(app: &App, letter: char) -> Option<char> {
+    app.is_shortcut_active(letter).then_some(letter)
 }
 
 /// The color a pane's border carries: the theme's accent while the pane
@@ -509,13 +530,61 @@ pub(crate) fn pane_border(focused: bool, palette: Palette) -> Block<'static> {
         .border_style(border_style(focused, palette))
 }
 
-fn title_span(title: &str, focused: bool, palette: Palette) -> Line<'static> {
+fn title_span(
+    title: &str,
+    focused: bool,
+    palette: Palette,
+    shortcut: Option<char>,
+) -> Line<'static> {
     let title_style = if focused {
         Style::new().fg(palette.accent).add_modifier(Modifier::BOLD)
     } else {
         muted_style(palette)
     };
-    Line::from(Span::styled(format!(" {title} "), title_style))
+    highlighted_line(
+        &format!(" {title} "),
+        title_style,
+        shortcut_highlight_style(palette),
+        shortcut,
+    )
+}
+
+/// The style a shortcut-overlay initial is drawn in, wherever it appears
+/// (a pane's title, or a tab strip's label) --- accent, bold and underlined
+/// so it reads as "press this" rather than merely "this is selected".
+pub(crate) fn shortcut_highlight_style(palette: Palette) -> Style {
+    Style::new()
+        .fg(palette.accent)
+        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+}
+
+/// `text` as a `Line`, styled `base` throughout except `shortcut`'s letter
+/// (case-insensitive, first occurrence), which gets `highlight` instead ---
+/// the shared building block for a pane's title ([`title_span`]) and the
+/// two tab strips (`panels::draw_log_tabs`, `files::draw_device_tabs`) that
+/// highlight a jump key's initial while the shortcuts overlay is up.
+/// `shortcut: None` (the overlay is closed, or this text has no live
+/// target) renders `text` plainly.
+pub(crate) fn highlighted_line(
+    text: &str,
+    base: Style,
+    highlight: Style,
+    shortcut: Option<char>,
+) -> Line<'static> {
+    if let Some(letter) = shortcut
+        && let Some((byte_index, matched)) = text
+            .char_indices()
+            .find(|(_, c)| c.eq_ignore_ascii_case(&letter))
+    {
+        let before = text[..byte_index].to_string();
+        let after = text[byte_index + matched.len_utf8()..].to_string();
+        return Line::from(vec![
+            Span::styled(before, base),
+            Span::styled(matched.to_string(), highlight),
+            Span::styled(after, base),
+        ]);
+    }
+    Line::from(Span::styled(text.to_string(), base))
 }
 
 /// The discreet one-column scrollbar shared by the Log and Monitor panes:

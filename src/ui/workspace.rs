@@ -14,7 +14,10 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
 
 use crate::app::{App, Focus};
-use crate::ui::{Palette, dashboard_focused, muted_style, pane_block, selection_style, tilde_path};
+use crate::ui::{
+    Palette, dashboard_focused, muted_style, pane_block, selection_style, shortcut_letter,
+    tilde_path,
+};
 use crate::workspace::WorkspacePanel;
 
 /// Draws the full second row for a workspace+build backend: the workspace
@@ -44,7 +47,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
             area.width.saturating_sub(9) as usize
         )
     );
-    let block = pane_block(&title, focused, palette);
+    let block = pane_block(&title, focused, palette, shortcut_letter(app, 'f'));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 

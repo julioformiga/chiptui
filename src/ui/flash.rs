@@ -82,7 +82,7 @@ fn draw_menu(frame: &mut Frame, area: Rect, flash: &FlashPanel, focused: bool, p
     let mut state = ListState::default().with_selected(Some(flash.cursor));
     frame.render_stateful_widget(
         List::new(items)
-            .block(pane_block("Flash", focused, palette))
+            .block(pane_block("Flash", focused, palette, None))
             .highlight_style(selection_style(palette)),
         area,
         &mut state,
@@ -128,7 +128,7 @@ fn draw_options(
 
     frame.render_widget(
         Paragraph::new(lines)
-            .block(pane_block("Options", focused, palette))
+            .block(pane_block("Options", focused, palette, None))
             .wrap(Wrap { trim: false }),
         area,
     );
@@ -207,7 +207,7 @@ fn draw_online_frame(
     palette: Palette,
     online: OnlineFrame,
 ) {
-    let block = pane_block(online.title, focused, palette);
+    let block = pane_block(online.title, focused, palette, None);
     let inner = block.inner(area);
     let [head, list_area, foot] = Layout::vertical([
         Constraint::Length(2),
@@ -388,7 +388,7 @@ fn draw_custom_url(
 
     frame.render_widget(
         Paragraph::new(lines)
-            .block(pane_block("Firmware URL", focused, palette))
+            .block(pane_block("Firmware URL", focused, palette, None))
             .wrap(Wrap { trim: false }),
         area,
     );
