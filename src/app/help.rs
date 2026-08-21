@@ -106,6 +106,11 @@ pub enum When {
     /// The device pane is *not* showing the actions tab --- the files
     /// grammar's sites, so they stop claiming keys the tab took over.
     FilesTab,
+    /// The device pane has a tab strip at all (a filesystem backend that
+    /// can flash or erase). The chord's destination depends on it: with a
+    /// strip the chord drives it from panes without one of their own,
+    /// without one it falls through to the Log • Monitor strip.
+    DeviceStrip(bool),
 }
 
 /// Everything a [`Site`] can be tested against: the state the footer is
@@ -121,6 +126,9 @@ pub struct Context {
     /// Whether the device pane's Project actions tab is showing and
     /// focused (see [`When::ActionsTab`]).
     pub actions_tab: bool,
+    /// Whether the device pane has a tab strip at all (see
+    /// [`When::DeviceStrip`]).
+    pub device_strip: bool,
 }
 
 impl Site {
@@ -142,6 +150,7 @@ impl When {
             When::Screen(screen) => ctx.flash_screen == screen,
             When::ActionsTab => ctx.actions_tab,
             When::FilesTab => !ctx.actions_tab,
+            When::DeviceStrip(want) => ctx.device_strip == want,
         }
     }
 }
@@ -262,50 +271,81 @@ const DASHBOARD_NAVIGATION: [HelpBinding; 10] = [
     sited(
         "→",
         "descend into the selected directory",
-        // The local pane keeps its arrow; the device pane's arrows belong
-        // to its tab strip instead (below) --- Backspace ascends there.
-        &[site(
-            "→",
-            "descend",
-            11,
-            &[Focus::FilesLocal],
-            &[],
-            When::Always,
-        )],
+        // Both file panes: the device pane's Files tab keeps its arrow for
+        // directories --- switching its tabs moved to the ctrl chord
+        // (below), so the grammar matches the local pane again.
+        &[site("→", "descend", 11, FILES, &[], When::FilesTab)],
     ),
     sited(
         "backspace / ←",
         "go to the parent directory",
+        // `←` ascends on every files pane: the device side's Files tab got
+        // its arrow back with the tab chord (below).
+        &[site("←/bksp", "up", 12, FILES, &[], When::FilesTab)],
+    ),
+    sited(
+        "ctrl+← / ctrl+→",
+        "switch the device pane's tabs from any pane",
         &[
-            site("←/bksp", "up", 12, &[Focus::FilesLocal], &[], When::Always),
-            // On the device pane only Backspace ascends: the arrows switch
-            // the pane's tabs, row 3's rule.
-            site("bksp", "up", 12, &[Focus::FilesDevice], &[], When::FilesTab),
+            site(
+                "ctrl+←/→",
+                "actions",
+                13,
+                &[Focus::FilesDevice],
+                &[Capability::Flash, Capability::EraseFlash],
+                When::FilesTab,
+            ),
+            // The actions side keeps the plain arrows: its stacked buttons
+            // take ↑/↓ alone, so ←/→ are free to switch.
+            site(
+                "←/→",
+                "files",
+                13,
+                &[Focus::FilesDevice],
+                &[Capability::Flash, Capability::EraseFlash],
+                When::ActionsTab,
+            ),
+            // The chord is dashboard-wide: panes without a strip of their
+            // own drive the device pane's strip without giving up the
+            // cursor. Gated on `DeviceStrip`, not the caps --- Zephyr
+            // declares `Flash` too, but its build row has no device pane
+            // to strip. Its rank sits in the dashboard-commands band, not
+            // beside the files keys: it reaches *another* pane, and the
+            // footer's middle-dropping may sacrifice it before a key the
+            // focused pane itself uses.
+            site(
+                "ctrl+←/→",
+                "actions",
+                59,
+                &[Focus::FilesLocal, Focus::Project],
+                &[],
+                When::DeviceStrip(true),
+            ),
         ],
     ),
     sited(
         "← / →",
-        "switch the device pane's tabs",
-        &[site(
-            "←/→",
-            "actions/files",
-            13,
-            &[Focus::FilesDevice],
-            &[Capability::Flash, Capability::EraseFlash],
-            When::Always,
-        )],
-    ),
-    sited(
-        "← / →",
-        "switch the Log and Monitor tabs",
-        &[site(
-            "←/→",
-            "log/monitor",
-            60,
-            &[Focus::Logs],
-            &[Capability::Monitor],
-            When::Always,
-        )],
+        "switch the Log and Monitor tabs (ctrl+←/→ elsewhere)",
+        &[
+            site(
+                "←/→",
+                "log/monitor",
+                60,
+                &[Focus::Logs],
+                &[Capability::Monitor],
+                When::Always,
+            ),
+            // Panes with no strip of their own and no device pane beside
+            // them (the Zephyr row): the chord lands on row 3's strip.
+            site(
+                "ctrl+←/→",
+                "log/monitor",
+                61,
+                &[Focus::Workspace, Focus::Build, Focus::Project],
+                &[Capability::Monitor],
+                When::DeviceStrip(false),
+            ),
+        ],
     ),
     sited(
         "shift+p",
@@ -951,6 +991,7 @@ mod tests {
             log_tab: LogTab::Log,
             flash_screen: None,
             actions_tab: false,
+            device_strip: false,
         }
     }
 
@@ -961,8 +1002,12 @@ mod tests {
     #[test]
     fn the_footer_lists_every_live_site_in_rank_order() {
         // The files columns: the browser's own grammar first, then the
-        // dashboard-wide commands, then the tail.
-        let files = footer(View::Dashboard, &ctx(micropython(), Focus::FilesLocal));
+        // dashboard-wide commands, then the tail. MicroPython's device pane
+        // carries a strip, so the chord is advertised from the local pane
+        // too (it drives that strip from wherever the cursor sits).
+        let mut files_ctx = ctx(micropython(), Focus::FilesLocal);
+        files_ctx.device_strip = true;
+        let files = footer(View::Dashboard, &files_ctx);
         assert_eq!(
             files,
             vec![
@@ -982,6 +1027,7 @@ mod tests {
                 ("x", "flash"),
                 ("m", "monitor/REPL"),
                 ("shift+r", "restart device"),
+                ("ctrl+←/→", "actions"),
                 ("shift+p", "projects"),
                 ("?", "help"),
                 ("q", "quit"),
@@ -1011,11 +1057,25 @@ mod tests {
         let keys = footer_keys(View::Dashboard, &monitor);
         assert!(!keys.contains(&"↑/↓"), "{keys:?}");
 
-        // Zephyr's build pane.
+        // Zephyr's build pane: no device strip, so the chord falls to
+        // row 3's strip and is advertised as such.
         assert_eq!(
             footer_keys(View::Dashboard, &ctx(zephyr(), Focus::Build)),
             vec![
-                "tab", "ctrl+p", "↑/↓", "enter", "d", "o", "t", "x", "m", "s", "shift+p", "?", "q",
+                "tab",
+                "ctrl+p",
+                "↑/↓",
+                "enter",
+                "d",
+                "o",
+                "t",
+                "x",
+                "m",
+                "s",
+                "ctrl+←/→",
+                "shift+p",
+                "?",
+                "q",
             ]
         );
 
@@ -1024,8 +1084,24 @@ mod tests {
         assert_eq!(
             footer_keys(View::Dashboard, &ctx(zephyr(), Focus::Workspace)),
             vec![
-                "tab", "ctrl+p", "↑/↓", "enter", "v", "del", "a", "r", "d", "o", "t", "x", "m",
-                "s", "shift+p", "?", "q",
+                "tab",
+                "ctrl+p",
+                "↑/↓",
+                "enter",
+                "v",
+                "del",
+                "a",
+                "r",
+                "d",
+                "o",
+                "t",
+                "x",
+                "m",
+                "s",
+                "ctrl+←/→",
+                "shift+p",
+                "?",
+                "q",
             ]
         );
 
@@ -1033,7 +1109,20 @@ mod tests {
         assert_eq!(
             footer_keys(View::Dashboard, &ctx(zephyr(), Focus::Project)),
             vec![
-                "tab", "ctrl+p", "↑/↓", "enter", "d", "o", "t", "x", "m", "s", "shift+p", "?", "q",
+                "tab",
+                "ctrl+p",
+                "↑/↓",
+                "enter",
+                "d",
+                "o",
+                "t",
+                "x",
+                "m",
+                "s",
+                "ctrl+←/→",
+                "shift+p",
+                "?",
+                "q",
             ]
         );
     }
@@ -1107,22 +1196,28 @@ mod tests {
                 Focus::Build,
                 Focus::Logs,
             ] {
-                for run_active in [false, true] {
-                    for run_view in [false, true] {
-                        for log_tab in [LogTab::Log, LogTab::Monitor] {
-                            let mut context = ctx(caps, focus);
-                            context.run_active = run_active;
-                            context.run_view = run_view;
-                            context.log_tab = log_tab;
-                            let keys = footer_keys(View::Dashboard, &context);
-                            let mut sorted = keys.clone();
-                            sorted.sort_unstable();
-                            sorted.dedup();
-                            assert_eq!(
-                                keys.len(),
-                                sorted.len(),
-                                "duplicate label: {keys:?} (focus {focus:?})"
-                            );
+                for actions_tab in [false, true] {
+                    for device_strip in [false, true] {
+                        for run_active in [false, true] {
+                            for run_view in [false, true] {
+                                for log_tab in [LogTab::Log, LogTab::Monitor] {
+                                    let mut context = ctx(caps, focus);
+                                    context.actions_tab = actions_tab;
+                                    context.device_strip = device_strip;
+                                    context.run_active = run_active;
+                                    context.run_view = run_view;
+                                    context.log_tab = log_tab;
+                                    let keys = footer_keys(View::Dashboard, &context);
+                                    let mut sorted = keys.clone();
+                                    sorted.sort_unstable();
+                                    sorted.dedup();
+                                    assert_eq!(
+                                        keys.len(),
+                                        sorted.len(),
+                                        "duplicate label: {keys:?} (focus {focus:?})"
+                                    );
+                                }
+                            }
                         }
                     }
                 }

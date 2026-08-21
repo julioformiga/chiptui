@@ -1893,6 +1893,46 @@ impl App {
         self.device_pane_tab == DevicePaneTab::Actions && self.device_actions_tab_available()
     }
 
+    /// The `ctrl+←/→` chord, live from every pane: switch the tabs of the
+    /// pane in focus when it has a strip, else the device pane's strip when
+    /// one exists (its row is where the user's other hand already is ---
+    /// the local files pane's nearest strip), else the Log • Monitor strip.
+    /// Two panes never flip at once: one keypress, one strip, chosen by
+    /// that priority --- flipping every strip together would make a
+    /// single-pane switch impossible to express.
+    fn switch_strip_tabs(&mut self, forward: bool) {
+        match self.focus {
+            // Row 3 is its own strip: the focused pane's strip always wins.
+            Focus::Logs => self.switch_log_tab(forward),
+            // Everywhere else the device pane's strip takes the chord when
+            // one exists --- its row is where the cursor's neighbours are
+            // (the local files pane) --- and row 3 answers for panes whose
+            // backend has no device strip (the Zephyr row).
+            _ if self.device_actions_tab_available() => self.switch_device_pane_tab(),
+            _ => self.switch_log_tab(forward),
+        }
+    }
+
+    fn switch_device_pane_tab(&mut self) {
+        match self.device_pane_tab {
+            // The way in creates the flash panel the tab draws, exactly as
+            // `x` does --- the strip is a second door to the same pane, not
+            // a lighter one.
+            DevicePaneTab::Files => self.show_device_actions_tab(),
+            DevicePaneTab::Actions => self.device_pane_tab = DevicePaneTab::Files,
+        }
+    }
+
+    fn switch_log_tab(&mut self, forward: bool) {
+        if forward {
+            if self.manager.capabilities().contains(Capability::Monitor) {
+                self.log_tab = LogTab::Monitor;
+            }
+        } else {
+            self.log_tab = LogTab::Log;
+        }
+    }
+
     /// The header's `project` field. A backend that makes the project a
     /// question ([`Capability::ProjectSelect`]) answers it with the picked
     /// root --- the build panel's for Zephyr (and only once that root is a
@@ -2105,6 +2145,20 @@ impl App {
                 self.toggle_project_focus();
                 return;
             }
+            // The strip chord is dashboard-wide: from *any* pane it
+            // switches the tabs of the pane in focus when that pane has a
+            // strip, the device pane's strip when one exists beside a pane
+            // without its own, and the Log • Monitor strip otherwise ---
+            // the chord reaches panes beyond the focused one, so a pane's
+            // tabs can be switched without giving up the cursor. Placed
+            // before the focus dispatch (like `m` and `s`), it also keeps
+            // the chord out of the panes' own arrow grammars: on the local
+            // files pane it must never descend a directory, in row 3 it
+            // merely joins the plain arrows nothing competes with there.
+            KeyCode::Left | KeyCode::Right if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.switch_strip_tabs(key.code == KeyCode::Right);
+                return;
+            }
             KeyCode::Char('o') => {
                 self.open_picker();
                 return;
@@ -2172,24 +2226,18 @@ impl App {
             _ => {}
         }
 
-        // Row 3's rule, on the device pane: while the pane holds focus the
-        // arrows switch its two tabs from *either* side --- the strip is the
-        // pane's navigation, like Log • Monitor. On the files side that
-        // means the arrows give up their directory meaning (Backspace still
-        // ascends; `Enter`'s menu descends), the price of one consistent
-        // tab grammar everywhere; an untabbed device pane (no flash
-        // capability) keeps the arrows for directories.
+        // The device pane's plain arrows, on the actions side only: the
+        // stacked buttons take `↑/↓` alone, so `←/→` are free to walk the
+        // strip there (the ctrl chord arrives earlier and works from any
+        // pane). On the files side the plain arrows keep their directory
+        // meaning (descend / ascend) and fall through to the browser, the
+        // same grammar the local pane and an untabbed device pane (no
+        // flash capability) always had.
         if self.focus == Focus::FilesDevice
-            && self.device_actions_tab_available()
+            && self.device_actions_tab_active()
             && matches!(key.code, KeyCode::Left | KeyCode::Right)
         {
-            match self.device_pane_tab {
-                // The way in creates the flash panel the tab draws, exactly
-                // as `x` does --- the strip is a second door to the same
-                // pane, not a lighter one.
-                DevicePaneTab::Files => self.show_device_actions_tab(),
-                DevicePaneTab::Actions => self.device_pane_tab = DevicePaneTab::Files,
-            }
+            self.device_pane_tab = DevicePaneTab::Files;
             return;
         }
 
@@ -2231,6 +2279,10 @@ impl App {
                 self.detect();
                 self.maybe_open_project_setup();
             }
+            // Plain arrows on the Log • Monitor strip: nothing competes
+            // with them in row 3, so they keep the strip to themselves ---
+            // the ctrl chord (which reaches this strip from panes without
+            // one of their own) is intercepted earlier, above.
             KeyCode::Left if self.focus == Focus::Logs => self.log_tab = LogTab::Log,
             KeyCode::Right if self.focus == Focus::Logs => {
                 if self.manager.capabilities().contains(Capability::Monitor) {
@@ -2448,6 +2500,7 @@ impl App {
                     flash_screen: self.flash.as_ref().map(|flash| flash.screen),
                     actions_tab: self.focus == Focus::FilesDevice
                         && self.device_actions_tab_active(),
+                    device_strip: self.device_actions_tab_available(),
                 },
             ),
         }
@@ -3210,6 +3263,51 @@ mod tests {
         // panes' own navigation).
         app.focus = Focus::FilesLocal;
         app.handle(key(KeyCode::Right));
+        assert_eq!(app.log_tab, LogTab::Log);
+    }
+
+    #[test]
+    fn ctrl_arrows_switch_the_log_tab_too() {
+        // Row 3 keeps its plain arrows (nothing competes with them there)
+        // and answers the ctrl chord as well: one key means "switch tabs"
+        // wherever a pane has a strip, so the device pane's chord works
+        // here by reflex.
+        let mut app = App::new(std::env::temp_dir());
+        app.detect();
+        app.manager.set_override(Some(BackendKind::MicroPython));
+        app.focus = Focus::Logs;
+
+        app.handle(AppEvent::Key(KeyEvent::new(
+            KeyCode::Right,
+            KeyModifiers::CONTROL,
+        )));
+        assert_eq!(app.log_tab, LogTab::Monitor);
+        app.handle(AppEvent::Key(KeyEvent::new(
+            KeyCode::Left,
+            KeyModifiers::CONTROL,
+        )));
+        assert_eq!(app.log_tab, LogTab::Log);
+    }
+
+    #[test]
+    fn the_chord_falls_to_the_log_strip_on_a_backend_without_a_device_pane() {
+        // Zephyr has no device pane to strip, so from its panes the chord
+        // lands on row 3 instead --- the chord does something tab-like
+        // from every pane, never nothing.
+        let mut app = App::new(std::env::temp_dir());
+        app.detect();
+        app.manager.set_override(Some(BackendKind::Zephyr));
+        app.focus = Focus::Workspace;
+
+        app.handle(AppEvent::Key(KeyEvent::new(
+            KeyCode::Right,
+            KeyModifiers::CONTROL,
+        )));
+        assert_eq!(app.log_tab, LogTab::Monitor);
+        app.handle(AppEvent::Key(KeyEvent::new(
+            KeyCode::Left,
+            KeyModifiers::CONTROL,
+        )));
         assert_eq!(app.log_tab, LogTab::Log);
     }
 

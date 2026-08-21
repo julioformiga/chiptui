@@ -881,26 +881,114 @@ fn x_switches_the_device_pane_to_the_actions_tab() {
 fn the_arrows_switch_the_pane_tabs_from_either_side() {
     let project = Project::new("pane-switch");
     let mut app = app_in_actions_tab(&project);
+    let ctrl = |code: KeyCode| AppEvent::Key(KeyEvent::new(code, KeyModifiers::CONTROL));
 
+    // From the actions side the plain arrows still switch: the stacked
+    // buttons take ↑/↓ alone, so the arrows are free there.
     app.handle(key(KeyCode::Left));
     assert!(
         !app.device_actions_tab_active(),
         "the strip's other tab is one arrow away"
     );
-    // The pane keeps focus; on the files side the arrows switch tabs too
-    // (row 3's rule), never navigating directories --- Backspace is the
-    // way up there.
+    // The pane keeps focus; on the files side the plain arrows keep their
+    // directory meaning (the local pane's grammar) --- only the ctrl chord
+    // switches tabs from there.
     assert_eq!(app.focus, Focus::FilesDevice);
 
     app.handle(key(KeyCode::Right));
     assert!(
+        !app.device_actions_tab_active(),
+        "a plain → on the files side must not switch the tab"
+    );
+
+    app.handle(ctrl(KeyCode::Right));
+    assert!(
         app.device_actions_tab_active(),
-        "either arrow switches back --- a two-tab strip has one other place to go"
+        "ctrl+→ switches --- the universal tab chord"
+    );
+    app.handle(ctrl(KeyCode::Left));
+    assert!(
+        !app.device_actions_tab_active(),
+        "ctrl+← switches back --- a two-tab strip has one other place to go"
     );
 
     app.handle(key(KeyCode::Char('x')));
     assert!(app.device_actions_tab_active(), "`x` returns to the tab");
     assert_eq!(app.focus, Focus::FilesDevice);
+}
+
+#[test]
+fn the_strip_chord_switches_the_device_pane_from_the_local_files_pane() {
+    // The chord is dashboard-wide: browsing the local pane, ctrl+→ flips
+    // the device pane's tab without moving the cursor --- and without
+    // descending into the local directory the way a plain → would. Only
+    // one strip flips: row 3 keeps its place.
+    let project = Project::new("chord-from-local");
+    let mut app = app_in_actions_tab(&project);
+    app.handle(key(KeyCode::Left)); // plain ← from actions: over to the files tab
+    app.focus = Focus::FilesLocal;
+
+    app.handle(AppEvent::Key(KeyEvent::new(
+        KeyCode::Right,
+        KeyModifiers::CONTROL,
+    )));
+    assert!(
+        app.device_actions_tab_active(),
+        "the device pane's tab flips from the local pane"
+    );
+    assert_eq!(
+        app.focus,
+        Focus::FilesLocal,
+        "the cursor never leaves the local pane"
+    );
+    assert_eq!(
+        app.browser.as_ref().unwrap().local_path,
+        project.root,
+        "ctrl+→ must not descend a local directory"
+    );
+    assert_eq!(
+        app.log_tab,
+        LogTab::Log,
+        "one keypress, one strip: row 3 is untouched"
+    );
+
+    app.handle(AppEvent::Key(KeyEvent::new(
+        KeyCode::Left,
+        KeyModifiers::CONTROL,
+    )));
+    assert!(!app.device_actions_tab_active());
+    assert_eq!(app.log_tab, LogTab::Log);
+}
+
+/// The device pane's two tabs share one height: the row is sized to the
+/// actions tab's button stack whenever the strip exists, so flipping
+/// between Files and Actions (by chord from anywhere) must not reflow the
+/// rows below --- row 3's strip stays exactly where it was.
+#[test]
+fn the_two_device_tabs_hold_the_same_row_height() {
+    let project = Project::new("pane-stable-height");
+    let mut app = app_in_actions_tab(&project);
+
+    let strip_rows = |app: &mut App| -> (usize, usize) {
+        let frame = render(app, 110, 40);
+        let device = frame
+            .lines()
+            .position(|line| line.contains("Project actions • Device files"))
+            .expect("the device pane's strip");
+        let log = frame
+            .lines()
+            .position(|line| line.contains("Log • Monitor"))
+            .expect("row 3's strip");
+        (device, log)
+    };
+
+    let actions = strip_rows(&mut app);
+    app.handle(key(KeyCode::Left)); // plain ← from actions: over to the files tab
+    let files = strip_rows(&mut app);
+    assert_eq!(
+        actions, files,
+        "switching the tabs must not move the device pane or the rows below it"
+    );
 }
 
 #[test]
@@ -1209,7 +1297,9 @@ fn a_refused_search_opens_no_dialog_from_the_tab() {
 #[test]
 fn the_arrows_create_the_flash_panel_the_tab_draws() {
     // `x` is not the only way onto the tab: with no board plugged in
-    // nothing else creates the panel, so the strip's own arrows must.
+    // nothing else creates the panel, so the strip's own key must. On the
+    // files side that key is the ctrl chord --- plain → navigates
+    // directories there.
     let project = Project::new("pane-arrow-first");
     let mut app = App::new(&project.root);
     app.bootstrap();
@@ -1218,7 +1308,10 @@ fn the_arrows_create_the_flash_panel_the_tab_draws() {
     app.focus = Focus::FilesDevice;
     assert!(app.flash.is_none(), "nothing has created a panel yet");
 
-    app.handle(key(KeyCode::Right));
+    app.handle(AppEvent::Key(KeyEvent::new(
+        KeyCode::Right,
+        KeyModifiers::CONTROL,
+    )));
     assert!(app.device_actions_tab_active());
     assert!(app.flash.is_some(), "the tab arrives with its panel");
 

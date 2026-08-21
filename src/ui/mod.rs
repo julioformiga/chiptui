@@ -31,6 +31,7 @@ use ratatui::widgets::{
 
 use crate::app::{App, Focus, LogTab, View};
 use crate::backend::BackendKind;
+use crate::flash::FlashAction;
 
 /// Below this the dashboard cannot be rendered legibly --- and the number
 /// is the *measured* one, not an aspiration: at 80x32 the row-2 button
@@ -147,12 +148,15 @@ fn draw_dashboard(frame: &mut Frame, body: Rect, app: &mut App, palette: Palette
     let [row1, rest] =
         Layout::vertical([Constraint::Length(info_height), Constraint::Min(0)]).areas(body);
     // Row 2 leans on its content when the workspace/project panes or the
-    // device pane's actions tab claim it: their stacked button groups
-    // (checklist rows, a separator, a rule per button edge, the pinned
-    // state line) are the tallest content on the dashboard, so the row is
-    // sized to fit them and the log pane (which scrolls) takes the
-    // remainder. The browser keeps the historical 60/40 split.
-    let [row2, row3] = if app.workspace_pane_visible() || app.device_actions_tab_active() {
+    // device pane's strip claim it: their stacked button groups (checklist
+    // rows, a separator, a rule per button edge, the pinned state line)
+    // are the tallest content on the dashboard, so the row is sized to
+    // fit them and the log pane (which scrolls) takes the remainder. The
+    // device pane sizes the row whenever its *strip* exists, not only
+    // while the actions tab is showing: switching the two tabs must not
+    // reflow the rows below, so the files tab rides at the actions tab's
+    // height instead of the browser's historical 60/40 split.
+    let [row2, row3] = if app.workspace_pane_visible() || app.device_actions_tab_available() {
         let needed = row2_content_height(app)
             .saturating_add(2) // the pane's borders (the state line is content, already counted)
             .min(rest.height.saturating_sub(3).max(1));
@@ -212,14 +216,22 @@ fn row2_content_height(app: &App) -> u16 {
         let mains = panel.actions(&caps).len() - usize::from(panel.is_busy());
         (2 * mains + 1 + 3) as u16
     });
-    // The device pane's Project actions tab sizes the row by the same
-    // rule while it is showing: its stack is the tallest content the
-    // browser row has, and a clipped button is one the user cannot press.
-    let actions = if app.device_actions_tab_active() {
-        app.flash.as_ref().map_or(0, |flash| {
-            let mains = flash.pane_actions().len() - usize::from(flash.is_busy());
-            (2 * mains + 1 + 3) as u16
-        })
+    // The device pane's strip sizes the row by the same rule whenever it
+    // exists: its stack is the tallest content the browser row has, a
+    // clipped button is one the user cannot press, and the files tab must
+    // not sit at a different height than the actions tab beside it. With
+    // no panel yet (nothing background-created one), the stack the first
+    // entry onto the tab will draw is `FlashAction::ALL` --- ChipInfo is
+    // filtered out and SearchOnline added back, so the idle count equals
+    // it, and `Stop` is pinned in the reserved footer rather than the
+    // stack, so busy does not change the number either.
+    let actions = if app.device_actions_tab_available() {
+        app.flash
+            .as_ref()
+            .map_or(FlashAction::ALL.len() as u16, |flash| {
+                let mains = flash.pane_actions().len() - usize::from(flash.is_busy());
+                (2 * mains + 1 + 3) as u16
+            })
     } else {
         0
     };

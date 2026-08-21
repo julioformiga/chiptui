@@ -69,11 +69,17 @@ riding the strip's right edge: the walked device path plus the running-script fl
 files tab, the flag alone for the actions tab (no listing to locate there, but a running
 script gates every esptool action). `x`
 (`App::open_flash`) creates the flash panel and switches to the actions tab instead of
-opening a dialog; the arrows switch the two tabs from *either* side while the pane holds
-focus — row 3's Log/Monitor rule, handled in `on_dashboard_key` before the pane dispatch —
-so on the files side they give up their directory meaning (Backspace still ascends,
-`Enter`'s menu descends); the local pane keeps its arrows, and an untabbed device pane
-(no flash capability) does too. The tab renders the esptool menu as
+opening a dialog; `ctrl+←/→` is a **dashboard-wide chord** (`App::switch_strip_tabs`,
+handled in `on_dashboard_key` before every pane dispatch, like `m`): it switches the tabs
+of the pane holding focus when that pane has a strip, the device pane's strip when one
+exists beside a pane without its own (the local files pane flips the device pane without
+giving up the cursor), and row 3's Log • Monitor strip otherwise (the Zephyr row) — one
+keypress flips exactly one strip, never two. Plain `←/→` join the switch only on the
+actions side (its stacked buttons take `↑/↓` alone); on the files side they keep their
+directory meaning (descend/ascend, `Enter`'s menu descends), the same grammar the local
+pane and an untabbed device pane (no flash capability) always had — and because the chord
+is intercepted before the dispatch, it never leaks into a pane's own arrows (on the local
+pane `ctrl+→` must not descend). The tab renders the esptool menu as
 the *same* stacked-button widget the Zephyr build pane uses (`ui::flash::draw_actions_pane`:
 one button per `FlashPanel::pane_actions` row --- the esptool actions, capitalized like the
 build pane's, plus `⇩ Search firmware online`, the menu's old `s` key as a button; the chip
@@ -81,8 +87,11 @@ identity every device selection already queries in the background gets no button
 (`ChipInfo` is filtered out of the pane rows, though the dialog menu still lists it), and a
 direct download URL is pasted with `u` from the search windows --- over the
 same reserved three-row footer, `■ Stop` as its own half-width box while a command runs,
-the state line with a live counter/last report), row 2 sized to the stack while the tab is
-showing (`row2_content_height`). A started command keeps focus on the pane with the cursor
+the state line with a live counter/last report), row 2 sized to the stack whenever the strip
+exists --- both tabs hold that height, so flipping Files/Actions (from anywhere, via the
+chord) never reflows the rows below (`row2_content_height`, which falls back to
+`FlashAction::ALL`'s count when no panel exists yet). A started command keeps focus on the pane
+with the cursor
 parked on `Stop` (the Zephyr rule; `show_flash_in_monitor` focuses the Monitor tab only when
 the run started from a dialog), and a finished one lands back on its own row with a
 `FlashReport` in the footer. The state line names whatever holds the panel
@@ -112,8 +121,10 @@ re-enters the tour at its first stop. The operation buttons they gate live in th
 actions** pane --- a small custom widget (`src/ui/button.rs`: one stacked
 group sharing a rounded border, a centered icon label per row, a `├─┤` divider between each
 pair --- N buttons cost 2N+1 lines, and `draw_dashboard`'s `row2_content_height` sizes row 2
-to that content (the log pane, which scrolls, takes the remainder; the browser row keeps
-60/40); the group's frame is the theme's muted color, labels bold `fg` (muted while disabled), and the selected row
+to that content (the log pane, which scrolls, takes the remainder; a device pane with a
+tab strip holds this height on *both* its tabs, so the browser row no longer uses the
+historical 60/40 there --- only an untabbed device pane does); the group's frame is the theme's
+muted color, labels bold `fg` (muted while disabled), and the selected row
 is `palette.selection`/`palette.fg` (not `Modifier::REVERSED`, which read inconsistently
 across terminals) applied as a `Buffer::set_style` patch over the row's inner cells *after*
 the label is drawn, filling it edge to edge without ever painting over the side rules,

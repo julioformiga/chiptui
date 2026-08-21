@@ -1673,6 +1673,54 @@ fn right_descends_into_a_directory_directly_without_opening_the_dialog() {
     );
 }
 
+/// The device pane's Files tab keeps the plain arrows as directory keys
+/// even when the tab strip is present (a flash-capable backend): the strip
+/// moved to the ctrl chord, so →/← descend/ascend there like the local
+/// pane instead of switching tabs.
+#[test]
+fn the_device_files_tab_keeps_the_arrows_for_directories() {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    let project = Project::new("device-arrows");
+    let mut app = app_in_browser(&project);
+    app.focus = Focus::FilesDevice;
+    {
+        let browser = app.browser.as_mut().unwrap();
+        browser.focus = Side::Device;
+        browser.cursor_to(0); // lib/ --- the fixture's lone device directory
+    }
+
+    // Plain → descends into the device directory.
+    app.handle(key(KeyCode::Right));
+    assert!(
+        !app.device_actions_tab_active(),
+        "a plain → must not cross to the actions tab"
+    );
+    assert_eq!(
+        app.browser.as_ref().unwrap().device_path,
+        DevicePath::new("/lib")
+    );
+
+    // The ctrl chord is what switches the tabs --- over and back.
+    app.handle(AppEvent::Key(KeyEvent::new(
+        KeyCode::Right,
+        KeyModifiers::CONTROL,
+    )));
+    assert!(app.device_actions_tab_active());
+    app.handle(AppEvent::Key(KeyEvent::new(
+        KeyCode::Left,
+        KeyModifiers::CONTROL,
+    )));
+    assert!(!app.device_actions_tab_active());
+
+    // Plain ← ascends back to the root.
+    app.handle(key(KeyCode::Left));
+    assert_eq!(
+        app.browser.as_ref().unwrap().device_path,
+        DevicePath::new("/")
+    );
+}
+
 #[test]
 fn right_on_a_file_does_nothing() {
     use ratatui::crossterm::event::KeyCode;
