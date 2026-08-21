@@ -234,7 +234,7 @@ fn zephyr_shows_the_workspace_and_build_panes_in_row_two() {
     let frame = render(&mut app, 100, 32);
 
     assert!(
-        frame.contains("Local Files:"),
+        frame.contains("Files:"),
         "missing the project-files pane:\n{frame}"
     );
     assert!(
@@ -284,7 +284,7 @@ fn dashboard_shows_the_file_browser_in_row_two_for_a_filesystem_backend() {
     let frame = render(&mut app, 100, 32);
 
     assert!(
-        frame.contains("Local Files:"),
+        frame.contains("Files:"),
         "missing the local file pane:\n{frame}"
     );
     assert!(

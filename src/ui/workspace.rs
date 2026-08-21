@@ -35,13 +35,13 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
     // ("blinkety/src/"): with the checklist moved up to the Project pane,
     // the bar would sit between two borders saying nothing, so the border
     // says it instead and the listing gets the whole pane. The prefix never
-    // truncates --- only the path shortens, from the left (15 is
-    // "Local Files: " plus the title's own padding spaces).
+    // truncates --- only the path shortens, from the left (9 is
+    // "Files: " plus the title's own padding spaces).
     let title = format!(
-        "Local Files: {}",
+        "Files: {}",
         shorten_start(
             &files_title(panel, app),
-            area.width.saturating_sub(15) as usize
+            area.width.saturating_sub(9) as usize
         )
     );
     let block = pane_block(&title, focused, palette);

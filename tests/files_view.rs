@@ -927,10 +927,7 @@ fn the_browser_renders_both_panes_with_comparison_markers() {
     // the new ctrl+p row at smaller widths.
     let frame = render(&mut app, 132, 32);
 
-    assert!(
-        frame.contains("Local Files:"),
-        "missing local pane:\n{frame}"
-    );
+    assert!(frame.contains("Files:"), "missing local pane:\n{frame}");
     assert!(
         // A flash-capable backend renders the device pane as a tabbed pane:
         // the strip names both tabs, with the walked device path riding

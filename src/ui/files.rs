@@ -114,7 +114,7 @@ fn draw_local(
     };
     // The prefix never truncates --- only the path shortens, from the left.
     let block = pane_block(
-        &format!("Local Files: {}", shorten(&title, area.width)),
+        &format!("Files: {}", shorten(&title, area.width)),
         focused,
         palette,
     );
@@ -597,9 +597,9 @@ fn truncate(name: &str, max: usize) -> String {
     format!("{kept}…")
 }
 
-/// Shortens the pane title from the left: 13 is "Local Files: ".len().
+/// Shortens the pane title from the left: 7 is "Files: ".len().
 fn shorten(path: &str, width: u16) -> String {
-    truncate_start(path, (width as usize).saturating_sub(13))
+    truncate_start(path, (width as usize).saturating_sub(7))
 }
 
 #[cfg(test)]

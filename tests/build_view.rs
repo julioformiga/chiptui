@@ -877,7 +877,7 @@ fn the_workspace_file_section_titles_with_the_project_and_offers_the_parent_row(
 
     // At the root the pane's title carries the project's own name… (140
     // columns: the fixture's generated name is long, and the
-    // "Local Files: " prefix eats 13 of them.)
+    // "Files: " prefix eats 7 of them.)
     let project = root.file_name().unwrap().to_string_lossy().into_owned();
     let frame = render(&mut app, 140, 32);
     assert!(
@@ -1381,7 +1381,7 @@ fn the_workspace_pane_resolves_from_project_config_and_runs_update() {
     let unresolved = render(&mut app, 100, 32);
     let row2 = unresolved
         .lines()
-        .position(|l| l.contains("Local Files"))
+        .position(|l| l.contains("Files"))
         .expect("the project-files pane renders before resolution");
 
     let home = root.join("home");
@@ -1424,7 +1424,7 @@ fn the_workspace_pane_resolves_from_project_config_and_runs_update() {
     );
 
     let frame = render(&mut app, 100, 32);
-    assert!(frame.contains("Local Files"), "the pane renders:\n{frame}");
+    assert!(frame.contains("Files"), "the pane renders:\n{frame}");
     assert!(frame.contains("zephyrproject"), "the path shows:\n{frame}");
     assert!(
         frame.contains("zephyr 4.1"),
@@ -1435,7 +1435,7 @@ fn the_workspace_pane_resolves_from_project_config_and_runs_update() {
         "the badge carries no label --- the values name themselves:\n{frame}"
     );
     assert_eq!(
-        frame.lines().position(|l| l.contains("Local Files")),
+        frame.lines().position(|l| l.contains("Files")),
         Some(row2),
         "the versions badge must not shift row 2:\n{frame}"
     );

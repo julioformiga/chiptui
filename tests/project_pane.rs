@@ -140,7 +140,7 @@ fn the_micropython_pane_renders_its_four_rows() {
         "a script belief the probe/monitor never formed is honest about it:\n{frame}"
     );
     assert!(
-        frame.contains("Local Files:"),
+        frame.contains("Files:"),
         "the local pane carries the project-files title:\n{frame}"
     );
 }
@@ -263,7 +263,7 @@ fn picking_a_micropython_project_reroots_the_local_pane() {
 
     let frame = render(&mut app, 100, 32);
     assert!(
-        frame.contains("Local Files: blink/"),
+        frame.contains("Files: blink/"),
         "the local pane's title names the picked project:\n{frame}"
     );
     assert!(

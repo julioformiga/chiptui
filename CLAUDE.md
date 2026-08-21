@@ -37,7 +37,7 @@ when the comparison verdict marks the file as differing or same-size-unchecked.
 menu: it descends into a directory directly (a no-op on a file), mirroring `←`/Backspace going back up
 — only `Enter` opens the menu. `a` creates a new
 entry in the focused pane inline — a trailing `/` on the typed name makes it a directory
-(`Browser::request_mkdir`/`request_touch`). The local pane is titled `Local Files: name/path`
+(`Browser::request_mkdir`/`request_touch`). The local pane is titled `Files: name/path`
 (`Browser::local_root`, re-rooted by `set_local_root`): MicroPython makes the project a
 question too (`Capability::ProjectSelect`) --- `[micropython] projects` in the user config
 (`settings::mpy_projects_raw`/`save_mpy_projects`) answers the Projects base row, a pick
@@ -59,7 +59,7 @@ script runs (`Overlay::ConfirmInterruptDevice`), and an accepted interruption en
 restore prompt (`Overlay::RestoreDeviceScript`: hard reset, `import main`, or leave stopped).
 
 Row 2 is capability-driven now: a backend that can build without a device filesystem (Zephyr)
-claims the *whole* row with a **Local Files | Actions** pair (`maybe_scan_devices`/
+claims the *whole* row with a **Files | Actions** pair (`maybe_scan_devices`/
 `ensure_browser_scanning` skip the browser entirely for such a backend — listing/editing the
 project's own sources is the user's editor's job; MicroPython's dual-pane browser and its
 capability-gated `FileAction::for_entry` menu are unchanged, except that its device pane is
@@ -310,9 +310,9 @@ records the workspace when `install_state` says it is already `Complete`, so a
 late failure never discards a good `west init` + `west update`. `esc` is ignored while a step runs --- `Stop` is the way out. A finished
 run writes `[zephyr] workspace` (+ `sdk`), re-resolves, and chains into the
 projects-folder picker. Its four-state row grammar (`✓ ⚠ ✗ □`) is the shared
-`ui::workspace::marked_row`, which `checklist_row` now delegates to. The **Local Files**
+`ui::workspace::marked_row`, which `checklist_row` now delegates to. The **Files**
 pane (the old workspace pane, `src/ui/workspace.rs`) is the project's own listing, whole:
-its title carries the walked path (`Local Files: proj/src/`, never truncating the
+its title carries the walked path (`Files: proj/src/`, never truncating the
 prefix), and the body is the list --- no action menu: `Enter` descends into a
 directory and opens a text file straight in `$EDITOR`, `v` views one in the viewer, `Del`
 asks through `Overlay::ConfirmDelete` (default No), and a binary/unknown entry ignores both
