@@ -227,3 +227,53 @@ fn the_terminal_answers_the_queries_a_prompt_blocks_on() {
         "the query was answered with a cursor-position report: {screen:?}"
     );
 }
+
+/// The tab's shell is a *login* shell: it sources `~/.profile` (`.zprofile`,
+/// `.bash_profile` for the shells that name them differently) --- where a
+/// login session's exported variables live, and the difference between the
+/// tab's environment and a fresh terminal window's. The real path resolves
+/// the user's shell itself, so the probe points `SHELL` at `/bin/sh` and
+/// `HOME` at a temp directory whose `.profile` prints a marker: a non-login
+/// interactive shell never reads it (that is dash's and bash's own rule), so
+/// the marker on screen is the login mode speaking.
+#[test]
+fn the_tab_shell_starts_as_a_login_shell_and_sources_its_login_files() {
+    let home = std::env::temp_dir().join(format!("chiptui-login-shell-{}", std::process::id()));
+    std::fs::create_dir_all(&home).expect("the probe home exists");
+    std::fs::write(home.join(".profile"), "printf 'login-file-sourced\n'\n")
+        .expect("the login file is written");
+
+    let mut app = App::new("/nonexistent-project-dir");
+    app.set_terminal_tool(
+        Command::new("sh")
+            .as_login_shell()
+            .env("SHELL", "/bin/sh")
+            .env("HOME", home.to_str().expect("the probe home is utf-8")),
+    );
+    app.show_terminal_tab();
+    let id = app.terminal_process.expect("the shell session started");
+
+    // The shell stays alive at its prompt after sourcing the file, so wait
+    // for the marker rather than for an exit.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !app
+        .terminal
+        .screen()
+        .contents()
+        .contains("login-file-sourced")
+        && Instant::now() < deadline
+    {
+        for event in app.processes.drain() {
+            app.handle(AppEvent::Process(event));
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    app.processes.cancel(id);
+    let _ = std::fs::remove_dir_all(&home);
+
+    let screen = app.terminal.screen().contents();
+    assert!(
+        screen.contains("login-file-sourced"),
+        "the login file was sourced into the tab's shell: {screen:?}"
+    );
+}

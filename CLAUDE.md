@@ -591,8 +591,20 @@ These are the decisions that shape most code, and getting them wrong causes wide
   does not implement (colors, OSC) are consumed, never rendered.
 - **The Terminal tab is a terminal emulator, not a console** (`src/app/terminal.rs`,
   `src/ui/terminal.rs`): row 3's third tab spawns `$SHELL` (`/bin/sh` fallback) in a PTY
-  (cwd = the project root) the moment the tab is entered — entering it is the whole start
-  gesture. It deliberately does **not** reuse the Monitor's machinery. `LineConsole` is a
+  (cwd = the project root) as a **login shell** the moment the tab is entered — entering it
+  is the whole start gesture (`Command::as_login_shell`, answered by the PTY spawner's
+  `pty_command`: portable-pty's default program, empty argv, which resolves the shell itself
+  and execs it with `argv[0] = -<basename>`, so the shell sources its login files
+  (`.zprofile`/`.profile`) and the tab carries the full login environment a fresh terminal
+  window has — the parent's own variables were always inherited). The shell is also *born into the
+  resolved workspace's environment* (`App::terminal_west_env`, the same `WestEnv` env half the build
+  panel's commands get: `ZEPHYR_BASE`, `ZEPHYR_SDK_INSTALL_DIR`, `VIRTUAL_ENV` and a venv-first
+  `PATH` — no workspace resolved, no injection), so `west`/`python` typed in the tab mean what they
+  mean in the Actions pane; a process cannot have its environment edited from outside, so
+  `apply_west_env` compares the fresh env against `terminal_shell_env` (what the live session was
+  born with) and restarts the shell (`restart_terminal_shell`, same trade as `r`) when a workspace
+  resolves or moves under it — an unchanged env restarts nothing. It deliberately does
+  **not** reuse the Monitor's machinery. `LineConsole` is a
   single-line editor (`{ parse, col }`, implementing LF/CR/BS/`CSI K`/`CSI D`/`CSI C` and
   dropping every SGR), which is right for MicroPython's readline redraw and wrong for a
   shell: a real prompt — powerlevel10k, here — paints itself in 256 colours, redraws by

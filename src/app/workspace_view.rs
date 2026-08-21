@@ -417,8 +417,16 @@ impl App {
         let installed = workspace.resolved.is_some();
         if let Some(panel) = &mut self.build {
             panel.set_tool_path(west_env.program.clone());
-            panel.set_tool_env(west_env.env);
+            panel.set_tool_env(west_env.env.clone());
             panel.workspace_installed = installed;
+        }
+        // The Terminal tab's shell carries this same environment, and a
+        // running one cannot be edited from outside: a live session whose
+        // birth environment no longer matches is restarted into the new
+        // one here, so the tab never quietly disagrees with the commands
+        // above. An unchanged environment restarts nothing.
+        if self.terminal_process.is_some() && west_env.env != self.terminal_shell_env {
+            self.restart_terminal_shell();
         }
     }
 

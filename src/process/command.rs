@@ -14,6 +14,7 @@ pub struct Command {
     args: Vec<String>,
     cwd: Option<PathBuf>,
     env: Vec<(String, String)>,
+    login_shell: bool,
 }
 
 impl Command {
@@ -23,6 +24,7 @@ impl Command {
             args: Vec::new(),
             cwd: None,
             env: Vec::new(),
+            login_shell: false,
         }
     }
 
@@ -46,6 +48,31 @@ impl Command {
     pub fn current_dir(mut self, dir: impl Into<PathBuf>) -> Self {
         self.cwd = Some(dir.into());
         self
+    }
+
+    /// Marks the command as the user's *login shell* rather than the named
+    /// program. Only the PTY spawn path consults this: it asks portable-pty
+    /// for its default program, which resolves the shell itself (`$SHELL`,
+    /// then the passwd entry) and execs it with `argv[0]` prefixed by `-`.
+    /// That dash is the convention every terminal emulator uses to ask a
+    /// shell to source its login files (`.zprofile`, `.profile`,
+    /// `.bash_profile`) --- where a login session's exported variables
+    /// live. The process environment is inherited whole either way, but a
+    /// plain non-login shell never reads those files, so the Terminal tab
+    /// would miss everything the user's own terminal adds at login. The
+    /// program and arguments are not consulted on this path; the program
+    /// stays meaningful as the command's label.
+    #[must_use]
+    pub fn as_login_shell(mut self) -> Self {
+        self.login_shell = true;
+        self
+    }
+
+    /// Whether [`Command::as_login_shell`] marked this command --- the PTY
+    /// spawn path's question, answered there.
+    #[must_use]
+    pub fn is_login_shell(&self) -> bool {
+        self.login_shell
     }
 
     /// Adds one environment variable, overriding any inherited value for

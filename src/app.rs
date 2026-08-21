@@ -887,6 +887,12 @@ pub struct App {
     /// but the keyboard returns to the dashboard. Switching back to the
     /// Terminal tab re-attaches.
     terminal_detached: bool,
+    /// The workspace environment the running shell was *born* with
+    /// (`terminal_west_env`'s answer at spawn time). A process cannot have
+    /// its environment edited from outside, so this is what
+    /// `apply_west_env` compares against to know a live session went stale
+    /// and must be restarted into the environment that resolves *now*.
+    terminal_shell_env: Vec<(String, String)>,
     /// The command the Terminal tab spawns instead of `$SHELL` --- the test
     /// seam that keeps the suite off the developer's real shell (the same
     /// role `Browser::set_tool_path` plays for mpremote).
@@ -1048,6 +1054,7 @@ impl App {
             terminal: terminal::TerminalSession::new(),
             terminal_program: String::new(),
             terminal_detached: false,
+            terminal_shell_env: Vec::new(),
             terminal_tool: None,
             run_process: None,
             run_output: Vec::new(),
@@ -2845,6 +2852,7 @@ fn key_to_bytes(key: KeyEvent) -> Option<Vec<u8>> {
 mod tests {
     use super::*;
     use help::HelpSection;
+    use std::time::Instant;
 
     fn key(code: KeyCode) -> AppEvent {
         AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE))
@@ -3001,6 +3009,120 @@ mod tests {
         app.show_terminal_tab();
         let id = app.terminal_process.expect("the shell session started");
         (app, id)
+    }
+
+    /// A workspace panel resolved to a synthetic installation with every
+    /// environment half present: a venv (whose `bin` must lead `PATH`) and
+    /// an SDK location. The paths need not exist --- resolution already
+    /// happened, and the panel only carries the answer.
+    fn resolved_workspace_panel(dir: &std::path::Path) -> crate::workspace::WorkspacePanel {
+        crate::workspace::WorkspacePanel::new(
+            crate::backend::zephyr::workspace::Resolution::Single(
+                crate::backend::zephyr::workspace::Workspace {
+                    dir: dir.to_path_buf(),
+                    origin: crate::backend::zephyr::workspace::WorkspaceOrigin::UserConfig,
+                    zephyr_base: dir.join("zephyr"),
+                    venv: Some(dir.join(".venv")),
+                    west: dir.join(".venv/bin/west").display().to_string(),
+                    sdk: Some(dir.join("sdk")),
+                },
+            ),
+            "",
+        )
+    }
+
+    /// The resolved workspace's exported environment reaches the Terminal
+    /// tab's shell --- not just the build panel's commands --- so `west`
+    /// typed there means what it means in the Actions pane. Proven on a
+    /// real child: the seam tool prints `ZEPHYR_BASE`, and the grid shows
+    /// the workspace's value.
+    #[test]
+    fn the_terminal_shell_carries_the_workspace_environment() {
+        let dir = std::env::temp_dir().join(format!("chiptui-term-env-{}", std::process::id()));
+        let mut app = app();
+        app.set_terminal_tool(
+            crate::process::Command::new("/bin/sh")
+                .arg("-c")
+                .arg("printf 'ZB=%s\\n' \"$ZEPHYR_BASE\""),
+        );
+        app.workspace = Some(resolved_workspace_panel(&dir));
+        app.show_terminal_tab();
+        let id = app.terminal_process.expect("the shell session started");
+
+        let get = |key: &str| {
+            app.terminal_shell_env
+                .iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.clone())
+        };
+        assert_eq!(
+            get("ZEPHYR_BASE").as_deref(),
+            Some(dir.join("zephyr").display().to_string().as_str()),
+            "ZEPHYR_BASE is the workspace's checkout"
+        );
+        assert_eq!(
+            get("VIRTUAL_ENV").as_deref(),
+            Some(dir.join(".venv").display().to_string().as_str())
+        );
+        let path = get("PATH").expect("the venv rewrites PATH");
+        assert!(
+            path.starts_with(&format!("{}/bin:", dir.join(".venv").display())),
+            "the venv's bin leads PATH: {path}"
+        );
+        assert!(
+            get("ZEPHYR_SDK_INSTALL_DIR").is_some(),
+            "the SDK rides along"
+        );
+
+        // The child saw it too, through the same raw PTY arm as always.
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !app.terminal.screen().contents().contains("ZB=/") && Instant::now() < deadline {
+            for event in app.processes.drain() {
+                app.handle(AppEvent::Process(event));
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let screen = app.terminal.screen().contents();
+        assert!(
+            screen.contains(&format!("ZB={}", dir.join("zephyr").display())),
+            "the shell's environment holds the workspace's ZEPHYR_BASE: {screen:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        app.processes.cancel(id);
+    }
+
+    /// A workspace resolving under a live shell restarts it into the new
+    /// environment (a process cannot be edited from outside), and an
+    /// unchanged environment restarts nothing: one workspace change, one
+    /// restart, not one per refresh.
+    #[test]
+    fn a_workspace_change_restarts_a_live_shell_into_the_new_environment() {
+        let dir = std::env::temp_dir().join(format!("chiptui-term-restart-{}", std::process::id()));
+        let (mut app, first) = app_in_terminal();
+        assert!(
+            app.terminal_shell_env.is_empty(),
+            "no workspace resolved, the shell inherits the parent's own"
+        );
+
+        app.workspace = Some(resolved_workspace_panel(&dir));
+        app.apply_west_env();
+        let second = app.terminal_process.expect("a new shell session started");
+        assert_ne!(first, second, "the stale session was replaced");
+        assert!(
+            !app.terminal_shell_env.is_empty(),
+            "the replacement was born under the workspace's environment"
+        );
+
+        app.apply_west_env();
+        assert_eq!(
+            app.terminal_process,
+            Some(second),
+            "the same environment refreshes nothing"
+        );
+
+        app.processes.cancel(first);
+        app.processes.cancel(second);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

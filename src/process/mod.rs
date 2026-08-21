@@ -326,8 +326,7 @@ impl ProcessManager {
             })
             .map_err(|e| e.to_string())?;
 
-        let mut cmd = portable_pty::CommandBuilder::new(command.program());
-        cmd.args(command.args_slice());
+        let mut cmd = pty_command(&command);
         // The structured command's whole setting: a working directory and
         // environment overrides belong to the child as much as the program
         // does (the Terminal tab's shell asks for the project root this
@@ -478,6 +477,25 @@ impl ProcessManager {
 
     pub fn running_count(&self) -> usize {
         self.running.len()
+    }
+}
+
+/// The PTY child of a structured command. A login-shell command maps to
+/// portable-pty's *default program*: empty argv, which makes the crate
+/// resolve the user's shell itself (`$SHELL`, then the passwd entry) and
+/// exec it with `argv[0]` prefixed by `-` --- the login convention, and the
+/// one supported way to reach it. Any other command is its program plus
+/// arguments. Both kinds start from the parent's full environment; the
+/// difference is only which shell startup files the child then sources,
+/// and a login shell is what gives the Terminal tab the environment a
+/// fresh terminal window has (`.zprofile`/`.profile` exports included).
+fn pty_command(command: &Command) -> portable_pty::CommandBuilder {
+    if command.is_login_shell() {
+        portable_pty::CommandBuilder::new_default_prog()
+    } else {
+        let mut builder = portable_pty::CommandBuilder::new(command.program());
+        builder.args(command.args_slice());
+        builder
     }
 }
 
@@ -638,5 +656,33 @@ fn supervise(
             Ok(None) => thread::sleep(POLL_INTERVAL),
             Err(source) => return Outcome::SpawnFailed(source.to_string()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_pty_command_is_its_program_and_arguments() {
+        let builder = pty_command(&Command::new("/bin/sh").arg("-c").arg("true"));
+        assert_eq!(
+            builder.get_argv().as_slice(),
+            [
+                std::ffi::OsString::from("/bin/sh"),
+                "-c".into(),
+                "true".into()
+            ]
+        );
+        assert!(!builder.is_default_prog());
+    }
+
+    #[test]
+    fn a_login_shell_command_maps_to_the_default_program() {
+        // Empty argv is portable-pty's grammar for "the user's shell, as a
+        // login shell": it resolves and execs the shell itself, with the
+        // leading-dash `argv[0]` the login convention rides on.
+        let builder = pty_command(&Command::new("zsh").as_login_shell());
+        assert!(builder.is_default_prog());
     }
 }

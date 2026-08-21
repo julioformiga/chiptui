@@ -292,15 +292,44 @@ impl App {
             .unwrap_or_else(|| "/bin/sh".to_string())
     }
 
+    /// The resolved Zephyr workspace's exported environment --- the same
+    /// half the build panel's commands get through `set_tool_env`
+    /// (`ZEPHYR_BASE` always; `ZEPHYR_SDK_INSTALL_DIR`, `VIRTUAL_ENV` and a
+    /// venv-first `PATH` when the workspace owns them). The Terminal tab's
+    /// shell is a UI affordance every backend offers, so there is no
+    /// capability to gate on: no workspace resolved, no variables, and the
+    /// shell inherits the parent's own environment untouched.
+    fn terminal_west_env(&self) -> Vec<(String, String)> {
+        self.workspace
+            .as_ref()
+            .map_or_else(Vec::new, |panel| panel.west_env().env)
+    }
+
     pub(super) fn start_terminal_shell(&mut self) {
         let root = self
             .manager
             .root()
             .map_or_else(|| self.manager.start_dir().to_path_buf(), Path::to_path_buf);
+        let west_env = self.terminal_west_env();
         let command = match &self.terminal_tool {
             Some(tool) => tool.clone(),
-            None => crate::process::Command::new(self.shell_program()).current_dir(root),
+            None => crate::process::Command::new(self.shell_program())
+                .current_dir(root)
+                // A login shell, what a fresh terminal window starts: the
+                // parent's own environment is inherited whole, but the
+                // variables a login session exports (`PATH` additions,
+                // pyenv and friends, set in `.zprofile`/`.profile`) reach
+                // a shell only through its login files --- which plain
+                // `$SHELL` never sources. portable-pty resolves the shell
+                // itself on this path (`$SHELL`, then the passwd entry);
+                // `shell_program` above stays the tab label's answer.
+                .as_login_shell(),
         }
+        // The workspace's environment rides along, so `west`, `python` and
+        // `cmake` typed in the tab mean what they mean in the Actions pane
+        // --- the whole point of handing the shell the developer's Zephyr
+        // setup rather than the bare parent environment.
+        .envs(west_env.clone())
         // `TERM` is a promise about what the *emulator* can do, and the one
         // this tab makes is `vt100`'s: an xterm-shaped, 256-colour terminal.
         // Inheriting the outer terminal's own value (`xterm-ghostty` here)
@@ -309,6 +338,7 @@ impl App {
         // survive: `vt100` parses `38;2;r;g;b` and `tui-term` renders it.
         .env("TERM", "xterm-256color")
         .env("COLORTERM", "truecolor");
+        self.terminal_shell_env = west_env;
 
         self.terminal_program = Path::new(command.program())
             .file_name()
@@ -332,6 +362,23 @@ impl App {
                 self.terminal_process = None;
             }
         }
+    }
+
+    /// Replaces a live shell session with one born under the environment
+    /// the workspace resolves to *now*. A process cannot have its
+    /// environment edited from outside, and a workspace that resolved or
+    /// moved under the Terminal tab changes what `west` and `python` mean
+    /// there --- so the stale session is ended and a fresh one started
+    /// (the same trade `r` makes) rather than left quietly disagreeing
+    /// with the Actions pane. The old shell's last events are dropped by
+    /// the id match; the reset below belongs to the new session alone.
+    pub(super) fn restart_terminal_shell(&mut self) {
+        if let Some(id) = self.terminal_process.take() {
+            self.processes.cancel(id);
+        }
+        self.start_terminal_shell();
+        self.logs
+            .info("terminal: shell restarted with the workspace's environment");
     }
 
     /// Sends a paste to the shell, framed the way the child asked for it.
