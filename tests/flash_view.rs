@@ -461,8 +461,21 @@ fn the_online_search_window_names_its_source_and_the_local_folder_priority() {
     settle(&mut app);
     let frame = render(&mut app, 110, 32);
     assert!(
-        frame.contains("2 boards for this query"),
+        frame.contains("2 boards for this chip"),
         "results carry a status line:\n{frame}"
+    );
+    assert!(
+        frame.contains("Vendor") && frame.contains("Firmware") && frame.contains("Board"),
+        "the boards window is a table with named columns:\n{frame}"
+    );
+    let vendor = frame.find("Vendor").expect("checked above");
+    assert!(
+        frame[vendor..].contains("Firmware"),
+        "the Vendor column must lead the Firmware column:\n{frame}"
+    );
+    assert!(
+        frame.contains("Espressif") && frame.contains("Acme"),
+        "every vendor's boards arrive, the vendor is a column to choose from:\n{frame}"
     );
 }
 

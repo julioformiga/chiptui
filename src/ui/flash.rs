@@ -10,7 +10,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{List, ListItem, ListState, Paragraph, Row, Table, TableState, Wrap};
 
 use super::button::{self, Button};
 use super::workspace::label;
@@ -31,8 +31,9 @@ pub fn dialog_size(flash: &FlashPanel) -> (u16, u16) {
             (66, fields + firmware_line + 4)
         }
         // The online screens carry a source line and a local-folder note
-        // around the list itself (`+ 4` content rows).
-        FlashScreen::OnlineBoards => (72, flash.online_boards.len().max(2) as u16 + 6),
+        // around the list itself (`+ 4` content rows); the boards screen
+        // adds its table's header row on top of the rows.
+        FlashScreen::OnlineBoards => (72, flash.online_boards.len().max(2) as u16 + 7),
         FlashScreen::OnlineFirmware => (72, flash.online_firmware.len().max(2) as u16 + 6),
         FlashScreen::CustomUrl => (70, 6),
     }
@@ -225,8 +226,56 @@ struct OnlineFrame {
     settled: String,
     /// The status line when the fetch finished and nothing arrived.
     empty: &'static str,
-    /// The list rows; empty means there is nothing to pick (yet).
-    items: Vec<ListItem<'static>>,
+    /// The selectable rows; empty means there is nothing to pick (yet).
+    rows: OnlineRows,
+    /// The cursor's row, shared by both row kinds.
+    cursor: usize,
+}
+
+/// The body of an online screen: a plain list, or a columned table. The
+/// board-selection screen is the table --- the search narrows by MCU alone,
+/// so boards from many vendors arrive and the `Vendor` column (first, before
+/// the `Firmware` it belongs to) is what tells them apart.
+enum OnlineRows {
+    List(Vec<ListItem<'static>>),
+    Table {
+        header: Vec<&'static str>,
+        rows: Vec<Row<'static>>,
+        widths: Vec<Constraint>,
+    },
+}
+
+impl OnlineRows {
+    fn is_empty(&self) -> bool {
+        match self {
+            Self::List(items) => items.is_empty(),
+            Self::Table { rows, .. } => rows.is_empty(),
+        }
+    }
+
+    fn render(self, area: Rect, frame: &mut Frame, cursor: usize, palette: Palette) {
+        match self {
+            Self::List(items) => {
+                let mut state = ListState::default().with_selected(Some(cursor));
+                frame.render_stateful_widget(
+                    List::new(items).highlight_style(selection_style(palette)),
+                    area,
+                    &mut state,
+                );
+            }
+            Self::Table {
+                header,
+                rows,
+                widths,
+            } => {
+                let table = Table::new(rows, widths)
+                    .header(Row::new(header).style(muted_style(palette)))
+                    .row_highlight_style(selection_style(palette));
+                let mut state = TableState::default().with_selected(Some(cursor));
+                frame.render_stateful_widget(table, area, &mut state);
+            }
+        }
+    }
 }
 
 /// The last path segment of [`FlashPanel::firmware_dir`] — enough to name
@@ -274,7 +323,7 @@ fn draw_online_frame(
             ),
             Span::styled(format!(" {what}"), Style::new().fg(palette.accent)),
         ]),
-        None if online.items.is_empty() => Line::from(vec![
+        None if online.rows.is_empty() => Line::from(vec![
             Span::styled(online.empty, Style::new().fg(palette.warning)),
             Span::styled("  (u pastes a direct URL)", muted_style(palette)),
         ]),
@@ -285,13 +334,8 @@ fn draw_online_frame(
         head,
     );
 
-    if !online.items.is_empty() {
-        let mut state = ListState::default().with_selected(Some(flash.online_cursor));
-        frame.render_stateful_widget(
-            List::new(online.items).highlight_style(selection_style(palette)),
-            list_area,
-            &mut state,
-        );
+    if !online.rows.is_empty() {
+        online.rows.render(list_area, frame, online.cursor, palette);
     }
 
     let dir = firmware_dir_name(flash);
@@ -311,7 +355,11 @@ fn draw_online_frame(
     frame.render_widget(block, area);
 }
 
-/// Boards found by [`crate::flash::FlashPanel::search_online`].
+/// Boards found by [`crate::flash::FlashPanel::search_online`]. Drawn as a
+/// table whose `Vendor` column leads the `Firmware` one: the search narrows
+/// by MCU alone, so boards from several vendors arrive together and the
+/// vendor is the first thing a pick turns on --- a column to read, not a
+/// silent filter the board's USB id already made for the user.
 fn draw_online_boards(
     frame: &mut Frame,
     area: Rect,
@@ -325,7 +373,7 @@ fn draw_online_boards(
         title: "Firmware online",
         fetching: flash.searching_boards().then_some("searching for boards…"),
         settled: format!(
-            "{} board{} for this query — enter lists its firmware",
+            "{} board{} for this chip — enter lists its firmware",
             flash.online_boards.len(),
             if flash.online_boards.len() == 1 {
                 ""
@@ -334,20 +382,32 @@ fn draw_online_boards(
             }
         ),
         empty: "no boards found for this chip",
-        items: flash
-            .online_boards
-            .iter()
-            .map(|board| {
-                ListItem::new(Line::from(vec![
-                    Span::styled(format!(" {} ", board.product), Style::new().fg(palette.fg)),
-                    Span::styled(
-                        format!("{}  ", board.vendor),
-                        Style::new().fg(palette.accent),
-                    ),
-                    Span::styled(board.id.clone(), muted_style(palette)),
-                ]))
-            })
-            .collect(),
+        cursor: flash.online_cursor,
+        rows: OnlineRows::Table {
+            header: vec!["Vendor", "Firmware", "Board"],
+            widths: vec![
+                Constraint::Length(18),
+                Constraint::Min(20),
+                Constraint::Length(22),
+            ],
+            rows: flash
+                .online_boards
+                .iter()
+                .map(|board| {
+                    Row::new(vec![
+                        Line::from(Span::styled(
+                            board.vendor.clone(),
+                            Style::new().fg(palette.accent),
+                        )),
+                        Line::from(Span::styled(
+                            board.product.clone(),
+                            Style::new().fg(palette.fg),
+                        )),
+                        Line::from(Span::styled(board.id.clone(), muted_style(palette))),
+                    ])
+                })
+                .collect(),
+        },
     };
     draw_online_frame(frame, area, flash, focused, palette, online)
 }
@@ -383,23 +443,26 @@ fn draw_online_firmware(
             firmware_dir_name(flash)
         ),
         empty: "no flashable .bin firmware for this board",
-        items: flash
-            .online_firmware
-            .iter()
-            .map(|file| {
-                let mut spans = vec![Span::styled(
-                    format!(" {} ", file.label),
-                    Style::new().fg(palette.fg),
-                )];
-                if !file.variant.is_empty() {
-                    spans.push(Span::styled(
-                        format!("{}  ", file.variant),
-                        muted_style(palette),
-                    ));
-                }
-                ListItem::new(Line::from(spans))
-            })
-            .collect(),
+        cursor: flash.online_cursor,
+        rows: OnlineRows::List(
+            flash
+                .online_firmware
+                .iter()
+                .map(|file| {
+                    let mut spans = vec![Span::styled(
+                        format!(" {} ", file.label),
+                        Style::new().fg(palette.fg),
+                    )];
+                    if !file.variant.is_empty() {
+                        spans.push(Span::styled(
+                            format!("{}  ", file.variant),
+                            muted_style(palette),
+                        ));
+                    }
+                    ListItem::new(Line::from(spans))
+                })
+                .collect(),
+        ),
     };
     draw_online_frame(frame, area, flash, focused, palette, online)
 }

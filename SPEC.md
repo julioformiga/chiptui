@@ -492,13 +492,14 @@ disk. With a connected device and a known chip family (read from an
 [micropython.org/download](https://micropython.org/download/) for candidate
 firmware builds:
 
--   the search narrows by MCU (chip family) always;
--   it narrows by board vendor as well, but only when the connected
-    device's USB vendor/product id identifies an actual board vendor rather
-    than a generic USB-serial bridge chip (e.g. CP210x, FTDI, CH340 are used
-    across many unrelated boards and must not be treated as a vendor
-    filter);
--   results are presented as a list of candidate boards, and then a list of
+-   the search narrows by MCU (chip family) always, and by nothing else ---
+    the connected device's USB ids are deliberately not turned into a vendor
+    filter (a generic USB-serial bridge such as CP210x, FTDI or CH340 is
+    soldered onto boards from many unrelated vendors, so it must not narrow
+    anything);
+-   results are presented as a selection table of candidate boards whose
+    `Vendor` column leads the `Firmware` one (then the board id), so boards
+    from every vendor can be told apart at a glance, and then as a list of
     firmware builds for the chosen board (version, date, variant);
 -   the user may paste a specific download URL directly instead of
     searching;

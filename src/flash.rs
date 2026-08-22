@@ -1246,18 +1246,14 @@ impl FlashPanel {
         self.in_flight_fetch.as_ref().map(|fetch| &fetch.kind)
     }
 
-    /// Searches micropython.org/download/ for boards matching `mcu` and,
-    /// optionally, `vendor` (`SPEC.md` §9).
+    /// Searches micropython.org/download/ for boards matching `mcu`
+    /// (`SPEC.md` §9) --- by MCU alone, so every vendor's boards arrive and
+    /// the results table's `Vendor` column is what tells them apart.
     ///
     /// Moves to [`FlashScreen::OnlineBoards`] right away so the search is
     /// visible as a window --- its own source line and a searching status ---
     /// rather than a silent wait on the menu for results that may never come.
-    pub fn search_online(
-        &mut self,
-        mcu: &str,
-        vendor: Option<&str>,
-        processes: &mut ProcessManager,
-    ) -> Vec<Notice> {
+    pub fn search_online(&mut self, mcu: &str, processes: &mut ProcessManager) -> Vec<Notice> {
         if self.is_busy() {
             return vec![(Level::Warn, "a command is already running".to_string())];
         }
@@ -1268,7 +1264,7 @@ impl FlashPanel {
             )];
         }
 
-        let url = firmware::board_list_url(mcu, vendor);
+        let url = firmware::board_list_url(mcu);
         let command = self.build_curl(curl_commands::fetch_page(&url));
         let id = processes.spawn(command, FETCH_TIMEOUT);
         self.in_flight_fetch = Some(RunningFetch {
@@ -2189,25 +2185,19 @@ mod tests {
         panel.set_curl_tool_path(fake_curl());
         let mut processes = ProcessManager::new();
 
-        panel.search_online("esp32", None, &mut processes);
+        panel.search_online("esp32", &mut processes);
         settle_fetch(&mut panel, &mut processes);
 
         assert_eq!(panel.screen, FlashScreen::OnlineBoards);
         assert_eq!(panel.online_boards.len(), 2);
-    }
-
-    #[test]
-    fn searching_online_narrows_by_vendor() {
-        let fixture = Fixture::new("search-vendor");
-        let mut panel = FlashPanel::new(&fixture.root);
-        panel.set_curl_tool_path(fake_curl());
-        let mut processes = ProcessManager::new();
-
-        panel.search_online("esp32", Some("Espressif"), &mut processes);
-        settle_fetch(&mut panel, &mut processes);
-
-        assert_eq!(panel.online_boards.len(), 1);
-        assert_eq!(panel.online_boards[0].id, "ESP32_GENERIC");
+        // The search narrows by MCU alone, so boards from other vendors
+        // arrive too --- the vendor is a column to choose from, not a filter.
+        assert!(
+            panel
+                .online_boards
+                .iter()
+                .any(|board| board.vendor != "Espressif")
+        );
     }
 
     #[test]
@@ -2217,7 +2207,7 @@ mod tests {
         panel.set_curl_tool_path(fake_curl());
         let mut processes = ProcessManager::new();
 
-        let notices = panel.search_online("esp32", None, &mut processes);
+        let notices = panel.search_online("esp32", &mut processes);
         assert!(
             notices.is_empty(),
             "a started search has nothing to say yet"
@@ -2250,7 +2240,7 @@ mod tests {
         panel.set_curl_tool_path(fake_curl());
         let mut processes = ProcessManager::new();
 
-        panel.search_online("esp32c3", None, &mut processes);
+        panel.search_online("esp32c3", &mut processes);
         assert_eq!(panel.activity(), Some(Activity::Search));
         assert!(
             matches!(panel.pane_actions().last(), Some(FlashPaneAction::Stop)),
@@ -2295,7 +2285,7 @@ mod tests {
         panel.set_curl_tool_path(fixture.root.join("not-curl").display().to_string());
         let mut processes = ProcessManager::new();
 
-        let notices = panel.search_online("esp32", None, &mut processes);
+        let notices = panel.search_online("esp32", &mut processes);
         assert_eq!(panel.screen, FlashScreen::Menu);
         assert!(panel.online_source.is_none());
         assert!(notices.iter().any(|(_, m)| m.contains("curl")));
@@ -2308,7 +2298,7 @@ mod tests {
         panel.set_curl_tool_path(fake_curl());
         let mut processes = ProcessManager::new();
 
-        panel.search_online("esp32c3", None, &mut processes);
+        panel.search_online("esp32c3", &mut processes);
         let update = settle_fetch(&mut panel, &mut processes);
 
         assert_eq!(
@@ -2417,7 +2407,7 @@ mod tests {
         panel.set_curl_tool_path(fake_curl());
         let mut processes = ProcessManager::new();
 
-        panel.search_online("esp32", None, &mut processes);
+        panel.search_online("esp32", &mut processes);
         assert!(panel.is_busy());
 
         let notices = panel.run(FlashAction::ChipInfo, &mut processes, None);

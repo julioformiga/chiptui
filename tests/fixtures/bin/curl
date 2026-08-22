@@ -22,17 +22,15 @@ for arg in "$@"; do
 done
 
 case "$url" in
+    *"mcu=esp32&"*|*"mcu=esp32?"*)
+        # The search narrows by MCU alone: any extra query parameter is a
+        # wrong invocation and must fail loudly, not serve canned boards.
+        echo "curl: fake rejects narrowed queries: $url" >&2
+        exit 1
+        ;;
     *"mcu=esp32c3"*)
         # Deliberately empty: exercises the "no boards found" path.
         exit 0
-        ;;
-    *"mcu=esp32&vendor=Espressif"*)
-        cat <<'EOF'
-<a class="board-card" href="ESP32_GENERIC">
-<div class="board-product">ESP32 / WROOM</div>
-<div class="board-vendor">Espressif</div>
-</a>
-EOF
         ;;
     *"mcu=esp32"*)
         cat <<'EOF'

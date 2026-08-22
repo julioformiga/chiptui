@@ -25,24 +25,9 @@ pub fn label_for(vid_pid: &str) -> Option<&'static str> {
     lookup(KNOWN_VENDORS, vid_pid)
 }
 
-/// `(vid:pid, micropython.org "vendor" filter value)` --- a narrower table
-/// than [`KNOWN_VENDORS`]. Only entries where the USB vid:pid identifies an
-/// actual board vendor belong here: `303a:*` is Espressif's own vendor id,
-/// and `2e8a:0005` is the Raspberry Pi Pico's. A generic USB-serial bridge
-/// (CP210x, FTDI, CH340, CH341) is soldered onto boards from dozens of
-/// unrelated vendors, so treating it as a vendor filter would wrongly narrow
-/// a firmware search away from the real board (`SPEC.md` §9).
-const BOARD_VENDORS: &[(&str, &str)] = &[("303a:", "Espressif"), ("2e8a:0005", "Raspberry Pi")];
-
-/// The micropython.org/download/ `vendor=` filter value for `vid_pid`, if
-/// the id identifies an actual board vendor rather than a bridge chip.
-pub fn board_vendor_for(vid_pid: &str) -> Option<&'static str> {
-    lookup(BOARD_VENDORS, vid_pid)
-}
-
-/// Shared by [`label_for`] and [`board_vendor_for`]: a `303a:` style entry
-/// matches on the vendor id alone (Espressif reassigns the `pid` half across
-/// chip revisions), every other entry matches the full pair.
+/// A `303a:` style entry matches on the vendor id alone (Espressif reassigns
+/// the `pid` half across chip revisions), every other entry matches the full
+/// pair.
 fn lookup(table: &[(&'static str, &'static str)], vid_pid: &str) -> Option<&'static str> {
     let vid_pid = vid_pid.to_ascii_lowercase();
     table
@@ -81,24 +66,5 @@ mod tests {
     #[test]
     fn unknown_vendors_are_not_a_match() {
         assert_eq!(label_for("1234:5678"), None);
-    }
-
-    #[test]
-    fn board_vendor_recognises_real_board_vendors() {
-        assert_eq!(board_vendor_for("303a:1001"), Some("Espressif"));
-        assert_eq!(board_vendor_for("2e8a:0005"), Some("Raspberry Pi"));
-    }
-
-    #[test]
-    fn board_vendor_excludes_generic_bridge_chips() {
-        // These are soldered onto boards from many unrelated vendors, so
-        // treating them as a vendor filter would wrongly narrow a search.
-        for bridge_vid_pid in ["10c4:ea60", "0403:6001", "1a86:7523", "1a86:55d4"] {
-            assert_eq!(
-                board_vendor_for(bridge_vid_pid),
-                None,
-                "{bridge_vid_pid} is a bridge chip, not a board vendor"
-            );
-        }
     }
 }

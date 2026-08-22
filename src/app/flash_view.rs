@@ -226,8 +226,8 @@ impl App {
     }
 
     /// Searches micropython.org/download/ for the currently known chip
-    /// (`SPEC.md` §9), narrowed by the selected device's board vendor when
-    /// its vid:pid identifies one (`DeviceInfo::board_vendor`). Local
+    /// (`SPEC.md` §9) --- by MCU alone, so every vendor's boards arrive and
+    /// the selection table's `Vendor` column tells them apart. Local
     /// candidates are re-discovered first so the search window's
     /// local-folder note starts truthful, and the source URL is logged so
     /// the feed's origin is on record outside the window too.
@@ -245,10 +245,6 @@ impl App {
                 .warn("no chip known yet --- connect the board or pick one in Options first");
             return;
         };
-        let vendor = self
-            .devices
-            .selected()
-            .and_then(|device| device.board_vendor());
         // Refresh the local candidates so the search window's local-folder
         // note starts truthful (the `s` key can arrive before any discovery
         // ever ran). Silent by design: every other path here (write/flash,
@@ -260,7 +256,7 @@ impl App {
             .into_iter()
             .filter(|(level, _)| *level == crate::logs::Level::Error)
             .collect::<Vec<_>>();
-        notices.extend(flash.search_online(mcu, vendor, &mut self.processes));
+        notices.extend(flash.search_online(mcu, &mut self.processes));
         let source = flash.online_source.clone();
         self.flash = Some(flash);
         for (level, message) in notices {

@@ -75,13 +75,6 @@ impl DeviceInfo {
     pub fn vendor(&self) -> Option<&'static str> {
         vendor::label_for(&self.vid_pid)
     }
-
-    /// The micropython.org/download/ `vendor=` filter value for this device,
-    /// if its vid:pid identifies an actual board vendor rather than a
-    /// generic USB-serial bridge chip (`SPEC.md` §9).
-    pub fn board_vendor(&self) -> Option<&'static str> {
-        vendor::board_vendor_for(&self.vid_pid)
-    }
 }
 
 /// Whether user code is believed to be running on the selected device.
@@ -457,18 +450,6 @@ mod tests {
 
         assert_eq!(state.devices()[0].port, "/dev/ttyACM0");
         assert_eq!(state.devices()[1].port, "/dev/ttyUSB0");
-    }
-
-    #[test]
-    fn board_vendor_is_narrower_than_the_display_label() {
-        let espressif = device_with_vid("/dev/ttyACM0", "303a:1001");
-        assert_eq!(espressif.board_vendor(), Some("Espressif"));
-
-        // CP210x is a bridge chip used by many unrelated boards: it gets a
-        // display label but no board-vendor filter value.
-        let bridge = device_with_vid("/dev/ttyUSB0", "10c4:ea60");
-        assert!(bridge.vendor().is_some());
-        assert_eq!(bridge.board_vendor(), None);
     }
 
     #[test]

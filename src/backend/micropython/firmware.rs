@@ -60,27 +60,17 @@ impl FirmwareKind {
     }
 }
 
-/// The URL for a board-list search, narrowed by MCU and, optionally, board
-/// vendor (`ChipFamily::micropython_mcu_filter`, `DeviceInfo::board_vendor`).
-pub fn board_list_url(mcu: &str, vendor: Option<&str>) -> String {
-    let mut url = format!("{BASE_URL}/download/?mcu={mcu}");
-    if let Some(vendor) = vendor {
-        url.push_str("&vendor=");
-        url.push_str(&encode_query_value(vendor));
-    }
-    url
+/// The URL for a board-list search, narrowed by MCU alone
+/// (`ChipFamily::micropython_mcu_filter`). The vendor is not a query
+/// filter anymore: without it the page lists every board for the MCU, and
+/// the selection table's `Vendor` column is what tells them apart.
+pub fn board_list_url(mcu: &str) -> String {
+    format!("{BASE_URL}/download/?mcu={mcu}")
 }
 
 /// The URL for one board's firmware page.
 pub fn board_page_url(board_id: &str) -> String {
     format!("{BASE_URL}/download/{board_id}/")
-}
-
-/// Percent-encodes a query value. Only handles the one character any vendor
-/// name in the site's own filter list actually contains --- not worth a
-/// `url`/`percent-encoding` dependency for a single character.
-fn encode_query_value(value: &str) -> String {
-    value.replace(' ', "%20")
 }
 
 /// Reads every `<a class="board-card" href="ID">...<div class="board-product">
@@ -222,24 +212,14 @@ mod tests {
 
     const DOWNLOAD_ESP32: &str =
         include_str!("../../../tests/fixtures/html/micropython_download_esp32.html");
-    const DOWNLOAD_ESP32_ESPRESSIF: &str =
-        include_str!("../../../tests/fixtures/html/micropython_download_esp32_espressif.html");
     const BOARD_ESP32_GENERIC: &str =
         include_str!("../../../tests/fixtures/html/micropython_board_esp32_generic.html");
 
     #[test]
-    fn board_list_url_omits_vendor_when_absent() {
+    fn board_list_url_narrows_by_mcu_alone() {
         assert_eq!(
-            board_list_url("esp32", None),
+            board_list_url("esp32"),
             "https://micropython.org/download/?mcu=esp32"
-        );
-    }
-
-    #[test]
-    fn board_list_url_encodes_a_space_in_the_vendor() {
-        assert_eq!(
-            board_list_url("rp2040", Some("Raspberry Pi")),
-            "https://micropython.org/download/?mcu=rp2040&vendor=Raspberry%20Pi"
         );
     }
 
@@ -261,19 +241,6 @@ mod tests {
             vendor: "Espressif".to_string(),
         }));
         assert!(boards.iter().any(|b| b.vendor == "Olimex"));
-    }
-
-    #[test]
-    fn a_vendor_filtered_search_narrows_to_one_board() {
-        let boards = parse_board_list(DOWNLOAD_ESP32_ESPRESSIF);
-        assert_eq!(
-            boards,
-            vec![BoardCandidate {
-                id: "ESP32_GENERIC".to_string(),
-                product: "ESP32 / WROOM".to_string(),
-                vendor: "Espressif".to_string(),
-            }]
-        );
     }
 
     #[test]
