@@ -89,8 +89,9 @@ direct download URL is pasted with `u` from the search windows --- over the
 same reserved three-row footer, `■ Stop` as its own half-width box while a command runs,
 the state line with a live counter/last report), row 2 sized to the stack whenever the strip
 exists --- both tabs hold that height, so flipping Files/Actions (from anywhere, via the
-chord) never reflows the rows below (`row2_content_height`, which falls back to
-`FlashAction::ALL`'s count when no panel exists yet). A started command keeps focus on the pane
+chord) never reflows the rows below (`row2_content_height`, which applies the same stack
+formula over `FlashAction::ALL`'s rows when no panel exists yet, so the height is right from
+the first frame). A started command keeps focus on the pane
 with the cursor
 parked on `Stop` (the Zephyr rule; `show_flash_in_monitor` focuses the Monitor tab only when
 the run started from a dialog), and a finished one lands back on its own row with a
@@ -200,7 +201,11 @@ half: it resolves the Zephyr *installation* (`src/backend/zephyr/workspace.rs`) 
 configuration and nowhere else --- `chiptui.toml`'s `[zephyr] workspace`, then the user
 config `~/.config/chiptui/config.toml` (both parsed by `src/settings.rs`); no directory
 conventions, no `$ZEPHYR_BASE`. Startup focus lands on this pane (`App::place_startup_focus`, after
-`maybe_scan_devices` in `main.rs`): the environment questions come first. When nothing is
+`maybe_scan_devices` in `main.rs`): the environment questions come first --- unless the device pane
+carries the Project actions strip (MicroPython), which starts there instead: the tab's stack sizes
+the row, its panel is created (no board plugged in means no background query ever will), and the
+empty-project prompt's answer (`apply_project_setup`) places focus the same way, being the
+backend's first entry too. When nothing is
 configured, `main.rs` calls
 `maybe_open_workspace_picker` right after: `Overlay::DirPicker` is a real
 filesystem browser (`workspace::dir_rows`, starting at `$HOME`) where the user navigates

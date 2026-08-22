@@ -231,12 +231,13 @@ fn row2_content_height(app: &App) -> u16 {
     // it, and `Stop` is pinned in the reserved footer rather than the
     // stack, so busy does not change the number either.
     let actions = if app.device_actions_tab_available() {
-        app.flash
-            .as_ref()
-            .map_or(FlashAction::ALL.len() as u16, |flash| {
-                let mains = flash.pane_actions().len() - usize::from(flash.is_busy());
-                (2 * mains + 1 + 3) as u16
-            })
+        // The no-panel fallback goes through the same stack formula: the
+        // row is sized for the stack the first entry onto the tab will
+        // draw, so creating the panel must not reflow the rows below.
+        let mains = app.flash.as_ref().map_or(FlashAction::ALL.len(), |flash| {
+            flash.pane_actions().len() - usize::from(flash.is_busy())
+        });
+        (2 * mains + 1 + 3) as u16
     } else {
         0
     };

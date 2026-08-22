@@ -862,6 +862,41 @@ fn app_in_actions_tab(project: &Project) -> App {
     app
 }
 
+/// Entering a MicroPython backend for the first time starts on the Project
+/// actions tab, not the files columns: the row is sized for that tab's stack
+/// and its buttons are the backend's front door. Both first-entry doors agree
+/// --- the startup route's `place_startup_focus` and the empty-project
+/// prompt's answer --- and the panel exists from the first frame because no
+/// background query creates it while no board is plugged in.
+#[test]
+fn entering_a_micropython_backend_starts_on_the_actions_tab() {
+    let project = Project::new("startup-actions-tab");
+    let mut app = hermetic_app(&project.root);
+    app.bootstrap();
+    app.manager.set_override(Some(BackendKind::MicroPython));
+    app.maybe_scan_devices();
+    app.place_startup_focus();
+
+    assert_eq!(app.focus, Focus::FilesDevice);
+    assert!(app.device_actions_tab_active());
+    assert!(app.flash.is_some(), "the tab has a panel to draw");
+
+    // The prompt's answer lands there too: the app had no backend before
+    // it, so there is no focus worth keeping.
+    let project = Project::new("prompt-actions-tab");
+    let mut app = hermetic_app(&project.root);
+    app.bootstrap();
+    app.maybe_open_project_setup();
+    assert_eq!(
+        app.overlay,
+        Some(Overlay::ProjectSetup { selected: 0 }),
+        "the empty directory prompts for its backend"
+    );
+    app.handle(key(KeyCode::Enter)); // MicroPython is the first option
+    assert_eq!(app.focus, Focus::FilesDevice);
+    assert!(app.device_actions_tab_active());
+}
+
 #[test]
 fn x_switches_the_device_pane_to_the_actions_tab() {
     let project = Project::new("pane-open");
@@ -1007,6 +1042,40 @@ fn the_two_device_tabs_hold_the_same_row_height() {
     assert_eq!(
         actions, files,
         "switching the tabs must not move the device pane or the rows below it"
+    );
+}
+
+/// The strip sizes row 2 from the moment it exists, with no flash panel
+/// yet: the row must already hold the height the Actions tab's stack will
+/// need, so the first entry onto the tab (`x`) draws in place instead of
+/// snapping the whole dashboard taller.
+#[test]
+fn the_row_holds_the_stack_height_before_the_panel_exists() {
+    let project = Project::new("pane-height-before-panel");
+    let mut app = hermetic_app(&project.root);
+    app.bootstrap();
+    app.manager.set_override(Some(BackendKind::MicroPython));
+    app.maybe_scan_devices();
+
+    let strip_to_log = |app: &mut App| -> usize {
+        let frame = render(app, 110, 40);
+        let device = frame
+            .lines()
+            .position(|line| line.contains("↯ Actions • ▣ Device Files"))
+            .expect("the device pane's strip");
+        let log = frame
+            .lines()
+            .position(|line| line.contains("▤ Log • ◉ Monitor"))
+            .expect("row 3's strip");
+        log - device
+    };
+
+    let before = strip_to_log(&mut app);
+    app.handle(key(KeyCode::Char('x')));
+    let after = strip_to_log(&mut app);
+    assert_eq!(
+        before, after,
+        "entering the Actions tab must not change the row's height"
     );
 }
 

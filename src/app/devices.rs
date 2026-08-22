@@ -13,7 +13,7 @@ use crate::device::{DiscoveryState, ScriptState};
 use crate::firmware_id::{FirmwareVerdict, FlashFirmware};
 
 use super::flash_view::{FirmwareCheck, FirmwareHold};
-use super::{App, DevicePaneTab, LogTab, MonitorSource, Overlay};
+use super::{App, DevicePaneTab, Focus, LogTab, MonitorSource, Overlay};
 
 impl App {
     /// Ensures row 2's panes exist and the right scans start, without
@@ -42,10 +42,21 @@ impl App {
     /// tour can start on the workspace pane --- a build backend's
     /// environment questions come first --- instead of wherever the
     /// pre-panel clamps left the focus (`App::detect` runs before any pane
-    /// exists, and clamps an unknown backend onto `Logs`). Startup-only:
-    /// later backend switches keep the user's focus where it is, clamped
-    /// to a pane that still exists.
+    /// exists, and clamps an unknown backend onto `Logs`). A backend whose
+    /// device pane carries the Project actions strip starts there instead
+    /// (MicroPython): the row is sized for that tab's stack, so the
+    /// dashboard opens at the height it will keep, and the buttons are the
+    /// backend's front door. Entering the tab here is what either door
+    /// onto it does (`x`, the strip's arrows) --- the panel is created
+    /// because with no board plugged in no background query ever will.
+    /// Startup-only: later backend switches keep the user's focus where it
+    /// is, clamped to a pane that still exists.
     pub fn place_startup_focus(&mut self) {
+        if self.device_actions_tab_available() {
+            self.show_device_actions_tab();
+            self.focus = Focus::FilesDevice;
+            return;
+        }
         self.focus = self.fallback_pane();
     }
 
@@ -651,7 +662,11 @@ impl App {
         self.ensure_workspace_panel();
         self.report_tools();
         self.maybe_scan_devices();
-        self.clamp_focus();
+        // The prompt's answer is this backend's first entry: place focus
+        // the way the startup route does (the actions tab for a strip
+        // backend, the workspace pane for a build one) instead of merely
+        // clamping --- the user has not navigated anywhere yet to keep.
+        self.place_startup_focus();
     }
 
     /// Starts an interactive device monitor.

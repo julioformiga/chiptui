@@ -643,7 +643,10 @@ fn switching_to_micropython_hides_the_panel_and_reclamps_focus() {
     app.focus = Focus::Build;
 
     // The real path: the empty-project prompt's answer applies the backend
-    // and re-clamps (MicroPython is the prompt's first row).
+    // and places focus (MicroPython is the prompt's first row). The answer
+    // is the backend's first entry, so it lands on the device pane's
+    // Project actions tab --- a pane that exists --- rather than merely
+    // clamping off the build panel that is gone.
     app.overlay = Some(Overlay::ProjectSetup { selected: 0 });
     app.handle(key(KeyCode::Enter));
 
@@ -651,8 +654,12 @@ fn switching_to_micropython_hides_the_panel_and_reclamps_focus() {
     assert!(!app.build_pane_visible());
     assert_eq!(
         app.focus,
-        Focus::FilesLocal,
-        "focus must fall back to the local pane, not a pane that is gone"
+        Focus::FilesDevice,
+        "focus must land on a pane that exists, not one that is gone"
+    );
+    assert!(
+        app.device_actions_tab_active(),
+        "a MicroPython first entry starts on its actions tab"
     );
 }
 
