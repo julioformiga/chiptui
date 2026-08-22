@@ -3,18 +3,19 @@
 //! example's gradient). The buttons are stacked in one bordered group that
 //! shares its top and bottom rules --- drawn in the theme's `muted` color,
 //! quiet enough that the frame never competes with a selected row for
-//! attention while still following the active theme --- one centered label
-//! per row, with a divider between each pair: N buttons cost 2N+1 lines, so
+//! attention while still following the active theme --- one left-aligned
+//! label per row, one indent in, so the icons line up as a single column
+//! down the stack whatever the label lengths, with a divider between each
+//! pair: N buttons cost 2N+1 lines, so
 //! a pane full of them still fits vertically. Each button's icon label is
 //! bold in the theme's `fg` while the action can run, `muted` while it
 //! waits for the checklist's answers.
 //!
 //! A button may also carry a muted second line ([`Button::detail`]), which
-//! makes it two rows tall and left-aligned. Nothing in a *pane* uses that
-//! --- their rows stay bare, per `SPEC.md` §15 --- it is for a menu, where
-//! the reader is choosing between actions rather than recognising one.
-//! [`stack_height`] therefore sums the buttons' rows rather than counting
-//! the buttons.
+//! makes it two rows tall. Nothing in a *pane* uses that --- their rows stay
+//! bare, per `SPEC.md` §15 --- it is for a menu, where the reader is choosing
+//! between actions rather than recognising one. [`stack_height`] therefore
+//! sums the buttons' rows rather than counting the buttons.
 //!
 //! The selection highlight is `palette.selection`/`palette.fg` --- an
 //! explicit, deterministic fill instead of `Modifier::REVERSED` (which this
@@ -40,8 +41,8 @@ use ratatui::widgets::Widget;
 
 use crate::ui::{Palette, muted_style};
 
-/// How far a detailed button's label row is indented, in columns: one, so
-/// the icon does not sit flush against the frame's rule.
+/// How far a button's label row is indented, in columns: one, so the
+/// icon does not sit flush against the frame's rule.
 const LABEL_INDENT: usize = 1;
 
 /// How far its detail row is indented: past that leading space and the
@@ -92,14 +93,9 @@ impl Button {
     }
 
     /// Adds a muted second line explaining the action --- what it does, or
-    /// the literal command it runs.
-    ///
-    /// A button with a detail costs two rows and draws **left-aligned**
-    /// rather than centered: a centered pair reads as two unrelated strings,
-    /// and centering labels of different lengths scatters their icons
-    /// instead of lining them up as a column. Panes keep the one-row
-    /// centered form; this is for a menu, where the reader is choosing
-    /// between actions rather than recognising one they already know.
+    /// the literal command it runs. A button with a detail costs two rows;
+    /// it is for a menu, where the reader is choosing between actions
+    /// rather than recognising one they already know.
     pub fn detail(mut self, detail: impl Into<String>) -> Self {
         self.detail = Some(detail.into());
         self
@@ -186,7 +182,7 @@ impl Widget for ButtonStack {
             // buffer like any other row.
             for (offset, button) in self.buttons.iter().enumerate() {
                 let y = area.y + offset as u16;
-                let content = icon_content(button.icon.map(|(glyph, _)| glyph), &button.label, 1);
+                let content = icon_content(button.icon.map(|(glyph, _)| glyph), &button.label);
                 let body = truncate(&content, width);
                 let spans = icon_body_spans(
                     body,
@@ -214,23 +210,14 @@ impl Widget for ButtonStack {
         let last = self.buttons.len() - 1;
         for (index, button) in self.buttons.iter().enumerate() {
             let top = y;
-            // Centered while the label stands alone; left-aligned once it
-            // has a detail under it, so the two rows read as one block and
-            // the icons line up down the stack (see `Button::detail`).
+            // Left-aligned, one indent in, whether the label stands alone
+            // or carries a detail under it: the icons line up as one column
+            // down the stack instead of scattering with the label lengths.
             let icon_glyph = button.icon.map(|(glyph, _)| glyph);
-            let (body, icon_at) = if button.detail.is_some() {
-                let content = icon_content(icon_glyph, &button.label, 2);
-                let truncated = truncate(&content, inner.saturating_sub(LABEL_INDENT));
-                (
-                    pad_left(&format!("{}{truncated}", " ".repeat(LABEL_INDENT)), inner),
-                    LABEL_INDENT,
-                )
-            } else {
-                let content = icon_content(icon_glyph, &button.label, 1);
-                let truncated = truncate(&content, inner);
-                let left = (inner - truncated.chars().count()) / 2;
-                (center(&truncated, inner), left)
-            };
+            let content = icon_content(icon_glyph, &button.label);
+            let truncated = truncate(&content, inner.saturating_sub(LABEL_INDENT));
+            let body = pad_left(&format!("{}{truncated}", " ".repeat(LABEL_INDENT)), inner);
+            let icon_at = LABEL_INDENT;
             let mut spans = vec![Span::styled("│", frame)];
             spans.extend(icon_body_spans(
                 body,
@@ -303,17 +290,6 @@ fn highlight_selected(buf: &mut Buffer, area: Rect, row: Rect, selected: bool, p
     buf.set_style(row, Style::new().bg(palette.selection).fg(palette.fg));
 }
 
-/// `text` centered in `width` columns, padded both sides.
-fn center(text: &str, width: usize) -> String {
-    let used = text.chars().count();
-    let left = (width - used) / 2;
-    format!(
-        "{}{text}{}",
-        " ".repeat(left),
-        " ".repeat(width - used - left)
-    )
-}
-
 /// `text` at the left of `width` columns, padded out on the right so the
 /// row still paints edge to edge (which is what lets the selection band
 /// cover it whole).
@@ -322,14 +298,14 @@ fn pad_left(text: &str, width: usize) -> String {
     format!("{text}{}", " ".repeat(width.saturating_sub(used)))
 }
 
-/// The label text to lay out and measure: `<icon><gap-spaces><label>` when
-/// an icon is set, `label` alone otherwise. `gap` is 1 for a centered row's
-/// `<icon> <label>` and 2 for a detailed row's `<icon>  <label>` (the module
-/// doc's convention, kept for the extra column [`DETAIL_INDENT`] already
-/// reserves for it).
-fn icon_content(icon: Option<&str>, label: &str, gap: usize) -> String {
+/// The label text to lay out and measure: `<icon>  <label>` (two spaces,
+/// one breathing column between the glyph's color and the text) when an
+/// icon is set, `label` alone otherwise. That two-space gap is what
+/// [`DETAIL_INDENT`] counts past the icon so a detail line starts under
+/// the label's *text*.
+fn icon_content(icon: Option<&str>, label: &str) -> String {
     match icon {
-        Some(glyph) => format!("{glyph}{}{label}", " ".repeat(gap)),
+        Some(glyph) => format!("{glyph}  {label}"),
         None => label.to_string(),
     }
 }
@@ -476,21 +452,29 @@ mod tests {
 
     #[test]
     fn buttons_stack_in_one_shared_border_group_with_dividers() {
+        // The icon comes from `Button::icon` (as every pane's rows do), whose
+        // two-space gap to the label is part of the widget, not the string.
+        let palette = palette();
         assert_eq!(
-            render(20, &[Button::new("▶ Build"), Button::new("× Clean")]),
+            render(
+                20,
+                &[
+                    Button::new("Build").icon("▶", palette.fg),
+                    Button::new("Clean").icon("×", palette.fg),
+                ]
+            ),
             "╭──────────────────╮\n\
-             │     ▶ Build      │\n\
+             │ ▶  Build         │\n\
              ├──────────────────┤\n\
-             │     × Clean      │\n\
+             │ ×  Clean         │\n\
              ╰──────────────────╯"
         );
     }
 
     #[test]
-    fn a_detail_adds_a_muted_second_line_and_left_aligns_the_pair() {
-        // Left-aligned, and the detail starts under the label's *text*, not
-        // under its icon --- which is what makes a column of icons out of
-        // labels of different lengths.
+    fn a_detail_adds_a_muted_second_line_under_the_labels_text() {
+        // The detail starts under the label's *text*, not under its icon
+        // --- so the icon column and the text column each stay one line.
         assert_eq!(
             render(
                 34,
@@ -571,8 +555,8 @@ mod tests {
     #[test]
     fn a_long_label_is_clipped_to_the_group() {
         assert_eq!(
-            render(10, &[Button::new("⟳ Rebuilding")]),
-            "╭────────╮\n│⟳ Rebuil│\n╰────────╯"
+            render(10, &[Button::new("Rebuilding").icon("⟳", palette().fg)]),
+            "╭────────╮\n│ ⟳  Rebu│\n╰────────╯"
         );
     }
 

@@ -732,7 +732,7 @@ fn the_modal_is_legible_at_the_declared_minimum() {
         "python",
         "Find Python 3.12",
         "Install the SDK",
-        "▶ Install",
+        "▶  Install",
         "prerequisites missing",
     ] {
         assert!(

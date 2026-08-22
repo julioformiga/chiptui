@@ -383,7 +383,7 @@ fn zephyr_shows_the_workspace_and_build_panes_in_row_two() {
         "the project panel must be titled as the actions pane:\n{frame}"
     );
     assert!(
-        frame.contains("▶ Build"),
+        frame.contains("▶  Build"),
         "the lifecycle buttons must stay visible:\n{frame}"
     );
     assert!(
@@ -786,7 +786,7 @@ fn the_declared_minimum_fits_the_whole_dashboard() {
     // last button, or the group is drawn a row short of its frame.
     let flash_row = lines
         .iter()
-        .position(|line| line.contains("⇧ Flash"))
+        .position(|line| line.contains("⇧  Flash"))
         .expect("the Flash button renders");
     assert!(
         lines[flash_row + 1].contains('╰'),

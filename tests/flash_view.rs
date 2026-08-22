@@ -878,9 +878,9 @@ fn x_switches_the_device_pane_to_the_actions_tab() {
         frame.contains("↯ Actions • ▣ Device Files"),
         "missing the pane's tab strip:\n{frame}"
     );
-    assert!(frame.contains("ℹ Flash information"), "{frame}");
-    assert!(frame.contains("⇪ Write / flash firmware"), "{frame}");
-    assert!(frame.contains("⌕ Search firmware online"), "{frame}");
+    assert!(frame.contains("ℹ  Flash information"), "{frame}");
+    assert!(frame.contains("⇪  Write / flash firmware"), "{frame}");
+    assert!(frame.contains("⌕  Search firmware online"), "{frame}");
     // The chip identity is read in the background of every device
     // selection, and a direct URL is pasted from the search window: neither
     // is a button here.
@@ -891,7 +891,7 @@ fn x_switches_the_device_pane_to_the_actions_tab() {
         "the reserved state line before any run:\n{frame}"
     );
     assert!(
-        !frame.contains("■ Stop"),
+        !frame.contains("■  Stop"),
         "Stop appears only while a command runs:\n{frame}"
     );
 }
@@ -1033,7 +1033,7 @@ fn the_actions_tab_keeps_focus_and_parks_the_cursor_on_stop() {
     assert_eq!(app.view, View::Dashboard);
     assert_eq!(app.focus, Focus::FilesDevice);
     let frame = render(&mut app, 110, 40);
-    assert!(frame.contains("■ Stop"), "{frame}");
+    assert!(frame.contains("■  Stop"), "{frame}");
 
     settle(&mut app);
     assert!(
@@ -1051,7 +1051,7 @@ fn the_actions_tab_keeps_focus_and_parks_the_cursor_on_stop() {
         frame.contains("Reset ok in"),
         "the report line names the finished run:\n{frame}"
     );
-    assert!(!frame.contains("■ Stop"), "{frame}");
+    assert!(!frame.contains("■  Stop"), "{frame}");
 }
 
 #[test]
@@ -1337,8 +1337,8 @@ fn the_arrows_create_the_flash_panel_the_tab_draws() {
     // The row is sized to the button stack, so the buttons are actually
     // there to press --- a panel-less tab collapsed row 2 to its borders.
     let frame = render(&mut app, 110, 40);
-    assert!(frame.contains("ℹ Flash information"), "{frame}");
-    assert!(frame.contains("⌕ Search firmware online"), "{frame}");
+    assert!(frame.contains("ℹ  Flash information"), "{frame}");
+    assert!(frame.contains("⌕  Search firmware online"), "{frame}");
     assert!(frame.contains("no command yet"), "{frame}");
 }
 
@@ -1367,7 +1367,7 @@ fn the_tab_names_a_running_fetch_and_stops_it() {
         frame.contains("searching online…"),
         "the dimmed buttons say what they are waiting for:\n{frame}"
     );
-    assert!(frame.contains("■ Stop"), "{frame}");
+    assert!(frame.contains("■  Stop"), "{frame}");
 
     app.handle(key(KeyCode::End)); // the Stop row
     app.handle(key(KeyCode::Enter));
@@ -1377,7 +1377,7 @@ fn the_tab_names_a_running_fetch_and_stops_it() {
         "the Stop reached the fetch"
     );
     let frame = render(&mut app, 110, 40);
-    assert!(!frame.contains("■ Stop"), "{frame}");
+    assert!(!frame.contains("■  Stop"), "{frame}");
 }
 
 #[test]

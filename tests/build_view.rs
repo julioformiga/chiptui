@@ -154,7 +154,7 @@ fn the_panel_appears_and_is_a_focus_stop_for_a_build_backend() {
         "cached board not shown:\n{frame}"
     );
     assert!(
-        frame.contains("× Clean"),
+        frame.contains("×  Clean"),
         "the lifecycle buttons must show:\n{frame}"
     );
     assert!(
@@ -440,7 +440,7 @@ fn stop_cancels_the_running_command() {
     let lines: Vec<&str> = frame.lines().collect();
     let stop_idx = lines
         .iter()
-        .position(|line| line.contains("■ Stop"))
+        .position(|line| line.contains("■  Stop"))
         .unwrap_or_else(|| panic!("no stop box:\n{frame}"));
     assert!(
         lines[stop_idx - 1].contains("╭"),
@@ -450,7 +450,7 @@ fn stop_cancels_the_running_command() {
         lines[stop_idx - 2].contains("╰"),
         "the stack's bottom rule must sit directly above the box --- no blank row between Flash and Stop:\n{frame}"
     );
-    let stop_x = lines[stop_idx].find("■ Stop").unwrap();
+    let stop_x = lines[stop_idx].find("■  Stop").unwrap();
     assert!(
         stop_x > 75,
         "the Stop box must sit in the pane's right half ({stop_x}):\n{frame}"
@@ -489,11 +489,11 @@ fn stop_cancels_the_running_command() {
     // Idle again: the box is gone, the stack whole.
     let frame = render(&mut app, 100, 32);
     assert!(
-        !frame.contains("■ Stop"),
+        !frame.contains("■  Stop"),
         "no Stop box may show while idle:\n{frame}"
     );
     assert!(
-        frame.contains("⇧ Flash"),
+        frame.contains("⇧  Flash"),
         "the stack's tail must be back:\n{frame}"
     );
 }
@@ -538,7 +538,7 @@ fn the_live_counter_survives_the_declared_minimum_width() {
             "the elapsed counter must survive {width} columns:\n{state}"
         );
         assert!(
-            state.contains("■ Stop"),
+            state.contains("■  Stop"),
             "the Stop box must still share the row at {width} columns:\n{state}"
         );
     }
@@ -1885,7 +1885,7 @@ fn an_unconfigured_pane_shows_the_open_checklist_and_dim_buttons() {
         "the second question must show:\n{frame}"
     );
     assert!(
-        frame.contains("⇩ Install Zephyr"),
+        frame.contains("⇩  Install Zephyr"),
         "the environment button must stay visible:\n{frame}"
     );
 }
