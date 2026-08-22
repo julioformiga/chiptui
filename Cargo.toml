@@ -79,8 +79,16 @@ tui-term = "0.3.4"
 # only the direct child is signalled, so `Stop` reported the dashboard
 # cancelled while it kept working in the background. std can put a child in
 # its own process group (`CommandExt::process_group`) but has no API to
-# signal a group --- `libc::kill(-pgid, SIGKILL)` is that one call. Already
-# in the tree transitively via portable-pty, so it costs no extra compile.
+# signal a group --- `libc::kill(-pgid, SIGTERM/SIGKILL)` is that one call.
+# Already in the tree transitively via portable-pty, so it costs no extra
+# compile.
+libc = "0.2"
+
+[target.'cfg(unix)'.dev-dependencies]
+# The tree-kill tests ask "is this pid still alive?", which is the same
+# `kill` call with signal 0. An integration test links the crate, not the
+# crate's dependencies, so it needs its own entry --- and the alternative,
+# probing `/proc/<pid>`, silently limits those tests to Linux.
 libc = "0.2"
 
 [profile.release]

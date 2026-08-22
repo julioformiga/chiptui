@@ -11,7 +11,12 @@
 //!
 //! Cancellation kills the child's whole process group, not just the child:
 //! `west`/`mpremote` spawn helpers whose survival past the parent's death
-//! would be a "cancelled but still running" command. See [`kill_tree`].
+//! would be a "cancelled but still running" command. It asks before it
+//! insists (`SIGTERM`, then `SIGKILL` a grace later), so a tool with state
+//! on disk or on a board gets to close it. See [`signal_group`] and
+//! [`supervise`]; teardown runs the same shape synchronously, from
+//! [`ProcessManager::shutdown`], because at exit no supervisor thread is
+//! guaranteed another turn.
 //!
 //! Everything reaches the UI through one channel, drained once per frame by
 //! [`ProcessManager::drain`] --- no locks and no async runtime (`AGENTS.md`:
@@ -31,6 +36,17 @@ pub use command::Command;
 
 /// How often the supervisor checks for exit, cancellation and timeout.
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
+
+/// How long a cancelled or timed-out child gets to wind up on `SIGTERM`
+/// before `SIGKILL` (see [`supervise`]). Long enough for a tool to close
+/// what it has open, short enough that `Stop` still feels immediate --- the
+/// pane says "stopping" for this long at most.
+const KILL_GRACE: Duration = Duration::from_millis(250);
+
+/// The same, at teardown ([`ProcessManager::shutdown`]) --- shorter,
+/// because it is spent between the user's last keystroke and the terminal
+/// coming back, and it is a *total* budget rather than per child.
+const SHUTDOWN_GRACE: Duration = Duration::from_millis(200);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ProcessId(u64);
@@ -159,6 +175,14 @@ const DEFAULT_PTY_SIZE: (u16, u16) = (24, 80);
 /// is needed: cancellation is a flag the supervisor polls.
 struct Running {
     cancelled: Arc<AtomicBool>,
+    /// The child's pid, which is also its process-group id (every child is
+    /// spawned as its own group leader --- `Command::to_std`'s
+    /// `process_group(0)`, and portable-pty's `setsid` for a PTY child).
+    /// Kept here, beside the `Child` the supervisor thread owns, because
+    /// [`ProcessManager::shutdown`] has to reach the group *without* that
+    /// thread: at exit there is no guarantee it will ever be scheduled
+    /// again. `None` when the platform did not report one.
+    pid: Option<u32>,
     stdin_writer: Option<Box<dyn std::io::Write + Send>>,
     /// The PTY's master end, kept alive so the child can be told its window
     /// changed size ([`ProcessManager::resize_pty`]). Dropping it right
@@ -223,6 +247,7 @@ impl ProcessManager {
             id,
             Running {
                 cancelled: Arc::clone(&cancelled),
+                pid: Some(child.id()),
                 stdin_writer: None,
                 master: None,
             },
@@ -358,6 +383,7 @@ impl ProcessManager {
             id,
             Running {
                 cancelled: Arc::clone(&cancelled),
+                pid: child.process_id(),
                 stdin_writer: Some(writer),
                 master: Some(pair.master),
             },
@@ -462,6 +488,52 @@ impl ProcessManager {
         }
     }
 
+    /// Kills every running child *before this process returns* --- the
+    /// teardown path, called from `Drop`.
+    ///
+    /// [`Self::cancel`] cannot do this job: it stores a flag that a
+    /// supervisor thread polls every [`POLL_INTERVAL`], and at exit there is
+    /// no guarantee that thread is ever scheduled again --- `main` returns,
+    /// the process ends, and the threads die with it. Quitting ChipTUI with
+    /// a build running left `west` and its `ninja` behind exactly that way,
+    /// and a `mpremote` outliving the TUI keeps the serial port. Since
+    /// children are no longer in ChipTUI's process group
+    /// (`Command::to_std`), the terminal's own `SIGHUP` no longer cleans up
+    /// for us either.
+    ///
+    /// So this signals the groups itself, from the pids in `running`, with
+    /// the same ask-then-insist shape as [`supervise`] --- bounded by
+    /// [`SHUTDOWN_GRACE`] in total, since nothing here is worth making the
+    /// user wait for. The flags are still raised first, so a supervisor that
+    /// *does* get scheduled reports `Cancelled` rather than a signal death.
+    ///
+    /// What this still cannot cover is everything that never reaches `Drop`:
+    /// a ChipTUI killed outright (`SIGKILL`, or the `SIGHUP` of a closing
+    /// terminal window), and a panic in a release build, which aborts
+    /// (`Cargo.toml`'s `panic = "abort"`) without unwinding. Both would need
+    /// process-global state the signal handler and the panic hook could
+    /// reach --- `terminal::install_panic_hook` restores the terminal from
+    /// exactly such a place --- which is its own change, not this one.
+    pub fn shutdown(&mut self) {
+        self.cancel_all();
+        let pids: Vec<u32> = self.running.values().filter_map(|r| r.pid).collect();
+        if pids.is_empty() {
+            return;
+        }
+        for &pid in &pids {
+            signal_group(pid, Signal::Term);
+        }
+        let deadline = Instant::now() + SHUTDOWN_GRACE;
+        while Instant::now() < deadline && pids.iter().copied().any(group_alive) {
+            thread::sleep(Duration::from_millis(5));
+        }
+        for &pid in &pids {
+            if group_alive(pid) {
+                signal_group(pid, Signal::Kill);
+            }
+        }
+    }
+
     /// Collects everything that arrived since the last call. Never blocks.
     pub fn drain(&mut self) -> Vec<ProcessEvent> {
         let mut events = Vec::new();
@@ -512,8 +584,9 @@ impl Default for ProcessManager {
 
 impl Drop for ProcessManager {
     fn drop(&mut self) {
-        // Never leave a child holding a serial port after the TUI exits.
-        self.cancel_all();
+        // Never leave a child holding a serial port after the TUI exits ---
+        // and `cancel_all` alone never kept that promise, see `shutdown`.
+        self.shutdown();
     }
 }
 
@@ -626,6 +699,14 @@ fn pump_pty<R: Read>(
 }
 
 /// Waits for the child, killing it on cancellation or timeout.
+///
+/// The kill is two phases, not one. [`Signal::Term`] goes out first, so a
+/// tool that cleans up after itself gets to: `esptool` mid-`write-flash` and
+/// `ninja` mid-link both have state on disk (and, for esptool, on a board)
+/// that an unblockable `SIGKILL` leaves half-written. Only a child still
+/// alive [`KILL_GRACE`] later gets [`Signal::Kill`] --- which is also the
+/// direct [`std::process::Child::kill`], the fallback for a platform without
+/// groups and for a child that somehow left its own.
 fn supervise(
     child: &mut std::process::Child,
     cancelled: &AtomicBool,
@@ -633,6 +714,8 @@ fn supervise(
     timeout: Duration,
 ) -> Outcome {
     let mut kill_reason: Option<Outcome> = None;
+    let mut asked_at: Option<Instant> = None;
+    let pid = child.id();
 
     loop {
         if kill_reason.is_none() {
@@ -642,8 +725,16 @@ fn supervise(
                 kill_reason = Some(Outcome::TimedOut);
             }
             if kill_reason.is_some() {
-                kill_tree(child);
+                signal_group(pid, Signal::Term);
+                asked_at = Some(Instant::now());
             }
+        } else if asked_at.is_some_and(|at| at.elapsed() >= KILL_GRACE) {
+            // The grace ran out with the child still here: insist. Clearing
+            // `asked_at` is what keeps this to one escalation --- the loop
+            // keeps spinning until `try_wait` reports the exit.
+            asked_at = None;
+            signal_group(pid, Signal::Kill);
+            let _ = child.kill();
         }
 
         match child.try_wait() {
@@ -664,27 +755,78 @@ fn supervise(
     }
 }
 
-/// Kills the child *and everything it spawned*. A bare [`std::process::Child::kill`]
-/// signals the one pid, and a tool like `west` immediately delegates to
-/// helpers (cmake, ninja, the dashboard generator, the browser) that keep
-/// running --- and keep the pipes open --- after their parent dies: `Stop`
-/// reported the dashboard cancelled while it was still being built in the
-/// background. The piped spawner puts every child in its own process group
-/// (`Command::to_std`), so signalling the group reaches the whole tree.
-/// The direct kill stays as the fallback: on a platform without groups, and
-/// for a child that somehow left its group, it preserves the old behaviour.
-fn kill_tree(child: &mut std::process::Child) {
-    #[cfg(unix)]
-    // The group leader's pid *is* the pgid (`process_group(0)`), and `kill`
-    // fails harmlessly with ESRCH when the group is already gone (a natural
-    // exit racing the cancel).
-    {
-        let pgid = child.id() as libc::pid_t;
-        unsafe {
-            libc::kill(-pgid, libc::SIGKILL);
-        }
+/// What [`signal_group`] sends. Two values, because cancellation is two
+/// phases: ask, then insist (see [`supervise`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Signal {
+    /// "Wind up." Handled by anything that cleans up after itself --- and
+    /// the reason the escalation exists at all.
+    Term,
+    /// "Stop now." Unblockable, so it is the second phase, never the first.
+    Kill,
+}
+
+/// Signals the child's *whole process group*, not just the child.
+///
+/// A bare [`std::process::Child::kill`] reaches the one pid, and a tool like
+/// `west` immediately delegates to helpers (cmake, ninja, the dashboard
+/// generator) that keep running --- and keep the pipes open --- after their
+/// parent dies: `Stop` reported the dashboard cancelled while it was still
+/// being built in the background. Every child is spawned as its own group
+/// leader (`Command::to_std`'s `process_group(0)`; portable-pty's `setsid`
+/// for a PTY child), so its pid *is* the pgid and `kill(-pgid)` reaches the
+/// tree. Already gone fails harmlessly with `ESRCH` --- a natural exit
+/// racing the cancel is not an error.
+///
+/// **Known limitation.** The group is the whole tree, including anything the
+/// tool launched *for the user*: `west build -t dashboard` opens its HTML
+/// report in a browser, and a browser started from scratch (rather than
+/// handing off to a running instance) is a descendant. Stopping the command
+/// while `west` still waits on that launcher ends it too. It is signalled
+/// [`Signal::Term`] first, which is what a browser needs to shut down
+/// cleanly, but it is not spared. Narrowing the kill would need a way to
+/// tell "helper the command owns" from "program the command handed the
+/// user", which nothing here has.
+#[cfg(unix)]
+fn signal_group(pid: u32, signal: Signal) {
+    let Ok(pgid) = libc::pid_t::try_from(pid) else {
+        return;
+    };
+    let signal = match signal {
+        Signal::Term => libc::SIGTERM,
+        Signal::Kill => libc::SIGKILL,
+    };
+    // SAFETY: `kill` takes no pointers and cannot touch this process's
+    // memory. A negative pid addresses the group; every failure mode
+    // (ESRCH, EPERM) is a no-op we deliberately ignore.
+    unsafe {
+        libc::kill(-pgid, signal);
     }
-    let _ = child.kill();
+}
+
+#[cfg(not(unix))]
+fn signal_group(_pid: u32, _signal: Signal) {}
+
+/// Whether anything is left in `pid`'s process group --- signal 0 is the
+/// standard "check, don't send" probe. A group leader that has exited but
+/// has not been reaped yet still answers yes, which is correct for
+/// [`ProcessManager::shutdown`]'s purpose: the supervisor threads are still
+/// running during a drop and reap within [`POLL_INTERVAL`], so the wait
+/// ends as soon as the child is really gone.
+#[cfg(unix)]
+fn group_alive(pid: u32) -> bool {
+    let Ok(pgid) = libc::pid_t::try_from(pid) else {
+        return false;
+    };
+    // SAFETY: as in `signal_group`; signal 0 sends nothing at all.
+    unsafe { libc::kill(-pgid, 0) == 0 }
+}
+
+/// Without process groups there is nothing to wait for: `shutdown` skips
+/// straight to the direct kill.
+#[cfg(not(unix))]
+fn group_alive(_pid: u32) -> bool {
+    false
 }
 
 #[cfg(test)]

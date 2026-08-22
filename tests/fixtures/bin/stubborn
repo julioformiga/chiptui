@@ -1,0 +1,15 @@
+#!/bin/sh
+# Ignores SIGTERM and blocks: for the kill-escalation test.
+#
+# `trap '' TERM` sets the disposition to *ignored*, and an ignored
+# disposition survives exec --- so the `sleep` below inherits it and the
+# whole process group shrugs off a SIGTERM. Only SIGKILL ends this, which
+# is what makes it the honest counterpart to `slow` (which dies on the
+# first signal): together they prove the two phases are really two.
+#
+# The `ready` file in the cwd is the handshake: the trap must be installed
+# before the test cancels, or a SIGTERM racing the setup would kill it
+# early and the elapsed-time assertion would measure nothing.
+trap '' TERM
+echo ready > ready
+sleep 30

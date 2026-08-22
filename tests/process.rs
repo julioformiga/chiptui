@@ -14,6 +14,58 @@ fn fixture(name: &str) -> String {
     format!("{}/tests/fixtures/bin/{name}", env!("CARGO_MANIFEST_DIR"))
 }
 
+/// A temp directory that cleans itself up *even when the test fails* --- a
+/// plain `remove_dir_all` at the end of the body is skipped by the panic
+/// that made it interesting.
+struct Scratch(std::path::PathBuf);
+
+impl Scratch {
+    fn new(tag: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!("chiptui-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        Self(dir)
+    }
+
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Whether `pid` is still around. Signal 0 is the standard "check, don't
+/// send" probe --- and unlike a `/proc/<pid>` lookup it is not Linux-only,
+/// which matters because the code under test is `#[cfg(unix)]`.
+fn alive(pid: u32) -> bool {
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return false;
+    };
+    // SAFETY: `kill` takes no pointers, and signal 0 sends nothing.
+    unsafe { libc::kill(pid, 0) == 0 }
+}
+
+/// Reads a pid a fixture published, waiting for the file to hold a whole
+/// one. Waiting for the file to *exist* is not enough: `echo $! > f`
+/// creates it before it writes it, so an early read returns "" and the
+/// parse panics --- a flake that has nothing to do with the code under test.
+fn wait_for_pid(path: &std::path::Path) -> u32 {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if let Ok(text) = std::fs::read_to_string(path)
+            && let Ok(pid) = text.trim().parse()
+        {
+            return pid;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    panic!("{} never carried a pid", path.display());
+}
+
 /// Collects every event for `id` until it finishes, or panics on timeout.
 fn run_to_completion(processes: &mut ProcessManager, id: ProcessId) -> Vec<ProcessEvent> {
     let deadline = Instant::now() + Duration::from_secs(20);
@@ -165,30 +217,18 @@ fn cancelling_kills_the_whole_process_tree() {
     // parent died, so the panel reported the command cancelled while the
     // real work went on in the background. The spawner fixture reproduces
     // the shape: a grandchild that outlives its blocked parent. The cancel
-    // must reach it too, or the pid it published stays alive in /proc.
-    let dir = std::env::temp_dir().join(format!("chiptui-tree-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    // must reach it too.
+    let dir = Scratch::new("tree");
 
     let mut processes = ProcessManager::new();
     let id = processes.spawn(
-        Command::new(fixture("spawner")).current_dir(&dir),
+        Command::new(fixture("spawner")).current_dir(dir.path()),
         Duration::from_secs(60),
     );
 
-    let pid_file = dir.join("spawner-child.pid");
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while !pid_file.exists() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    let grandchild: u32 = std::fs::read_to_string(&pid_file)
-        .expect("the spawner published its grandchild's pid")
-        .trim()
-        .parse()
-        .expect("a pid");
-    let proc = std::path::PathBuf::from(format!("/proc/{grandchild}"));
+    let grandchild = wait_for_pid(&dir.path().join("spawner-child.pid"));
     assert!(
-        proc.exists(),
+        alive(grandchild),
         "the grandchild must be running before the cancel"
     );
 
@@ -196,16 +236,112 @@ fn cancelling_kills_the_whole_process_tree() {
     let events = run_to_completion(&mut processes, id);
     assert_eq!(outcome(&events), &Outcome::Cancelled);
 
-    // SIGKILL to the group is prompt; the small window covers /proc teardown.
+    // Both `sleep`s die on the SIGTERM that opens the kill, so this is
+    // prompt; the small window covers the reaping.
     let deadline = Instant::now() + Duration::from_secs(2);
-    while proc.exists() && Instant::now() < deadline {
+    while alive(grandchild) && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(10));
     }
     assert!(
-        !proc.exists(),
+        !alive(grandchild),
         "cancelling must kill the grandchild too, not just the direct child"
     );
-    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_child_that_ignores_sigterm_is_still_killed() {
+    // The kill is two phases: ask, then insist. A tool with state on disk
+    // or on a board (`ninja` mid-link, `esptool` mid-write-flash) has to
+    // get the chance to close it, so cancellation opens with SIGTERM --- and
+    // must still end a child that ignores it. The `stubborn` fixture is that
+    // child: `trap '' TERM`, inherited across exec by its `sleep`.
+    let dir = Scratch::new("stubborn");
+
+    let mut processes = ProcessManager::new();
+    let id = processes.spawn(
+        Command::new(fixture("stubborn")).current_dir(dir.path()),
+        Duration::from_secs(60),
+    );
+
+    // The trap must be installed before the cancel, or a SIGTERM racing the
+    // setup would end it early and time nothing.
+    let ready = dir.path().join("ready");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !ready.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(ready.exists(), "the fixture never signalled it was ready");
+
+    let started = Instant::now();
+    processes.cancel(id);
+    let events = run_to_completion(&mut processes, id);
+    let took = started.elapsed();
+
+    assert_eq!(outcome(&events), &Outcome::Cancelled);
+    // It only died because the escalation happened: had the first signal
+    // been SIGKILL, this would have finished long before the grace.
+    assert!(
+        took >= Duration::from_millis(250),
+        "SIGKILL came before the grace ran out ({took:?}) --- the phases collapsed into one"
+    );
+    assert!(
+        took < Duration::from_secs(5),
+        "the escalation never arrived ({took:?})"
+    );
+}
+
+#[test]
+fn a_child_that_handles_sigterm_dies_without_waiting_for_the_grace() {
+    // The other half of the pair: the grace is a ceiling, not a delay. A
+    // well-behaved child (`slow`'s plain `sleep`, which takes the default
+    // SIGTERM disposition) must end on the first signal, so `Stop` stays
+    // immediate for everything that is not `stubborn`.
+    let mut processes = ProcessManager::new();
+    let id = processes.spawn(Command::new(fixture("slow")), Duration::from_secs(60));
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while processes.running_count() == 0 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    let started = Instant::now();
+    processes.cancel(id);
+    let events = run_to_completion(&mut processes, id);
+    let took = started.elapsed();
+
+    assert_eq!(outcome(&events), &Outcome::Cancelled);
+    assert!(
+        took < Duration::from_millis(250),
+        "a child that takes SIGTERM should not wait out the grace ({took:?})"
+    );
+}
+
+#[test]
+fn dropping_the_manager_kills_what_is_still_running() {
+    // Quitting ChipTUI with a command running used to leave it running:
+    // `Drop` only stored the cancellation flag, and the supervisor thread
+    // that polls it every 20ms is not guaranteed another turn before the
+    // process exits. Since children are no longer in ChipTUI's process
+    // group, the terminal's own SIGHUP does not clean up either --- so the
+    // drop has to do the killing itself, synchronously.
+    let dir = Scratch::new("drop");
+
+    let grandchild = {
+        let mut processes = ProcessManager::new();
+        processes.spawn(
+            Command::new(fixture("spawner")).current_dir(dir.path()),
+            Duration::from_secs(60),
+        );
+        let grandchild = wait_for_pid(&dir.path().join("spawner-child.pid"));
+        assert!(alive(grandchild), "the tree must be up before the drop");
+        grandchild
+        // `processes` is dropped here, with the tree still running.
+    };
+
+    assert!(
+        !alive(grandchild),
+        "dropping the manager must not leave the tree running"
+    );
 }
 
 #[test]

@@ -155,11 +155,17 @@ impl Command {
             command.env(key, value);
         }
         // The child runs in its own process group so cancellation can kill
-        // the whole tree (`process::kill_tree`): tools like `west` spawn
+        // the whole tree (`process::signal_group`): tools like `west` spawn
         // helpers whose survival past the parent's death is exactly the
-        // "cancelled but still running" bug. ChipTUI itself reads the
-        // keyboard in raw mode, so moving children out of its (unused)
-        // foreground group changes nothing about signal delivery.
+        // "cancelled but still running" bug.
+        //
+        // This does change signal delivery, in one direction that matters:
+        // the terminal's own signals go to its *foreground* group, which
+        // these children are no longer in, so a `SIGHUP` from a closing
+        // window no longer reaches them. Nothing is lost for the keyboard
+        // (ChipTUI reads it in raw mode, so the tty generates no `SIGINT`
+        // to forward), but the hangup backstop is gone and the cleanup is
+        // ours now --- `ProcessManager::shutdown`, which `Drop` calls.
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;
