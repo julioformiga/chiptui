@@ -70,6 +70,11 @@ pub struct HomeScreen {
     /// `$HOME`: where the folder picker starts when nothing was used
     /// before, and what the list abbreviates paths against.
     home: PathBuf,
+    /// The session's icon set ([`crate::app::resolve_icons`]), read once
+    /// here because this screen exists before any `App` --- the same
+    /// startup read `App::new` does, and the reason the home answers the
+    /// same `[ui] icons` the dashboard will.
+    icons: crate::icons::IconSet,
     entries: Vec<ProjectEntry>,
     query: String,
     /// Index into [`Self::rows`], so `0` is always the create row.
@@ -84,6 +89,7 @@ impl HomeScreen {
         let mut screen = Self {
             config: settings::user_config_path(config_dir),
             home: home.to_path_buf(),
+            icons: crate::app::resolve_icons(config_dir),
             entries: Vec::new(),
             query: String::new(),
             selected: 0,
@@ -107,6 +113,12 @@ impl HomeScreen {
             .cloned()
             .collect();
         self.clamp();
+    }
+
+    /// The session's icon set, resolved in [`Self::new`] --- the home's
+    /// backend marks answer it (they are decoration, hidden by `none`).
+    pub fn icons(&self) -> crate::icons::IconSet {
+        self.icons
     }
 
     pub fn query(&self) -> &str {

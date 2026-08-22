@@ -64,6 +64,60 @@ fn press(screen: &mut HomeScreen, code: KeyCode) {
 }
 
 #[test]
+fn the_none_icon_set_hides_the_backend_marks() {
+    let fixture = Fixture::new("icons-none");
+    // The `[ui] icons` answer is read once in `HomeScreen::new`, the same
+    // startup read the dashboard's `App::new` does.
+    std::fs::create_dir_all(fixture.config_dir().join("chiptui")).unwrap();
+    std::fs::write(
+        settings::user_config_path(&fixture.config_dir()),
+        "[ui]\nicons = \"none\"\n",
+    )
+    .unwrap();
+    fixture.record("blinky", BackendKind::Zephyr);
+    fixture.record("sensor-node", BackendKind::MicroPython);
+
+    let frame = render(&fixture.screen(), 100, 20);
+
+    assert!(
+        !frame.contains('🔷') && !frame.contains('🐍'),
+        "the backend marks are decoration the none set drops:\n{frame}"
+    );
+    assert!(
+        frame.contains("Zephyr") && frame.contains("MicroPython"),
+        "the names carry the distinction on their own:\n{frame}"
+    );
+}
+
+#[test]
+fn the_nerd_set_gives_micropython_the_python_logo_and_zephyr_keeps_its_mark() {
+    let fixture = Fixture::new("icons-nerd");
+    std::fs::create_dir_all(fixture.config_dir().join("chiptui")).unwrap();
+    std::fs::write(
+        settings::user_config_path(&fixture.config_dir()),
+        "[ui]\nicons = \"nerd\"\n",
+    )
+    .unwrap();
+    fixture.record("blinky", BackendKind::Zephyr);
+    fixture.record("sensor-node", BackendKind::MicroPython);
+
+    let frame = render(&fixture.screen(), 100, 20);
+
+    assert!(
+        frame.contains('\u{E73C}'),
+        "MicroPython gets the Python logo:\n{frame}"
+    );
+    assert!(
+        !frame.contains('🐍'),
+        "the MicroPython emoji steps aside for it:\n{frame}"
+    );
+    assert!(
+        frame.contains('🔷'),
+        "Zephyr's mark never changes with the set:\n{frame}"
+    );
+}
+
+#[test]
 fn the_list_shows_each_project_with_its_backend_and_path() {
     let fixture = Fixture::new("list");
     fixture.record("blinky", BackendKind::Zephyr);

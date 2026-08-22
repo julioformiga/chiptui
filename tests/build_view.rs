@@ -1704,7 +1704,7 @@ fn the_zephyr_actions_menu_runs_the_build_dashboard() {
     assert!(matches!(app.overlay, Some(Overlay::ZephyrActions { .. })));
     let frame = render(&mut app, 100, 32);
     assert!(
-        frame.contains("▦  Dashboard") && frame.contains("⇩  Add SDK toolchains"),
+        frame.contains("▦  Dashboard") && frame.contains("⊕  Add SDK toolchains"),
         "the menu is the Actions pane's stacked-button widget:\n{frame}"
     );
     // Every entry explains itself, and `Dashboard` names the command it

@@ -43,7 +43,15 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
             // scroll by exactly the rows that were drawn.
             app.install_viewport = super::install::output_viewport(area);
             if let Some(installer) = &app.installer {
-                super::install::draw(frame, area, installer, app.home_dir(), app.ticks, palette);
+                super::install::draw(
+                    frame,
+                    area,
+                    installer,
+                    app.home_dir(),
+                    app.ticks,
+                    app.icon_set(),
+                    palette,
+                );
             }
         }
         Overlay::SdkToolchains { selected } => draw_sdk_toolchains(frame, area, app, selected, palette),
@@ -292,7 +300,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
             draw_restore_device_script(frame, area, selected, palette)
         }
         Overlay::ZephyrActions { selected } => {
-            draw_zephyr_actions(frame, area, selected, palette)
+            draw_zephyr_actions(frame, area, selected, app.icon_set(), palette)
         }
     }
 }
@@ -507,8 +515,12 @@ fn draw_restore_device_script(frame: &mut Frame, area: Rect, selected: usize, pa
 /// widget: the same stacked shared-border group, the same
 /// `palette.selection` highlight, so the submenu reads as a piece of the
 /// pane that opened it rather than a different control. Icons carry the
-/// grammar: `↻` rewrites the shared workspace, `⇩` adds to the SDK, `▦` is
-/// the report's grid.
+/// grammar --- `update` rewrites the shared workspace, `plus` adds to
+/// the SDK, `dashboard` is the report's grid --- each drawn from the
+/// active icon set and colored by what it does rather than left
+/// monochrome: `warning` for `Update Zephyr` (destructive-confirmed, same
+/// as the build pane's `Clean`/`Flash`), `success` for the additive `Add SDK
+/// toolchains`, `info` for the read-only `Dashboard` report.
 ///
 /// Every entry carries a second, muted line. The pane's own buttons
 /// deliberately do not (`SPEC.md` §15: the rows stay bare and the confirm
@@ -517,26 +529,39 @@ fn draw_restore_device_script(frame: &mut Frame, area: Rect, selected: usize, pa
 /// to say what it runs: `Update Zephyr` goes on to a confirm that quotes
 /// `west update`, `Add SDK toolchains` opens a picker, and this one starts
 /// a command outright with nothing anywhere naming it.
-fn draw_zephyr_actions(frame: &mut Frame, area: Rect, selected: usize, palette: Palette) {
-    const CHOICES: [(&str, &str); 3] = [
+fn draw_zephyr_actions(
+    frame: &mut Frame,
+    area: Rect,
+    selected: usize,
+    icons: crate::icons::IconSet,
+    palette: Palette,
+) {
+    type Glyph = fn(crate::icons::IconSet) -> &'static str;
+    const CHOICES: [(Glyph, &str, &str); 3] = [
         (
-            "↻  Update Zephyr",
+            crate::icons::IconSet::update,
+            "Update Zephyr",
             "west update — rewrites every checkout in the workspace",
         ),
         (
-            "⇩  Add SDK toolchains",
+            crate::icons::IconSet::plus,
+            "Add SDK toolchains",
             "extends the installed bundle; no full re-download",
         ),
         (
-            "▦  Dashboard",
+            crate::icons::IconSet::dashboard,
+            "Dashboard",
             "west build -t dashboard — HTML report, opens in browser",
         ),
     ];
+    let colors = [palette.warning, palette.success, palette.info];
     let buttons: Vec<super::button::Button> = CHOICES
         .iter()
+        .zip(colors)
         .enumerate()
-        .map(|(index, (label, detail))| {
+        .map(|(index, ((glyph, label, detail), color))| {
             super::button::Button::new(*label)
+                .icon(glyph(icons), color)
                 .detail(*detail)
                 .selected(index == selected)
         })

@@ -6,7 +6,9 @@
 //! (default: Tokyo Night, overridable via `[ui] theme` in the user config,
 //! see `settings.rs`) computed once per frame in [`draw`] and threaded down
 //! through every `draw_*` call as a `Palette` parameter, the same way `Focus`
-//! already is.
+//! already is. Button glyphs come from [`App::icon_set`] (`[ui] icons`,
+//! default plain Unicode) the same way, read off `App` by the calls that
+//! build a button stack.
 
 mod build;
 mod button;
@@ -296,24 +298,33 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
     );
 }
 
-/// The header's left side: the badge, then the backend icon and name.
+/// The header's left side: the badge, then the backend icon and name. The
+/// icon is decoration (`IconSet::shows_decorations`) --- the same mark the
+/// home screen's rows carry, hidden whole by the `none` icon set so the
+/// name alone says the backend there too --- and under the Nerd set only
+/// MicroPython gets its own glyph (the Python logo,
+/// `IconSet::python`); Zephyr keeps its `◆` in every set.
 fn backend_spans(app: &App, palette: Palette) -> Vec<Span<'static>> {
+    let icons = app.icon_set();
     let (icon, backend) = match app.manager.selected_kind() {
         Some(BackendKind::Zephyr) => ("◆", BackendKind::Zephyr.display_name()),
-        Some(BackendKind::MicroPython) => ("▲", BackendKind::MicroPython.display_name()),
+        Some(BackendKind::MicroPython) => (icons.python(), BackendKind::MicroPython.display_name()),
         None => ("◇", "none"),
     };
-    vec![
+    let mut spans = vec![
         Span::styled(
             " ChipTUI ",
             Style::new().fg(palette.bg).bg(palette.accent).bold(),
         ),
         Span::raw(" "),
-        Span::styled(icon, Style::new().fg(palette.accent)),
-        Span::raw(" "),
-        Span::styled(backend, Style::new().fg(palette.fg).bold()),
-        missing_tools(app, palette),
-    ]
+    ];
+    if icons.shows_decorations() && !icon.is_empty() {
+        spans.push(Span::styled(icon, Style::new().fg(palette.accent)));
+        spans.push(Span::raw(" "));
+    }
+    spans.push(Span::styled(backend, Style::new().fg(palette.fg).bold()));
+    spans.push(missing_tools(app, palette));
+    spans
 }
 
 /// The header's missing-tools badge: a red `⚠ N` beside the backend name,
@@ -524,6 +535,21 @@ pub(crate) fn pane_border(focused: bool, palette: Palette) -> Block<'static> {
     Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(border_style(focused, palette))
+}
+
+/// A pane/tab title with its leading glyph: `<glyph> <title>` when the
+/// active icon set has one for this surface, the bare `title` when it does
+/// not (`none`, or a surface with no glyph). The empty-glyph case is the
+/// rule, not a patch: `none` hides every pane/tab decoration whole
+/// ([`IconSet::shows_decorations`](crate::icons::IconSet)), so a title
+/// never keeps a blank column the way a *button* deliberately does
+/// (geometry there is sacred, titles have no budget).
+pub(crate) fn pane_title(glyph: &str, title: &str) -> String {
+    if glyph.is_empty() {
+        title.to_string()
+    } else {
+        format!("{glyph} {title}")
+    }
 }
 
 fn title_span(

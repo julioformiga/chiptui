@@ -17,8 +17,8 @@ use crate::logs::{Level, PREFIX_WIDTH};
 use crate::project::DetectionOutcome;
 use crate::ui::{
     Palette, SPINNER, border_style, content_style, dashboard_focused, highlighted_line,
-    muted_style, output_style, pane_block, pane_border, shortcut_highlight_style, shortcut_letter,
-    tilde_path,
+    muted_style, output_style, pane_block, pane_border, pane_title, shortcut_highlight_style,
+    shortcut_letter, tilde_path,
 };
 
 /// Row 1's fixed content height: the Project and the Device info panes
@@ -54,7 +54,8 @@ fn pad_info(mut lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
 /// content row.
 pub fn draw_project(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
     let focused = dashboard_focused(app, Focus::Project);
-    let block = pane_block("Environment", focused, palette, shortcut_letter(app, 'e'));
+    let title = pane_title(app.icon_set().environment(), "Environment");
+    let block = pane_block(&title, focused, palette, shortcut_letter(app, 'e'));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -453,7 +454,11 @@ fn shorten_start_owned(text: &str, budget: usize) -> String {
 pub fn draw_detection(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
     // Never a shortcut target --- Device Info never holds focus, so the
     // overlay dims it like everything else but highlights nothing here.
-    let block = pane_block("Device Info", false, palette, None);
+    // The glyph is the chip's own (`microchip`): this pane *is* the board's
+    // identity, the same meaning the flash menu's Chip information row
+    // carries.
+    let title = pane_title(app.icon_set().microchip(), "Device Info");
+    let block = pane_block(&title, false, palette, None);
     let lines = device_content(app, area.width as usize, palette);
     frame.render_widget(
         Paragraph::new(lines)
@@ -619,7 +624,8 @@ fn device_content(app: &App, width: usize, palette: Palette) -> Vec<Line<'static
 /// backend; the right half is the device pane under
 /// [`Capability::Filesystem`], else [`crate::ui::files`]'s placeholder.
 pub fn draw_no_filesystem(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
-    let block = pane_block("Files", false, palette, None);
+    let title = pane_title(app.icon_set().folder(), "Files");
+    let block = pane_block(&title, false, palette, None);
     let backend = app
         .manager
         .selected_kind()
@@ -758,9 +764,10 @@ pub fn draw_log_tabs(frame: &mut Frame, pane: Rect, app: &App, palette: Palette)
     };
     let inactive_style = muted_style(palette);
     let highlight_style = shortcut_highlight_style(palette);
+    let icons = app.icon_set();
 
     let mut titles = vec![highlighted_line(
-        "Log",
+        &pane_title(icons.list(), "Log"),
         if app.log_tab == LogTab::Log {
             active_style
         } else {
@@ -772,7 +779,7 @@ pub fn draw_log_tabs(frame: &mut Frame, pane: Rect, app: &App, palette: Palette)
     let mut monitor_slot = 1;
     if has_monitor {
         titles.push(highlighted_line(
-            "Monitor",
+            &pane_title(icons.screen(), "Monitor"),
             if app.log_tab == LogTab::Monitor {
                 active_style
             } else {
@@ -784,7 +791,7 @@ pub fn draw_log_tabs(frame: &mut Frame, pane: Rect, app: &App, palette: Palette)
         monitor_slot = 2;
     }
     titles.push(highlighted_line(
-        "Terminal",
+        &pane_title(icons.prompt(), "Terminal"),
         if app.log_tab == LogTab::Terminal {
             active_style
         } else {

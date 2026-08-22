@@ -14,11 +14,11 @@
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph};
 
-use crate::install::{Installer, Phase, Prereq, Probe, Step, StepState};
+use crate::install::{Action, Installer, Phase, Prereq, Probe, Step, StepState};
 
 use super::button::{self, Button};
 use super::workspace::{RowMark, marked_row};
@@ -66,6 +66,7 @@ pub(super) fn draw(
     installer: &Installer,
     home: &std::path::Path,
     ticks: u64,
+    icons: crate::icons::IconSet,
     palette: Palette,
 ) {
     let popup = area(body);
@@ -114,7 +115,7 @@ pub(super) fn draw(
 
     let footer_top = inner.bottom().saturating_sub(3);
     draw_output(frame, inner, y, footer_top, installer, palette);
-    draw_footer(frame, inner, footer_top, installer, palette);
+    draw_footer(frame, inner, footer_top, installer, icons, palette);
 }
 
 fn row(frame: &mut Frame, area: Rect, y: u16, line: Line<'static>) -> u16 {
@@ -339,6 +340,24 @@ fn draw_output(
     );
 }
 
+/// The footer button's glyph color: `accent` for every forward-moving step
+/// (`▶`), `success` for a state that is already good (`✓`), `warning` for
+/// `Stop` --- the same vocabulary `ui::build`/`ui::flash` use for their own
+/// action icons. Kept here rather than on `Action` itself: that type stays
+/// UI-free.
+fn action_icon_color(action: Action, palette: Palette) -> Color {
+    match action {
+        Action::Stop => palette.warning,
+        Action::Blocked
+        | Action::Install
+        | Action::PickToolchains
+        | Action::Retry
+        | Action::InstallSdk
+        | Action::AddToolchains => palette.accent,
+        Action::Adopt | Action::Done => palette.success,
+    }
+}
+
 /// The reserved footer: the state line on the left half, the panel's one
 /// action as its own half-width box on the right. Identical geometry to the
 /// build and flash panes, so the modal reads as part of the same app.
@@ -351,6 +370,7 @@ fn draw_footer(
     area: Rect,
     footer_top: u16,
     installer: &Installer,
+    icons: crate::icons::IconSet,
     palette: Palette,
 ) {
     if footer_top + 1 >= area.bottom() {
@@ -368,6 +388,7 @@ fn draw_footer(
         },
         footer_top,
         &[Button::new(action.label())
+            .icon(action.icon(icons), action_icon_color(action, palette))
             .enabled(action.enabled())
             .selected(true)],
         palette,

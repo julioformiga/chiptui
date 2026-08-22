@@ -113,14 +113,31 @@ pub enum Action {
 impl Action {
     pub const fn label(self) -> &'static str {
         match self {
-            Self::Stop => "■ Stop",
-            Self::Blocked | Self::Install => "▶ Install",
-            Self::PickToolchains => "▶ Pick SDK toolchains",
-            Self::Retry => "▶ Retry",
-            Self::Adopt => "✓ Use this installation",
-            Self::InstallSdk => "▶ Install the SDK",
-            Self::AddToolchains => "▶ Add SDK toolchains",
-            Self::Done => "✓ Done",
+            Self::Stop => "Stop",
+            Self::Blocked | Self::Install => "Install",
+            Self::PickToolchains => "Pick SDK toolchains",
+            Self::Retry => "Retry",
+            Self::Adopt => "Use this installation",
+            Self::InstallSdk => "Install the SDK",
+            Self::AddToolchains => "Add SDK toolchains",
+            Self::Done => "Done",
+        }
+    }
+
+    /// The button's leading glyph --- colored in `ui::install` (this type
+    /// stays UI-free, the same split `ui::flash`/`ui::build` use for their
+    /// own actions' colors). Which rendering the glyph comes from is the
+    /// caller's [`IconSet`](crate::icons::IconSet).
+    pub const fn icon(self, icons: crate::icons::IconSet) -> &'static str {
+        match self {
+            Self::Stop => icons.stop(),
+            Self::Blocked
+            | Self::Install
+            | Self::PickToolchains
+            | Self::Retry
+            | Self::InstallSdk
+            | Self::AddToolchains => icons.play(),
+            Self::Adopt | Self::Done => icons.check(),
         }
     }
 

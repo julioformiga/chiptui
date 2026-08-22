@@ -15,8 +15,8 @@ use ratatui::widgets::{Paragraph, Wrap};
 
 use crate::app::{App, Focus};
 use crate::ui::{
-    Palette, dashboard_focused, muted_style, pane_block, selection_style, shortcut_letter,
-    tilde_path,
+    Palette, dashboard_focused, muted_style, pane_block, pane_title, selection_style,
+    shortcut_letter, tilde_path,
 };
 use crate::workspace::WorkspacePanel;
 
@@ -38,14 +38,18 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
     // ("blinkety/src/"): with the checklist moved up to the Project pane,
     // the bar would sit between two borders saying nothing, so the border
     // says it instead and the listing gets the whole pane. The prefix never
-    // truncates --- only the path shortens, from the left (9 is
-    // "Files: " plus the title's own padding spaces).
-    let title = format!(
-        "Files: {}",
-        shorten_start(
-            &files_title(panel, app),
-            area.width.saturating_sub(9) as usize
-        )
+    // truncates --- only the path shortens, from the left (11 is
+    // "Files: " plus the title's own padding spaces plus the leading glyph
+    // and its gap, budgeted for the worst icon set).
+    let title = pane_title(
+        app.icon_set().folder(),
+        &format!(
+            "Files: {}",
+            shorten_start(
+                &files_title(panel, app),
+                area.width.saturating_sub(11) as usize
+            )
+        ),
     );
     let block = pane_block(&title, focused, palette, shortcut_letter(app, 'f'));
     let inner = block.inner(area);
@@ -103,7 +107,13 @@ fn draw_files_section(
     let mut items = Vec::with_capacity(panel.files_row_count());
     if panel.parent_row() {
         items.push(super::files::row(
-            "[..]", true, 0, None, area.width, palette,
+            "[..]",
+            true,
+            0,
+            None,
+            area.width,
+            app.icon_set(),
+            palette,
         ));
     }
     items.extend(panel.visible_files().iter().map(|entry| {
@@ -113,6 +123,7 @@ fn draw_files_section(
             entry.size,
             None,
             area.width,
+            app.icon_set(),
             palette,
         )
     }));

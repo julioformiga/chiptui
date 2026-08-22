@@ -11,7 +11,7 @@
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::Stylize;
+use ratatui::style::{Color, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
@@ -19,14 +19,15 @@ use super::button::{self, Button};
 use super::workspace::label;
 use crate::app::{App, Focus};
 use crate::build::{BuildPanel, BuildReport};
-use crate::ui::{Palette, dashboard_focused, pane_block, shortcut_letter};
+use crate::ui::{Palette, dashboard_focused, pane_block, pane_title, shortcut_letter};
 
 pub fn draw(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
     let Some(panel) = &app.build else {
         return;
     };
     let focused = dashboard_focused(app, Focus::Build);
-    let block = pane_block("Actions", focused, palette, shortcut_letter(app, 'a'));
+    let title = pane_title(app.icon_set().bolt(), "Actions");
+    let block = pane_block(&title, focused, palette, shortcut_letter(app, 'a'));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -166,6 +167,7 @@ fn draw_rows(
     // `Stop` trails the list exactly while a command runs; the stack shows
     // the buttons above it, and `Stop` itself becomes the footer's box.
     let stop = panel.is_busy() && matches!(actions.last(), Some(crate::build::BuildAction::Stop));
+    let icons = app.icon_set();
     let y = area.y;
     let mut buttons: Vec<Button> = Vec::new();
     let mains = &actions[..actions.len() - usize::from(stop)];
@@ -173,30 +175,32 @@ fn draw_rows(
         let selected = panel.cursor == position;
         match action {
             crate::build::BuildAction::Build(kind) => buttons.push(
-                Button::new(format!("{} {}", kind_icon(*kind), kind.label()))
+                Button::new(kind.label())
+                    .icon(kind_icon(*kind, icons), kind_icon_color(*kind, palette))
                     .enabled(app.build_action_enabled(*action))
                     .selected(selected),
             ),
             crate::build::BuildAction::Flash => buttons.push(
-                Button::new("⇧ Flash")
+                Button::new("Flash")
+                    .icon(icons.flash(), palette.warning)
                     .enabled(app.build_action_enabled(*action))
                     .selected(selected),
             ),
             crate::build::BuildAction::Menuconfig => buttons.push(
-                Button::new("✎ Menuconfig")
+                Button::new("Menuconfig")
+                    .icon(icons.pencil(), palette.info)
                     .enabled(app.build_action_enabled(*action))
                     .selected(selected),
             ),
             crate::build::BuildAction::UpdateZephyr => buttons.push(
-                // Two spaces: the gear is the densest glyph in the stack
-                // and reads glued to the label at one (`⚙Zephyr`), where
-                // ▶/✎/⇧/⇩ leave enough air of their own.
-                Button::new("⚙  Zephyr Actions")
+                Button::new("Zephyr Actions")
+                    .icon(icons.cogs(), palette.secondary)
                     .enabled(app.build_action_enabled(*action))
                     .selected(selected),
             ),
             crate::build::BuildAction::InstallZephyr => buttons.push(
-                Button::new("⇩ Install Zephyr")
+                Button::new("Install Zephyr")
+                    .icon(icons.download(), palette.success)
                     .enabled(app.build_action_enabled(*action))
                     .selected(selected),
             ),
@@ -237,7 +241,9 @@ fn draw_rows(
             frame,
             corner,
             footer_top,
-            &[Button::new("■ Stop").selected(selected)],
+            &[Button::new("Stop")
+                .icon(icons.stop(), palette.warning)
+                .selected(selected)],
             palette,
         );
     }
@@ -245,11 +251,23 @@ fn draw_rows(
 }
 
 /// The button glyph for a lifecycle kind: one glance tells the actions
-/// apart, the way `Stop`'s `■` already does.
-fn kind_icon(kind: crate::backend::BuildKind) -> &'static str {
+/// apart, the way `Stop`'s `■` already does. Which rendering the glyph
+/// comes from is the active [`IconSet`](crate::icons::IconSet).
+fn kind_icon(kind: crate::backend::BuildKind, icons: crate::icons::IconSet) -> &'static str {
     match kind {
-        crate::backend::BuildKind::Build => "▶",
-        crate::backend::BuildKind::Clean => "×",
-        crate::backend::BuildKind::Rebuild => "⟳",
+        crate::backend::BuildKind::Build => icons.play(),
+        crate::backend::BuildKind::Clean => icons.clean(),
+        crate::backend::BuildKind::Rebuild => icons.rebuild(),
+    }
+}
+
+/// The glyph's color: `accent` for the primary action, `warning` for the
+/// destructive-confirmed one (previewing the confirm screen's own target
+/// color), `secondary` for the less-prominent variant.
+fn kind_icon_color(kind: crate::backend::BuildKind, palette: Palette) -> Color {
+    match kind {
+        crate::backend::BuildKind::Build => palette.accent,
+        crate::backend::BuildKind::Clean => palette.warning,
+        crate::backend::BuildKind::Rebuild => palette.secondary,
     }
 }

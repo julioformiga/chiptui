@@ -78,6 +78,107 @@ fn a_narrow_footer_drops_whole_hints_and_keeps_the_way_out() {
     );
 }
 
+/// The button glyphs come from the session's icon set: plain Unicode by
+/// default, Nerd Font codepoints only when `[ui] icons = "nerd"` opted in
+/// (the render test drives the same seam `set_home_dir`-style tests use,
+/// so both renderings are exercised without a config file).
+#[test]
+fn the_icon_set_swaps_the_action_buttons_glyphs() {
+    let mut app = header_fixture("icons");
+    let unicode = render(&mut app, 100, 32);
+    assert!(
+        unicode.contains('⇩'),
+        "the Unicode set is the default (Install Zephyr's glyph):\n{unicode}"
+    );
+
+    app.set_icon_set(chiptui::icons::IconSet::Nerd);
+    let nerd = render(&mut app, 100, 32);
+    assert!(
+        nerd.contains('\u{F019}'),
+        "the Nerd set replaces the pane's glyphs:\n{nerd}"
+    );
+    assert!(
+        !nerd.contains('⇩'),
+        "no pane glyph survives from the default set:\n{nerd}"
+    );
+}
+
+/// `none` strips the glyphs everywhere the icon set reaches: the buttons
+/// keep their labels, centered, and the file rows their names --- only the
+/// decoration is gone. The pane's geometry is untouched (the glyph never
+/// had a row of its own).
+#[test]
+fn the_none_icon_set_leaves_labels_without_glyphs() {
+    let mut app = header_fixture("icons-none");
+    let frame = render(&mut app, 100, 32);
+
+    app.set_icon_set(chiptui::icons::IconSet::None);
+    let bare = render(&mut app, 100, 32);
+    for glyph in ['▶', '×', '⟳', '⇧', '✎', '⇩'] {
+        assert!(
+            !bare.contains(glyph),
+            "the {glyph} button glyph survived the none set:\n{bare}"
+        );
+    }
+    for label in ["Install Zephyr", "Menuconfig", "Build", "Flash"] {
+        assert!(
+            bare.contains(label),
+            "the `{label}` label survives without its glyph:\n{bare}"
+        );
+    }
+    assert!(
+        frame.contains('⇩'),
+        "sanity: the default set draws the glyph this test strips\n{frame}"
+    );
+}
+
+/// Pane titles and tab strips carry the icon set's decoration glyphs: the
+/// environment checklist, the chip-identity pane, the actions pane, and
+/// row 3's tabs --- each from the session's set, hidden whole by `none`
+/// (they are decoration, `shows_decorations`).
+#[test]
+fn pane_titles_and_tab_strips_carry_the_icon_sets_glyphs() {
+    let mut app = header_fixture("icons-panes");
+    let frame = render(&mut app, 100, 32);
+
+    assert!(
+        frame.contains("☰ Environment"),
+        "the environment pane's title:\n{frame}"
+    );
+    assert!(
+        frame.contains("◆ Device Info"),
+        "the chip-identity pane reuses the chip glyph:\n{frame}"
+    );
+    assert!(
+        frame.contains("↯ Actions"),
+        "the build pane's title:\n{frame}"
+    );
+    assert!(
+        frame.contains("▤ Log • ◉ Monitor • › Terminal"),
+        "row 3's tab strip:\n{frame}"
+    );
+
+    app.set_icon_set(chiptui::icons::IconSet::None);
+    let bare = render(&mut app, 100, 32);
+    for glyph in ['☰', '◆', '↯', '▤', '◉', '›'] {
+        assert!(
+            !bare.contains(glyph),
+            "the {glyph} pane/tab glyph survived the none set:\n{bare}"
+        );
+    }
+    for title in [
+        "Environment",
+        "Device Info",
+        "Actions",
+        "Log • Monitor • Terminal",
+    ] {
+        assert!(
+            bare.contains(title),
+            "the `{title}` title survives without its glyph:\n{bare}"
+        );
+    }
+}
+
 #[test]
 fn dashboard_shows_project_device_and_log_panes() {
     let mut app = app_with_backend(BackendKind::Zephyr);
@@ -211,6 +312,38 @@ fn an_unscanned_header_shows_the_disconnect_icon_and_reason() {
     assert!(
         header.contains("▲ MicroPython"),
         "each backend kind carries its own icon:\n{header}"
+    );
+}
+
+/// Under the Nerd set only MicroPython gets its own mark --- the Python
+/// logo (`nf-custom-python`, the seti set): the FA5 brand proved missing
+/// from partially patched fonts. Zephyr keeps its `◆` in every set.
+#[test]
+fn the_nerd_set_gives_micropython_the_python_logo_and_zephyr_keeps_its_mark() {
+    let mut app = app_with_backend(BackendKind::MicroPython);
+    app.set_icon_set(chiptui::icons::IconSet::Nerd);
+    let header = render(&mut app, 100, 32)
+        .lines()
+        .next()
+        .unwrap()
+        .trim_matches('"')
+        .to_string();
+    assert!(
+        header.contains("\u{E73C} MicroPython"),
+        "MicroPython's mark is the Python logo:\n{header}"
+    );
+
+    let mut app = app_with_backend(BackendKind::Zephyr);
+    app.set_icon_set(chiptui::icons::IconSet::Nerd);
+    let header = render(&mut app, 100, 32)
+        .lines()
+        .next()
+        .unwrap()
+        .trim_matches('"')
+        .to_string();
+    assert!(
+        header.contains("◆ Zephyr"),
+        "Zephyr's mark never changes with the set:\n{header}"
     );
 }
 
@@ -1241,7 +1374,7 @@ fn the_log_and_monitor_tabs_live_on_the_panes_border_row() {
     let mut app = zephyr_app();
     let frame = render(&mut app, 100, 32);
     assert!(
-        frame.contains("Log • Monitor"),
+        frame.contains("▤ Log • ◉ Monitor"),
         "the tabs must share the border row with the dot divider:\n{frame}"
     );
 
@@ -1286,7 +1419,7 @@ fn the_tab_strip_keeps_the_focused_pane_top_border_accent() {
     // Focus elsewhere: the whole frame, the top border carried by the strip
     // included, reads muted.
     app.focus = Focus::Build;
-    let rules = top_rules(&mut app, "Log \u{2022} Monitor");
+    let rules = top_rules(&mut app, "▤ Log • ◉ Monitor");
     assert!(!rules.is_empty(), "the strip's row must carry border rules");
     assert!(
         rules.iter().all(|fg| *fg == app.theme_palette().muted),
@@ -1296,7 +1429,7 @@ fn the_tab_strip_keeps_the_focused_pane_top_border_accent() {
     // The pane holds focus: the strip repaints the border row, so its rules
     // must keep the frame's accent, not take the labels' muted.
     app.focus = Focus::Logs;
-    let rules = top_rules(&mut app, "Log \u{2022} Monitor");
+    let rules = top_rules(&mut app, "▤ Log • ◉ Monitor");
     assert!(
         rules.iter().all(|fg| *fg == app.theme_palette().accent),
         "the focused top border must stay accent under the tab strip: {rules:?}"

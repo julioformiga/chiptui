@@ -3,6 +3,12 @@
 //! tofu or blank space on a terminal without that exact font installed, with
 //! no fallback --- `src/ui/home.rs` shipped one (`U+F11EC`) on the home
 //! screen's primary action until this test was added.
+//!
+//! The one sanctioned PUA use, `src/icons.rs`' opt-in Nerd Font rendering,
+//! writes its glyphs as `\u{…}` escapes rather than literal characters, so
+//! even that file stays scannable here without an exception list; the
+//! BMP-only, single-char contract those escapes must keep is pinned by
+//! `src/icons.rs`' own unit tests.
 
 use std::path::Path;
 

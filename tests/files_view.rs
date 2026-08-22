@@ -24,6 +24,23 @@ fn local_edit(path: PathBuf) -> PendingEdit {
     }
 }
 
+/// An app whose config reads come from a scratch home --- the same
+/// hermeticity `tests/ui_render.rs`'s `scratch_home` buys: `App::new` reads
+/// `[ui] icons` (pane/tab glyphs) out of `$HOME`, so without this the
+/// frames assert against whatever the developer happens to have configured.
+fn hermetic_app(root: impl Into<PathBuf>) -> App {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNT: AtomicU64 = AtomicU64::new(0);
+    let mut app = App::new(root);
+    let home = std::env::temp_dir().join(format!(
+        "chiptui-files-home-{}-{}",
+        std::process::id(),
+        COUNT.fetch_add(1, Ordering::Relaxed)
+    ));
+    app.set_home_dir(home);
+    app
+}
+
 fn fake_mpremote() -> String {
     format!("{}/tests/fixtures/bin/mpremote", env!("CARGO_MANIFEST_DIR"))
 }
@@ -675,7 +692,7 @@ fn discovering_devices_when_none_are_present() {
 fn the_device_picker_renders_a_helpful_empty_state() {
     // Covers the zero-devices branch of the picker overlay, reachable when a
     // scan completes with no candidates and the user still presses 'd'.
-    let mut app = App::new(std::env::temp_dir());
+    let mut app = hermetic_app(std::env::temp_dir());
     app.bootstrap();
     app.overlay = Some(Overlay::DevicePicker { selected: 0 });
 
@@ -694,7 +711,7 @@ fn the_file_browser_panes_stay_unreachable_before_a_browser_exists() {
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     let key = |code| AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE));
 
-    let mut app = App::new(std::env::temp_dir());
+    let mut app = hermetic_app(std::env::temp_dir());
     app.bootstrap();
 
     app.manager.set_override(Some(BackendKind::Zephyr));
@@ -722,7 +739,7 @@ fn the_file_browser_panes_stay_unreachable_before_a_browser_exists() {
 
 #[test]
 fn startup_scans_for_a_device_without_opening_the_browser() {
-    let mut app = App::new(std::env::temp_dir());
+    let mut app = hermetic_app(std::env::temp_dir());
     app.bootstrap();
     app.manager.set_override(Some(BackendKind::MicroPython));
 
@@ -749,7 +766,7 @@ fn startup_ensures_a_browser_and_a_serial_scan_without_a_filesystem() {
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     let key = |code: KeyCode| AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE));
 
-    let mut app = App::new(std::env::temp_dir());
+    let mut app = hermetic_app(std::env::temp_dir());
     app.bootstrap();
     app.manager.set_override(Some(BackendKind::Zephyr));
     // No mpremote here: an empty fixture /dev must not open the device
@@ -811,7 +828,7 @@ fn opening_the_browser_starts_on_src_when_it_exists() {
     std::fs::write(root.join("other.txt"), "x").unwrap();
     let expected = root.join("src");
 
-    let mut app = App::new(&root);
+    let mut app = hermetic_app(&root);
     app.bootstrap();
     app.manager.set_override(Some(BackendKind::MicroPython));
     app.maybe_scan_devices();
@@ -826,7 +843,7 @@ fn opening_the_browser_starts_on_src_when_it_exists() {
 
 #[test]
 fn a_second_scan_request_does_not_rescan_an_existing_browser() {
-    let mut app = App::new(std::env::temp_dir());
+    let mut app = hermetic_app(std::env::temp_dir());
     app.bootstrap();
     app.manager.set_override(Some(BackendKind::MicroPython));
 
@@ -850,7 +867,7 @@ fn answering_the_project_setup_prompt_for_a_filesystem_backend_scans_for_a_devic
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(root.join("home")).unwrap();
 
-    let mut app = App::new(&root);
+    let mut app = hermetic_app(&root);
     // Answering the prompt records the project in the user config, so the
     // home must be redirected before it is answered.
     app.set_home_dir(root.join("home"));
@@ -880,7 +897,7 @@ fn answering_the_project_setup_prompt_for_a_filesystem_backend_scans_for_a_devic
 fn the_browser_state_survives_a_focus_change_but_q_quits_outright() {
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-    let mut app = App::new(std::env::temp_dir());
+    let mut app = hermetic_app(std::env::temp_dir());
     app.bootstrap();
     app.manager.set_override(Some(BackendKind::MicroPython));
     app.maybe_scan_devices();
@@ -914,7 +931,7 @@ fn render(app: &mut App, width: u16, height: u16) -> String {
 
 /// An app sitting in the file browser, with the device pane already loaded.
 fn app_in_browser(project: &Project) -> App {
-    let mut app = App::new(&project.root);
+    let mut app = hermetic_app(&project.root);
     app.bootstrap();
     app.manager.set_override(Some(BackendKind::MicroPython));
     app.maybe_scan_devices();
@@ -941,7 +958,7 @@ fn the_browser_renders_both_panes_with_comparison_markers() {
         // A flash-capable backend renders the device pane as a tabbed pane:
         // the strip names both tabs, with the walked device path riding
         // the strip's right edge as the files tab's status.
-        frame.contains("Actions • Device Files"),
+        frame.contains("↯ Actions • ▣ Device Files"),
         "missing device pane tab strip:\n{frame}"
     );
     assert!(
@@ -994,7 +1011,7 @@ fn the_device_strip_shows_a_walked_path_but_not_the_root() {
         let frame = render(app, 132, 32);
         frame
             .lines()
-            .find(|line| line.contains("Actions \u{2022} Device Files"))
+            .find(|line| line.contains("↯ Actions • ▣ Device Files"))
             .unwrap()
             .split("Device Files")
             .nth(1)
@@ -1056,7 +1073,7 @@ fn the_device_tab_strip_keeps_the_focused_pane_top_border_accent() {
 
     let project = Project::new("tab-strip");
     let mut app = app_in_browser(&project);
-    let needle = "Actions \u{2022} Device Files";
+    let needle = "↯ Actions • ▣ Device Files";
 
     app.focus = Focus::FilesDevice;
     let rules = top_rules(&mut app, needle);
@@ -1077,7 +1094,7 @@ fn the_device_tab_strip_keeps_the_focused_pane_top_border_accent() {
 #[test]
 fn a_pending_listing_renders_a_spinner_not_a_frozen_pane() {
     let project = Project::new("spinner");
-    let mut app = App::new(&project.root);
+    let mut app = hermetic_app(&project.root);
     app.bootstrap();
     app.manager.set_override(Some(BackendKind::MicroPython));
     app.maybe_scan_devices();
@@ -1144,7 +1161,7 @@ fn the_browser_survives_a_range_of_sizes() {
 
 #[test]
 fn dashboard_help_describes_file_browser_keys_when_a_files_pane_is_focused() {
-    let mut app = App::new(std::env::temp_dir());
+    let mut app = hermetic_app(std::env::temp_dir());
     app.bootstrap();
     app.manager.set_override(Some(BackendKind::MicroPython));
     app.maybe_scan_devices();
@@ -1206,7 +1223,7 @@ fn disconnecting_the_device_clears_the_stale_dashboard_details() {
     use ratatui::crossterm::event::KeyCode;
 
     let project = Project::new("disconnect");
-    let mut app = App::new(&project.root);
+    let mut app = hermetic_app(&project.root);
     app.bootstrap();
     app.manager.set_override(Some(BackendKind::MicroPython));
 

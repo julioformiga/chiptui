@@ -465,6 +465,28 @@ pub fn theme(config_dir: &Path) -> Option<String> {
     section_value(&text, "ui", "theme")
 }
 
+/// Reads `[ui] icons` from the user config: `"unicode"` (the default),
+/// `"nerd"` (a Nerd Font terminal) or `"none"` (no glyphs at all), raw and
+/// unvalidated --- the caller turns it into an
+/// [`IconSet`](crate::icons::IconSet), falling back to plain Unicode on an
+/// absent or unrecognized value so a terminal without the font never meets
+/// a Private Use Area glyph. User-config-only, the same operator preference
+/// `[ui] theme` is; the dashboard's `ctrl+i` cycle is the runtime way to
+/// switch it (writing back through [`save_icons`]), not a guess about the
+/// terminal's font.
+pub fn icons(config_dir: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(user_config_path(config_dir)).ok()?;
+    section_value(&text, "ui", "icons")
+}
+
+/// Persists `[ui] icons = slug`, the same one-line replace-or-insert shape
+/// as [`save_theme`]. Written by the dashboard's `ctrl+i` cycle (the
+/// picker-less counterpart of `apply_theme_picker`), so a switched
+/// rendering survives a restart.
+pub fn save_icons(config: &Path, slug: &str) -> std::io::Result<()> {
+    save_key(config, "ui", "icons", slug)
+}
+
 /// Persists `[ui] theme = slug`, the same one-line replace-or-insert shape as
 /// [`save_last_parent`].
 pub fn save_theme(config: &Path, slug: &str) -> std::io::Result<()> {
@@ -794,6 +816,24 @@ mod tests {
             line!()
         ));
         assert_eq!(theme(&dir), None);
+    }
+
+    #[test]
+    fn icons_reads_the_ui_section() {
+        let dir = temp_dir("icons-read");
+        std::fs::create_dir_all(dir.join("chiptui")).unwrap();
+        std::fs::write(
+            dir.join("chiptui/config.toml"),
+            "[ui]\nicons = \"nerd\"\ntheme = \"auto\"\n",
+        )
+        .unwrap();
+        assert_eq!(icons(&dir).as_deref(), Some("nerd"));
+    }
+
+    #[test]
+    fn icons_is_none_when_unset() {
+        let dir = temp_dir("icons-unset");
+        assert_eq!(icons(&dir), None);
     }
 
     #[test]

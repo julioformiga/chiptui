@@ -181,7 +181,13 @@ No Private Use Area codepoints (Nerd Font icons and the like) in any glyph
 the UI draws --- they render as tofu or blank space on a terminal without
 that font installed, and there is no fallback. Stick to standard Unicode
 (plain symbols or emoji); `tests/no_private_use_glyphs.rs` scans `src/` for
-violations.
+violations. The single sanctioned exception is `src/icons.rs`, the shared
+button-glyph vocabulary, which may carry BMP Private Use Area codepoints
+(U+E000--U+F8FF, single-width `nf-fa-*` only) written as `\u{...}` escapes
+so the scan still holds without an exception list --- and those glyphs ship
+only behind the opt-in `[ui] icons = "nerd"` in the user config; the
+default rendering stays plain Unicode (`"unicode"`), with `"none"` drawing
+no glyphs at all, so a terminal without a Nerd Font never meets one.
 
 ## Testing
 

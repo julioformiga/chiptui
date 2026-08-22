@@ -207,6 +207,21 @@ const fn shifted(
     }
 }
 
+/// A Ctrl-chord row: the replay event the help select sends on `Enter`.
+const fn ctrl(
+    key: &'static str,
+    description: &'static str,
+    code: KeyCode,
+    sites: &'static [Site],
+) -> HelpBinding {
+    HelpBinding {
+        key,
+        description,
+        event: Some((code, KeyModifiers::CONTROL)),
+        sites,
+    }
+}
+
 const fn site(
     label: &'static str,
     short: &'static str,
@@ -354,7 +369,7 @@ const DASHBOARD_NAVIGATION: [HelpBinding; 10] = [
     ),
 ];
 
-const DASHBOARD_COMMANDS: [HelpBinding; 21] = [
+const DASHBOARD_COMMANDS: [HelpBinding; 22] = [
     action(
         "r",
         "re-detect, reload, or rename (file list)",
@@ -370,6 +385,16 @@ const DASHBOARD_COMMANDS: [HelpBinding; 21] = [
         "pick a color theme",
         KeyCode::Char('t'),
         &[site("t", "theme", 51, ANY_FOCUS, &[], When::Always)],
+    ),
+    // The chord only exists where the Kitty keyboard protocol answered:
+    // a legacy terminal sends Ctrl+I as plain Tab (byte 0x09), which keeps
+    // its focus-tour meaning there --- a caveat the one-line budget cannot
+    // carry, so it lives here and in `App::cycle_icon_set`'s doc.
+    ctrl(
+        "ctrl+i",
+        "cycle icons (unicode/nerd/none)",
+        KeyCode::Char('i'),
+        &[site("ctrl+i", "icons", 53, ANY_FOCUS, &[], When::Always)],
     ),
     action(
         "x",
@@ -1014,6 +1039,7 @@ mod tests {
                 ("d", "scan devices"),
                 ("t", "theme"),
                 ("x", "flash"),
+                ("ctrl+i", "icons"),
                 ("m", "monitor/REPL"),
                 ("shift+r", "restart device"),
                 ("ctrl+←/→", "actions"),
@@ -1035,8 +1061,8 @@ mod tests {
         assert_eq!(
             footer_keys(View::Dashboard, &logs),
             vec![
-                "tab", "r", "d", "t", "x", "m", "shift+r", "←/→", "ctrl+c", "s", "↑/↓", "shift+p",
-                "?", "q",
+                "tab", "r", "d", "t", "x", "ctrl+i", "m", "shift+r", "←/→", "ctrl+c", "s", "↑/↓",
+                "shift+p", "?", "q",
             ]
         );
 
@@ -1057,6 +1083,7 @@ mod tests {
                 "d",
                 "t",
                 "x",
+                "ctrl+i",
                 "m",
                 "s",
                 "ctrl+←/→",
@@ -1081,6 +1108,7 @@ mod tests {
                 "d",
                 "t",
                 "x",
+                "ctrl+i",
                 "m",
                 "s",
                 "ctrl+←/→",
@@ -1100,6 +1128,7 @@ mod tests {
                 "d",
                 "t",
                 "x",
+                "ctrl+i",
                 "m",
                 "s",
                 "ctrl+←/→",

@@ -72,18 +72,23 @@ impl FlashAction {
         }
     }
 
-    /// Single-glyph marker for the flash menu, same monochrome-unicode
-    /// convention as [`crate::files::SyncStatus::marker`] --- colored by the
-    /// terminal, not by an emoji font.
-    pub const fn icon(self) -> &'static str {
+    /// Single-glyph marker for the flash menu, same single-width-glyph
+    /// convention as [`crate::files::SyncStatus::marker`] --- and colored the
+    /// same way too: this type stays UI-free, so the glyph-to-`Palette`-color
+    /// mapping lives in `ui::flash`, exactly where `SyncStatus`'s own colors
+    /// live in `ui::files::status_style` rather than on `SyncStatus` itself.
+    /// The glyph itself comes from the active
+    /// [`IconSet`](crate::icons::IconSet), so an opt-in Nerd Font rendering
+    /// reaches this menu the same way it reaches the pane's buttons.
+    pub const fn icon(self, icons: crate::icons::IconSet) -> &'static str {
         match self {
-            Self::ChipInfo => "◆",
-            Self::FlashInfo => "▦",
-            Self::EraseFlash => "⌫",
-            Self::WriteFlash => "⇪",
-            Self::VerifyFlash => "✓",
-            Self::Reset => "↺",
-            Self::ReadFlash => "◎",
+            Self::ChipInfo => icons.microchip(),
+            Self::FlashInfo => icons.info(),
+            Self::EraseFlash => icons.erase(),
+            Self::WriteFlash => icons.write(),
+            Self::VerifyFlash => icons.check(),
+            Self::Reset => icons.power(),
+            Self::ReadFlash => icons.eye(),
         }
     }
 

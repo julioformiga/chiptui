@@ -22,13 +22,14 @@ use crate::files::SyncStatus;
 use crate::ui::panels::truncate_start;
 use crate::ui::{
     Palette, SPINNER, border_style, content_style, dashboard_focused, highlighted_line,
-    muted_style, pane_block, pane_border, selection_style, shortcut_highlight_style,
+    muted_style, pane_block, pane_border, pane_title, selection_style, shortcut_highlight_style,
     shortcut_letter,
 };
 
 pub fn draw(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
     let Some(browser) = &app.browser else {
-        let block = pane_block("Files", false, palette, None);
+        let title = pane_title(app.icon_set().folder(), "Files");
+        let block = pane_block(&title, false, palette, None);
         frame.render_widget(
             Paragraph::new("the file listing has not started yet".fg(palette.muted)).block(block),
             area,
@@ -75,7 +76,8 @@ fn draw_no_device(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
         .manager
         .selected_kind()
         .map_or("this backend".to_string(), |kind| kind.to_string());
-    let block = pane_block("Device", false, palette, None);
+    let title = pane_title(app.icon_set().folder(), "Device");
+    let block = pane_block(&title, false, palette, None);
     frame.render_widget(
         Paragraph::new(format!("{backend}: no device filesystem").fg(palette.muted)).block(block),
         area,
@@ -114,12 +116,11 @@ fn draw_local(
         crate::ui::tilde_path(&browser.local_path, app.home_dir())
     };
     // The prefix never truncates --- only the path shortens, from the left.
-    let block = pane_block(
+    let title = pane_title(
+        app.icon_set().folder(),
         &format!("Files: {}", shorten(&title, area.width)),
-        focused,
-        palette,
-        shortcut_letter(app, 'f'),
     );
+    let block = pane_block(&title, focused, palette, shortcut_letter(app, 'f'));
 
     if let Some(error) = &browser.local_error {
         frame.render_widget(
@@ -144,6 +145,7 @@ fn draw_local(
                 entry.size,
                 statuses.get(&entry.name).copied(),
                 inner.width,
+                app.icon_set(),
                 palette,
             )
         })
@@ -174,6 +176,7 @@ fn draw_device(
     if app.devices.script_state() == ScriptState::Running {
         title.push_str(" · script running");
     }
+    let title = pane_title(app.icon_set().folder(), &title);
     // A backend that can flash or erase gets the pane the flash menu moved
     // into: the border row carries the `Actions • Device Files`
     // tab strip (row 3's grammar) and the walked path rides the strip's
@@ -236,7 +239,7 @@ fn draw_device_tabs(frame: &mut Frame, pane: Rect, app: &App, browser: &Browser,
 
     let titles = vec![
         highlighted_line(
-            "Actions",
+            &pane_title(app.icon_set().bolt(), "Actions"),
             if actions_tab {
                 active_style
             } else {
@@ -246,7 +249,7 @@ fn draw_device_tabs(frame: &mut Frame, pane: Rect, app: &App, browser: &Browser,
             shortcut_letter(app, 'a'),
         ),
         highlighted_line(
-            "Device Files",
+            &pane_title(app.icon_set().folder(), "Device Files"),
             if actions_tab {
                 inactive_style
             } else {
@@ -359,6 +362,7 @@ fn draw_device_content(
                 entry.size,
                 statuses.get(&entry.name).copied(),
                 list_area.width,
+                app.icon_set(),
                 palette,
             )
         })
@@ -457,16 +461,18 @@ pub(super) fn render_list(
 /// The status marker exists only when there is another side to compare
 /// against; `None` (the workspace pane's lone directory list) draws just
 /// `<icon> <name> <size>` --- a list with no comparison states no verdict.
+/// The `none` icon set drops the `<icon>` column whole (see [`icon`]).
 pub(super) fn row(
     name: &str,
     is_dir: bool,
     size: u64,
     status: Option<SyncStatus>,
     width: u16,
+    icons: crate::icons::IconSet,
     palette: Palette,
 ) -> ListItem<'static> {
     ListItem::new(Line::from(row_spans(
-        name, is_dir, size, status, width, palette,
+        name, is_dir, size, status, width, icons, palette,
     )))
 }
 
@@ -478,6 +484,7 @@ fn row_spans(
     size: u64,
     status: Option<SyncStatus>,
     width: u16,
+    icons: crate::icons::IconSet,
     palette: Palette,
 ) -> Vec<Span<'static>> {
     let size_text = if is_dir {
@@ -491,8 +498,8 @@ fn row_spans(
     // U+2699 is East-Asian *ambiguous*, scored 1, which budgeted the
     // column one too narrow and pushed the name into the icon). The
     // column is fixed at 2 cells + the trailing space. A marker costs 2
-    // more.
-    let icon_width = 3;
+    // more. The `none` icon set drops the column (and its 3 cells) whole.
+    let icon_width = usize::from(icons.shows_decorations()) * 3;
     let marker_width = usize::from(status.is_some()) * 2;
     let name_width =
         (width as usize).saturating_sub(icon_width + marker_width + size_text.len() + 1);
@@ -512,10 +519,12 @@ fn row_spans(
             status_style(status, palette),
         ));
     }
-    spans.push(Span::styled(
-        format!("{} ", icon(name, is_dir)),
-        Style::new().fg(palette.fg),
-    ));
+    if icons.shows_decorations() {
+        spans.push(Span::styled(
+            format!("{} ", icon(name, is_dir, icons)),
+            Style::new().fg(palette.fg),
+        ));
+    }
     spans.push(Span::styled(display, name_style));
     spans.push(Span::raw(" ".repeat(padding + 1)));
     spans.push(Span::styled(size_text, muted_style(palette)));
@@ -525,7 +534,14 @@ fn row_spans(
 /// A glyph hinting at the entry's kind: a folder, or a common extension's
 /// language/purpose. Purely cosmetic --- unknown extensions fall back to a
 /// generic file glyph rather than nothing, so the column stays aligned.
-fn icon(name: &str, is_dir: bool) -> &'static str {
+/// A `.py` file follows the backend's own mark under the Nerd set
+/// ([`IconSet::python`](crate::icons::IconSet::python)): the file list
+/// reads in the same vocabulary the header and the home rows do, instead
+/// of mixing an emoji logo into a nerd-rendered UI. Every other extension
+/// keeps its emoji in every set (none of them has a backend to borrow
+/// from), and the `none` set never reaches here --- the whole column is
+/// decoration and hides first (`shows_decorations`).
+fn icon(name: &str, is_dir: bool, icons: crate::icons::IconSet) -> &'static str {
     if is_dir {
         return "📁";
     }
@@ -534,7 +550,10 @@ fn icon(name: &str, is_dir: bool) -> &'static str {
         .and_then(|ext| ext.to_str())
         .map(str::to_lowercase);
     match ext.as_deref() {
-        Some("py") => "🐍",
+        Some("py") => match icons {
+            crate::icons::IconSet::Nerd => icons.python(),
+            _ => "🐍",
+        },
         Some("rs") => "🦀",
         Some("c" | "h" | "cc" | "cpp" | "hpp") => "🔧",
         Some("dts" | "dtsi" | "overlay") => "🔌",
@@ -608,14 +627,17 @@ fn truncate(name: &str, max: usize) -> String {
     format!("{kept}…")
 }
 
-/// Shortens the pane title from the left: 7 is "Files: ".len().
+/// Shortens the pane title from the left: 7 is "Files: ".len(), plus 2
+/// for the leading glyph and its gap --- budgeted for the worst icon set,
+/// so a long path never rides over the pane's corner in any of them.
 fn shorten(path: &str, width: u16) -> String {
-    truncate_start(path, (width as usize).saturating_sub(7))
+    truncate_start(path, (width as usize).saturating_sub(9))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::icons::IconSet;
 
     #[test]
     fn sizes_are_scaled_for_narrow_columns() {
@@ -656,16 +678,31 @@ mod tests {
 
     #[test]
     fn a_directory_gets_the_folder_icon_regardless_of_name() {
-        assert_eq!(icon("src", true), "📁");
-        assert_eq!(icon("main.py", true), "📁");
+        assert_eq!(icon("src", true, IconSet::Unicode), "📁");
+        assert_eq!(icon("main.py", true, IconSet::Unicode), "📁");
     }
 
     #[test]
     fn known_extensions_get_a_distinct_icon() {
-        assert_eq!(icon("main.py", false), "🐍");
-        assert_eq!(icon("readme.TXT", false), "📄");
-        assert_eq!(icon("prj.conf", false), "⚙️");
-        assert_eq!(icon("board.overlay", false), "🔌");
+        assert_eq!(icon("main.py", false, IconSet::Unicode), "🐍");
+        assert_eq!(icon("readme.TXT", false, IconSet::Unicode), "📄");
+        assert_eq!(icon("prj.conf", false, IconSet::Unicode), "⚙️");
+        assert_eq!(icon("board.overlay", false, IconSet::Unicode), "🔌");
+    }
+
+    /// A `.py` row borrows the backend's own mark under the Nerd set ---
+    /// the same Python logo the header and the home rows carry --- while
+    /// every other extension keeps its emoji there (none of them has a
+    /// backend to borrow from).
+    #[test]
+    fn a_py_file_follows_the_backend_mark_under_the_nerd_set() {
+        assert_eq!(
+            icon("main.py", false, IconSet::Nerd),
+            "\u{E73C}",
+            "the Python logo, straight off the backend's mark"
+        );
+        assert_eq!(icon("lib.rs", false, IconSet::Nerd), "🦀");
+        assert_eq!(icon("firmware.bin", false, IconSet::Nerd), "📄");
     }
 
     #[test]
@@ -686,7 +723,15 @@ mod tests {
             "firmware.bin",
         ] {
             let is_dir = name == "src";
-            let spans = row_spans(name, is_dir, 128, None, 40, palette);
+            let spans = row_spans(
+                name,
+                is_dir,
+                128,
+                None,
+                40,
+                crate::icons::IconSet::Unicode,
+                palette,
+            );
             assert!(
                 spans[0].content.ends_with(' '),
                 "{name}: the icon column must end in a space (got {:?})",
@@ -698,8 +743,32 @@ mod tests {
     }
 
     #[test]
+    fn the_none_icon_set_drops_the_emoji_column_whole() {
+        let palette = ratatui_themes::ThemeName::TokyoNight.palette();
+        let spans = row_spans(
+            "main.py",
+            false,
+            128,
+            None,
+            40,
+            crate::icons::IconSet::None,
+            palette,
+        );
+        // No icon span at all: the row starts straight on the name, and
+        // the three cells the icon column used to budget belong to the
+        // name now (still inside the width).
+        assert!(
+            spans[0].content.starts_with("main.py"),
+            "the name leads: {:?}",
+            spans[0].content
+        );
+        let total: usize = spans.iter().map(|span| span.width()).sum();
+        assert!(total <= 40, "row is {total} wide, beyond the pane");
+    }
+
+    #[test]
     fn an_unknown_or_missing_extension_falls_back_to_a_generic_file_icon() {
-        assert_eq!(icon("Kconfig", false), "📄");
-        assert_eq!(icon("firmware.bin", false), "📄");
+        assert_eq!(icon("Kconfig", false, IconSet::Unicode), "📄");
+        assert_eq!(icon("firmware.bin", false, IconSet::Unicode), "📄");
     }
 }

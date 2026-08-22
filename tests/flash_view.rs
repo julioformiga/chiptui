@@ -66,9 +66,28 @@ fn key(code: KeyCode) -> AppEvent {
     AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE))
 }
 
+/// A home directory that does not exist, unique per call --- the same
+/// hermeticity `tests/ui_render.rs`'s `scratch_home` buys: `App::new` reads
+/// `[ui] theme`/`[ui] icons` out of `$HOME`'s config, so without this the
+/// frames assert against whatever the developer happens to have configured
+/// (an `icons = "nerd"` in the real config turned every glyph assertion
+/// here into a coin flip).
+fn hermetic_app(root: impl Into<PathBuf>) -> App {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNT: AtomicU64 = AtomicU64::new(0);
+    let mut app = App::new(root);
+    let home = std::env::temp_dir().join(format!(
+        "chiptui-flash-home-{}-{}",
+        std::process::id(),
+        COUNT.fetch_add(1, Ordering::Relaxed)
+    ));
+    app.set_home_dir(home);
+    app
+}
+
 /// An app sitting in the flash view, pointed at the fake `esptool`.
 fn app_with_flash(project: &Project) -> App {
-    let mut app = App::new(&project.root);
+    let mut app = hermetic_app(&project.root);
     app.bootstrap();
     app.manager.set_override(Some(BackendKind::MicroPython));
     app.open_flash();
@@ -112,7 +131,7 @@ fn the_flash_view_is_gated_on_flash_capabilities() {
     // AGENTS.md §3: the gate is the capability, not the backend name. No
     // backend is detected in a bare temp directory, so neither `Flash` nor
     // `EraseFlash` is available.
-    let mut app = App::new(std::env::temp_dir());
+    let mut app = hermetic_app(std::env::temp_dir());
     app.bootstrap();
     app.open_flash();
     assert_eq!(app.view, View::Dashboard, "no backend exposes no flash op");
@@ -304,7 +323,7 @@ fn write_flash_end_to_end_succeeds_and_detects_the_chip() {
 fn a_running_write_flash_reports_esptools_percentage() {
     let project = Project::new("write-progress");
     project.write_firmware("app.bin");
-    let mut app = App::new(&project.root);
+    let mut app = hermetic_app(&project.root);
     app.bootstrap();
     app.manager.set_override(Some(BackendKind::MicroPython));
     app.maybe_scan_devices();
@@ -834,7 +853,7 @@ fn device(port: &str) -> DeviceInfo {
 /// `mpremote` on PATH (there is none in CI), so discovery simply fails ---
 /// the pane and its tab exist regardless.
 fn app_in_actions_tab(project: &Project) -> App {
-    let mut app = App::new(&project.root);
+    let mut app = hermetic_app(&project.root);
     app.bootstrap();
     app.manager.set_override(Some(BackendKind::MicroPython));
     app.maybe_scan_devices();
@@ -856,12 +875,12 @@ fn x_switches_the_device_pane_to_the_actions_tab() {
     // the row needs 16+ rows of its own, so render tall enough to fit.
     let frame = render(&mut app, 110, 40);
     assert!(
-        frame.contains("Actions • Device Files"),
+        frame.contains("↯ Actions • ▣ Device Files"),
         "missing the pane's tab strip:\n{frame}"
     );
-    assert!(frame.contains("▦ Flash information"), "{frame}");
+    assert!(frame.contains("ℹ Flash information"), "{frame}");
     assert!(frame.contains("⇪ Write / flash firmware"), "{frame}");
-    assert!(frame.contains("⇩ Search firmware online"), "{frame}");
+    assert!(frame.contains("⌕ Search firmware online"), "{frame}");
     // The chip identity is read in the background of every device
     // selection, and a direct URL is pasted from the search window: neither
     // is a button here.
@@ -973,11 +992,11 @@ fn the_two_device_tabs_hold_the_same_row_height() {
         let frame = render(app, 110, 40);
         let device = frame
             .lines()
-            .position(|line| line.contains("Actions • Device Files"))
+            .position(|line| line.contains("↯ Actions • ▣ Device Files"))
             .expect("the device pane's strip");
         let log = frame
             .lines()
-            .position(|line| line.contains("Log • Monitor"))
+            .position(|line| line.contains("▤ Log • ◉ Monitor"))
             .expect("row 3's strip");
         (device, log)
     };
@@ -1097,7 +1116,7 @@ fn a_device_becoming_known_at_startup_queries_it_with_esptool_in_the_background(
     // resolved to a single board: the device panel should not need the user
     // to open the Flash view by hand to learn what is connected.
     let project = Project::new("auto-query-startup");
-    let mut app = App::new(&project.root);
+    let mut app = hermetic_app(&project.root);
     app.bootstrap();
     app.manager.set_override(Some(BackendKind::MicroPython));
 
@@ -1152,7 +1171,7 @@ fn picking_a_device_defers_the_esptool_query_until_mpremote_releases_the_port() 
     // same instant used to make esptool lose the race for the port
     // ("cannot open the serial port") every time.
     let project = Project::new("defer-query");
-    let mut app = App::new(&project.root);
+    let mut app = hermetic_app(&project.root);
     app.bootstrap();
     app.manager.set_override(Some(BackendKind::MicroPython));
 
@@ -1301,7 +1320,7 @@ fn the_arrows_create_the_flash_panel_the_tab_draws() {
     // files side that key is the ctrl chord --- plain → navigates
     // directories there.
     let project = Project::new("pane-arrow-first");
-    let mut app = App::new(&project.root);
+    let mut app = hermetic_app(&project.root);
     app.bootstrap();
     app.manager.set_override(Some(BackendKind::MicroPython));
     app.maybe_scan_devices();
@@ -1318,8 +1337,8 @@ fn the_arrows_create_the_flash_panel_the_tab_draws() {
     // The row is sized to the button stack, so the buttons are actually
     // there to press --- a panel-less tab collapsed row 2 to its borders.
     let frame = render(&mut app, 110, 40);
-    assert!(frame.contains("▦ Flash information"), "{frame}");
-    assert!(frame.contains("⇩ Search firmware online"), "{frame}");
+    assert!(frame.contains("ℹ Flash information"), "{frame}");
+    assert!(frame.contains("⌕ Search firmware online"), "{frame}");
     assert!(frame.contains("no command yet"), "{frame}");
 }
 
@@ -1378,7 +1397,7 @@ fn the_strip_carries_each_tabs_own_status() {
     let actions = render(&mut app, 110, 40);
     let strip = actions
         .lines()
-        .find(|line| line.contains("Actions • Device Files"))
+        .find(|line| line.contains("↯ Actions • ▣ Device Files"))
         .unwrap()
         .to_string();
     assert!(strip.contains("script running"), "{strip}");
@@ -1391,7 +1410,7 @@ fn the_strip_carries_each_tabs_own_status() {
     let files = render(&mut app, 110, 40);
     let strip = files
         .lines()
-        .find(|line| line.contains("Actions • Device Files"))
+        .find(|line| line.contains("↯ Actions • ▣ Device Files"))
         .unwrap()
         .to_string();
     assert!(

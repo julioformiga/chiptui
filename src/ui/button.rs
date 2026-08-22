@@ -34,7 +34,7 @@
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Widget;
 
@@ -57,6 +57,10 @@ pub struct Button {
     /// --- every button in a pane's stack --- costs one row, exactly as
     /// before.
     detail: Option<String>,
+    /// A leading glyph carrying its own color, independent of the label's
+    /// bold/muted weight (see [`Button::icon`]). `None` renders the label as
+    /// one plain span, exactly as before this field existed.
+    icon: Option<(&'static str, Color)>,
     enabled: bool,
     selected: bool,
 }
@@ -66,9 +70,25 @@ impl Button {
         Self {
             label: label.into(),
             detail: None,
+            icon: None,
             enabled: true,
             selected: false,
         }
+    }
+
+    /// A leading glyph, colored independently of the label text next to it
+    /// --- the same split the file browser's sync-status markers and the
+    /// header's backend icon use (a colored `Span`, then a plain-styled text
+    /// `Span`), rather than baking the glyph into the label string. `glyph`
+    /// is expected to be exactly one column (the crate's single-width-glyph
+    /// policy --- see [`truncate`]'s doc comment), or the width math below
+    /// silently miscounts. The one exception is the empty string --- the
+    /// `none` icon set's way of saying "no glyph" --- which keeps the
+    /// button's geometry exactly as it is (the column stays, blank) so a
+    /// switch of icon sets never shifts a label or a detail line.
+    pub fn icon(mut self, glyph: &'static str, color: Color) -> Self {
+        self.icon = Some((glyph, color));
+        self
     }
 
     /// Adds a muted second line explaining the action --- what it does, or
@@ -111,6 +131,16 @@ impl Button {
             Style::new().fg(palette.fg).bold()
         } else {
             muted_style(palette)
+        }
+    }
+
+    /// The icon glyph's color: its own `icon()` color while the action can
+    /// run, `muted` while it waits --- so a disabled row reads as uniformly
+    /// dimmed rather than a grey label under a still-vivid icon.
+    fn icon_style(&self, palette: Palette) -> Style {
+        match (self.enabled, self.icon) {
+            (true, Some((_, color))) => Style::new().fg(color),
+            _ => muted_style(palette),
         }
     }
 }
@@ -156,15 +186,16 @@ impl Widget for ButtonStack {
             // buffer like any other row.
             for (offset, button) in self.buttons.iter().enumerate() {
                 let y = area.y + offset as u16;
-                put(
-                    buf,
-                    area,
-                    y,
-                    Line::styled(
-                        truncate(&button.label, width),
-                        button.row_style(self.palette),
-                    ),
+                let content = icon_content(button.icon.map(|(glyph, _)| glyph), &button.label, 1);
+                let body = truncate(&content, width);
+                let spans = icon_body_spans(
+                    body,
+                    0,
+                    button.icon.is_some(),
+                    button.icon_style(self.palette),
+                    button.row_style(self.palette),
                 );
+                put(buf, area, y, Line::from(spans));
                 let row = Rect {
                     x: area.x,
                     y,
@@ -186,22 +217,30 @@ impl Widget for ButtonStack {
             // Centered while the label stands alone; left-aligned once it
             // has a detail under it, so the two rows read as one block and
             // the icons line up down the stack (see `Button::detail`).
-            let body = if button.detail.is_some() {
-                let label = truncate(&button.label, inner.saturating_sub(LABEL_INDENT));
-                pad_left(&format!("{}{label}", " ".repeat(LABEL_INDENT)), inner)
+            let icon_glyph = button.icon.map(|(glyph, _)| glyph);
+            let (body, icon_at) = if button.detail.is_some() {
+                let content = icon_content(icon_glyph, &button.label, 2);
+                let truncated = truncate(&content, inner.saturating_sub(LABEL_INDENT));
+                (
+                    pad_left(&format!("{}{truncated}", " ".repeat(LABEL_INDENT)), inner),
+                    LABEL_INDENT,
+                )
             } else {
-                center(&truncate(&button.label, inner), inner)
+                let content = icon_content(icon_glyph, &button.label, 1);
+                let truncated = truncate(&content, inner);
+                let left = (inner - truncated.chars().count()) / 2;
+                (center(&truncated, inner), left)
             };
-            put(
-                buf,
-                area,
-                y,
-                Line::from(vec![
-                    Span::styled("│", frame),
-                    Span::styled(body, button.row_style(self.palette)),
-                    Span::styled("│", frame),
-                ]),
-            );
+            let mut spans = vec![Span::styled("│", frame)];
+            spans.extend(icon_body_spans(
+                body,
+                icon_at,
+                button.icon.is_some(),
+                button.icon_style(self.palette),
+                button.row_style(self.palette),
+            ));
+            spans.push(Span::styled("│", frame));
+            put(buf, area, y, Line::from(spans));
             y += 1;
             if let Some(detail) = &button.detail {
                 let text = truncate(detail, inner.saturating_sub(DETAIL_INDENT));
@@ -281,6 +320,49 @@ fn center(text: &str, width: usize) -> String {
 fn pad_left(text: &str, width: usize) -> String {
     let used = text.chars().count();
     format!("{text}{}", " ".repeat(width.saturating_sub(used)))
+}
+
+/// The label text to lay out and measure: `<icon><gap-spaces><label>` when
+/// an icon is set, `label` alone otherwise. `gap` is 1 for a centered row's
+/// `<icon> <label>` and 2 for a detailed row's `<icon>  <label>` (the module
+/// doc's convention, kept for the extra column [`DETAIL_INDENT`] already
+/// reserves for it).
+fn icon_content(icon: Option<&str>, label: &str, gap: usize) -> String {
+    match icon {
+        Some(glyph) => format!("{glyph}{}{label}", " ".repeat(gap)),
+        None => label.to_string(),
+    }
+}
+
+/// Splits an already truncated/padded/centered `body` into spans: the
+/// character at `icon_at` styled `icon_style`, everything else styled
+/// `label_style`. `has_icon` is `false` for a button with no [`Button::icon`]
+/// set, in which case `body` renders as one plain span exactly as it did
+/// before this splitting existed --- `icon_at` only means something once an
+/// icon is actually there to find at that column.
+fn icon_body_spans(
+    body: String,
+    icon_at: usize,
+    has_icon: bool,
+    icon_style: Style,
+    label_style: Style,
+) -> Vec<Span<'static>> {
+    if !has_icon || icon_at >= body.chars().count() {
+        return vec![Span::styled(body, label_style)];
+    }
+    let mut chars = body.chars();
+    let before: String = (&mut chars).take(icon_at).collect();
+    let icon_char = chars.next().expect("icon_at < body's char count");
+    let after: String = chars.collect();
+    let mut spans = Vec::with_capacity(3);
+    if !before.is_empty() {
+        spans.push(Span::styled(before, label_style));
+    }
+    spans.push(Span::styled(icon_char.to_string(), icon_style));
+    if !after.is_empty() {
+        spans.push(Span::styled(after, label_style));
+    }
+    spans
 }
 
 /// Writes one row at `y` unless it falls past the area's bottom.
@@ -592,5 +674,67 @@ mod tests {
         let label_cell = |x: u16, y: u16| &buf[(x, y)];
         assert_eq!(label_cell(9, 1).fg, palette.fg, "enabled button label");
         assert_eq!(label_cell(9, 3).fg, palette.muted, "disabled button label");
+    }
+
+    /// [`Button::icon`] colors only the glyph --- the label text next to it
+    /// keeps `row_style`'s normal `fg`/bold, the same split the file
+    /// browser's colored sync-status marker and plain name already use.
+    #[test]
+    fn an_icon_carries_its_own_color_independent_of_the_label() {
+        let palette = palette();
+        let stack = ButtonStack {
+            buttons: vec![Button::new("Clean").icon("×", palette.warning)],
+            palette,
+        };
+        let height = stack.height();
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(20, height)).unwrap();
+        terminal
+            .draw(|frame| frame.render_widget(stack, frame.area()))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let icon_x = (0..20)
+            .find(|&x| buf[(x, 1)].symbol() == "×")
+            .expect("the icon cell is drawn");
+        assert_eq!(buf[(icon_x, 1)].fg, palette.warning, "icon cell color");
+        let label_x = (0..20)
+            .find(|&x| buf[(x, 1)].symbol() == "C")
+            .expect("the label cell is drawn");
+        assert_eq!(
+            buf[(label_x, 1)].fg,
+            palette.fg,
+            "label cell keeps the normal fg"
+        );
+    }
+
+    /// A disabled button's icon mutes along with its label --- a still-vivid
+    /// icon on an otherwise-dimmed row would read as broken, not as "waiting
+    /// for the checklist".
+    #[test]
+    fn a_disabled_buttons_icon_mutes_with_its_label() {
+        let palette = palette();
+        let stack = ButtonStack {
+            buttons: vec![
+                Button::new("Clean")
+                    .icon("×", palette.warning)
+                    .enabled(false),
+            ],
+            palette,
+        };
+        let height = stack.height();
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(20, height)).unwrap();
+        terminal
+            .draw(|frame| frame.render_widget(stack, frame.area()))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let icon_x = (0..20)
+            .find(|&x| buf[(x, 1)].symbol() == "×")
+            .expect("the icon cell is drawn");
+        assert_eq!(
+            buf[(icon_x, 1)].fg,
+            palette.muted,
+            "a disabled icon mutes instead of keeping its color"
+        );
     }
 }

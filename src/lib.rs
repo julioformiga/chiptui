@@ -21,6 +21,7 @@ pub mod firmware_id;
 pub mod flash;
 pub mod highlight;
 pub mod home;
+pub mod icons;
 pub mod install;
 pub mod logs;
 pub mod process;

@@ -148,6 +148,11 @@ pub fn draw(frame: &mut Frame, screen: &HomeScreen, theme: super::Palette) {
 /// `<icon> <backend>  <name>  <path>` --- fixed columns for the first two so
 /// the names line up, the path taking whatever is left and losing its head
 /// (never its tail: the project's own folder is the identifying part).
+/// The `none` icon set drops the `<icon>` column (and its 3 budgeted cells)
+/// whole, the same rule the file browser's emoji column follows; under the
+/// Nerd set only MicroPython trades its emoji for the Python logo (the
+/// header's rule, `IconSet::python`) --- Zephyr keeps its `🔷` in every
+/// set, and plain Unicode keeps both emoji.
 fn project_spans<'a>(
     screen: &HomeScreen,
     entry: &'a crate::settings::ProjectEntry,
@@ -159,25 +164,36 @@ fn project_spans<'a>(
     const BACKEND_WIDTH: usize = 12;
     const NAME_WIDTH: usize = 22;
 
+    let icons = screen.icons();
+    let mark = match (icons, entry.backend) {
+        (crate::icons::IconSet::Nerd, crate::backend::BackendKind::MicroPython) => {
+            icons.python().to_string()
+        }
+        _ => entry.backend.icon().to_string(),
+    };
     let name = fit(&entry.name, NAME_WIDTH);
-    let used = 1 + 3 + BACKEND_WIDTH + 2 + NAME_WIDTH + 2;
+    let icon_cols = usize::from(icons.shows_decorations()) * 3;
+    let used = 1 + icon_cols + BACKEND_WIDTH + 2 + NAME_WIDTH + 2;
     let path_width = width.saturating_sub(used + 1);
     let path = super::panels::truncate_start(&screen.display_path(&entry.path), path_width);
 
-    vec![
+    let mut spans = vec![
         Span::styled(" ", base),
-        Span::styled(format!("{} ", entry.backend.icon()), base),
         Span::styled(
             format!("{:<BACKEND_WIDTH$}", entry.backend.display_name()),
             base.fg(accent).add_modifier(Modifier::BOLD),
         ),
-        Span::styled("  ", base),
-        Span::styled(format!("{name:<NAME_WIDTH$}"), base),
-        Span::styled("  ", base),
-        // Padded to the pane's width so the tint reaches the right edge:
-        // a row that stops at its text would look like a ragged block.
-        Span::styled(format!("{path:<path_width$}"), base.fg(muted)),
-    ]
+    ];
+    if icons.shows_decorations() {
+        spans.insert(1, Span::styled(format!("{mark} "), base));
+    }
+    spans.push(Span::styled("  ", base));
+    spans.push(Span::styled(format!("{name:<NAME_WIDTH$}"), base));
+    spans.push(Span::styled("  ", base));
+    // Padded to the pane's width so the tint reaches the right edge:
+    // a row that stops at its text would look like a ragged block.
+    spans.push(Span::styled(format!("{path:<path_width$}"), base.fg(muted)));
+    spans
 }
 
 /// Shortens `text` from the right, keeping the head --- a project's name

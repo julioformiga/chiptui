@@ -757,6 +757,18 @@ pub fn resolve_theme(config_dir: &std::path::Path) -> ThemeChoice {
         .unwrap_or(ThemeChoice::Named(ratatui_themes::ThemeName::TokyoNight))
 }
 
+/// Resolves the stored `[ui] icons` choice, falling back to plain
+/// Unicode on an absent or unrecognized value --- a Private Use Area
+/// glyph never appears unless the operator opted in. Read once at
+/// startup ([`App::new`]) and moved with `home_dir`, the same two reads
+/// as the theme; mid-run, `ctrl+i` ([`App::cycle_icon_set`]) steps and
+/// re-persists the choice.
+pub fn resolve_icons(config_dir: &std::path::Path) -> crate::icons::IconSet {
+    crate::settings::icons(config_dir)
+        .and_then(|slug| crate::icons::IconSet::from_slug(&slug))
+        .unwrap_or_default()
+}
+
 pub struct App {
     pub manager: ProjectManager,
     pub logs: LogStore,
@@ -967,6 +979,12 @@ pub struct App {
     /// [`ZephyrSettings`](crate::settings::ZephyrSettings) (recomputed on
     /// demand), this is read every frame by the renderer.
     theme: ThemeChoice,
+    /// The button glyphs' rendering --- `Unicode` unless `[ui] icons` in
+    /// the user config says `nerd`/`none` ([`resolve_icons`]). No per-frame
+    /// derivation, so the draw calls that build a button stack read it
+    /// straight off [`Self::icon_set`]; the `ctrl+i` cycle
+    /// ([`Self::cycle_icon_set`]) is the one thing that moves it mid-run.
+    icons: crate::icons::IconSet,
     /// Memoized [`Self::tool_status`]. The render path asks twice a frame
     /// (once to measure the pane, once to draw it) for an answer that only
     /// changes with the selected backend or the resolved tool locations, and
@@ -1008,6 +1026,7 @@ impl App {
             std::env::var_os("HOME").map_or_else(std::path::PathBuf::new, std::path::PathBuf::from);
         let config_dir = crate::settings::default_config_dir(&home);
         let theme = resolve_theme(&config_dir);
+        let icons = resolve_icons(&config_dir);
         let mut manager = ProjectManager::new(start_dir);
         manager.set_known_projects(crate::settings::ProjectRegistry::load(&config_dir, &home));
         Self {
@@ -1071,6 +1090,7 @@ impl App {
             serial_dir: std::path::PathBuf::from("/dev"),
             config_dir,
             theme,
+            icons,
             home_dir: home,
             tool_status_cache: std::cell::RefCell::new(None),
             switch_requested: false,
@@ -1116,6 +1136,56 @@ impl App {
     /// when the session follows the backend, a fixed theme otherwise.
     pub fn theme_choice(&self) -> ThemeChoice {
         self.theme
+    }
+
+    /// `ctrl+i`: steps the icon rendering through its three values in
+    /// declaration order (`unicode` → `nerd` → `none` → `unicode`), applies
+    /// it immediately (the next frame's button stacks read a different
+    /// [`Self::icon_set`]) and persists it the same way the theme picker
+    /// does --- a failed write still applies the set for this session, so
+    /// it is logged as a warning rather than lost silently. The chord only
+    /// ever arrives as `Char('i')` + `CONTROL` on a terminal that answered
+    /// the Kitty keyboard protocol probe; a legacy terminal sends Ctrl+I as
+    /// plain Tab (byte `0x09`), which keeps its focus-tour meaning there,
+    /// and nothing about this arm can fire.
+    fn cycle_icon_set(&mut self) {
+        let next = match self.icons {
+            crate::icons::IconSet::Unicode => crate::icons::IconSet::Nerd,
+            crate::icons::IconSet::Nerd => crate::icons::IconSet::None,
+            crate::icons::IconSet::None => crate::icons::IconSet::Unicode,
+        };
+        self.icons = next;
+        let name = match next {
+            crate::icons::IconSet::Unicode => "unicode",
+            crate::icons::IconSet::Nerd => "nerd",
+            crate::icons::IconSet::None => "none",
+        };
+        let config = self.user_config_path();
+        match crate::settings::save_icons(&config, name) {
+            Ok(()) => self
+                .logs
+                .info(format!("icon set cycled to {name} ({})", config.display())),
+            Err(err) => self.logs.warn(format!(
+                "icon set cycled to {name} for this session, but could not save it to {}: {err}",
+                config.display()
+            )),
+        }
+    }
+
+    /// The button glyphs' rendering for this session ([`resolve_icons`]).
+    /// [`Self::set_icon_set`] is the test seam; `ctrl+i`
+    /// ([`Self::cycle_icon_set`]) is the runtime switch.
+    pub fn icon_set(&self) -> crate::icons::IconSet {
+        self.icons
+    }
+
+    /// Points the session at another icon rendering --- the test seam the
+    /// render tests use to draw the panes with the Nerd set, the same role
+    /// `set_terminal_tool`/`set_keyboard_enhanced` play for theirs. Real
+    /// sessions get theirs from `[ui] icons` at startup and switch it with
+    /// `ctrl+i` ([`Self::cycle_icon_set`]), which also persists the answer.
+    pub fn set_icon_set(&mut self, icons: crate::icons::IconSet) {
+        self.icons = icons;
     }
 
     fn previewed_theme(&self) -> ratatui_themes::ThemeName {
@@ -2462,6 +2532,16 @@ impl App {
                 self.open_theme_picker();
                 return;
             }
+            // The icon cycle: `unicode` → `nerd` → `none`, applied and
+            // persisted. The CONTROL guard is what keeps the plain `i` of
+            // the device pane's package install falling through to it, and
+            // the guard itself only ever passes on a Kitty-protocol
+            // terminal --- legacy sends Ctrl+I as Tab, which the arm above
+            // keeps as the focus tour.
+            KeyCode::Char('i') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.cycle_icon_set();
+                return;
+            }
             KeyCode::Char('x') => {
                 self.open_flash();
                 return;
@@ -3630,6 +3710,110 @@ mod tests {
             Some(ThemeChoice::Auto),
             "Auto leads the picker's rows"
         );
+    }
+
+    #[test]
+    fn icon_set_resolves_from_the_config_and_falls_back_to_unicode() {
+        let home = std::env::temp_dir().join(format!("chiptui-icons-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let config = home.join(".config");
+        std::fs::create_dir_all(config.join("chiptui")).unwrap();
+
+        std::fs::write(
+            config.join("chiptui/config.toml"),
+            "[ui]\nicons = \"nerd\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            resolve_icons(&config),
+            crate::icons::IconSet::Nerd,
+            "the opt-in is honored"
+        );
+
+        std::fs::write(
+            config.join("chiptui/config.toml"),
+            "[ui]\nicons = \"none\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            resolve_icons(&config),
+            crate::icons::IconSet::None,
+            "the no-glyphs choice is honored"
+        );
+
+        std::fs::write(
+            config.join("chiptui/config.toml"),
+            "[ui]\nicons = \"not-a-font\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            resolve_icons(&config),
+            crate::icons::IconSet::Unicode,
+            "an unrecognized value never admits PUA glyphs"
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn redirected_home_re_reads_the_icon_set() {
+        let home = std::env::temp_dir().join(format!("chiptui-icons-move-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let config = home.join(".config");
+        std::fs::create_dir_all(config.join("chiptui")).unwrap();
+        std::fs::write(
+            config.join("chiptui/config.toml"),
+            "[ui]\nicons = \"nerd\"\n",
+        )
+        .unwrap();
+
+        let mut app = App::new(std::env::temp_dir());
+        app.set_home_dir(&home);
+        assert_eq!(
+            app.icon_set(),
+            crate::icons::IconSet::Nerd,
+            "the config the redirected home answers wins"
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// `ctrl+i` steps the three renderings in declaration order and writes
+    /// each answer back, the same apply-and-persist trade the theme picker
+    /// makes --- while a *plain* `i` (the device pane's package install)
+    /// never touches the set.
+    #[test]
+    fn ctrl_i_cycles_the_icon_set_and_persists_each_step() {
+        let mut app = app();
+        let home = std::env::temp_dir().join(format!(
+            "chiptui-icons-cycle-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = std::fs::remove_dir_all(&home);
+        app.set_home_dir(&home);
+        assert_eq!(app.icon_set(), crate::icons::IconSet::Unicode);
+
+        let chord = || AppEvent::Key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::CONTROL));
+        app.handle(chord());
+        assert_eq!(app.icon_set(), crate::icons::IconSet::Nerd);
+        app.handle(chord());
+        assert_eq!(app.icon_set(), crate::icons::IconSet::None);
+        app.handle(chord());
+        assert_eq!(
+            app.icon_set(),
+            crate::icons::IconSet::Unicode,
+            "the cycle wraps"
+        );
+        // The standing answer is what a restart would reload.
+        assert_eq!(
+            crate::settings::icons(&home.join(".config")).as_deref(),
+            Some("unicode")
+        );
+
+        // The unmodified key is not the chord: it keeps falling through to
+        // whatever pane holds focus.
+        app.handle(key(KeyCode::Char('i')));
+        assert_eq!(app.icon_set(), crate::icons::IconSet::Unicode);
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]

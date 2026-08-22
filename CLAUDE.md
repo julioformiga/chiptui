@@ -136,6 +136,30 @@ video on purpose, being the terminal's cursor rather than a selection), which st
 visible but dimmed until their answers exist (`WorkspacePanel::action_enabled`,
 `App::build_action_enabled`) --- Enter on a dimmed row is a no-op; rows carry no trailing
 text (the confirm overlays quote the literal commands, `SPEC.md` §15, not the rows).
+Every button stack's leading glyph comes from `src/icons.rs` (`IconSet`, resolved once at
+startup from `[ui] icons` in the user config, `App::icon_set`): plain Unicode by default ---
+byte-identical to what the panes showed before the module existed --- Nerd Font
+`nf-fa-*` codepoints when the operator opts in with `icons = "nerd"` (written as `\u{…}`
+escapes so `tests/no_private_use_glyphs.rs` still scans every file, per the amended rule in
+`AGENTS.md`), or no glyphs at all with `icons = "none"` --- labels stand alone (a pane's
+geometry never changes: the glyph never had a row of its own) and the *decorative* emojis
+outside the buttons (the file panes' kind icons, the home screen's backend marks,
+`IconSet::shows_decorations`) disappear too; state-carrying glyphs (checklist `✓ ⚠ ✗ □`,
+sync markers, the spinner) are never affected. Pane titles and tab strips carry the same set's
+decoration glyphs (`☰ Environment`, `◆ Device Info`, `▣ Files:…`, `↯ Actions`, row 3's
+`▤ Log • ◉ Monitor • › Terminal`, the device pane's `↯ Actions • ▣ Device Files`, and the
+header's backend mark) via `ui::pane_title` --- width-1 glyphs in every set (the render tests'
+`TestBackend` annotates lines carrying multi-width symbols, which would make those frames
+untestable), hidden whole by `none` along with the other decorations. Under the Nerd set the
+MicroPython mark becomes the Python logo (`IconSet::python` = `nf-custom-python` U+E73C, the
+seti set's glyph --- the FA5 brand at U+F3E2 proved missing from partially patched fonts), in
+both the header and the home rows; Zephyr keeps its own mark (`◆` header, `🔷` home) in every
+set, and plain Unicode keeps each surface's own MicroPython mark too (`▲` header, `🐍` home).
+The file panes' `.py` row follows the backend's mark the same way (Python logo under nerd, `🐍`
+otherwise); every other file-kind emoji stays in every set. `ctrl+i` cycles the three values
+(Kitty-protocol terminals only --- legacy sends Ctrl+I as plain Tab, which keeps its
+focus-tour meaning), applying and persisting the answer like the theme picker does
+(`App::cycle_icon_set`).
 
 Dimming has **two** rules, not one. `ui::content_style` is the *selection* rule --- an unfocused
 pane's content goes `Modifier::DIM`, which is what makes the column the cursor sits in obvious ---

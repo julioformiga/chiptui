@@ -8,7 +8,7 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style, Stylize};
+use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{List, ListItem, ListState, Paragraph, Wrap};
 
@@ -49,8 +49,9 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
 
     let focused = app.overlay.is_none();
     let ticks = app.ticks;
+    let icons = app.icon_set();
     match flash.screen {
-        FlashScreen::Menu => draw_menu(frame, area, flash, focused, palette),
+        FlashScreen::Menu => draw_menu(frame, area, flash, focused, icons, palette),
         FlashScreen::Options => draw_options(frame, area, flash, focused, palette),
         FlashScreen::OnlineBoards => {
             draw_online_boards(frame, area, flash, ticks, focused, palette)
@@ -62,14 +63,52 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
     }
 }
 
-fn draw_menu(frame: &mut Frame, area: Rect, flash: &FlashPanel, focused: bool, palette: Palette) {
+/// The glyph's color for a given action --- read-only queries in `info`,
+/// destructive-confirmed operations in `warning` (previewing the color the
+/// confirmation screen is about to show), a positive check in `success`, a
+/// lower-stakes utility in `secondary`. Kept here rather than on
+/// `FlashAction` itself, the same split `ui::files::status_style` uses for
+/// `SyncStatus`'s glyphs: the state type stays UI-free, the palette mapping
+/// lives in the view.
+fn action_icon_color(action: FlashAction, palette: Palette) -> Color {
+    match action {
+        FlashAction::ChipInfo | FlashAction::FlashInfo | FlashAction::ReadFlash => palette.info,
+        FlashAction::EraseFlash | FlashAction::WriteFlash => palette.warning,
+        FlashAction::VerifyFlash => palette.success,
+        FlashAction::Reset => palette.secondary,
+    }
+}
+
+fn draw_menu(
+    frame: &mut Frame,
+    area: Rect,
+    flash: &FlashPanel,
+    focused: bool,
+    icons: crate::icons::IconSet,
+    palette: Palette,
+) {
     let items: Vec<ListItem> = FlashAction::ALL
         .iter()
         .map(|action| {
-            let mut spans = vec![Span::styled(
-                format!(" {} {} ", action.icon(), action.label()),
-                Style::new().fg(palette.fg),
-            )];
+            let mut spans = vec![Span::raw(" ")];
+            let glyph = action.icon(icons);
+            if glyph.is_empty() {
+                // The `none` set: the label stands alone, no blank column
+                // left where the glyph was.
+                spans.push(Span::styled(
+                    format!("{} ", action.label()),
+                    Style::new().fg(palette.fg),
+                ));
+            } else {
+                spans.push(Span::styled(
+                    glyph,
+                    Style::new().fg(action_icon_color(*action, palette)),
+                ));
+                spans.push(Span::styled(
+                    format!(" {} ", action.label()),
+                    Style::new().fg(palette.fg),
+                ));
+            }
             // Destructive operations are flagged wherever they appear, same
             // convention as the capabilities pane (`SPEC.md` §15).
             if action.is_destructive() {
@@ -409,7 +448,7 @@ pub fn draw_actions_pane(frame: &mut Frame, area: Rect, app: &App, palette: Pale
         );
         return;
     };
-    let footer_top = draw_action_rows(frame, area, flash, palette);
+    let footer_top = draw_action_rows(frame, area, flash, app.icon_set(), palette);
     draw_action_state(frame, area, flash, footer_top, palette);
 }
 
@@ -418,7 +457,13 @@ pub fn draw_actions_pane(frame: &mut Frame, area: Rect, app: &App, palette: Pale
 /// exactly while a command runs, never a row of the stack; a pane too
 /// short for both pins the box to the bottom and clips the stack above
 /// it). Returns the footer's top row.
-fn draw_action_rows(frame: &mut Frame, area: Rect, flash: &FlashPanel, palette: Palette) -> u16 {
+fn draw_action_rows(
+    frame: &mut Frame,
+    area: Rect,
+    flash: &FlashPanel,
+    icons: crate::icons::IconSet,
+    palette: Palette,
+) -> u16 {
     let actions = flash.pane_actions();
     let stop = matches!(actions.last(), Some(FlashPaneAction::Stop));
     let mains = &actions[..actions.len() - usize::from(stop)];
@@ -428,10 +473,11 @@ fn draw_action_rows(frame: &mut Frame, area: Rect, flash: &FlashPanel, palette: 
     let mut buttons: Vec<Button> = Vec::new();
     for (position, action) in mains.iter().enumerate() {
         let button = match action {
-            FlashPaneAction::Run(action) => {
-                Button::new(format!("{} {}", action.icon(), action.label()))
+            FlashPaneAction::Run(action) => Button::new(action.label())
+                .icon(action.icon(icons), action_icon_color(*action, palette)),
+            FlashPaneAction::SearchOnline => {
+                Button::new("Search firmware online").icon(icons.search(), palette.info)
             }
-            FlashPaneAction::SearchOnline => Button::new("⇩ Search firmware online"),
             FlashPaneAction::Stop => unreachable!("Stop is drawn as the footer box"),
         }
         .enabled(enabled)
@@ -462,7 +508,9 @@ fn draw_action_rows(frame: &mut Frame, area: Rect, flash: &FlashPanel, palette: 
             frame,
             corner,
             footer_top,
-            &[Button::new("■ Stop").selected(selected)],
+            &[Button::new("Stop")
+                .icon(icons.stop(), palette.warning)
+                .selected(selected)],
             palette,
         );
     }
