@@ -1696,8 +1696,19 @@ fn the_zephyr_actions_menu_runs_the_build_dashboard() {
     assert!(matches!(app.overlay, Some(Overlay::ZephyrActions { .. })));
     let frame = render(&mut app, 100, 32);
     assert!(
-        frame.contains("▦ Dashboard") && frame.contains("⇩ Add SDK toolchains"),
+        frame.contains("▦  Dashboard") && frame.contains("⇩  Add SDK toolchains"),
         "the menu is the Actions pane's stacked-button widget:\n{frame}"
+    );
+    // Every entry explains itself, and `Dashboard` names the command it
+    // runs: it is the one action here that starts something outright, with
+    // no confirm quoting the command and no picker to pass through.
+    assert!(
+        frame.contains("west build -t dashboard"),
+        "the menu must name the command Dashboard runs:\n{frame}"
+    );
+    assert!(
+        frame.contains("west update"),
+        "every entry carries its explanation:\n{frame}"
     );
     app.handle(key(KeyCode::Down));
     app.handle(key(KeyCode::Down));

@@ -4,9 +4,17 @@
 //! shares its top and bottom rules --- drawn in the theme's `muted` color,
 //! quiet enough that the frame never competes with a selected row for
 //! attention while still following the active theme --- one centered label
-//! per row: N buttons cost N+2 lines, so a pane full of them still fits
-//! vertically. Each button's icon label is bold in the theme's `fg` while
-//! the action can run, `muted` while it waits for the checklist's answers.
+//! per row, with a divider between each pair: N buttons cost 2N+1 lines, so
+//! a pane full of them still fits vertically. Each button's icon label is
+//! bold in the theme's `fg` while the action can run, `muted` while it
+//! waits for the checklist's answers.
+//!
+//! A button may also carry a muted second line ([`Button::detail`]), which
+//! makes it two rows tall and left-aligned. Nothing in a *pane* uses that
+//! --- their rows stay bare, per `SPEC.md` §15 --- it is for a menu, where
+//! the reader is choosing between actions rather than recognising one.
+//! [`stack_height`] therefore sums the buttons' rows rather than counting
+//! the buttons.
 //!
 //! The selection highlight is `palette.selection`/`palette.fg` --- an
 //! explicit, deterministic fill instead of `Modifier::REVERSED` (which this
@@ -32,9 +40,23 @@ use ratatui::widgets::Widget;
 
 use crate::ui::{Palette, muted_style};
 
+/// How far a detailed button's label row is indented, in columns: one, so
+/// the icon does not sit flush against the frame's rule.
+const LABEL_INDENT: usize = 1;
+
+/// How far its detail row is indented: past that leading space and the
+/// icon's own column-plus-gap, so the second line starts under the first
+/// line's *text* rather than under its icon. A detailed button's label is
+/// expected to read `<icon>  <label>` for the two to line up.
+const DETAIL_INDENT: usize = LABEL_INDENT + 3;
+
 #[derive(Debug, Clone)]
 pub struct Button {
     label: String,
+    /// A muted second line under the label (see [`Button::detail`]). `None`
+    /// --- every button in a pane's stack --- costs one row, exactly as
+    /// before.
+    detail: Option<String>,
     enabled: bool,
     selected: bool,
 }
@@ -43,9 +65,29 @@ impl Button {
     pub fn new(label: impl Into<String>) -> Self {
         Self {
             label: label.into(),
+            detail: None,
             enabled: true,
             selected: false,
         }
+    }
+
+    /// Adds a muted second line explaining the action --- what it does, or
+    /// the literal command it runs.
+    ///
+    /// A button with a detail costs two rows and draws **left-aligned**
+    /// rather than centered: a centered pair reads as two unrelated strings,
+    /// and centering labels of different lengths scatters their icons
+    /// instead of lining them up as a column. Panes keep the one-row
+    /// centered form; this is for a menu, where the reader is choosing
+    /// between actions rather than recognising one they already know.
+    pub fn detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = Some(detail.into());
+        self
+    }
+
+    /// How many rows this button occupies.
+    fn rows(&self) -> u16 {
+        if self.detail.is_some() { 2 } else { 1 }
     }
 
     /// Whether `Enter` runs the action: bold says yes, dim says "still
@@ -73,14 +115,19 @@ impl Button {
     }
 }
 
-/// A stack's full height: the top rule, one row per button, a divider
-/// between each pair. Zero for no buttons (nothing is drawn then).
+/// A stack's full height: the two outer rules, each button's rows, and a
+/// divider between each pair. Zero for no buttons (nothing is drawn then).
+///
+/// Buttons are summed rather than counted because a detailed one takes two
+/// rows ([`Button::detail`]); for a stack of plain buttons this is still
+/// `2N + 1`, which is the number `ui::MIN_HEIGHT` was measured against.
 pub(super) fn stack_height(buttons: &[Button]) -> u16 {
     if buttons.is_empty() {
-        0
-    } else {
-        2 * buttons.len() as u16 + 1
+        return 0;
     }
+    let rows: u16 = buttons.iter().map(Button::rows).sum();
+    let dividers = buttons.len() as u16 - 1;
+    rows + dividers + 2
 }
 
 /// One shared-border stack of [`Button`]s.
@@ -135,35 +182,56 @@ impl Widget for ButtonStack {
         let mut y = area.y + 1;
         let last = self.buttons.len() - 1;
         for (index, button) in self.buttons.iter().enumerate() {
-            let label = truncate(&button.label, inner);
-            let label_width = label.chars().count();
-            let left = (inner - label_width) / 2;
-            let right = inner - label_width - left;
+            let top = y;
+            // Centered while the label stands alone; left-aligned once it
+            // has a detail under it, so the two rows read as one block and
+            // the icons line up down the stack (see `Button::detail`).
+            let body = if button.detail.is_some() {
+                let label = truncate(&button.label, inner.saturating_sub(LABEL_INDENT));
+                pad_left(&format!("{}{label}", " ".repeat(LABEL_INDENT)), inner)
+            } else {
+                center(&truncate(&button.label, inner), inner)
+            };
             put(
                 buf,
                 area,
                 y,
                 Line::from(vec![
                     Span::styled("│", frame),
-                    Span::styled(
-                        format!("{}{}{}", " ".repeat(left), label, " ".repeat(right)),
-                        button.row_style(self.palette),
-                    ),
+                    Span::styled(body, button.row_style(self.palette)),
                     Span::styled("│", frame),
                 ]),
             );
-            // A `set_style` patch over the row's inner cells, done *after*
-            // the label --- see the module doc for why this, and not a
-            // styled `Span`, carries the selection color. Confined to
-            // `x+1..width-1` so the side rules `│` never get painted over.
+            y += 1;
+            if let Some(detail) = &button.detail {
+                let text = truncate(detail, inner.saturating_sub(DETAIL_INDENT));
+                put(
+                    buf,
+                    area,
+                    y,
+                    Line::from(vec![
+                        Span::styled("│", frame),
+                        Span::styled(
+                            pad_left(&format!("{}{text}", " ".repeat(DETAIL_INDENT)), inner),
+                            muted_style(self.palette),
+                        ),
+                        Span::styled("│", frame),
+                    ]),
+                );
+                y += 1;
+            }
+            // A `set_style` patch over the button's inner cells, done
+            // *after* the text --- see the module doc for why this, and not
+            // a styled `Span`, carries the selection color. Confined to
+            // `x+1..width-1` so the side rules `│` never get painted over,
+            // and spanning both rows so a detailed button highlights whole.
             let inner_row = Rect {
                 x: area.x + 1,
-                y,
+                y: top,
                 width: area.width.saturating_sub(2),
-                height: 1,
+                height: y - top,
             };
             highlight_selected(buf, area, inner_row, button.selected, self.palette);
-            y += 1;
             // The divider between stacked buttons: never after the last
             // one, and in the same muted frame color as the outer rules ---
             // the selection highlight stays confined to a button's inner
@@ -187,7 +255,32 @@ fn highlight_selected(buf: &mut Buffer, area: Rect, row: Rect, selected: bool, p
     if !selected || row.y >= area.bottom() {
         return;
     }
+    // A detailed button is two rows tall and the pane may have room for
+    // only the first, so the patch is clipped like `put` clips.
+    let row = Rect {
+        height: row.height.min(area.bottom() - row.y),
+        ..row
+    };
     buf.set_style(row, Style::new().bg(palette.selection).fg(palette.fg));
+}
+
+/// `text` centered in `width` columns, padded both sides.
+fn center(text: &str, width: usize) -> String {
+    let used = text.chars().count();
+    let left = (width - used) / 2;
+    format!(
+        "{}{text}{}",
+        " ".repeat(left),
+        " ".repeat(width - used - left)
+    )
+}
+
+/// `text` at the left of `width` columns, padded out on the right so the
+/// row still paints edge to edge (which is what lets the selection band
+/// cover it whole).
+fn pad_left(text: &str, width: usize) -> String {
+    let used = text.chars().count();
+    format!("{text}{}", " ".repeat(width.saturating_sub(used)))
 }
 
 /// Writes one row at `y` unless it falls past the area's bottom.
@@ -309,6 +402,88 @@ mod tests {
              │     × Clean      │\n\
              ╰──────────────────╯"
         );
+    }
+
+    #[test]
+    fn a_detail_adds_a_muted_second_line_and_left_aligns_the_pair() {
+        // Left-aligned, and the detail starts under the label's *text*, not
+        // under its icon --- which is what makes a column of icons out of
+        // labels of different lengths.
+        assert_eq!(
+            render(
+                34,
+                &[
+                    Button::new("↻  Update").detail("west update"),
+                    Button::new("▦  Dashboard").detail("west build -t dashboard"),
+                ]
+            ),
+            "╭────────────────────────────────╮\n\
+             │ ↻  Update                      │\n\
+             │    west update                 │\n\
+             ├────────────────────────────────┤\n\
+             │ ▦  Dashboard                   │\n\
+             │    west build -t dashboard     │\n\
+             ╰────────────────────────────────╯"
+        );
+    }
+
+    #[test]
+    fn a_plain_stack_still_costs_two_rows_per_button_plus_one() {
+        // `ui::MIN_HEIGHT` was measured against this number, so a detailed
+        // button must not change what a pane's stack costs. Zephyr's six
+        // buttons are the case that sized the constant.
+        let plain: Vec<Button> = (0..6).map(|_| Button::new("▶ Build")).collect();
+        assert_eq!(stack_height(&plain), 13);
+        assert_eq!(stack_height(&[]), 0);
+        // And a detailed one costs exactly one row more than it used to.
+        let detailed = [
+            Button::new("↻  Update").detail("west update"),
+            Button::new("▦  Dashboard").detail("west build -t dashboard"),
+        ];
+        assert_eq!(stack_height(&detailed), 7);
+    }
+
+    #[test]
+    fn the_selection_band_covers_both_rows_of_a_detailed_button() {
+        // A band over the label alone would split the button in two --- the
+        // detail is part of the thing the cursor is on.
+        let palette = palette();
+        let buttons = [
+            Button::new("↻  Update").detail("west update"),
+            Button::new("▦  Dashboard")
+                .detail("west build -t dashboard")
+                .selected(true),
+        ];
+        let stack = ButtonStack {
+            buttons: buttons.to_vec(),
+            palette,
+        };
+        let height = stack.height();
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(34, height)).unwrap();
+        terminal
+            .draw(|frame| frame.render_widget(stack, frame.area()))
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        // Rows 4 and 5 are the selected button's label and detail.
+        for y in [4, 5] {
+            assert_eq!(
+                buf[(2, y)].bg,
+                palette.selection,
+                "row {y} of the selected button must carry the band"
+            );
+        }
+        // The divider above it, and the unselected button, must not.
+        for y in [1, 2, 3] {
+            assert_ne!(
+                buf[(2, y)].bg,
+                palette.selection,
+                "row {y} is not the selected button"
+            );
+        }
+        // The side rules stay unpainted.
+        assert_ne!(buf[(0, 4)].bg, palette.selection, "the left rule");
+        assert_ne!(buf[(33, 4)].bg, palette.selection, "the right rule");
     }
 
     #[test]

@@ -504,20 +504,47 @@ fn draw_restore_device_script(frame: &mut Frame, area: Rect, selected: usize, pa
 }
 
 /// The Zephyr Actions menu, drawn with the Actions pane's own button
-/// widget: the same stacked shared-border group, the same centered
-/// icon-label rows and the same `palette.selection` highlight, so the
-/// submenu reads as a piece of the pane that opened it rather than a
-/// different control. Icons carry the grammar: `↻` rewrites the shared
-/// workspace, `⇩` adds to the SDK, `▦` is the report's grid.
+/// widget: the same stacked shared-border group, the same
+/// `palette.selection` highlight, so the submenu reads as a piece of the
+/// pane that opened it rather than a different control. Icons carry the
+/// grammar: `↻` rewrites the shared workspace, `⇩` adds to the SDK, `▦` is
+/// the report's grid.
+///
+/// Every entry carries a second, muted line. The pane's own buttons
+/// deliberately do not (`SPEC.md` §15: the rows stay bare and the confirm
+/// overlays quote the literal command), but a *menu* is where the reader is
+/// choosing rather than recognising --- and `Dashboard` had no other place
+/// to say what it runs: `Update Zephyr` goes on to a confirm that quotes
+/// `west update`, `Add SDK toolchains` opens a picker, and this one starts
+/// a command outright with nothing anywhere naming it.
 fn draw_zephyr_actions(frame: &mut Frame, area: Rect, selected: usize, palette: Palette) {
-    const CHOICES: [&str; 3] = ["↻ Update Zephyr", "⇩ Add SDK toolchains", "▦ Dashboard"];
+    const CHOICES: [(&str, &str); 3] = [
+        (
+            "↻  Update Zephyr",
+            "west update — rewrites every checkout in the workspace",
+        ),
+        (
+            "⇩  Add SDK toolchains",
+            "extends the installed bundle; no full re-download",
+        ),
+        (
+            "▦  Dashboard",
+            "west build -t dashboard — HTML report, opens in browser",
+        ),
+    ];
     let buttons: Vec<super::button::Button> = CHOICES
         .iter()
         .enumerate()
-        .map(|(index, label)| super::button::Button::new(*label).selected(index == selected))
+        .map(|(index, (label, detail))| {
+            super::button::Button::new(*label)
+                .detail(*detail)
+                .selected(index == selected)
+        })
         .collect();
     let height = super::button::stack_height(&buttons).saturating_add(2);
-    let popup = centered(area, 40, height);
+    // Wide enough for the longest detail line plus the frame and the
+    // indent; the sibling choice overlays use the same 64.
+    let popup = centered(area, 64, height);
     frame.render_widget(Clear, popup);
     let block = modal("Zephyr Actions", palette);
     let inner = block.inner(popup);
