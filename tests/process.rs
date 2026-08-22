@@ -158,6 +158,57 @@ fn cancelling_stops_a_running_process() {
 }
 
 #[test]
+fn cancelling_kills_the_whole_process_tree() {
+    // The regression this pins: `Stop` on `west build -t dashboard`
+    // signalled only `west`, whose helpers (cmake, the dashboard generator,
+    // the browser) kept running --- and kept the pipes open --- after their
+    // parent died, so the panel reported the command cancelled while the
+    // real work went on in the background. The spawner fixture reproduces
+    // the shape: a grandchild that outlives its blocked parent. The cancel
+    // must reach it too, or the pid it published stays alive in /proc.
+    let dir = std::env::temp_dir().join(format!("chiptui-tree-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let mut processes = ProcessManager::new();
+    let id = processes.spawn(
+        Command::new(fixture("spawner")).current_dir(&dir),
+        Duration::from_secs(60),
+    );
+
+    let pid_file = dir.join("spawner-child.pid");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !pid_file.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let grandchild: u32 = std::fs::read_to_string(&pid_file)
+        .expect("the spawner published its grandchild's pid")
+        .trim()
+        .parse()
+        .expect("a pid");
+    let proc = std::path::PathBuf::from(format!("/proc/{grandchild}"));
+    assert!(
+        proc.exists(),
+        "the grandchild must be running before the cancel"
+    );
+
+    processes.cancel(id);
+    let events = run_to_completion(&mut processes, id);
+    assert_eq!(outcome(&events), &Outcome::Cancelled);
+
+    // SIGKILL to the group is prompt; the small window covers /proc teardown.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while proc.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        !proc.exists(),
+        "cancelling must kill the grandchild too, not just the direct child"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn a_pty_child_runs_in_the_commands_working_directory() {
     // The Terminal tab's shell reaches its project directory through this
     // path: `spawn_pty` must honour `Command::current_dir`, not just the

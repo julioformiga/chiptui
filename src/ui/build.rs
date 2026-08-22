@@ -51,17 +51,18 @@ fn draw_state(
         return;
     }
     let line = if let Some(elapsed) = panel.elapsed() {
+        // The tool's own progress (ninja's step counter, or an esptool
+        // percentage from a runner that shells out to it) --- the
+        // command's label instead of the generic "running", since the
+        // count alone does not say what it counts. Without one (and the
+        // dashboard deliberately never adopts progress, see
+        // `BuildPanel::on_process`), the label carries the state itself:
+        // "Dashboard running · 12s", never a bare "running" that does not
+        // name what runs.
+        let name = panel.running_label().unwrap_or("command");
         let text = match panel.progress() {
-            // The tool's own progress (ninja's step counter, or an esptool
-            // percentage from a runner that shells out to it) --- the
-            // command's label instead of the generic "running", since the
-            // count alone does not say what it counts.
-            Some(progress) => format!(
-                "{} · {}",
-                panel.running_label().unwrap_or("running"),
-                progress.render()
-            ),
-            None => format!("running · {}", BuildPanel::secs(elapsed)),
+            Some(progress) => format!("{name} · {}", progress.render()),
+            None => format!("{name} running · {}", BuildPanel::secs(elapsed)),
         };
         Line::from(vec![label("state", palette), text.fg(palette.accent)])
     } else if let Some(report) = &panel.last {
@@ -86,15 +87,29 @@ fn draw_state(
 
 fn report_line(report: &BuildReport, palette: Palette) -> Line<'static> {
     let what = report.what;
-    let (mark, style) = if report.ok {
-        ("✓", ratatui::style::Style::new().fg(palette.success))
+    // Three outcomes, not two: a command the user stopped reads as success
+    // --- the check and the success color, with "stopped" as the word ---
+    // because stopping is exactly what was asked for, not something that
+    // went wrong. `ok` itself stays `false`: nothing was completed, and the
+    // cursor logic must not treat a stop as a green light for Flash.
+    let (mark, style, outcome) = if report.cancelled {
+        (
+            "✓",
+            ratatui::style::Style::new().fg(palette.success),
+            format!("{what} stopped"),
+        )
+    } else if report.ok {
+        (
+            "✓",
+            ratatui::style::Style::new().fg(palette.success),
+            format!("{what} ok in {}", BuildPanel::secs(report.duration)),
+        )
     } else {
-        ("✗", ratatui::style::Style::new().fg(palette.error))
-    };
-    let outcome = if report.ok {
-        format!("{what} ok in {}", BuildPanel::secs(report.duration))
-    } else {
-        format!("{what} failed")
+        (
+            "✗",
+            ratatui::style::Style::new().fg(palette.error),
+            format!("{what} failed"),
+        )
     };
     Line::from(vec![
         label("last", palette),
@@ -147,7 +162,10 @@ fn draw_rows(
                     .selected(selected),
             ),
             crate::build::BuildAction::UpdateZephyr => buttons.push(
-                Button::new("↻ Update Zephyr/SDK")
+                // Two spaces: the gear is the densest glyph in the stack
+                // and reads glued to the label at one (`⚙Zephyr`), where
+                // ▶/✎/⇧/⇩ leave enough air of their own.
+                Button::new("⚙  Zephyr Actions")
                     .enabled(app.build_action_enabled(*action))
                     .selected(selected),
             ),
@@ -157,6 +175,11 @@ fn draw_rows(
                     .selected(selected),
             ),
             crate::build::BuildAction::Stop => unreachable!("Stop is drawn as the footer box"),
+            // Reached through the Zephyr Actions menu, never a panel row
+            // (see `BuildAction::Dashboard`).
+            crate::build::BuildAction::Dashboard => {
+                unreachable!("Dashboard is drawn in the Zephyr Actions menu")
+            }
         }
     }
     // The footer sits directly under the stack's bottom rule --- no blank

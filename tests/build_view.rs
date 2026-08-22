@@ -402,6 +402,25 @@ fn stop_cancels_the_running_command() {
         "the pane layout must not change when a command starts:\n{idle}\n---\n{running_frame}"
     );
 
+    // While the command runs, the stack under `Stop` is disabled: the
+    // panel has one process slot, and the dimmed rows are the explanation.
+    // Enter on one is a no-op --- no second command, no overlay.
+    assert!(!app.build_action_enabled(BuildAction::Flash));
+    assert!(!app.build_action_enabled(BuildAction::Build(BuildKind::Build)));
+    assert!(!app.build_action_enabled(BuildAction::Menuconfig));
+    assert!(app.build_action_enabled(BuildAction::Stop));
+    cursor_on(&mut app, BuildAction::Flash);
+    app.handle(key(KeyCode::Enter));
+    assert!(
+        app.build.as_ref().unwrap().is_busy(),
+        "a dimmed row's Enter must not start anything"
+    );
+    assert!(
+        app.overlay.is_none(),
+        "no confirm may open from a dimmed row"
+    );
+    cursor_on(&mut app, BuildAction::Stop);
+
     // While running, Stop trails the list as the footer box and holds the
     // cursor (starting the build left focus on the panel): Enter cancels.
     // The footer hugs the stack --- the box's top rule directly under the
@@ -443,6 +462,19 @@ fn stop_cancels_the_running_command() {
     assert!(cancelled, "the cancellation never reported");
     let last = app.build.as_ref().unwrap().last.as_ref().unwrap();
     assert!(!last.ok, "a cancelled build is not a success");
+    assert!(last.cancelled, "a cancelled build says so on the report");
+
+    // A stopped command reads as success: the check and the success color,
+    // with "stopped" as the word --- never "failed".
+    let frame = render(&mut app, 100, 32);
+    assert!(
+        frame.contains("stopped"),
+        "the state line must say stopped:\n{frame}"
+    );
+    assert!(
+        !frame.contains("failed"),
+        "a command the user stopped is not a failure:\n{frame}"
+    );
 
     // Idle again: the box is gone, the stack whole.
     let frame = render(&mut app, 100, 32);
@@ -1452,15 +1484,14 @@ fn the_workspace_pane_resolves_from_project_config_and_runs_update() {
         "the detection source no longer has a field:\n{frame}"
     );
 
-    // Enter on the Update Zephyr/SDK button asks what to update first --- it
-    // leads the Project actions pane now, the list's first row. Picking
-    // "Update Zephyr" (the default, row 0) confirms next, since it rewrites
-    // the shared workspace.
+    // Enter on the Zephyr Actions button (the panel's first row) opens the
+    // action menu first. Picking "Update Zephyr" (the default, row 0)
+    // confirms next, since it rewrites the shared workspace.
     app.focus = Focus::Build;
     app.handle(key(KeyCode::Enter));
     assert!(matches!(
         app.overlay,
-        Some(Overlay::UpdateZephyrChoice { selected: 0 })
+        Some(Overlay::ZephyrActions { selected: 0 })
     ));
     app.handle(key(KeyCode::Enter));
     assert!(matches!(
@@ -1494,9 +1525,9 @@ fn the_workspace_pane_resolves_from_project_config_and_runs_update() {
 
 #[test]
 fn the_update_choice_menu_routes_to_the_sdk_toolchain_picker() {
-    // The other branch of the choice menu: picking "Update / add SDK
-    // toolchains" must land on the same picker the `s` shortcut opens,
-    // never on the `west update` confirm.
+    // The other branch of the choice menu: picking "Add SDK toolchains"
+    // must land on the same picker the `s` shortcut opens, never on the
+    // `west update` confirm.
     let (mut app, root) = zephyr_app("ws-sdk", None);
     let home = root.join("home");
     let ws = workspace_under(&home, "zephyrproject");
@@ -1514,15 +1545,107 @@ fn the_update_choice_menu_routes_to_the_sdk_toolchain_picker() {
     app.handle(key(KeyCode::Enter));
     assert!(matches!(
         app.overlay,
-        Some(Overlay::UpdateZephyrChoice { selected: 0 })
+        Some(Overlay::ZephyrActions { selected: 0 })
     ));
     app.handle(key(KeyCode::Down));
     assert!(matches!(
         app.overlay,
-        Some(Overlay::UpdateZephyrChoice { selected: 1 })
+        Some(Overlay::ZephyrActions { selected: 1 })
     ));
     app.handle(key(KeyCode::Enter));
     assert!(matches!(app.overlay, Some(Overlay::SdkToolchains { .. })));
+}
+
+#[test]
+fn the_zephyr_actions_menu_runs_the_build_dashboard() {
+    // The menu's third branch: `west build -t dashboard` runs through the
+    // build panel's process slot --- the same Monitor-tab hand-off as the
+    // lifecycle --- with no confirm and no board answer: the report reads
+    // an already-configured build directory, and a missing one is west's
+    // own error to explain in the Monitor.
+    let (mut app, root) = zephyr_app("ws-dash", None);
+    let home = root.join("home");
+    let ws = workspace_under(&home, "zephyrproject");
+    std::fs::write(
+        root.join("chiptui.toml"),
+        format!("[zephyr]\nworkspace = \"{}\"\n", ws.display()),
+    )
+    .unwrap();
+    app.workspace = None;
+    app.build = None;
+    app.maybe_scan_devices();
+    assert!(app.workspace.as_ref().unwrap().resolved.is_some());
+    // `west-progress` streams ninja-style `[1/3]` counters regardless of
+    // arguments: exactly the output shape a real dashboard run carries
+    // (the target builds its own helpers through cmake/ninja), and exactly
+    // what the state line must *not* adopt as the dashboard's progress.
+    app.build
+        .as_mut()
+        .unwrap()
+        .set_tool_path(fake("west-progress"));
+
+    app.focus = Focus::Build;
+    app.handle(key(KeyCode::Enter));
+    assert!(matches!(app.overlay, Some(Overlay::ZephyrActions { .. })));
+    let frame = render(&mut app, 100, 32);
+    assert!(
+        frame.contains("▦ Dashboard") && frame.contains("⇩ Add SDK toolchains"),
+        "the menu is the Actions pane's stacked-button widget:\n{frame}"
+    );
+    app.handle(key(KeyCode::Down));
+    app.handle(key(KeyCode::Down));
+    app.handle(key(KeyCode::Enter));
+    assert!(
+        app.overlay.is_none(),
+        "the menu closes before the command runs"
+    );
+    assert!(app.build.as_ref().unwrap().is_busy());
+    let command = app.build.as_ref().unwrap().output.front().unwrap().clone();
+    assert_eq!(
+        command, "$ west-progress build -t dashboard",
+        "the label names the substituted tool (the fixture), the arguments name the command"
+    );
+    // The build rule: focus stays on the panel (the cursor rides `Stop`),
+    // the Monitor tab shows the run.
+    assert_eq!(app.focus, Focus::Build);
+
+    // Let the ninja counter lines arrive, then hold the line: the
+    // dashboard never adopts them --- the state says the label runs, not a
+    // `0/1` that counts an internal helper build.
+    let counters_arrived = pump_until(
+        &mut app,
+        |app| {
+            app.build
+                .as_ref()
+                .unwrap()
+                .output
+                .iter()
+                .any(|line| line.contains("[1/3]"))
+        },
+        10,
+    );
+    assert!(counters_arrived, "the fixture never streamed its counter");
+    assert!(
+        app.build.as_ref().unwrap().progress().is_none(),
+        "the dashboard must not adopt its helpers' ninja counter"
+    );
+    let frame = render(&mut app, 100, 32);
+    assert!(
+        frame.contains("Dashboard running"),
+        "the state must name what runs:\n{frame}"
+    );
+    assert!(
+        !frame.contains("Dashboard · "),
+        "no step counter may ride the dashboard's state line:\n{frame}"
+    );
+
+    let finished = pump_until(
+        &mut app,
+        |app| app.build.as_ref().unwrap().last.is_some(),
+        10,
+    );
+    assert!(finished);
+    assert!(app.build.as_ref().unwrap().last.as_ref().unwrap().ok);
 }
 
 #[test]

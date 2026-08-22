@@ -291,8 +291,8 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
         Overlay::RestoreDeviceScript { selected } => {
             draw_restore_device_script(frame, area, selected, palette)
         }
-        Overlay::UpdateZephyrChoice { selected } => {
-            draw_update_zephyr_choice(frame, area, selected, palette)
+        Overlay::ZephyrActions { selected } => {
+            draw_zephyr_actions(frame, area, selected, palette)
         }
     }
 }
@@ -503,45 +503,26 @@ fn draw_restore_device_script(frame: &mut Frame, area: Rect, selected: usize, pa
     );
 }
 
-fn draw_update_zephyr_choice(frame: &mut Frame, area: Rect, selected: usize, palette: Palette) {
-    const CHOICES: [(&str, &str); 2] = [
-        ("Update Zephyr", "pulls the latest checkouts (west update)"),
-        (
-            "Update / add SDK toolchains",
-            "installs or extends the toolchain bundle",
-        ),
-    ];
-
-    let items: Vec<ListItem> = CHOICES
+/// The Zephyr Actions menu, drawn with the Actions pane's own button
+/// widget: the same stacked shared-border group, the same centered
+/// icon-label rows and the same `palette.selection` highlight, so the
+/// submenu reads as a piece of the pane that opened it rather than a
+/// different control. Icons carry the grammar: `↻` rewrites the shared
+/// workspace, `⇩` adds to the SDK, `▦` is the report's grid.
+fn draw_zephyr_actions(frame: &mut Frame, area: Rect, selected: usize, palette: Palette) {
+    const CHOICES: [&str; 3] = ["↻ Update Zephyr", "⇩ Add SDK toolchains", "▦ Dashboard"];
+    let buttons: Vec<super::button::Button> = CHOICES
         .iter()
-        .map(|(label, detail)| {
-            ListItem::new(Line::from(vec![
-                Span::styled(format!(" {label} "), Style::new().fg(palette.fg)),
-                Span::styled(format!("— {detail}"), muted_style(palette)),
-            ]))
-        })
+        .enumerate()
+        .map(|(index, label)| super::button::Button::new(*label).selected(index == selected))
         .collect();
-
-    let popup = centered(area, 64, CHOICES.len() as u16 + 4);
-    let block = modal("Update Zephyr or SDK?", palette);
-    let inner = block.inner(popup);
-    let [message, list] =
-        Layout::vertical([Constraint::Length(2), Constraint::Min(CHOICES.len() as u16)])
-            .areas(inner);
-
+    let height = super::button::stack_height(&buttons).saturating_add(2);
+    let popup = centered(area, 40, height);
     frame.render_widget(Clear, popup);
+    let block = modal("Zephyr Actions", palette);
+    let inner = block.inner(popup);
     frame.render_widget(block, popup);
-    frame.render_widget(
-        Paragraph::new("What do you want to update?".fg(palette.muted)),
-        message,
-    );
-
-    let mut state = ListState::default().with_selected(Some(selected));
-    frame.render_stateful_widget(
-        List::new(items).highlight_style(selection_style(palette)),
-        list,
-        &mut state,
-    );
+    super::button::render_stack(frame, inner, inner.y, &buttons, palette);
 }
 
 fn draw_confirm_delete(

@@ -868,17 +868,17 @@ impl App {
                     },
                 );
             }
-            Overlay::UpdateZephyrChoice { selected } => {
-                const COUNT: usize = 2;
+            Overlay::ZephyrActions { selected } => {
+                const COUNT: usize = 3;
                 match key.code {
                     KeyCode::Esc | KeyCode::Char('q') => self.overlay = None,
                     KeyCode::Up | KeyCode::Char('k') => {
-                        self.overlay = Some(Overlay::UpdateZephyrChoice {
+                        self.overlay = Some(Overlay::ZephyrActions {
                             selected: (selected + COUNT - 1) % COUNT,
                         });
                     }
                     KeyCode::Down | KeyCode::Char('j') => {
-                        self.overlay = Some(Overlay::UpdateZephyrChoice {
+                        self.overlay = Some(Overlay::ZephyrActions {
                             selected: (selected + 1) % COUNT,
                         });
                     }
@@ -888,7 +888,16 @@ impl App {
                             confirm: false,
                         });
                     }
-                    KeyCode::Enter => self.open_sdk_toolchains_shortcut(),
+                    KeyCode::Enter if selected == 1 => self.open_sdk_toolchains_shortcut(),
+                    // The menu closes before the command starts: the
+                    // Monitor tab showing the run must not sit behind a
+                    // modal. Routed through `run_build_action` so the
+                    // buildable-project gate (the one gate this command
+                    // keeps) applies like every other project command.
+                    KeyCode::Enter => {
+                        self.overlay = None;
+                        self.run_build_action(BuildAction::Dashboard);
+                    }
                     _ => {}
                 }
             }

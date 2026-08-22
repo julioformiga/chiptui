@@ -100,6 +100,18 @@ pub fn menuconfig(dir: &str) -> Command {
         .arg("menuconfig")
 }
 
+/// `west build -t dashboard` --- the Zephyr 4.4 build dashboard: one HTML
+/// report consolidating the ram/rom reports, the Kconfig symbols, the
+/// initialization levels and the device tree, which the target itself
+/// opens in the browser. Like every other `-t` target it needs a
+/// configured build directory; `west` explains what is missing when there
+/// is none, which is why nothing upstream gates on the board answer.
+pub fn dashboard(dir: &str) -> Command {
+    build_dir(Command::new(PROGRAM).arg("build"), dir)
+        .arg("-t")
+        .arg("dashboard")
+}
+
 /// `west update` --- syncs every project in the manifest (`west.yml`) into
 /// the workspace. Slow, network-bound, and rewrites the workspace's
 /// checkouts, which the workspace pane's confirm quotes before running
@@ -236,6 +248,18 @@ mod tests {
         assert_eq!(
             menuconfig("build-release").to_string(),
             "west build -d build-release -t menuconfig"
+        );
+    }
+
+    #[test]
+    fn dashboard_is_a_build_target_like_the_others() {
+        assert_eq!(
+            dashboard(BUILD_DIR_DEFAULT).to_string(),
+            "west build -t dashboard"
+        );
+        assert_eq!(
+            dashboard("build-release").to_string(),
+            "west build -d build-release -t dashboard"
         );
     }
 

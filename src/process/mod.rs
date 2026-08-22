@@ -9,6 +9,10 @@
 //! has already seen every line that process produced. A process we *killed* is
 //! reported immediately instead --- see [`ProcessManager::spawn`] for why.
 //!
+//! Cancellation kills the child's whole process group, not just the child:
+//! `west`/`mpremote` spawn helpers whose survival past the parent's death
+//! would be a "cancelled but still running" command. See [`kill_tree`].
+//!
 //! Everything reaches the UI through one channel, drained once per frame by
 //! [`ProcessManager::drain`] --- no locks and no async runtime (`AGENTS.md`:
 //! "avoid premature async").
@@ -258,13 +262,14 @@ impl ProcessManager {
                 wait_for_readers(&readers);
             }
             //
-            // Not so for a process we killed: `kill` reaches only the direct
-            // child, and any grandchild it left behind still holds the write
-            // end of these pipes, so the readers would block until *that*
-            // exits --- which is precisely the hang the timeout exists to
-            // escape. Report immediately instead and let the readers end on
-            // their own; late lines are dropped, because consumers stop
-            // tracking a process once it has finished.
+            // Not so for a process we killed: even with the group kill
+            // closing the pipes, a grandchild that escaped its group (a
+            // daemon calling setsid, say) still holds the write end, so the
+            // readers would block until *that* exits --- which is precisely
+            // the hang the timeout exists to escape. Report immediately
+            // instead and let the readers end on their own; late lines are
+            // dropped, because consumers stop tracking a process once it
+            // has finished.
             // We don't join readers anymore to simplify the code and avoid the LLVM crash.
             // When child dies, pipes close, and pump threads naturally exit.
             // If they are late, it's fine.
@@ -637,7 +642,7 @@ fn supervise(
                 kill_reason = Some(Outcome::TimedOut);
             }
             if kill_reason.is_some() {
-                let _ = child.kill();
+                kill_tree(child);
             }
         }
 
@@ -657,6 +662,29 @@ fn supervise(
             Err(source) => return Outcome::SpawnFailed(source.to_string()),
         }
     }
+}
+
+/// Kills the child *and everything it spawned*. A bare [`std::process::Child::kill`]
+/// signals the one pid, and a tool like `west` immediately delegates to
+/// helpers (cmake, ninja, the dashboard generator, the browser) that keep
+/// running --- and keep the pipes open --- after their parent dies: `Stop`
+/// reported the dashboard cancelled while it was still being built in the
+/// background. The piped spawner puts every child in its own process group
+/// (`Command::to_std`), so signalling the group reaches the whole tree.
+/// The direct kill stays as the fallback: on a platform without groups, and
+/// for a child that somehow left its group, it preserves the old behaviour.
+fn kill_tree(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    // The group leader's pid *is* the pgid (`process_group(0)`), and `kill`
+    // fails harmlessly with ESRCH when the group is already gone (a natural
+    // exit racing the cancel).
+    {
+        let pgid = child.id() as libc::pid_t;
+        unsafe {
+            libc::kill(-pgid, libc::SIGKILL);
+        }
+    }
+    let _ = child.kill();
 }
 
 #[cfg(test)]

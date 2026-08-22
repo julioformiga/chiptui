@@ -173,6 +173,10 @@ impl Backend for ZephyrBackend {
         Some(commands::menuconfig(build_dir))
     }
 
+    fn dashboard_command(&self, build_dir: &str) -> Option<crate::process::Command> {
+        Some(commands::dashboard(build_dir))
+    }
+
     fn workspace_update_command(&self) -> Option<crate::process::Command> {
         Some(commands::update())
     }

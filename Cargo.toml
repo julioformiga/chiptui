@@ -73,6 +73,16 @@ ratatui-image = { version = "11", features = ["crossterm"] }
 vt100 = "0.16.2"
 tui-term = "0.3.4"
 
+[target.'cfg(unix)'.dependencies]
+# Cancelling a build command must kill the whole tree it spawned: `west`
+# leaves helpers (cmake, the dashboard generator, the browser) running when
+# only the direct child is signalled, so `Stop` reported the dashboard
+# cancelled while it kept working in the background. std can put a child in
+# its own process group (`CommandExt::process_group`) but has no API to
+# signal a group --- `libc::kill(-pgid, SIGKILL)` is that one call. Already
+# in the tree transitively via portable-pty, so it costs no extra compile.
+libc = "0.2"
+
 [profile.release]
 strip = true
 lto = "fat"

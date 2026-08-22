@@ -1,0 +1,12 @@
+#!/bin/sh
+# Spawns a grandchild that outlives it, then blocks: for tree-kill tests.
+#
+# Reproduces the `west build -t dashboard` shape --- a tool that delegates
+# to helpers which survive their parent's death and keep the pipes open
+# (the backgrounded `sleep` inherits stdout) --- so a cancel that only
+# signalled the direct child would report the command stopped while the
+# grandchild kept running. The grandchild's pid lands in `spawner-child.pid`
+# inside the cwd, for the test to watch.
+sleep 30 &
+echo $! > spawner-child.pid
+sleep 30

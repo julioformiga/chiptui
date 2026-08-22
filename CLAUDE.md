@@ -201,16 +201,28 @@ and `BackendRegistry::tool_status(kind, located)` judges those files with
 execute bit) a `PATH` lookup uses --- while every unlocated tool keeps the `PATH` answer.
 `PATH` lookups skip empty entries, which mean the cwd; that makes the *report* stricter
 than `execvp`, never the reverse.
-`west update` lives as a button in the Actions pane, enabled once the
+`west update` lives behind the Actions pane's `⚙ Zephyr Actions` button, enabled once the
 installation resolves, under `Capability::WorkspaceSync`. Pressing it no
-longer runs `west update` outright: it opens `Overlay::UpdateZephyrChoice`,
-a two-row menu (same j/k/arrows-and-Enter shape as `Overlay::RestoreDeviceScript`)
-asking whether to update Zephyr itself or the SDK/toolchains --- picking
-"Update Zephyr" leads into the existing confirm (`Overlay::ConfirmBuild`,
+longer runs `west update` outright: it opens `Overlay::ZephyrActions`, a
+three-button menu drawn with the Actions pane's own stacked-button widget
+(`ui::button`, same icons/labels/selection grammar) --- `↻ Update Zephyr`
+leads into the existing confirm (`Overlay::ConfirmBuild`,
 which rewrites the shared checkouts and runs through the build panel's one
-process slot into the Monitor tab), picking "Update / add SDK toolchains"
+process slot into the Monitor tab), `⇩ Add SDK toolchains`
 calls the same `App::open_sdk_toolchains_shortcut` the dashboard `s` key
-uses, landing on `Overlay::SdkToolchains` instead. That
+uses, landing on `Overlay::SdkToolchains` instead, and `▦ Dashboard` runs
+`west build -t dashboard` (Zephyr 4.4's build dashboard: one HTML report
+over the configured build directory, opened in the browser by the target
+itself) through that same process slot --- focus stays on the panel with
+the cursor on `Stop`, the build rule --- with no confirm (nothing
+destructive) and no board answer: the report reads an existing build
+directory, and a missing one is `west`'s own error to explain in the
+Monitor (`BuildAction::Dashboard`, never a row of the stack; the panel
+also never adopts progress for it --- the target's own `[0/1]` ninja
+counters track its internal helpers, not the report, so the state line
+says `Dashboard running · 12s` rather than a meaningless count, and every
+other busy command's state names its label the same way when no progress
+shape arrives). That
 button's slot is *shared*: with nothing resolved it reads `⇩ Install Zephyr`
 instead (`BuildAction::list_for`, keyed off `BuildPanel::workspace_installed`,
 pushed in by `apply_west_env` --- the one place a panel is seeded from the
@@ -223,7 +235,7 @@ one row keeps the stack at six buttons and `ui::MIN_HEIGHT` where it is.
 run as a sequence, with its own process slot and output buffer (not the build
 panel's --- the output belongs in its own modal, and there is no resolved
 workspace for a build command anyway). The `Zephyr path` row is the other door, and the one
-that matters once a workspace is already resolved (the button is `Update Zephyr`
+that matters once a workspace is already resolved (the button is `Zephyr Actions`
 then): a directory `install_check` refuses no longer merely re-renders the
 picker with the reason --- `accept_workspace_dir` opens
 `Overlay::ConfirmInstallHere`, whose wording comes from
@@ -353,15 +365,22 @@ finds it; `ZEPHYR_SDK_INSTALL_DIR`/`PATH`/`VIRTUAL_ENV` when applicable —
 `<build-dir>/zephyr/CMakeCache.txt`, falling
 back to the sysbuild top-level cache; a hand-picked board is session state no finished
 command demotes) or a hand pick, and gates
-Update Zephyr/SDK List/Menuconfig/Clean/Build/Rebuild/Flash (the list's order; while a
+Zephyr Actions/SDK List/Menuconfig/Clean/Build/Rebuild/Flash (the list's order; while a
 command runs `Stop` is appended and appears in the pane's three-row footer, always reserved
---- the pane's height never changes when a command starts --- hugging the stack's bottom rule
+--- the pane's height never changes when a command starts --- and every other button dims for
+as long as the one process slot is occupied (`App::build_action_enabled`: only `Stop` stays
+live, so `x`/`Enter` on a dimmed row is a no-op rather than a refused second command); the
+footer hugs the stack's bottom rule
 and split horizontally: the state line on the left half, `Stop` as its own half-width button
 box on the right, same rows, side by side — never a row of the stack; a pane too short for
 both pins the box to the bottom and clips the stack above it)
 via
 `BuildPanel::lifecycle_ready`, the command state pinned to the pane's last line (skipped
-when the rows already fill the pane); starting Build/Rebuild shows the Monitor tab
+when the rows already fill the pane; a *stopped* command reads as success there and on
+the Monitor strip --- `BuildReport::cancelled`, the check and success color with the word
+"stopped" (`✓ Build stopped`), never the error `✗`/`failed`, since stopping is what the
+user asked for --- while `ok` itself stays `false` so the cursor logic does not treat a
+stop as a green light for Flash); starting Build/Rebuild shows the Monitor tab
 (`MonitorSource::Build`) but keeps focus on the panel with the cursor on `Stop`, moving it to
 `Flash` on a success and back to `Build` on a failure or after a `Clean` (which parks it on
 `Build` while running — the step a clean clears the way for),
@@ -564,8 +583,12 @@ These are the decisions that shape most code, and getting them wrong causes wide
   otherwise a pure function of `App`.
 - **Processes** (`src/process/`): `spawn` returns immediately; a supervisor thread plus two reader
   threads push `ProcessEvent`s into one channel that `main.rs` drains each frame. Two non-obvious
-  rules live here. *Killing reaches only the direct child* — a grandchild keeps the pipes open, so
-  a killed process reports `Finished` **without** waiting for the readers (otherwise the timeout
+  rules live here. *Killing reaches the child's whole process group* — every piped child is spawned
+  in its own group (`Command::to_std`'s `process_group(0)`), and a cancel/timeout signals
+  `kill(-pgid, SIGKILL)` (`kill_tree`), because a bare `Child::kill` left `west`'s helpers (cmake,
+  the dashboard generator) running after `Stop` reported the command cancelled; a grandchild that
+  *escaped* its group (a setsid daemon) still keeps the pipes open, so a killed process reports
+  `Finished` **without** waiting for the readers (otherwise the timeout
   deadlocks on the very hang it exists to escape). A *natural* exit instead waits (bounded,
   `READ_DRAIN_TIMEOUT`) on a reader counter before reporting, keeping the invariant that
   "Finished implies all output arrived" without joining threads. And `ProcessManager` is dropped

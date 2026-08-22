@@ -403,14 +403,14 @@ pub enum Overlay {
     /// Yes/No, because "restart" has two honest flavors with different
     /// tradeoffs (see [`Self::apply_restore_device_script`]).
     RestoreDeviceScript { selected: usize },
-    /// The choice menu in front of the `Update Zephyr/SDK` button: whether
-    /// to pull the shared workspace (`west update`) or add/update SDK
-    /// toolchains. Same shape as [`Self::RestoreDeviceScript`] --- a small
-    /// list, `j`/`k`/arrows to move, `Enter` to pick --- except `Esc` here
-    /// is a plain cancel, not itself a choice: giving up on "what to
-    /// update" has no implicit action the way giving up on "how to
-    /// restore" does.
-    UpdateZephyrChoice { selected: usize },
+    /// The choice menu behind the `Zephyr Actions` button: update the shared
+    /// workspace (`west update`), add SDK toolchains, or generate the build
+    /// dashboard (`west build -t dashboard`). Same shape as
+    /// [`Self::RestoreDeviceScript`] --- a small list, `j`/`k`/arrows to
+    /// move, `Enter` to pick --- except `Esc` here is a plain cancel, not
+    /// itself a choice: giving up on "what to run" has no implicit action
+    /// the way giving up on "how to restore" does.
+    ZephyrActions { selected: usize },
     /// The Zephyr installer: prerequisites, the sequence, and the running
     /// step's output. Carries nothing at all --- every piece of its state
     /// lives on [`App::installer`], which is what lets the panel keep a
@@ -2284,11 +2284,17 @@ impl App {
 
     /// Whether `Enter` runs this project-panel action: the operation
     /// buttons need both checklist answers (asked in the workspace pane)
-    /// first --- a disabled button is dimmed, never hidden.
+    /// first --- a disabled button is dimmed, never hidden. While a command
+    /// runs, everything but `Stop` is disabled too: the panel's one process
+    /// slot is occupied, and the dimmed stack under the live `Stop` box is
+    /// what says so.
     pub fn build_action_enabled(&self, action: crate::build::BuildAction) -> bool {
         let Some(panel) = &self.build else {
             return true;
         };
+        if action != crate::build::BuildAction::Stop && panel.is_busy() {
+            return false;
+        }
         match action {
             crate::build::BuildAction::Stop => true,
             crate::build::BuildAction::Build(_)
@@ -2306,6 +2312,11 @@ impl App {
             // The row that exists precisely because nothing is resolved:
             // it is the one environment action with no prerequisite.
             crate::build::BuildAction::InstallZephyr => true,
+            // Reached through the Zephyr Actions menu, not a panel row, and
+            // deliberately ungated: a build directory that is not
+            // configured yet is `west`'s own error to explain in the
+            // Monitor (the report's whole point is an existing build).
+            crate::build::BuildAction::Dashboard => true,
         }
     }
 
@@ -2773,7 +2784,7 @@ impl App {
                 | Overlay::ProjectSetup { .. }
                 | Overlay::FileActions { .. }
                 | Overlay::RestoreDeviceScript { .. }
-                | Overlay::UpdateZephyrChoice { .. },
+                | Overlay::ZephyrActions { .. },
             ) => {
                 vec![("↑/↓", "select"), ("enter", "apply"), ("esc", "cancel")]
             }

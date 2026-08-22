@@ -154,6 +154,17 @@ impl Command {
         for (key, value) in &self.env {
             command.env(key, value);
         }
+        // The child runs in its own process group so cancellation can kill
+        // the whole tree (`process::kill_tree`): tools like `west` spawn
+        // helpers whose survival past the parent's death is exactly the
+        // "cancelled but still running" bug. ChipTUI itself reads the
+        // keyboard in raw mode, so moving children out of its (unused)
+        // foreground group changes nothing about signal delivery.
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
         command
     }
 }

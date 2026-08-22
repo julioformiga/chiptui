@@ -1353,6 +1353,7 @@ fn the_monitor_tab_marks_the_last_finished_command() {
     let report = |ok| chiptui::build::BuildReport {
         what: "Build",
         ok,
+        cancelled: false,
         duration: std::time::Duration::from_secs(3),
         at: time::OffsetDateTime::now_utc(),
     };
@@ -1368,6 +1369,25 @@ fn the_monitor_tab_marks_the_last_finished_command() {
     assert!(
         failed.contains("✗ Build ("),
         "a failed command must be crossed red:\n{failed}"
+    );
+
+    // A stopped command reads as success on the strip too: the check, never
+    // the error cross --- stopping is what the user asked for.
+    app.build.as_mut().unwrap().last = Some(chiptui::build::BuildReport {
+        what: "Build",
+        ok: false,
+        cancelled: true,
+        duration: std::time::Duration::from_secs(3),
+        at: time::OffsetDateTime::now_utc(),
+    });
+    let stopped = render(&mut app, 100, 32);
+    assert!(
+        stopped.contains("✓ Build ("),
+        "a stopped command must carry the success check:\n{stopped}"
+    );
+    assert!(
+        !stopped.contains("✗ Build ("),
+        "a command the user stopped is not an error:\n{stopped}"
     );
 
     // Before any command ran, the title stands alone with the row count.

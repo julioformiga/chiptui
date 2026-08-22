@@ -48,6 +48,13 @@ pub struct BuildReport {
     /// What ran, as a label ("Build", "Clean", "Flash", …).
     pub what: &'static str,
     pub ok: bool,
+    /// The user stopped this command (`Stop`): not a failure, whatever the
+    /// exit status says --- the process tree was killed mid-run by design.
+    /// `ok` stays `false` (nothing was completed), but the footer and the
+    /// Monitor strip draw a stopped report in the warning color with its
+    /// own mark instead of the error `✗`, because an outcome the user
+    /// chose is not a diagnosis.
+    pub cancelled: bool,
     pub duration: Duration,
     /// Wall-clock finish time, in the app's configured local offset.
     pub at: OffsetDateTime,
@@ -263,6 +270,12 @@ pub enum BuildAction {
     /// picker rather than running anything --- the installation itself is
     /// [`crate::install::Installer`]'s.
     InstallZephyr,
+    /// `west build -t dashboard` --- the Zephyr 4.4 build dashboard report,
+    /// reached through the Zephyr Actions menu rather than a row of the
+    /// stack. Never listed (it only rides a running command, so `finish`
+    /// knows where the cursor came from), and never gated: an unconfigured
+    /// build directory is `west`'s own error to explain in the Monitor.
+    Dashboard,
 }
 
 impl BuildAction {
@@ -694,6 +707,17 @@ impl BuildPanel {
         Some(self.decorated(command.current_dir(&self.root)))
     }
 
+    /// The build-dashboard command (`west build -t dashboard`), rooted and
+    /// decorated like the others --- a piped command, streamed into the
+    /// Monitor tab like the lifecycle.
+    pub fn dashboard_command(
+        &self,
+        backend: &dyn crate::backend::Backend,
+    ) -> Option<crate::process::Command> {
+        let command = backend.dashboard_command(&self.build_dir)?;
+        Some(self.decorated(command.current_dir(&self.root)))
+    }
+
     fn has_build_dir(&self) -> bool {
         self.root.join(&self.build_dir).is_dir()
     }
@@ -787,7 +811,18 @@ impl BuildPanel {
                     .as_ref()
                     .is_some_and(|running| running.id == *id)
                 {
-                    if let Some(progress) = crate::progress::detect(text)
+                    // The dashboard target runs its own cmake/ninja helpers
+                    // whose `[0/1]` counters track an internal build, not
+                    // the report being generated --- surfacing them as
+                    // "Dashboard 0/1" would be noise, so the dashboard
+                    // never adopts progress and its state line stays on
+                    // the label (`ui::build::draw_state`).
+                    let wants_progress = self
+                        .running
+                        .as_ref()
+                        .is_none_or(|running| running.action != BuildAction::Dashboard);
+                    if wants_progress
+                        && let Some(progress) = crate::progress::detect(text)
                         && let Some(running) = &mut self.running
                     {
                         running.progress = Some(progress);
@@ -852,12 +887,14 @@ impl BuildPanel {
                 "{what} did not finish within {} minutes",
                 BUILD_TIMEOUT.as_secs() / 60
             ),
-            Outcome::Cancelled => format!("{what}: cancelled"),
+            Outcome::Cancelled => format!("{what} stopped"),
         };
         let level = if ok {
             Level::Success
         } else if matches!(outcome, Outcome::Cancelled) {
-            Level::Warn
+            // The same success-as-stopped reading the panel footer draws:
+            // a quiet notice in the log, never an error.
+            Level::Success
         } else {
             Level::Error
         };
@@ -865,6 +902,7 @@ impl BuildPanel {
         self.last = Some(BuildReport {
             what: running.what,
             ok,
+            cancelled: matches!(outcome, Outcome::Cancelled),
             duration,
             at: OffsetDateTime::now_utc().to_offset(self.offset),
         });

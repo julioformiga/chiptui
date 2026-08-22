@@ -738,7 +738,7 @@ one is being built is never guessed:
     picked folder, and stays empty until a project is chosen (a launch
     directory that already is one fills it by itself);
 3.  before any project command (build, clean, rebuild, menuconfig,
-    flash) runs, its working directory must hold those build elements.
+    flash, dashboard) runs, its working directory must hold those build elements.
     The launch directory passes the gate by itself when it is a project;
     otherwise the command is refused with the reason and the pickers
     above open --- folder first, then project. The accepted project
@@ -773,6 +773,8 @@ The initial backend should support:
 -   build (targeting the conventional `build` directory in the project);
 -   clean;
 -   `menuconfig` (interactive: the TUI suspends, like `$EDITOR`);
+-   the build dashboard (`west build -t dashboard`, Zephyr 4.4+: one HTML
+    report over the configured build directory, opened in the browser);
 -   flash;
 -   serial monitor;
 -   build output/logs;
@@ -946,10 +948,15 @@ one-line contextual shortcut footer:
   `Project files: name/src/`; no action menu --- `Enter` descends or hands a text file to
   `$EDITOR`, `v` views, `Del` asks, `a` creates, `r` renames) beside the
   project panel (the build lifecycle). The project panel is buttons only
-  (`west update`, menuconfig, the lifecycle, flash) over a three-row footer
+  (`Zephyr Actions` --- a stacked-button submenu holding `west update`, adding
+  SDK toolchains, and the build dashboard --- menuconfig, the lifecycle, flash)
+  over a three-row footer
   that is always reserved --- the pane's height never changes when a command starts --- and
   splits horizontally while one runs: the build status on the left half, a `Stop` button
-  (same widget, half the pane's width) on the right. A filesystem backend that can also
+  (same widget, half the pane's width) on the right, with the stack's buttons dimmed for as
+  long as the panel's one process slot is occupied. Stopping kills the command's whole
+  process tree (children run in their own process group), so a delegating tool like `west`
+  cannot leave its helpers running after the cancellation. A filesystem backend that can also
   flash (today: MicroPython) keeps the dual-pane browser and gains the same button-group
   grammar as the device pane's second tab: a `Project actions • Device files` strip on the
   pane's border, the esptool actions plus the online-firmware entries as the stacked

@@ -405,6 +405,19 @@ pub trait Backend {
         None
     }
 
+    /// Returns the command generating the build dashboard over the
+    /// configured build directory (`west build -t dashboard`): one HTML
+    /// report consolidating the memory reports, Kconfig symbols,
+    /// initialization levels and device tree, which the target itself opens
+    /// in the browser. Unlike [`Self::menuconfig_command`] it is a piped
+    /// command (no terminal hand-off) and deliberately ungated --- a missing
+    /// build directory is `west`'s own error to explain. Returns `None`
+    /// when the backend has no such tool.
+    fn dashboard_command(&self, build_dir: &str) -> Option<crate::process::Command> {
+        let _ = build_dir;
+        None
+    }
+
     /// Returns the command syncing the backend's shared environment with
     /// its manifest (`west update`) --- a workspace-wide, slow, state-
     /// changing operation the caller confirms before running. Returns

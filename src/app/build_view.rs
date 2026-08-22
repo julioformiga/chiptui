@@ -237,7 +237,10 @@ impl App {
         }
         if matches!(
             action,
-            BuildAction::Build(_) | BuildAction::Flash | BuildAction::Menuconfig
+            BuildAction::Build(_)
+                | BuildAction::Flash
+                | BuildAction::Menuconfig
+                | BuildAction::Dashboard
         ) && !self.require_buildable_project(&action)
         {
             return;
@@ -262,11 +265,12 @@ impl App {
             }
             BuildAction::Menuconfig => self.start_menuconfig(),
             BuildAction::UpdateZephyr => {
-                self.overlay = Some(Overlay::UpdateZephyrChoice { selected: 0 });
+                self.overlay = Some(Overlay::ZephyrActions { selected: 0 });
             }
             // Nothing runs from this row: it asks where to install, and
             // the installer's own confirm asks whether to.
             BuildAction::InstallZephyr => self.open_install_picker(),
+            BuildAction::Dashboard => self.start_dashboard(),
         }
     }
 
@@ -293,6 +297,7 @@ impl App {
             BuildAction::Build(kind) => kind.label(),
             BuildAction::Flash => "flash",
             BuildAction::Menuconfig => "menuconfig",
+            BuildAction::Dashboard => "dashboard",
             _ => "this command",
         };
         self.logs.warn(format!(
@@ -462,6 +467,25 @@ impl App {
         self.logs
             .info(format!("running {command} (the TUI is suspended)"));
         self.pending_command = Some(command);
+    }
+
+    /// Starts the build dashboard (`west build -t dashboard`, reached
+    /// through the Zephyr Actions menu): the build pane's own process slot,
+    /// output streaming in the Monitor tab, focus staying on the panel with
+    /// the cursor on `Stop` --- the build rule, because this is a build
+    /// target like any other. The target itself opens the HTML report in
+    /// the browser; what streams here is the generation. A board answer is
+    /// deliberately not required: the report reads an already-configured
+    /// build directory, and one that is missing is `west`'s error to
+    /// explain.
+    pub(super) fn start_dashboard(&mut self) {
+        self.start_build_command(
+            "Dashboard",
+            false,
+            BuildAction::Dashboard,
+            Focus::Build,
+            |panel, backend| panel.dashboard_command(backend),
+        );
     }
 
     /// Applies the build-directory choice (picked row or typed name):

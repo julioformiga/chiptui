@@ -904,7 +904,14 @@ fn monitor_status(app: &App, palette: Palette) -> Line<'static> {
                 if let Some(label) = panel.running_label() {
                     (spinner(), label.to_string())
                 } else if let Some(report) = panel.last.as_ref() {
-                    let icon = if report.ok { check() } else { cross() };
+                    // A stopped command is a success here too: stopping is
+                    // what the user asked for, so it gets the check, never
+                    // the error cross.
+                    let icon = if report.ok || report.cancelled {
+                        check()
+                    } else {
+                        cross()
+                    };
                     (Some(icon), report.what.to_string())
                 } else {
                     (None, "Build".to_string())
