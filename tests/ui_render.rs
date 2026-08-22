@@ -147,7 +147,7 @@ fn header_shows_the_backend_left_the_project_centered_the_device_right() {
     let header = frame.lines().next().unwrap().trim_matches('"').to_string();
 
     assert!(
-        header.contains("Backend ◆ Zephyr"),
+        header.contains("◆ Zephyr"),
         "the backend section names the kind under its icon:\n{header}"
     );
     assert!(
@@ -181,7 +181,7 @@ fn a_narrow_header_ellipsizes_the_project_and_never_the_device() {
     let header = frame.lines().next().unwrap().trim_matches('"').to_string();
 
     assert!(
-        header.contains("Backend ◆ Zephyr"),
+        header.contains("◆ Zephyr"),
         "the backend section keeps its shape:\n{header}"
     );
     assert!(
@@ -209,7 +209,7 @@ fn an_unscanned_header_shows_the_disconnect_icon_and_reason() {
         "before any scan the header says so, dimmed:\n{header}"
     );
     assert!(
-        header.contains("Backend ▲ MicroPython"),
+        header.contains("▲ MicroPython"),
         "each backend kind carries its own icon:\n{header}"
     );
 }

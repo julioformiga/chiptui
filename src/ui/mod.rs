@@ -296,9 +296,7 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
     );
 }
 
-/// The header's left side: the badge, then the backend section. Labels
-/// carry the muted color and values the weight (bold default), so what the
-/// user asked about reads louder than the word that marked it.
+/// The header's left side: the badge, then the backend icon and name.
 fn backend_spans(app: &App, palette: Palette) -> Vec<Span<'static>> {
     let (icon, backend) = match app.manager.selected_kind() {
         Some(BackendKind::Zephyr) => ("◆", BackendKind::Zephyr.display_name()),
@@ -310,8 +308,6 @@ fn backend_spans(app: &App, palette: Palette) -> Vec<Span<'static>> {
             " ChipTUI ",
             Style::new().fg(palette.bg).bg(palette.accent).bold(),
         ),
-        Span::raw(" "),
-        Span::styled("Backend", Style::new().fg(palette.muted)),
         Span::raw(" "),
         Span::styled(icon, Style::new().fg(palette.accent)),
         Span::raw(" "),
