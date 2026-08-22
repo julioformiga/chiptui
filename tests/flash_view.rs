@@ -338,8 +338,9 @@ fn a_running_write_flash_reports_esptools_percentage() {
     assert!(flash.select_firmware(0));
     flash.set_offset("0x1000".to_string());
 
-    app.handle(key(KeyCode::Down)); // flash information -> erase flash
-    app.handle(key(KeyCode::Down)); // erase flash -> write flash
+    for _ in 0..5 {
+        app.handle(key(KeyCode::Down)); // ... -> write / flash firmware
+    }
     app.handle(key(KeyCode::Enter)); // firmware and offset already set: straight to confirm
     match &app.overlay {
         Some(Overlay::Confirm { message, .. }) => assert!(message.contains("write-flash")),
@@ -1084,7 +1085,7 @@ fn the_actions_tab_keeps_focus_and_parks_the_cursor_on_stop() {
     let project = Project::new("pane-run");
     let mut app = app_in_actions_tab(&project);
 
-    for _ in 0..4 {
+    for _ in 0..2 {
         app.handle(key(KeyCode::Down)); // Reset, read-only
     }
     app.handle(key(KeyCode::Enter));
@@ -1112,7 +1113,7 @@ fn the_actions_tab_keeps_focus_and_parks_the_cursor_on_stop() {
     assert_eq!(app.focus, Focus::FilesDevice);
     assert_eq!(
         app.flash.as_ref().unwrap().pane_cursor,
-        4,
+        2,
         "a finished command lands back on its own row"
     );
     let frame = render(&mut app, 110, 40);
@@ -1128,7 +1129,9 @@ fn erase_from_the_actions_tab_still_confirms_with_the_literal_command() {
     let project = Project::new("pane-erase");
     let mut app = app_in_actions_tab(&project);
 
-    app.handle(key(KeyCode::Down)); // Erase flash
+    for _ in 0..4 {
+        app.handle(key(KeyCode::Down)); // Erase flash
+    }
     app.handle(key(KeyCode::Enter));
 
     match &app.overlay {
@@ -1161,9 +1164,7 @@ fn the_search_button_opens_the_online_window_as_a_dialog() {
         flash.cycle_chip(true);
         flash.cycle_chip(true); // Esp32, matching the curl fixture
     }
-    for _ in 0..5 {
-        app.handle(key(KeyCode::Down)); // Search firmware online
-    }
+    // Search firmware online --- the tab's first row
     app.handle(key(KeyCode::Enter));
 
     assert_eq!(app.view, View::Flash, "the online window is a dialog");
@@ -1340,9 +1341,7 @@ fn leaving_a_dialog_returns_to_the_pane_that_hosts_the_menu() {
         flash.cycle_chip(true); // Esp32, matching the curl fixture
     }
 
-    for _ in 0..5 {
-        app.handle(key(KeyCode::Down)); // Search firmware online
-    }
+    // Search firmware online --- the tab's first row
     app.handle(key(KeyCode::Enter));
     assert_eq!(app.view, View::Flash);
     assert_eq!(
@@ -1368,9 +1367,7 @@ fn a_refused_search_opens_no_dialog_from_the_tab() {
     let project = Project::new("pane-search-refused");
     let mut app = app_in_actions_tab(&project);
 
-    for _ in 0..5 {
-        app.handle(key(KeyCode::Down)); // Search firmware online
-    }
+    // Search firmware online --- the tab's first row
     app.handle(key(KeyCode::Enter));
 
     assert_eq!(
@@ -1424,9 +1421,7 @@ fn the_tab_names_a_running_fetch_and_stops_it() {
         flash.cycle_chip(true);
         flash.cycle_chip(true); // Esp32, matching the curl fixture
     }
-    for _ in 0..5 {
-        app.handle(key(KeyCode::Down)); // Search firmware online
-    }
+    // Search firmware online --- the tab's first row
     app.handle(key(KeyCode::Enter));
     app.handle(key(KeyCode::Esc)); // back to the pane, fetch still in flight
 

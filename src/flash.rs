@@ -459,23 +459,29 @@ impl FlashPanel {
         }
     }
 
-    /// The button rows the device pane's Actions tab shows: the
-    /// esptool menu actions in their order, then the online-firmware
-    /// search, with `Stop` appended exactly while a command runs --- drawn
-    /// as its own half-width box, never a stack row, like the build pane's
-    /// own `Stop`.
+    /// The button rows the device pane's Actions tab shows, in workflow
+    /// order: the online-firmware search first (finding an image is step
+    /// one), then the read-only esptool actions, the destructive pair last
+    /// --- with `Stop` appended exactly while a command runs, drawn as its
+    /// own half-width box, never a stack row, like the build pane's own
+    /// `Stop`.
     ///
     /// [`FlashAction::ChipInfo`] is not among them: the identity it reads
     /// is already asked in the background of every device selection
     /// ([`Self::query_device_info`]) and shown in the Device info pane, so
     /// a button for it would only re-run work the pane has done.
     pub fn pane_actions(&self) -> Vec<FlashPaneAction> {
-        let mut rows: Vec<FlashPaneAction> = FlashAction::ALL
-            .iter()
-            .filter(|action| **action != FlashAction::ChipInfo)
-            .map(|action| FlashPaneAction::Run(*action))
-            .collect();
-        rows.push(FlashPaneAction::SearchOnline);
+        let mut rows: Vec<FlashPaneAction> = vec![FlashPaneAction::SearchOnline];
+        rows.extend(
+            [
+                FlashAction::FlashInfo,
+                FlashAction::Reset,
+                FlashAction::VerifyFlash,
+                FlashAction::EraseFlash,
+                FlashAction::WriteFlash,
+            ]
+            .map(FlashPaneAction::Run),
+        );
         if self.is_busy() {
             rows.push(FlashPaneAction::Stop);
         }
