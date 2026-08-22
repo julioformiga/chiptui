@@ -22,8 +22,8 @@ use crate::files::SyncStatus;
 use crate::ui::panels::truncate_start;
 use crate::ui::{
     Palette, SPINNER, border_style, content_style, dashboard_focused, highlighted_line,
-    muted_style, pane_block, pane_border, pane_title, selection_style, shortcut_highlight_style,
-    shortcut_letter,
+    icon_column, muted_style, pane_block, pane_border, pane_title, selection_style,
+    shortcut_highlight_style, shortcut_letter,
 };
 
 pub fn draw(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
@@ -497,8 +497,11 @@ fn row_spans(
     // two cells wide --- however unicode-width scores the codepoint (⚙️
     // U+2699 is East-Asian *ambiguous*, scored 1, which budgeted the
     // column one too narrow and pushed the name into the icon). The
-    // column is fixed at 2 cells + the trailing space. A marker costs 2
-    // more. The `none` icon set drops the column (and its 3 cells) whole.
+    // column is fixed at 2 cells + the trailing space, and the Nerd
+    // set's width-1 glyphs (`icon_column`) center into it so a `.py`
+    // row lines up with the emoji rows beside it. A marker costs 2
+    // more. The `none` icon set drops the column (and its 3 cells)
+    // whole.
     let icon_width = usize::from(icons.shows_decorations()) * 3;
     let marker_width = usize::from(status.is_some()) * 2;
     let name_width =
@@ -520,8 +523,9 @@ fn row_spans(
         ));
     }
     if icons.shows_decorations() {
+        let (glyph, single_cell) = icon(name, is_dir, icons);
         spans.push(Span::styled(
-            format!("{} ", icon(name, is_dir, icons)),
+            icon_column(glyph, single_cell),
             Style::new().fg(palette.fg),
         ));
     }
@@ -541,9 +545,12 @@ fn row_spans(
 /// keeps its emoji in every set (none of them has a backend to borrow
 /// from), and the `none` set never reaches here --- the whole column is
 /// decoration and hides first (`shows_decorations`).
-fn icon(name: &str, is_dir: bool, icons: crate::icons::IconSet) -> &'static str {
+/// The kind glyph plus whether it draws a single cell wide --- true only
+/// for the Nerd set's Python logo, [`icon_column`]'s caller-declared
+/// width rather than a guess from the codepoint.
+fn icon(name: &str, is_dir: bool, icons: crate::icons::IconSet) -> (&'static str, bool) {
     if is_dir {
-        return "📁";
+        return ("📁", false);
     }
     let ext = std::path::Path::new(name)
         .extension()
@@ -551,16 +558,16 @@ fn icon(name: &str, is_dir: bool, icons: crate::icons::IconSet) -> &'static str 
         .map(str::to_lowercase);
     match ext.as_deref() {
         Some("py") => match icons {
-            crate::icons::IconSet::Nerd => icons.python(),
-            _ => "🐍",
+            crate::icons::IconSet::Nerd => (icons.python(), true),
+            _ => ("🐍", false),
         },
-        Some("rs") => "🦀",
-        Some("c" | "h" | "cc" | "cpp" | "hpp") => "🔧",
-        Some("dts" | "dtsi" | "overlay") => "🔌",
-        Some("md" | "rst") => "📝",
-        Some("conf" | "cfg" | "ini" | "toml" | "yaml" | "yml" | "json") => "⚙️",
-        Some("sh") => "🐚",
-        _ => "📄",
+        Some("rs") => ("🦀", false),
+        Some("c" | "h" | "cc" | "cpp" | "hpp") => ("🔧", false),
+        Some("dts" | "dtsi" | "overlay") => ("🔌", false),
+        Some("md" | "rst") => ("📝", false),
+        Some("conf" | "cfg" | "ini" | "toml" | "yaml" | "yml" | "json") => ("⚙️", false),
+        Some("sh") => ("🐚", false),
+        _ => ("📄", false),
     }
 }
 
@@ -678,31 +685,34 @@ mod tests {
 
     #[test]
     fn a_directory_gets_the_folder_icon_regardless_of_name() {
-        assert_eq!(icon("src", true, IconSet::Unicode), "📁");
-        assert_eq!(icon("main.py", true, IconSet::Unicode), "📁");
+        assert_eq!(icon("src", true, IconSet::Unicode), ("📁", false));
+        assert_eq!(icon("main.py", true, IconSet::Unicode), ("📁", false));
     }
 
     #[test]
     fn known_extensions_get_a_distinct_icon() {
-        assert_eq!(icon("main.py", false, IconSet::Unicode), "🐍");
-        assert_eq!(icon("readme.TXT", false, IconSet::Unicode), "📄");
-        assert_eq!(icon("prj.conf", false, IconSet::Unicode), "⚙️");
-        assert_eq!(icon("board.overlay", false, IconSet::Unicode), "🔌");
+        assert_eq!(icon("main.py", false, IconSet::Unicode), ("🐍", false));
+        assert_eq!(icon("readme.TXT", false, IconSet::Unicode), ("📄", false));
+        assert_eq!(icon("prj.conf", false, IconSet::Unicode), ("⚙️", false));
+        assert_eq!(
+            icon("board.overlay", false, IconSet::Unicode),
+            ("🔌", false)
+        );
     }
 
     /// A `.py` row borrows the backend's own mark under the Nerd set ---
-    /// the same Python logo the header and the home rows carry --- while
-    /// every other extension keeps its emoji there (none of them has a
-    /// backend to borrow from).
+    /// the same Python logo the header and the home rows carry, single
+    /// cell wide --- while every other extension keeps its two-cell
+    /// emoji there (none of them has a backend to borrow from).
     #[test]
     fn a_py_file_follows_the_backend_mark_under_the_nerd_set() {
         assert_eq!(
             icon("main.py", false, IconSet::Nerd),
-            "\u{E73C}",
+            ("\u{E73C}", true),
             "the Python logo, straight off the backend's mark"
         );
-        assert_eq!(icon("lib.rs", false, IconSet::Nerd), "🦀");
-        assert_eq!(icon("firmware.bin", false, IconSet::Nerd), "📄");
+        assert_eq!(icon("lib.rs", false, IconSet::Nerd), ("🦀", false));
+        assert_eq!(icon("firmware.bin", false, IconSet::Nerd), ("📄", false));
     }
 
     #[test]
@@ -743,6 +753,39 @@ mod tests {
     }
 
     #[test]
+    fn a_nerd_python_logo_reserves_the_same_three_cells_as_an_emoji() {
+        // The Nerd set's glyph is a width-1 Private Use Area codepoint
+        // where every emoji is two cells; unpadded, a `.py` row shifted
+        // its name one cell left of the emoji rows beside it.
+        let palette = ratatui_themes::ThemeName::TokyoNight.palette();
+        let spans = row_spans(
+            "main.py",
+            false,
+            128,
+            None,
+            40,
+            crate::icons::IconSet::Nerd,
+            palette,
+        );
+        assert_eq!(
+            spans[0].width(),
+            3,
+            "the Python logo pads into the fixed icon column: {:?}",
+            spans[0].content
+        );
+        let emoji = row_spans(
+            "lib.rs",
+            false,
+            128,
+            None,
+            40,
+            crate::icons::IconSet::Nerd,
+            palette,
+        );
+        assert_eq!(emoji[0].width(), 3, "the emoji column is three cells");
+    }
+
+    #[test]
     fn the_none_icon_set_drops_the_emoji_column_whole() {
         let palette = ratatui_themes::ThemeName::TokyoNight.palette();
         let spans = row_spans(
@@ -768,7 +811,7 @@ mod tests {
 
     #[test]
     fn an_unknown_or_missing_extension_falls_back_to_a_generic_file_icon() {
-        assert_eq!(icon("Kconfig", false, IconSet::Unicode), "📄");
-        assert_eq!(icon("firmware.bin", false, IconSet::Unicode), "📄");
+        assert_eq!(icon("Kconfig", false, IconSet::Unicode), ("📄", false));
+        assert_eq!(icon("firmware.bin", false, IconSet::Unicode), ("📄", false));
     }
 }

@@ -75,6 +75,28 @@ pub(crate) fn muted_style(palette: Palette) -> Style {
     Style::new().fg(palette.muted)
 }
 
+/// A decoration mark padded into the fixed three-cell icon column: two
+/// cells for the glyph, one separating space. Every emoji mark draws two
+/// cells wide in any terminal, but some marks --- the Nerd set's Private
+/// Use Area glyphs, and the plain `◆` diamond [`crate::icons::IconSet::
+/// zephyr`] shares with the header --- are single-width, and a width-1
+/// glyph needs two pads, not one: a trailing pad alone keeps the text
+/// columns lined up but parks the glyph at the column's left edge, a
+/// full cell left of a two-cell mark's visual center, so the *marks*
+/// read misaligned against each other. The leading pad centers a
+/// single-cell glyph over the second cell of a two-cell mark's span ---
+/// the closest a one-cell glyph gets to the middle of one two cells
+/// wide. `single_cell` is the caller's own knowledge of its glyph's
+/// width, not a guess from the codepoint --- a mark drawn single-width
+/// is never inferable from its range alone (`◆` sits outside the PUA
+/// same as any emoji, yet draws one cell). Both columns that budget the
+/// three cells (the home screen's project rows, the file panes' kind
+/// column) draw through here, so the pad is stated once.
+fn icon_column(mark: &str, single_cell: bool) -> String {
+    let lead = if single_cell { " " } else { "" };
+    format!("{lead}{mark} ")
+}
+
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
 

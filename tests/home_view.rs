@@ -90,7 +90,7 @@ fn the_none_icon_set_hides_the_backend_marks() {
 }
 
 #[test]
-fn the_nerd_set_gives_micropython_the_python_logo_and_zephyr_keeps_its_mark() {
+fn the_nerd_set_gives_both_backends_a_single_width_mark() {
     let fixture = Fixture::new("icons-nerd");
     std::fs::create_dir_all(fixture.config_dir().join("chiptui")).unwrap();
     std::fs::write(
@@ -112,8 +112,133 @@ fn the_nerd_set_gives_micropython_the_python_logo_and_zephyr_keeps_its_mark() {
         "the MicroPython emoji steps aside for it:\n{frame}"
     );
     assert!(
-        frame.contains('🔷'),
-        "Zephyr's mark never changes with the set:\n{frame}"
+        frame.contains('◆'),
+        "Zephyr trades its two-cell emoji for the header's single-width diamond:\n{frame}"
+    );
+    assert!(
+        !frame.contains('🔷'),
+        "the Zephyr emoji steps aside for it:\n{frame}"
+    );
+}
+
+/// The buffer cell `needle` starts at, scanning rows top to bottom --- a
+/// true cell coordinate, not a char offset, which is the whole point:
+/// the emoji marks are one char over two cells, and the alignment the
+/// icon column promises is in cells.
+fn cell_x(buffer: &ratatui::buffer::Buffer, needle: &str) -> Option<u16> {
+    let chars: Vec<char> = needle.chars().collect();
+    for y in 0..buffer.area.height {
+        for x in 0..buffer.area.width {
+            let hit = (0..chars.len()).all(|i| {
+                let cx = x + i as u16;
+                cx < buffer.area.width && buffer[(cx, y)].symbol() == chars[i].to_string()
+            });
+            if hit {
+                return Some(x);
+            }
+        }
+    }
+    None
+}
+
+#[test]
+fn the_icon_column_keeps_both_backends_rows_aligned_under_the_nerd_set() {
+    let fixture = Fixture::new("icons-nerd-align");
+    std::fs::create_dir_all(fixture.config_dir().join("chiptui")).unwrap();
+    std::fs::write(
+        settings::user_config_path(&fixture.config_dir()),
+        "[ui]\nicons = \"nerd\"\n",
+    )
+    .unwrap();
+    fixture.record("blinky", BackendKind::Zephyr);
+    fixture.record("sensor-node", BackendKind::MicroPython);
+
+    let mut terminal = Terminal::new(TestBackend::new(100, 20)).expect("test terminal");
+    let screen = fixture.screen();
+    let theme = ratatui_themes::ThemeName::TokyoNight.palette();
+    terminal
+        .draw(|frame| chiptui::ui::home::draw(frame, &screen, theme))
+        .expect("draw succeeds");
+    let buffer = terminal.backend().buffer().clone();
+
+    // The Python logo is one cell wide where Zephyr's emoji mark is
+    // two; `icon_column` pads the difference so every text column
+    // after the mark starts at the same cell on both kinds of row.
+    assert_eq!(
+        cell_x(&buffer, "Zephyr").expect("the Zephyr label is drawn"),
+        cell_x(&buffer, "MicroPython").expect("the MicroPython label is drawn"),
+        "the backend column starts at the same cell on every row"
+    );
+    assert_eq!(
+        cell_x(&buffer, "blinky").expect("the Zephyr row's name"),
+        cell_x(&buffer, "sensor-node").expect("the MicroPython row's name"),
+        "the name column starts at the same cell on every row"
+    );
+
+    // And the marks themselves line up: both are single-width under the
+    // Nerd set (the diamond and the logo), so `icon_column` centers
+    // each identically over the column's two-cell glyph slot rather
+    // than one hugging the left edge and the other the middle.
+    let diamond = cell_x(&buffer, "◆").expect("the Zephyr mark is drawn");
+    let logo = cell_x(&buffer, "\u{E73C}").expect("the Python logo is drawn");
+    assert_eq!(
+        logo, diamond,
+        "both single-width marks center at the same cell"
+    );
+}
+
+/// The first cell whose symbol equals `needle` --- for asserting on the
+/// *style* a mark was drawn with, not just that it appears.
+fn cell_of<'a>(
+    buffer: &'a ratatui::buffer::Buffer,
+    needle: &str,
+) -> Option<&'a ratatui::buffer::Cell> {
+    for y in 0..buffer.area.height {
+        for x in 0..buffer.area.width {
+            if buffer[(x, y)].symbol() == needle {
+                return Some(&buffer[(x, y)]);
+            }
+        }
+    }
+    None
+}
+
+#[test]
+fn the_backend_marks_carry_their_backends_accent_color() {
+    let fixture = Fixture::new("icons-nerd-color");
+    std::fs::create_dir_all(fixture.config_dir().join("chiptui")).unwrap();
+    std::fs::write(
+        settings::user_config_path(&fixture.config_dir()),
+        "[ui]\nicons = \"nerd\"\n",
+    )
+    .unwrap();
+    fixture.record("blinky", BackendKind::Zephyr);
+    fixture.record("sensor-node", BackendKind::MicroPython);
+
+    let mut terminal = Terminal::new(TestBackend::new(100, 20)).expect("test terminal");
+    let screen = fixture.screen();
+    let theme = ratatui_themes::ThemeName::TokyoNight.palette();
+    terminal
+        .draw(|frame| chiptui::ui::home::draw(frame, &screen, theme))
+        .expect("draw succeeds");
+    let buffer = terminal.backend().buffer().clone();
+
+    // A single-width Nerd glyph has no color of its own the way an emoji
+    // does; it takes the backend's accent --- the same blue the Zephyr
+    // name beside it is drawn in, and green for the Python logo.
+    let diamond = cell_of(&buffer, "◆").expect("the Zephyr mark is drawn");
+    assert_eq!(
+        diamond.fg,
+        theme.info,
+        "the Zephyr mark rides the theme's info blue:\n{}",
+        terminal.backend()
+    );
+    let logo = cell_of(&buffer, "\u{E73C}").expect("the Python logo is drawn");
+    assert_eq!(
+        logo.fg,
+        theme.success,
+        "the MicroPython mark rides the theme's success green:\n{}",
+        terminal.backend()
     );
 }
 

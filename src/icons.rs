@@ -349,12 +349,30 @@ impl IconSet {
     /// `nf-custom-python` (the seti set's logo): the FA5 brand at U+F3E2
     /// was tried and proved missing from partially patched Nerd Font
     /// builds, while the custom/seti range has shipped whole since the
-    /// first release. The only backend with its own Nerd glyph --- Zephyr
-    /// keeps its plain mark in every set.
+    /// first release. The only backend with a dedicated Nerd Font glyph
+    /// --- see [`Self::zephyr`] for the other one's width-1 mark.
     pub const fn python(self) -> &'static str {
         match self {
             Self::Unicode => "▲",
             Self::Nerd => "\u{E73C}",
+            Self::None => "",
+        }
+    }
+
+    /// The Zephyr backend's mark under the Nerd set: the header's own
+    /// `◆` diamond ([`crate::ui::backend_spans`], which draws it
+    /// directly in every icon set), reused here so a Zephyr row in the
+    /// home screen's project list costs the same single cell
+    /// [`Self::python`] costs a MicroPython row. No Nerd Font glyph
+    /// exists for Zephyr (the search that found MicroPython's logo
+    /// turned up nothing for this one), so this is not a dedicated Nerd
+    /// icon --- it is the plain diamond every set already shows in the
+    /// header, adopted here only for Nerd because the plain-Unicode and
+    /// `none` home rows keep [`crate::backend::BackendKind::icon`]'s
+    /// two-cell `🔷` unchanged.
+    pub const fn zephyr(self) -> &'static str {
+        match self {
+            Self::Unicode | Self::Nerd => "◆",
             Self::None => "",
         }
     }

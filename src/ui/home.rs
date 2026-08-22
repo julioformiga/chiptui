@@ -20,7 +20,7 @@ use ratatui::widgets::{Block, BorderType, Clear, List, ListItem, ListState, Para
 use crate::home::{Flow, HomeScreen, Row};
 use crate::workspace::{DirRowKind, dir_rows};
 
-use super::{centered, muted_style, selection_style};
+use super::{centered, icon_column, muted_style, selection_style};
 
 /// Widest the panel gets; beyond this the path column stops being scannable.
 const MAX_WIDTH: u16 = 100;
@@ -150,9 +150,13 @@ pub fn draw(frame: &mut Frame, screen: &HomeScreen, theme: super::Palette) {
 /// (never its tail: the project's own folder is the identifying part).
 /// The `none` icon set drops the `<icon>` column (and its 3 budgeted cells)
 /// whole, the same rule the file browser's emoji column follows; under the
-/// Nerd set only MicroPython trades its emoji for the Python logo (the
-/// header's rule, `IconSet::python`) --- Zephyr keeps its `🔷` in every
-/// set, and plain Unicode keeps both emoji.
+/// Nerd set both backends trade their two-cell emoji for a single-width
+/// mark --- MicroPython the Python logo (`IconSet::python`), Zephyr the
+/// header's own `◆` diamond (`IconSet::zephyr`, not a dedicated Nerd
+/// glyph --- see its doc) --- while plain Unicode keeps both emoji.
+/// [`super::icon_column`] centers a single-cell mark over a two-cell
+/// mark's span so the marks and every text column after them line up
+/// across rows regardless of which set or backend drew the row.
 fn project_spans<'a>(
     screen: &HomeScreen,
     entry: &'a crate::settings::ProjectEntry,
@@ -165,11 +169,14 @@ fn project_spans<'a>(
     const NAME_WIDTH: usize = 22;
 
     let icons = screen.icons();
-    let mark = match (icons, entry.backend) {
+    let (mark, single_cell) = match (icons, entry.backend) {
         (crate::icons::IconSet::Nerd, crate::backend::BackendKind::MicroPython) => {
-            icons.python().to_string()
+            (icons.python().to_string(), true)
         }
-        _ => entry.backend.icon().to_string(),
+        (crate::icons::IconSet::Nerd, crate::backend::BackendKind::Zephyr) => {
+            (icons.zephyr().to_string(), true)
+        }
+        _ => (entry.backend.icon().to_string(), false),
     };
     let name = fit(&entry.name, NAME_WIDTH);
     let icon_cols = usize::from(icons.shows_decorations()) * 3;
@@ -185,7 +192,13 @@ fn project_spans<'a>(
         ),
     ];
     if icons.shows_decorations() {
-        spans.insert(1, Span::styled(format!("{mark} "), base));
+        // The mark rides the same backend accent as the name beside it
+        // (Zephyr's diamond in the theme's info blue), so a single-width
+        // glyph is not left in the terminal's default foreground.
+        spans.insert(
+            1,
+            Span::styled(icon_column(&mark, single_cell), base.fg(accent)),
+        );
     }
     spans.push(Span::styled("  ", base));
     spans.push(Span::styled(format!("{name:<NAME_WIDTH$}"), base));

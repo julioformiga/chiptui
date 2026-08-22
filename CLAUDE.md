@@ -154,10 +154,19 @@ header's backend mark) via `ui::pane_title` --- width-1 glyphs in every set (the
 untestable), hidden whole by `none` along with the other decorations. Under the Nerd set the
 MicroPython mark becomes the Python logo (`IconSet::python` = `nf-custom-python` U+E73C, the
 seti set's glyph --- the FA5 brand at U+F3E2 proved missing from partially patched fonts), in
-both the header and the home rows; Zephyr keeps its own mark (`◆` header, `🔷` home) in every
-set, and plain Unicode keeps each surface's own MicroPython mark too (`▲` header, `🐍` home).
-The file panes' `.py` row follows the backend's mark the same way (Python logo under nerd, `🐍`
-otherwise); every other file-kind emoji stays in every set. `ctrl+i` cycles the three values
+both the header and the home rows; the header shows Zephyr's `◆` diamond in every set, and the
+home row follows under Nerd too (`IconSet::zephyr`, not a dedicated Nerd Font glyph --- none
+exists for Zephyr --- but the header's own mark reused so a Zephyr row costs the same
+single cell a MicroPython row does), keeping the plain-Unicode/`none` home row's two-cell `🔷`
+(`BackendKind::icon`) unchanged. Plain Unicode keeps each surface's own MicroPython mark too
+(`▲` header, `🐍` home). The file panes' `.py` row follows the backend's mark the same way
+(Python logo under nerd, `🐍` otherwise); every other file-kind emoji stays in every set. The
+two decoration columns that budget a two-cell mark (the home rows' backend mark, the file
+panes' kind column) centre a single-cell glyph in the fixed three cells via `ui::icon_column`
+(a leading pad, so it rides the second cell of a two-cell mark's span, the caller declaring its
+own glyph's width rather than `icon_column` guessing it from the codepoint), keeping both the
+marks and the columns after them lined up across backends and file kinds. `ctrl+i` cycles the
+three values
 (Kitty-protocol terminals only --- legacy sends Ctrl+I as plain Tab, which keeps its
 focus-tour meaning), applying and persisting the answer like the theme picker does
 (`App::cycle_icon_set`).
