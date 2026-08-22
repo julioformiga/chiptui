@@ -50,23 +50,35 @@ fn draw_state(
     if area.height < 2 || footer_top + 1 >= area.bottom() {
         return;
     }
+    // The state shares its row with the `Stop` box while a command runs and
+    // owns the whole row otherwise.
+    let width = if panel.is_busy() {
+        button::footer_split(area.width).0
+    } else {
+        area.width
+    };
     let line = if let Some(elapsed) = panel.elapsed() {
         // The tool's own progress (ninja's step counter, or an esptool
         // percentage from a runner that shells out to it) --- the
         // command's label instead of the generic "running", since the
         // count alone does not say what it counts. Without one (and the
         // dashboard deliberately never adopts progress, see
-        // `BuildPanel::on_process`), the label carries the state itself:
-        // "Dashboard running · 12s", never a bare "running" that does not
-        // name what runs.
+        // `BuildPanel::on_process`), the elapsed counter takes that place.
+        //
+        // The label and the counter are what carry meaning here; the word
+        // "running" carried none, because the counter only ever ticks while
+        // something runs and the Monitor strip is already spinning a
+        // spinner. It cost eight columns of a line that has few
+        // (`button::footer_split`), and those columns were coming out of
+        // the counter.
         let name = panel.running_label().unwrap_or("command");
         let text = match panel.progress() {
             Some(progress) => format!("{name} · {}", progress.render()),
-            None => format!("{name} running · {}", BuildPanel::secs(elapsed)),
+            None => format!("{name} · {}", BuildPanel::secs(elapsed)),
         };
         Line::from(vec![label("state", palette), text.fg(palette.accent)])
     } else if let Some(report) = &panel.last {
-        report_line(report, palette)
+        report_line(report, palette, width)
     } else {
         Line::from(vec![
             label("state", palette),
@@ -75,28 +87,30 @@ fn draw_state(
     };
     let rect = Rect {
         y: footer_top + 1,
-        width: if panel.is_busy() {
-            area.width / 2
-        } else {
-            area.width
-        },
+        width,
         ..area
     };
     frame.render_widget(Paragraph::new(line), rect);
 }
 
-fn report_line(report: &BuildReport, palette: Palette) -> Line<'static> {
+fn report_line(report: &BuildReport, palette: Palette, width: u16) -> Line<'static> {
     let what = report.what;
-    // Three outcomes, not two: a command the user stopped reads as success
-    // --- the check and the success color, with "stopped" as the word ---
-    // because stopping is exactly what was asked for, not something that
-    // went wrong. `ok` itself stays `false`: nothing was completed, and the
-    // cursor logic must not treat a stop as a green light for Flash.
+    // Three outcomes, and three marks: a command the user stopped is not a
+    // failure --- stopping is exactly what was asked for --- but it is not a
+    // success either, and giving it the success check made the two
+    // indistinguishable at a glance, which is the only way this line is ever
+    // read. `◼` in the warning color says "ended early, by choice" without
+    // claiming either. `ok` itself stays `false`: nothing was completed, and
+    // the cursor logic must not treat a stop as a green light for Flash.
+    //
+    // The duration comes back with it. "How far did it get before I stopped
+    // it" is a real question --- and it was the one outcome of the three
+    // dropping the answer.
     let (mark, style, outcome) = if report.cancelled {
         (
-            "✓",
-            ratatui::style::Style::new().fg(palette.success),
-            format!("{what} stopped"),
+            "◼",
+            ratatui::style::Style::new().fg(palette.warning),
+            format!("{what} stopped after {}", BuildPanel::secs(report.duration)),
         )
     } else if report.ok {
         (
@@ -111,12 +125,24 @@ fn report_line(report: &BuildReport, palette: Palette) -> Line<'static> {
             format!("{what} failed"),
         )
     };
-    Line::from(vec![
+    // The clock is the line's least load-bearing part --- what happened
+    // outranks the minute it happened --- so when the row cannot hold both
+    // it is dropped whole rather than truncated. A half-written `10:2` reads
+    // as a bug; no clock reads as no clock. Same rule the Device Info pane's
+    // chip line follows with its crystal/revision suffixes, and
+    // `esptool::features::compact` with its tail entries.
+    let head = vec![
         label("last", palette),
         Span::styled(format!("{mark} {outcome}"), style),
-        Span::raw(" "),
-        format!("{:02}:{:02}", report.at.hour(), report.at.minute()).fg(palette.muted),
-    ])
+    ];
+    let clock = format!(" {:02}:{:02}", report.at.hour(), report.at.minute());
+    let used: usize = head.iter().map(|span| span.content.chars().count()).sum();
+    if used + clock.chars().count() > usize::from(width) {
+        return Line::from(head);
+    }
+    let mut spans = head;
+    spans.push(clock.fg(palette.muted));
+    Line::from(spans)
 }
 
 /// The pane's rows: the operation buttons stacked in one shared-border
@@ -195,12 +221,14 @@ fn draw_rows(
     };
     button::render_stack(frame, stack_area, y, &buttons, palette);
     if stop {
-        // The right half of the footer: the same stacked-button widget,
-        // one button of its own, sharing its label row with the state.
-        let half = area.width / 2;
+        // The right end of the footer: the same stacked-button widget, one
+        // button of its own, sharing its label row with the state. Its
+        // width is fixed --- see `button::footer_split`, which the state
+        // line reads from the other side.
+        let (state, stop_width) = button::footer_split(area.width);
         let corner = Rect {
-            x: area.x + half,
-            width: area.width - half,
+            x: area.x + state,
+            width: stop_width,
             y: footer_top,
             height: area.bottom().saturating_sub(footer_top),
         };

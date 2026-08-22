@@ -448,7 +448,7 @@ fn stop_cancels_the_running_command() {
         "the Stop box must sit in the pane's right half ({stop_x}):\n{frame}"
     );
     assert!(
-        lines[stop_idx].contains("running ·"),
+        lines[stop_idx].contains("state Build · "),
         "the state must share the footer row, beside the box:\n{frame}"
     );
     assert_eq!(app.focus, Focus::Build);
@@ -464,16 +464,18 @@ fn stop_cancels_the_running_command() {
     assert!(!last.ok, "a cancelled build is not a success");
     assert!(last.cancelled, "a cancelled build says so on the report");
 
-    // A stopped command reads as success: the check and the success color,
-    // with "stopped" as the word --- never "failed".
+    // A stopped command gets its own mark: not the error cross (stopping is
+    // what was asked for) and not the success check either (nothing
+    // finished) --- the two used to be indistinguishable at a glance, which
+    // is the only way this line is read.
     let frame = render(&mut app, 100, 32);
     assert!(
-        frame.contains("stopped"),
-        "the state line must say stopped:\n{frame}"
+        frame.contains("◼ Build stopped after "),
+        "the report must carry its own mark and how far it got:\n{frame}"
     );
     assert!(
-        !frame.contains("failed"),
-        "a command the user stopped is not a failure:\n{frame}"
+        !frame.contains("✓ Build") && !frame.contains("failed"),
+        "a stopped command is neither a success nor a failure:\n{frame}"
     );
 
     // Idle again: the box is gone, the stack whole.
@@ -485,6 +487,111 @@ fn stop_cancels_the_running_command() {
     assert!(
         frame.contains("⇧ Flash"),
         "the stack's tail must be back:\n{frame}"
+    );
+}
+
+#[test]
+fn the_live_counter_survives_the_declared_minimum_width() {
+    // The regression this pins. The state line grew the command's label
+    // (`running · 12.4s` -> `Dashboard running · 12.4s`) while still being
+    // clipped to half the pane, so the elapsed counter --- the one signal
+    // that a long build is still alive --- fell off the end: at 100 columns
+    // it read `Dashboard running`, and at `ui::MIN_WIDTH` it read
+    // `Dashboard run`, a word cut in half. Nothing rendered the busy footer
+    // at the minimum, so nothing caught it.
+    let mut app = app_with_west("counter", "slow");
+    app.focus = Focus::Build;
+    cursor_on(&mut app, BuildAction::Build(BuildKind::Build));
+    app.handle(key(KeyCode::Enter));
+    assert!(app.build.as_ref().unwrap().is_busy());
+
+    // Past a second, so the counter is wider than "0.0s" and a clip shows.
+    let ticked = pump_until(
+        &mut app,
+        |app| {
+            app.build
+                .as_ref()
+                .unwrap()
+                .elapsed()
+                .is_some_and(|e| e.as_millis() > 1_100)
+        },
+        5,
+    );
+    assert!(ticked, "the command never ran long enough to time");
+
+    for width in [80, 100] {
+        let frame = render(&mut app, width, 32);
+        let state = frame
+            .lines()
+            .find(|line| line.contains("state Build"))
+            .unwrap_or_else(|| panic!("no state line at {width} columns:\n{frame}"));
+        assert!(
+            state.contains("state Build · 1."),
+            "the elapsed counter must survive {width} columns:\n{state}"
+        );
+        assert!(
+            state.contains("■ Stop"),
+            "the Stop box must still share the row at {width} columns:\n{state}"
+        );
+    }
+}
+
+#[test]
+fn a_report_drops_its_clock_rather_than_truncating_it() {
+    // The footer's clock is the least load-bearing thing on the line: what
+    // happened outranks the minute it happened. When the row cannot hold
+    // both, it goes whole --- a half-written `10:2` reads as a bug.
+    //
+    // `Dashboard` is the label that makes the row run out: a stopped report
+    // carries a duration *and* the longest word, and at `ui::MIN_WIDTH` the
+    // pane's 38 columns hold `last  ◼ Dashboard stopped after 0.0s` with
+    // nothing left for ` 10:30`. (`Build` fits exactly, which is why it
+    // cannot stand in for this.)
+    let (mut app, root) = zephyr_app("clock", None);
+    let ws = workspace_under(&root.join("home"), "zephyrproject");
+    std::fs::write(
+        root.join("chiptui.toml"),
+        format!("[zephyr]\nworkspace = \"{}\"\n", ws.display()),
+    )
+    .unwrap();
+    app.workspace = None;
+    app.build = None;
+    app.maybe_scan_devices();
+    app.build.as_mut().unwrap().set_tool_path(fake("slow"));
+
+    app.focus = Focus::Build;
+    app.overlay = Some(Overlay::ZephyrActions { selected: 2 });
+    app.handle(key(KeyCode::Enter));
+    assert!(app.build.as_ref().unwrap().is_busy(), "the dashboard ran");
+    cursor_on(&mut app, BuildAction::Stop);
+    app.handle(key(KeyCode::Enter));
+    assert!(
+        pump_until(
+            &mut app,
+            |app| app.build.as_ref().unwrap().last.is_some(),
+            10
+        ),
+        "the cancellation never reported"
+    );
+
+    let narrow = render(&mut app, 80, 32);
+    let line = narrow
+        .lines()
+        .find(|line| line.contains("◼ Dashboard stopped"))
+        .expect("the stopped report");
+    assert!(
+        !line.contains(':'),
+        "a clock that does not fit must be dropped, not cut:\n{line}"
+    );
+    // Wide enough, and it is back: this is a width rule, not a removal.
+    let wide = render(&mut app, 120, 32);
+    let line = wide
+        .lines()
+        .find(|line| line.contains("◼ Dashboard stopped"))
+        .expect("the stopped report");
+    assert!(
+        line.contains(':'),
+        "the clock must return once the row can hold it:\n{line}"
     );
 }
 
@@ -1630,13 +1737,18 @@ fn the_zephyr_actions_menu_runs_the_build_dashboard() {
         "the dashboard must not adopt its helpers' ninja counter"
     );
     let frame = render(&mut app, 100, 32);
+    let state = frame
+        .lines()
+        .find(|line| line.contains("state Dashboard"))
+        .unwrap_or_else(|| panic!("the state must name what runs:\n{frame}"));
+    // The counter the dashboard shows is its own elapsed time, never the
+    // `[1/3]` its cmake/ninja helpers stream --- which the fixture is
+    // emitting into the Monitor right now, so this has to look at the state
+    // line alone. Both forms share the `·`, so the discriminator is the
+    // counter's shape, not the separator.
     assert!(
-        frame.contains("Dashboard running"),
-        "the state must name what runs:\n{frame}"
-    );
-    assert!(
-        !frame.contains("Dashboard · "),
-        "no step counter may ride the dashboard's state line:\n{frame}"
+        state.contains("state Dashboard · ") && !state.contains("1/3"),
+        "no step counter may ride the dashboard's state line:\n{state}"
     );
 
     let finished = pump_until(

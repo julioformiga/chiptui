@@ -212,6 +212,34 @@ fn truncate(text: &str, max: usize) -> String {
     text.chars().take(max).collect()
 }
 
+/// The `Stop` box's width in the footer of a pane that runs commands.
+///
+/// Fixed, not a share of the pane. `■ Stop` is six columns and the box adds
+/// two rules, so eleven is already roomy --- while the *other* half of that
+/// footer carries the live state line, which is the half that actually
+/// needs room and the one that was silently losing it. Thirteen keeps the
+/// box visually the same as the half-width one at a typical width and stops
+/// it from eating half the pane at [`crate::ui::MIN_WIDTH`].
+pub(super) const STOP_BOX_WIDTH: u16 = 13;
+
+/// Splits a command pane's footer into `(state, stop)` widths.
+///
+/// The two used to be `width / 2` each, computed separately in the build
+/// pane and the flash pane (four places). That was fine while the state
+/// line read `running · 12.4s`, and stopped being fine when it grew the
+/// command's name: at `MIN_WIDTH` the Actions pane's half is 19 columns,
+/// `state ` takes 6, and `Dashboard running · 12.4s` rendered as
+/// `Dashboard run` --- the live counter, the one thing saying a long build
+/// is still alive, gone. `Stop`'s needs are fixed and small, so it takes a
+/// fixed box and the state keeps the rest.
+///
+/// A pane too narrow for both gives everything to `Stop`: the button has to
+/// stay reachable, and a state line with no room is only a truncation.
+pub(super) fn footer_split(width: u16) -> (u16, u16) {
+    let stop = STOP_BOX_WIDTH.min(width);
+    (width - stop, stop)
+}
+
 /// Renders the buttons as one stacked group at `y` and returns the next
 /// row's y. The full height is consumed even when the pane clips the
 /// rows, so callers measuring their content agree with what is drawn.

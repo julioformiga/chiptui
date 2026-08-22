@@ -1371,8 +1371,9 @@ fn the_monitor_tab_marks_the_last_finished_command() {
         "a failed command must be crossed red:\n{failed}"
     );
 
-    // A stopped command reads as success on the strip too: the check, never
-    // the error cross --- stopping is what the user asked for.
+    // A stopped command carries its own mark on the strip, matching the
+    // pane's footer: not the error cross (stopping is what the user asked
+    // for) and not the success check either (nothing finished).
     app.build.as_mut().unwrap().last = Some(chiptui::build::BuildReport {
         what: "Build",
         ok: false,
@@ -1382,12 +1383,12 @@ fn the_monitor_tab_marks_the_last_finished_command() {
     });
     let stopped = render(&mut app, 100, 32);
     assert!(
-        stopped.contains("✓ Build ("),
-        "a stopped command must carry the success check:\n{stopped}"
+        stopped.contains("◼ Build ("),
+        "a stopped command must carry the stopped mark:\n{stopped}"
     );
     assert!(
-        !stopped.contains("✗ Build ("),
-        "a command the user stopped is not an error:\n{stopped}"
+        !stopped.contains("✗ Build (") && !stopped.contains("✓ Build ("),
+        "a stopped command is neither an error nor a success:\n{stopped}"
     );
 
     // Before any command ran, the title stands alone with the row count.

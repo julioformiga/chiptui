@@ -447,12 +447,13 @@ fn draw_action_rows(frame: &mut Frame, area: Rect, flash: &FlashPanel, palette: 
     };
     button::render_stack(frame, stack_area, y, &buttons, palette);
     if stop {
-        // The right half of the footer: the same stacked-button widget,
-        // one button of its own, sharing its label row with the state.
-        let half = area.width / 2;
+        // The right end of the footer: the same stacked-button widget, one
+        // button of its own, sharing its label row with the state. Same
+        // fixed split as the build pane --- `button::footer_split`.
+        let (state, stop_width) = button::footer_split(area.width);
         let corner = Rect {
-            x: area.x + half,
-            width: area.width - half,
+            x: area.x + state,
+            width: stop_width,
             y: footer_top,
             height: area.bottom().saturating_sub(footer_top),
         };
@@ -545,7 +546,7 @@ fn draw_action_state(
     let rect = Rect {
         y: footer_top + 1,
         width: if flash.is_busy() {
-            area.width / 2
+            button::footer_split(area.width).0
         } else {
             area.width
         },

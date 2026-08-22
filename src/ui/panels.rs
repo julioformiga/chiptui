@@ -897,6 +897,10 @@ fn monitor_status(app: &App, palette: Palette) -> Line<'static> {
     };
     let check = || ("\u{2713}", Style::new().fg(palette.success));
     let cross = || ("\u{2717}", Style::new().fg(palette.error));
+    // The third outcome, matching the pane's own footer (`ui::build`'s
+    // `report_line`): stopped is neither the success check nor the error
+    // cross.
+    let stopped = || ("\u{25fc}", Style::new().fg(palette.warning));
 
     let (icon, title): (Option<(&str, Style)>, String) = match app.monitor_source {
         MonitorSource::Build => match app.build.as_ref() {
@@ -904,10 +908,13 @@ fn monitor_status(app: &App, palette: Palette) -> Line<'static> {
                 if let Some(label) = panel.running_label() {
                     (spinner(), label.to_string())
                 } else if let Some(report) = panel.last.as_ref() {
-                    // A stopped command is a success here too: stopping is
-                    // what the user asked for, so it gets the check, never
-                    // the error cross.
-                    let icon = if report.ok || report.cancelled {
+                    // A stopped command is not an error --- it is what the
+                    // user asked for --- but it did not finish either, so
+                    // it carries its own mark rather than borrowing one of
+                    // the other two.
+                    let icon = if report.cancelled {
+                        stopped()
+                    } else if report.ok {
                         check()
                     } else {
                         cross()
