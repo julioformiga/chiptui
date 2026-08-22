@@ -892,9 +892,11 @@ impl BuildPanel {
         let level = if ok {
             Level::Success
         } else if matches!(outcome, Outcome::Cancelled) {
-            // The same success-as-stopped reading the panel footer draws:
-            // a quiet notice in the log, never an error.
-            Level::Success
+            // Neither a success nor an error --- the same third reading the
+            // panel footer draws with its own mark. `stop_build` already
+            // logged the request as a warning; answering it with a green
+            // `Success` made one event read as two different things.
+            Level::Info
         } else {
             Level::Error
         };
@@ -928,6 +930,14 @@ impl BuildPanel {
             BuildAction::Build(BuildKind::Clean) => BuildAction::Build(BuildKind::Build),
             BuildAction::Build(_) if ok => BuildAction::Flash,
             BuildAction::Build(_) => BuildAction::Build(BuildKind::Build),
+            // `Dashboard` has no row of its own (it is reached through the
+            // Zephyr Actions menu), so it lands on the row that *opens* that
+            // menu --- where the user was when they started it. Said out
+            // loud because the fallback below would otherwise decide it:
+            // `position` finds nothing for an unlisted action and
+            // `unwrap_or(0)` happens to be this same row today, which is a
+            // coincidence, not a decision.
+            BuildAction::Dashboard => BuildAction::UpdateZephyr,
             other => other,
         };
         self.cursor = settled

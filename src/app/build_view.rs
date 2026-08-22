@@ -233,6 +233,24 @@ impl App {
     /// that gate, since it runs in the workspace, not the project.
     pub(super) fn run_build_action(&mut self, action: BuildAction) {
         if !self.build_action_enabled(action) {
+            // Two reasons a row is dimmed, and only one of them explains
+            // itself. The checklist gate does: the Environment pane is
+            // showing the unanswered question, so silence is the right
+            // answer and the dimmed row is the whole message. The *busy*
+            // gate does not --- it arrived with the one-process-slot rule
+            // and dims every row under a live `Stop`, so a user pressing
+            // Enter on a familiar button gets nothing at all, and the
+            // warning that used to say why is now unreachable from here
+            // (`start_build_command`'s guard, which the gate short-circuits).
+            if action != BuildAction::Stop
+                && self
+                    .build
+                    .as_ref()
+                    .is_some_and(crate::build::BuildPanel::is_busy)
+            {
+                self.logs
+                    .warn("a build command is already running — stop it first");
+            }
             return;
         }
         if matches!(
@@ -530,7 +548,12 @@ impl App {
             return;
         };
         if panel.is_busy() {
-            self.logs.warn("a build command is already running");
+            // Depth, not the user-facing path: `run_build_action`'s gate
+            // catches this first for every panel row. What still reaches
+            // here is a confirm overlay's accept path, which calls the
+            // `start_*` helpers directly.
+            self.logs
+                .warn("a build command is already running — stop it first");
             return;
         }
         let Some(command) = command(panel, backend) else {

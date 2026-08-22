@@ -402,9 +402,11 @@ fn stop_cancels_the_running_command() {
         "the pane layout must not change when a command starts:\n{idle}\n---\n{running_frame}"
     );
 
-    // While the command runs, the stack under `Stop` is disabled: the
-    // panel has one process slot, and the dimmed rows are the explanation.
-    // Enter on one is a no-op --- no second command, no overlay.
+    // While the command runs, the stack under `Stop` is disabled: the panel
+    // has one process slot. Enter on one starts nothing --- and says why.
+    // Dimming alone explains the *checklist* gate (the Environment pane is
+    // showing the unanswered question); it explains nothing here, so a
+    // press that does nothing has to leave a word behind.
     assert!(!app.build_action_enabled(BuildAction::Flash));
     assert!(!app.build_action_enabled(BuildAction::Build(BuildKind::Build)));
     assert!(!app.build_action_enabled(BuildAction::Menuconfig));
@@ -418,6 +420,12 @@ fn stop_cancels_the_running_command() {
     assert!(
         app.overlay.is_none(),
         "no confirm may open from a dimmed row"
+    );
+    assert!(
+        app.logs
+            .visible(20)
+            .any(|entry| entry.message.contains("already running")),
+        "a refused press must say why it was refused"
     );
     cursor_on(&mut app, BuildAction::Stop);
 
@@ -1769,6 +1777,18 @@ fn the_zephyr_actions_menu_runs_the_build_dashboard() {
     );
     assert!(finished);
     assert!(app.build.as_ref().unwrap().last.as_ref().unwrap().ok);
+
+    // The cursor comes back to the row that opens the menu it was started
+    // from --- `Dashboard` has no row of its own. Asserted by name rather
+    // than by index: the point is that the landing spot is chosen, not
+    // whatever `unwrap_or(0)` happens to be for an unlisted action.
+    let caps = app.manager.capabilities();
+    let panel = app.build.as_ref().unwrap();
+    assert_eq!(
+        panel.action_at(&caps, panel.cursor),
+        Some(BuildAction::UpdateZephyr),
+        "a finished Dashboard lands on the Zephyr Actions row"
+    );
 }
 
 #[test]
