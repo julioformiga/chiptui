@@ -147,10 +147,14 @@ pub enum DevicePaneTab {
 /// enum from [`Focus`] because two letters (`a`/`d`) resolve differently
 /// depending on whether the device pane is tabbed, and `Environment` is
 /// deliberately off the `Tab` tour (`App::focus_order`) while still being a
-/// jump target here.
+/// jump target here. `Home` is the odd one out even among those: it names
+/// no pane at all --- it is the header's own "Project" label, and acting on
+/// it leaves the dashboard entirely (`App::request_home_screen`) rather
+/// than moving focus within it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ShortcutTarget {
     Project,
+    Home,
     FilesLocal,
     Workspace,
     DeviceFiles,
@@ -2226,6 +2230,10 @@ impl App {
     /// not.
     fn shortcut_targets(&self) -> Vec<(char, ShortcutTarget)> {
         let mut targets = Vec::new();
+        // Always offered, like `l`/`t` --- the header's "Project" label is
+        // drawn regardless of backend or capability, and `shift+p` (the key
+        // this mirrors) carries no guard either.
+        targets.push(('p', ShortcutTarget::Home));
         if !self.project_rows().is_empty() {
             targets.push(('e', ShortcutTarget::Project));
         }
@@ -2267,10 +2275,12 @@ impl App {
 
     /// Jumps to a shortcut target: focuses its pane and, for the two that
     /// share `Focus::FilesDevice`/`Focus::Logs` with a sibling, selects the
-    /// right sub-tab too.
+    /// right sub-tab too. `Home` is the exception --- it focuses nothing,
+    /// it leaves the dashboard the same way `shift+p` does.
     fn apply_shortcut_target(&mut self, target: ShortcutTarget) {
         match target {
             ShortcutTarget::Project => self.focus_project(),
+            ShortcutTarget::Home => self.request_home_screen(),
             ShortcutTarget::FilesLocal => self.focus = Focus::FilesLocal,
             ShortcutTarget::Workspace => self.focus = Focus::Workspace,
             ShortcutTarget::DeviceFiles => {

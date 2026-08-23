@@ -338,11 +338,16 @@ fn project_spans(app: &App, palette: Palette, zone: usize) -> Option<Vec<Span<'s
         short.push('…');
         short
     };
-    Some(vec![
-        Span::styled("Project", Style::new().fg(palette.muted)),
-        Span::raw(" "),
-        Span::styled(name, Style::new().fg(palette.fg).bold()),
-    ])
+    let mut spans: Vec<Span<'static>> = highlighted_line(
+        "Project",
+        Style::new().fg(palette.muted),
+        shortcut_highlight_style(palette),
+        shortcut_letter(app, 'p'),
+    )
+    .spans;
+    spans.push(Span::raw(" "));
+    spans.push(Span::styled(name, Style::new().fg(palette.fg).bold()));
+    Some(spans)
 }
 
 fn spans_width(spans: &[Span<'_>]) -> usize {
@@ -368,8 +373,13 @@ pub(crate) fn header_project_name_rect(area: Rect, app: &App, palette: Palette) 
         .max(zone_start as u16)
         .min(area.width.saturating_sub(right_width as u16 + center_width));
     // `Project ` leads the name; its width is the offset of the name span.
-    let prefix = center[0].width() + center[1].width();
-    let name = &center[2];
+    // The label itself may be split into more than one span (the shortcuts
+    // overlay highlighting its `p`), so the name is always the *last* span
+    // and everything before it is the prefix, regardless of count.
+    let name = center
+        .last()
+        .expect("project_spans always appends a name span");
+    let prefix: usize = center[..center.len() - 1].iter().map(Span::width).sum();
     Some(Rect {
         x: x + prefix as u16,
         y: area.y,
