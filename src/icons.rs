@@ -189,6 +189,18 @@ impl IconSet {
         }
     }
 
+    /// Copy a fact off the UI: the Device Info pane's MAC row, whose
+    /// click-to-copy gesture the icon advertises. `⧉` / `nf-fa-copy`.
+    /// The `None` set draws nothing --- the gesture still works, it just
+    /// goes unadvertised.
+    pub const fn copy(self) -> &'static str {
+        match self {
+            Self::Unicode => "⧉",
+            Self::Nerd => "\u{F0C5}",
+            Self::None => "",
+        }
+    }
+
     /// End a running command: `Stop`, every pane's footer box.
     /// `■` / `nf-fa-stop`.
     pub const fn stop(self) -> &'static str {

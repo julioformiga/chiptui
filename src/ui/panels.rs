@@ -616,10 +616,18 @@ fn device_content(app: &App, width: usize, palette: Palette) -> Vec<Line<'static
         }
     }
     if let Some(mac) = &details.mac {
-        lines.push(Line::from(vec![
+        let mut spans = vec![
             label_span("MAC", palette),
             Span::styled(mac.clone(), Style::new().fg(palette.fg)),
-        ]));
+        ];
+        // The copy glyph rides the value's end, advertising the row's
+        // click-to-copy gesture (`app::mouse`). Only decorations carry it:
+        // the `none` set draws nothing, though the gesture itself stays.
+        let icon = app.icon_set().copy();
+        if !icon.is_empty() {
+            spans.push(Span::styled(format!(" {icon}"), muted));
+        }
+        lines.push(Line::from(spans));
         // The firmware answer sits directly under the MAC, the identity it
         // belongs beside, and carries the version the same read found in
         // the banner/descriptor bytes (`Zephyr v4.0.0`, `ESP-IDF v5.3.1`);
