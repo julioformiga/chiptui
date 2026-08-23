@@ -9,12 +9,12 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph};
 
 use crate::app::help::{self, HelpSection};
-use crate::app::{App, FileAction, Overlay, ThemeChoice, ViewerSource, ViewerState};
+use crate::app::{App, DocsFocus, FileAction, Overlay, ThemeChoice, ViewerSource, ViewerState};
 use crate::backend::BackendKind;
 use crate::backend::zephyr::workspace::InstallState;
 use crate::browser::SyncPlan;
 use crate::highlight::{self, TokenKind};
-use crate::ui::{Palette, muted_style, selection_style};
+use crate::ui::{Palette, border_style, draw_scrollbar, muted_style, selection_style};
 
 pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
     let Some(overlay) = app.overlay.clone() else {
@@ -215,12 +215,14 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
             input,
             selected,
             scroll,
-        } => draw_board_picker(frame, area, app, &input, selected, scroll, palette),
+            focus,
+        } => draw_board_picker(frame, area, app, &input, selected, scroll, focus, palette),
         Overlay::ShieldPicker {
             input,
             selected,
             scroll,
-        } => draw_shield_picker(frame, area, app, &input, selected, scroll, palette),
+            focus,
+        } => draw_shield_picker(frame, area, app, &input, selected, scroll, focus, palette),
         Overlay::DirPicker {
             purpose,
             path,
@@ -1607,6 +1609,7 @@ fn draw_firmware_picker(
 /// discover it from a changed file). The row under the cursor is enriched
 /// from the Zephyr docs index: its picture and documentation page on the
 /// right, fetched in the background while the cursor rests (`App::docs`).
+#[allow(clippy::too_many_arguments)]
 fn draw_board_picker(
     frame: &mut Frame,
     area: Rect,
@@ -1614,6 +1617,7 @@ fn draw_board_picker(
     input: &str,
     selected: usize,
     scroll: u16,
+    focus: DocsFocus,
     palette: Palette,
 ) {
     use crate::build::ListState as FetchState;
@@ -1684,9 +1688,11 @@ fn draw_board_picker(
         app,
         palette,
         title,
+        "Boards",
         input,
         selected,
         scroll,
+        focus,
         items,
         hint,
         doc_id.as_deref(),
@@ -1700,6 +1706,7 @@ fn draw_board_picker(
 /// a leading `(none)` row --- the shield is optional, and that row is how an
 /// existing answer is cleared (saved with the board, like a board pick).
 /// Enriched from the docs index exactly like the board picker.
+#[allow(clippy::too_many_arguments)]
 fn draw_shield_picker(
     frame: &mut Frame,
     area: Rect,
@@ -1707,6 +1714,7 @@ fn draw_shield_picker(
     input: &str,
     selected: usize,
     scroll: u16,
+    focus: DocsFocus,
     palette: Palette,
 ) {
     use crate::build::ListState as FetchState;
@@ -1770,9 +1778,11 @@ fn draw_shield_picker(
         app,
         palette,
         title,
+        "Shields",
         input,
         selected,
         scroll,
+        focus,
         items,
         hint,
         doc_id.as_deref(),
@@ -1782,12 +1792,18 @@ fn draw_shield_picker(
     );
 }
 
-/// The shared body of the two pickers: the filter line and hint over a
-/// two-column layout --- the west list on the left, the docs enrichment
-/// (picture above, documentation text below) for the row under the cursor
-/// on the right. The panes degrade honestly: a target the index does not
-/// know, a board without a picture, an offline docs site --- each is a
-/// named state on the right, never a hole.
+/// The shared body of the two pickers: the search line and hint over a
+/// two-column layout --- the west list with the preview under it on the
+/// left (the list keeps the majority), the documentation text for the row
+/// under the cursor on the right. The modal fills the frame minus two
+/// rows and two columns, and that geometry lives in
+/// [`crate::ui::layout::docs_picker`], shared with the click hit-testing.
+/// The panes degrade honestly: a target the index does not know, a board
+/// without a picture, an offline docs site --- each is a named state,
+/// never a hole. The list and the details pane each carry a scrollbar
+/// when their content overflows (the column stays reserved, so nothing
+/// reflows when one appears), and the pane borders show which half `Tab`
+/// left the keyboard in.
 #[allow(clippy::too_many_arguments)]
 fn draw_docs_picker(
     frame: &mut Frame,
@@ -1795,9 +1811,11 @@ fn draw_docs_picker(
     app: &mut App,
     palette: Palette,
     title: String,
+    list_title: &str,
     input: &str,
     selected: usize,
     scroll: u16,
+    focus: DocsFocus,
     items: Vec<ListItem>,
     hint: String,
     doc_id: Option<&str>,
@@ -1808,48 +1826,54 @@ fn draw_docs_picker(
     use crate::board_docs::IndexState;
     use crate::ui::SPINNER;
 
-    // Fixed height: the list scrolls inside it (ListState keeps the
-    // selection visible), so the modal does not jump around as the filter
-    // changes.
-    let width = 88u16.min(area.width.saturating_sub(2));
-    let height = 28u16.min(area.height.saturating_sub(2));
-    let popup = centered(area, width, height);
-    frame.render_widget(Clear, popup);
+    let areas = crate::ui::layout::docs_picker(area);
+    frame.render_widget(Clear, areas.popup);
+    frame.render_widget(modal(&title, palette), areas.popup);
 
-    let block = modal(&title, palette);
-    let [filter_area, hint_area, body_area] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Length(2),
-        Constraint::Min(1),
-    ])
-    .areas(block.inner(popup));
-    frame.render_widget(block, popup);
-
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("filter ", muted_style(palette)),
-            Span::styled(input.to_string(), Style::new().fg(palette.fg)),
-            Span::styled("▏", Style::new().fg(palette.accent)),
-        ])),
-        filter_area,
-    );
+    // The search field: the icon set's magnifier replaces the old
+    // `filter` label (the flash pane's online search uses the same
+    // glyph); the `none` set draws the field bare, like a pane title
+    // without a glyph.
+    let search = app.icon_set().search();
+    let mut field = Vec::new();
+    if !search.is_empty() {
+        field.push(Span::styled(format!("{search} "), muted_style(palette)));
+    }
+    field.push(Span::styled(input.to_string(), Style::new().fg(palette.fg)));
+    field.push(Span::styled("▏", Style::new().fg(palette.accent)));
+    frame.render_widget(Paragraph::new(Line::from(field)), areas.filter);
     frame.render_widget(
         Paragraph::new(hint.fg(palette.muted)).wrap(ratatui::widgets::Wrap { trim: false }),
-        hint_area,
+        areas.hint,
     );
 
-    let [list_area, right_area] =
-        Layout::horizontal([Constraint::Length(34), Constraint::Min(1)]).areas(body_area);
+    // The west list, the picker's spine: the focused border is the same
+    // grammar the dashboard's panes use, and the scrollbar's column stays
+    // reserved beside the list so the descriptions never shift when it
+    // appears. `ListState` keeps the selection visible; the offset it
+    // settles on is the position the scrollbar reports.
+    let total = items.len();
+    let list_block = pane(list_title, focus == DocsFocus::List, palette);
+    let list_inner = list_block.inner(areas.list);
+    frame.render_widget(list_block, areas.list);
+    let list_view = Rect {
+        width: list_inner.width.saturating_sub(1),
+        ..list_inner
+    };
     let mut state = ListState::default().with_selected(Some(selected));
     frame.render_stateful_widget(
         List::new(items).highlight_style(selection_style(palette)),
-        list_area,
+        list_view,
         &mut state,
     );
-
-    let image_height = (right_area.height / 3).clamp(5, 12);
-    let [image_area, details_area] =
-        Layout::vertical([Constraint::Length(image_height), Constraint::Min(1)]).areas(right_area);
+    draw_scrollbar(
+        frame,
+        list_inner,
+        total,
+        list_inner.height as usize,
+        state.offset(),
+        palette,
+    );
 
     let spinner = SPINNER[(app.ticks as usize) % SPINNER.len()];
     let entry = doc_id.and_then(|id| app.docs.entry(id).cloned());
@@ -1859,9 +1883,9 @@ fn draw_docs_picker(
         .map(|entry| entry.name.clone())
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| fallback_name.to_string());
-    let image_block = pane(&image_title, palette);
-    let image_inner = image_block.inner(image_area);
-    frame.render_widget(image_block, image_area);
+    let image_block = pane(&image_title, false, palette);
+    let image_inner = image_block.inner(areas.preview);
+    frame.render_widget(image_block, areas.preview);
 
     let protocol = doc_id.and_then(|id| app.docs.protocol_for(id));
     if let Some(protocol) = protocol {
@@ -1885,28 +1909,36 @@ fn draw_docs_picker(
                 }
             }
         };
-        frame.render_widget(Paragraph::new(note.fg(palette.muted)), image_inner);
+        frame.render_widget(
+            Paragraph::new(note.fg(palette.muted)).wrap(ratatui::widgets::Wrap { trim: false }),
+            image_inner,
+        );
     }
 
-    let details_block = pane("Details", palette);
-    let details_inner = details_block.inner(details_area);
-    frame.render_widget(details_block, details_area);
+    let details_block = pane("Details", focus == DocsFocus::Details, palette);
+    let details_inner = details_block.inner(areas.details);
+    frame.render_widget(details_block, areas.details);
+    let details_view = Rect {
+        width: details_inner.width.saturating_sub(1),
+        ..details_inner
+    };
 
     let mut lines: Vec<Line> = Vec::new();
+    let width = details_view.width as usize;
     match &entry {
         Some(entry) => {
             if !entry.vendor.is_empty() {
-                lines.push(labelled("Vendor", &entry.vendor, palette));
+                lines.extend(labelled("Vendor", &entry.vendor, width, palette));
             }
             if !entry.arch.is_empty() {
-                lines.push(labelled("Arch", &entry.arch, palette));
+                lines.extend(labelled("Arch", &entry.arch, width, palette));
             }
             if !lines.is_empty() {
                 lines.push(Line::from(""));
             }
             match doc_id.and_then(|id| app.docs.details.get(id)) {
                 Some(text) => {
-                    for line in wrap_words(text, details_inner.width as usize) {
+                    for line in wrap_words(text, details_view.width as usize) {
                         lines.push(Line::from(line));
                     }
                 }
@@ -1924,7 +1956,7 @@ fn draw_docs_picker(
         }
         None => {
             if !fallback_desc.is_empty() {
-                lines.push(labelled("Description", fallback_desc, palette));
+                lines.extend(labelled("Description", fallback_desc, width, palette));
             }
             match &index_state {
                 IndexState::Loading => lines.push(Line::from(
@@ -1950,31 +1982,70 @@ fn draw_docs_picker(
 
     // The pane scrolls over the rows that are actually drawn: the viewport
     // is published for the key handler's paging, and the offset is clamped
-    // here, where the wrapped length is known.
+    // here, where the wrapped length is known. The scrollbar's column is
+    // reserved in `details_view`, so the wrap width already accounts for
+    // it and the text never reflows when the bar appears.
     app.docs_viewport = details_inner.height as usize;
-    let max_scroll = lines.len().saturating_sub(app.docs_viewport);
+    let total = lines.len();
+    let max_scroll = total.saturating_sub(app.docs_viewport);
     let start = (scroll as usize).min(max_scroll);
     let visible = lines.split_off(start);
-    frame.render_widget(Paragraph::new(visible), details_inner);
+    frame.render_widget(Paragraph::new(visible), details_view);
+    draw_scrollbar(
+        frame,
+        details_inner,
+        total,
+        app.docs_viewport,
+        start,
+        palette,
+    );
 }
 
 /// A small inner pane of the picker modal: bordered and titled like the
 /// dashboard's panes, muted so the modal's own frame stays the loudest
-/// border.
-fn pane(title: &str, palette: Palette) -> Block<'_> {
+/// border --- except the pane holding the keyboard, whose border takes
+/// the focus accent ([`crate::ui::border_style`]).
+fn pane(title: &str, focused: bool, palette: Palette) -> Block<'_> {
     Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::new().fg(palette.muted))
+        .border_style(border_style(focused, palette))
         .title(format!(" {title} "))
 }
 
 /// One `Label value` row for the details pane: the label muted, the value
-/// plain.
-fn labelled(label: &str, value: &str, palette: Palette) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(format!("{label} "), muted_style(palette)),
-        Span::raw(value.to_string()),
-    ])
+/// plain. Long values wrap with a hanging indent past the label (the same
+/// greedy word-wrap [`wrap_words`] does, the first row's budget shortened
+/// by the label), so a long vendor or west description is never silently
+/// truncated by the pane's width.
+fn labelled(label: &str, value: &str, width: usize, palette: Palette) -> Vec<Line<'static>> {
+    let mut rows = Vec::new();
+    let mut budget = width.saturating_sub(label.chars().count() + 1).max(4);
+    let mut current = String::new();
+    for word in value.split_whitespace() {
+        if current.is_empty() {
+            current.push_str(word);
+        } else if current.chars().count() + 1 + word.chars().count() <= budget {
+            current.push(' ');
+            current.push_str(word);
+        } else {
+            rows.push(std::mem::take(&mut current));
+            budget = width.max(4);
+            current.push_str(word);
+        }
+    }
+    rows.push(current);
+    let mut lines = Vec::with_capacity(rows.len());
+    for (index, row) in rows.into_iter().enumerate() {
+        if index == 0 {
+            lines.push(Line::from(vec![
+                Span::styled(format!("{label} "), muted_style(palette)),
+                Span::raw(row),
+            ]));
+        } else {
+            lines.push(Line::from(row));
+        }
+    }
+    lines
 }
 
 /// Greedy word-wrap, the shape every scrolling pane here expects: rows in,

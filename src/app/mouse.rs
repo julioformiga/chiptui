@@ -21,7 +21,8 @@ use ratatui::crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, 
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
 
 use crate::app::{
-    App, DevicePaneTab, FileAction, Focus, LogTab, Overlay, ProjectRow, ThemeChoice, View,
+    App, DevicePaneTab, DocsFocus, FileAction, Focus, LogTab, Overlay, ProjectRow, ThemeChoice,
+    View,
 };
 use crate::backend::BackendKind;
 use crate::browser::{PaneState, Side, SyncPlan};
@@ -646,6 +647,15 @@ impl App {
             Overlay::BoardPicker {
                 input, selected, ..
             } => {
+                // A click on the details pane hands it the keyboard (the
+                // mouse's way of `Tab`); a click on the list side hands it
+                // back and selects the row under the pointer.
+                let areas = layout::docs_picker(frame);
+                if contains(areas.details, point) {
+                    self.set_docs_picker_focus(DocsFocus::Details);
+                    return;
+                }
+                self.set_docs_picker_focus(DocsFocus::List);
                 let Some(len) = self
                     .build
                     .as_ref()
@@ -660,8 +670,14 @@ impl App {
             Overlay::ShieldPicker {
                 input, selected, ..
             } => {
-                // The leading `(none)` row clears a pick; it is a row of
-                // the list, so it is included in the count.
+                // Same grammar as the board picker, over a list whose row 0
+                // is the `(none)` row --- it is included in the count.
+                let areas = layout::docs_picker(frame);
+                if contains(areas.details, point) {
+                    self.set_docs_picker_focus(DocsFocus::Details);
+                    return;
+                }
+                self.set_docs_picker_focus(DocsFocus::List);
                 let Some(len) = self
                     .build
                     .as_ref()
@@ -837,6 +853,19 @@ impl App {
         ) = &mut self.overlay
         {
             *selected = index;
+        }
+    }
+
+    /// A docs picker's focus follows the click: a gesture on the details
+    /// pane hands it the keyboard, one on the list side takes it back ---
+    /// the same swap `Tab` makes.
+    fn set_docs_picker_focus(&mut self, focus: DocsFocus) {
+        if let Some(
+            Overlay::BoardPicker { focus: picker, .. }
+            | Overlay::ShieldPicker { focus: picker, .. },
+        ) = &mut self.overlay
+        {
+            *picker = focus;
         }
     }
 
@@ -1057,31 +1086,27 @@ fn confirm_buttons(area: Rect, size: (u16, u16)) -> Option<(Rect, Rect)> {
     Some((no, yes))
 }
 
-/// A row click inside a docs picker's left list (the board/shield pickers'
-/// two-pane modal): filter line and hint rows sit above the body, the west
-/// list occupies the first 34 columns of it. Same fresh-`ListState`
+/// A row click inside a docs picker's west list (the board/shield pickers'
+/// two-column modal): the rows sit inside the pane's border, on the shared
+/// geometry the frame drew ([`layout::docs_picker`]). Same fresh-`ListState`
 /// minimal-scroll math as [`list_row`], over the list's explicit rect.
 fn docs_list_row(area: Rect, point: (u16, u16), selected: usize, len: usize) -> Option<usize> {
     if len == 0 {
         return None;
     }
-    let popup = crate::ui::centered(
-        area,
-        88u16.min(area.width.saturating_sub(2)),
-        28u16.min(area.height.saturating_sub(2)),
-    );
-    let list = Rect {
-        x: popup.x + 1,
-        y: popup.y + 1 + 3,
-        width: 34,
-        height: popup.height.saturating_sub(2 + 3),
+    let pane = layout::docs_picker(area).list;
+    let inner = Rect {
+        x: pane.x + 1,
+        y: pane.y + 1,
+        width: pane.width.saturating_sub(2),
+        height: pane.height.saturating_sub(2),
     };
-    if !contains(list, point) || list.height == 0 {
+    if !contains(inner, point) || inner.height == 0 {
         return None;
     }
-    let height = list.height as usize;
+    let height = inner.height as usize;
     let offset = selected.saturating_sub(height - 1);
-    let index = offset + (point.1 - list.y) as usize;
+    let index = offset + (point.1 - inner.y) as usize;
     (index < len).then_some(index)
 }
 
@@ -1778,6 +1803,79 @@ mod tests {
     /// must open the one under the pointer --- not whichever half `←`/`→`
     /// last selected. Pinned against the drawn row: the board half ends
     /// where the ` · Shield: ` separator begins.
+    /// A docs picker's click lands through the shared geometry: a row of
+    /// the west list selects it and hands the list the keyboard, a click
+    /// on the details pane hands it the keyboard instead (`Tab`'s mouse
+    /// side).
+    #[test]
+    fn a_docs_picker_click_selects_and_the_details_takes_the_keyboard() {
+        let root = project_dir("docspick", 0);
+        let mut app = app_with_backend(BackendKind::Zephyr, &root);
+        app.build.as_mut().unwrap().set_tool_path(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/bin/west"
+        ));
+        app.open_board_picker();
+
+        // Drain the background `west boards` fetch to its list.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            for event in app.processes.drain() {
+                app.handle(AppEvent::Process(event));
+            }
+            if matches!(
+                app.build.as_ref().unwrap().boards.state,
+                crate::build::ListState::Loaded(_)
+            ) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the fake west boards never finished"
+            );
+        }
+
+        // The row click: pinned against the drawn row, through its own
+        // column (byte offsets are not columns).
+        let lines = render(&mut app, 100, 40);
+        let row = lines
+            .iter()
+            .position(|line| line.contains("rpi_pico/rp2040"))
+            .expect("a board row is drawn");
+        let col = column_of(&lines[row], "rpi_pico").unwrap();
+        click(&mut app, col, row as u16);
+        assert!(
+            matches!(
+                app.overlay,
+                Some(Overlay::BoardPicker {
+                    selected: 4,
+                    focus: DocsFocus::List,
+                    ..
+                })
+            ),
+            "the row click selected the drawn row and kept the list's keyboard"
+        );
+
+        // The details pane's own frame takes the keyboard.
+        let title = lines
+            .iter()
+            .position(|line| line.contains("Details"))
+            .expect("the details pane is drawn");
+        let col = column_of(&lines[title], "Details").unwrap();
+        click(&mut app, col, title as u16);
+        assert!(
+            matches!(
+                app.overlay,
+                Some(Overlay::BoardPicker {
+                    focus: DocsFocus::Details,
+                    ..
+                })
+            ),
+            "a click on the details pane hands it the keyboard"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn board_shield_clicks_open_the_half_they_land_on() {
         let root = project_dir("seg", 1);

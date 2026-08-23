@@ -190,6 +190,72 @@ fn row2_content_height(app: &App) -> u16 {
     workspace.max(build).max(actions)
 }
 
+/// The board/shield pickers' pane rects: the modal fills the frame minus
+/// one column per side and two rows above and below (a frame at the
+/// declared minimum still fits whole panes), its body split into the west
+/// list with the preview below it and the details column. One definition
+/// shared by the renderer ([`crate::ui::overlay`]) and the click
+/// hit-testing (`crate::app::mouse`), like [`dashboard`] below.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DocsPickerAreas {
+    /// The modal itself (border included) --- the `Clear` rect.
+    pub(crate) popup: Rect,
+    /// The search/filter line, above the hint.
+    pub(crate) filter: Rect,
+    /// The wrapped hint line(s) between the filter and the body.
+    pub(crate) hint: Rect,
+    /// The west list pane (border included).
+    pub(crate) list: Rect,
+    /// The preview pane under it (border included).
+    pub(crate) preview: Rect,
+    /// The details column (border included).
+    pub(crate) details: Rect,
+}
+
+/// Where the docs pickers' panes sit inside `area`: the modal takes the
+/// whole frame minus one column per side and two rows above and below;
+/// under the filter and hint lines the body fixes the west list's column
+/// at 32 (the list above, the preview below it), so every column a wider
+/// terminal adds goes to the details pane --- the list's rows are the
+/// picker's spine and fit their fixed column, while the docs text is the
+/// part more width genuinely buys. The preview takes a bounded minority
+/// of the column --- never more than the column minus the rows the list
+/// needs to stay usable.
+pub(crate) fn docs_picker(area: Rect) -> DocsPickerAreas {
+    let popup = super::centered(
+        area,
+        area.width.saturating_sub(2),
+        area.height.saturating_sub(4),
+    );
+    let inner = Rect {
+        x: popup.x + 1,
+        y: popup.y + 1,
+        width: popup.width.saturating_sub(2),
+        height: popup.height.saturating_sub(2),
+    };
+    let [filter, hint, body] = Layout::vertical([
+        Constraint::Length(1), // the search/filter line
+        Constraint::Length(2), // the wrapped hint
+        Constraint::Min(1),
+    ])
+    .areas(inner);
+    let [left, details] =
+        Layout::horizontal([Constraint::Length(32), Constraint::Min(1)]).areas(body);
+    let preview = ((left.height as u32 * 2 / 5) as u16)
+        .clamp(4, 14)
+        .min(left.height.saturating_sub(4));
+    let [list, preview] =
+        Layout::vertical([Constraint::Min(1), Constraint::Length(preview)]).areas(left);
+    DocsPickerAreas {
+        popup,
+        filter,
+        hint,
+        list,
+        preview,
+        details,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -200,6 +266,42 @@ mod tests {
 
     fn app() -> App {
         App::new("/nonexistent-project-dir")
+    }
+
+    /// The docs pickers' modal fills the frame minus one column per side
+    /// and two rows above and below, and the west list's column stays
+    /// fixed at 32 --- every extra column a wider terminal adds belongs
+    /// to the details pane.
+    #[test]
+    fn docs_picker_modal_margins_and_fixed_list_column() {
+        let areas = docs_picker(area());
+        assert_eq!(
+            areas.popup,
+            Rect::new(1, 2, 98, 36),
+            "centered, margins 1/2"
+        );
+        assert_eq!(
+            areas.list,
+            Rect::new(2, 6, 32, 19),
+            "list above, fixed width"
+        );
+        assert_eq!(
+            areas.preview,
+            Rect::new(2, 25, 32, 12),
+            "preview below, same column"
+        );
+        assert_eq!(
+            areas.details,
+            Rect::new(34, 6, 64, 31),
+            "details takes the rest"
+        );
+
+        // Widening the frame widens only the details column: the list and
+        // preview keep their whole geometry.
+        let wide = docs_picker(Rect::new(0, 0, 140, 40));
+        assert_eq!(wide.list, areas.list);
+        assert_eq!(wide.preview, areas.preview);
+        assert_eq!(wide.details.width, 104);
     }
 
     /// Row 1 is fixed-height and halved; row 3 takes whatever remains ---

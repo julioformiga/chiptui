@@ -13,11 +13,26 @@
 # filesystem evidence `Step::already_done` reads on a real machine.
 case "$1" in
     boards)
+        # Real Zephyr targets, enough of them (16) that a picker's list
+        # overflows its pane at the dashboard's declared minimum --- the
+        # scrollbar is part of that surface and needs the overflow to be
+        # exercised.
         printf 'esp32_devkitc_wrover/esp32/procpu  ESP32 DevKitC-WROVER\n'
         printf 'native/native64                   Native POSIX\n'
         printf 'nrf52840dk/nrf52840               Nordic nRF52840 DK\n'
         printf 'nrf52840dk/nrf52840/qspi          Nordic nRF52840 DK (QSPI)\n'
         printf 'rpi_pico/rp2040                   Raspberry Pi Pico\n'
+        printf 'adafruit_feather_esp32s3/esp32s3/procpu  Adafruit Feather ESP32-S3\n'
+        printf 'bbc_microbit/nrf51822             BBC Micro:bit\n'
+        printf 'bl654_dvk/nrf52840                Laird BL654 Dev Kit\n'
+        printf 'blackpill_f411ce/stm32f411xe      WeAct BlackPill V3.0\n'
+        printf 'disco_l475_iot1/stm32l475xx       ST Discovery IoT Node\n'
+        printf 'esp32s3_devkitc/esp32s3/procpu    ESP32-S3 DevKitC\n'
+        printf 'frdm_k64f/mk64f12                 NXP Freedom K64F\n'
+        printf 'nucleo_f401re/stm32f401xe         ST Nucleo F401RE\n'
+        printf 'reel_board/nrf52840               Phytec Reel Board\n'
+        printf 'thingy52/nrf52832                 Nordic Thingy:52\n'
+        printf 'xiao_ble/nrf52840                 Seeed XIAO BLE\n'
         exit 0
         ;;
     shields)

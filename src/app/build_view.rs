@@ -10,7 +10,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use crate::backend::BuildKind;
 use crate::build::BuildAction;
 
-use super::{App, Focus, LogTab, MonitorSource, Overlay};
+use super::{App, DocsFocus, Focus, LogTab, MonitorSource, Overlay};
 
 impl App {
     /// Handles a key while [`Focus::Build`] holds focus. The list is
@@ -54,6 +54,7 @@ impl App {
             input: String::new(),
             selected: 0,
             scroll: 0,
+            focus: DocsFocus::default(),
         });
         self.docs.ensure_index(&self.docs_label());
         let Some(backend) = self.manager.backend() else {
@@ -180,6 +181,7 @@ impl App {
             input: String::new(),
             selected: 0,
             scroll: 0,
+            focus: DocsFocus::default(),
         });
         self.docs.ensure_index(&self.docs_label());
         let Some(backend) = self.manager.backend() else {

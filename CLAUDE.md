@@ -466,11 +466,23 @@ below (under `Capability::ShieldSelect`) opens `Overlay::ShieldPicker` over a ba
 shields` fetch — same `ListFetch` machinery as boards — with a leading `(none)` row to clear the
 pick (the clearing persists too); the saved answer reaches only first-configuration builds as
 `--shield` (never an incremental build of an already-configured directory). Both pickers are
-enlarged two-pane modals (`src/ui/overlay.rs`'s shared `draw_docs_picker`, a `scroll` field on the
-overlay variants for pgup/pgdn over the details pane): the west list on the left, and on the right
-the row under the cursor enriched from docs.zephyrproject.org — its picture rendered inline
+full-frame modals (`src/ui/overlay.rs`'s shared `draw_docs_picker`): the window fills the frame
+minus one column per side and two rows above and below, and the geometry is one definition in
+`ui::layout::docs_picker` shared with the click hit-testing (like the dashboard's own tree).
+Under a search line (the icon set's `⌕` magnifier standing in for the old `filter` label) and the
+hint, the body fixes its left column at 32 columns — the west list with the row's *preview* (its
+picture rendered inline
 (`ratatui-image` + `image`; the terminal protocol is probed once in `main.rs` *before* the TUI
-takes over, `Picker::from_query_stdio` falling back to halfblocks) above its documentation text.
+takes over, `Picker::from_query_stdio` falling back to halfblocks) below it, sized for the list's
+rows rather than the terminal — and gives every remaining column to the Details pane, so
+widening the terminal widens only Details. `Tab` swaps the keyboard between the
+list and the details (`DocsFocus` on the overlay variants; the focused pane's border takes the
+accent, the shared `border_style` grammar): with the details focused the arrows and pgup/pgdn
+scroll its text (a `scroll` field), while printable keys keep filtering and `Enter` keeps
+applying the list's row — and a click on either pane hands it the keyboard the same way. Both
+list and details carry the shared one-column scrollbar when their content overflows (the column
+always reserved beside the pane, so nothing reflows when a bar appears), and long labelled rows
+(vendor, description) wrap with a hanging indent instead of truncating.
 The enrichment layer is `src/board_docs.rs` (`App::docs`): the boards index (one `a.board-card`
 per board/shield, joined onto west names by the *documentation directory* in the card href —
 `boards/<vendor>/<id>/` for boards, the prefix before the HWMv2 qualifier — never by display

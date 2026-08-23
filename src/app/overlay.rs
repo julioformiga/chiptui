@@ -10,7 +10,7 @@ use crate::build::BuildAction;
 use crate::device::ScriptState;
 
 use super::help::{self, HelpSection};
-use super::{App, FileAction, Overlay, PendingEdit, ThemeChoice, View, ViewerSource};
+use super::{App, DocsFocus, FileAction, Overlay, PendingEdit, ThemeChoice, View, ViewerSource};
 
 impl App {
     /// Shared key handling for every Yes/No confirm overlay
@@ -390,13 +390,16 @@ impl App {
                 input,
                 selected,
                 scroll,
+                focus,
             } => {
                 // The list the cursor walks is the *filtered* one, so every
                 // filter change re-clamps `selected` against the length the
                 // changed filter produces (typing can only shrink it, but
                 // backspace grows it too). A new row (filter or cursor)
                 // restarts the details pane from its top; only pgup/pgdn
-                // move it deliberately.
+                // and the arrows with the details focused move it
+                // deliberately. The keyboard follows `focus` (Tab), while
+                // printable keys and `Enter` keep answering the list.
                 let rebuild = |app: &mut Self, input: String, mut selected: usize| {
                     if let Some(panel) = app.build.as_ref() {
                         let count = panel.filtered_boards(&input).len();
@@ -408,6 +411,7 @@ impl App {
                         input,
                         selected,
                         scroll: 0,
+                        focus,
                     });
                 };
                 let count = self
@@ -428,9 +432,25 @@ impl App {
                         input.push(c);
                         rebuild(self, input, selected);
                     }
-                    // Arrows only for navigation: every printable char is
-                    // filter text here, including `k`/`j` (typing "dk" must
-                    // not move the cursor).
+                    // The keyboard follows the focus: with the details
+                    // focused the arrows scroll the docs text (clamped by
+                    // the renderer, which knows the wrapped length); with
+                    // the list focused they walk it. Every printable char
+                    // is filter text here either way, including `k`/`j`
+                    // (typing "dk" must not move anything).
+                    KeyCode::Up | KeyCode::Down if focus == DocsFocus::Details => {
+                        let scroll = if key.code == KeyCode::Up {
+                            scroll.saturating_sub(1)
+                        } else {
+                            scroll.saturating_add(1)
+                        };
+                        self.overlay = Some(Overlay::BoardPicker {
+                            input,
+                            selected,
+                            scroll,
+                            focus,
+                        });
+                    }
                     KeyCode::Up => {
                         let selected = (selected + count - 1) % count;
                         rebuild(self, input, selected);
@@ -438,6 +458,14 @@ impl App {
                     KeyCode::Down => {
                         let selected = (selected + 1) % count;
                         rebuild(self, input, selected);
+                    }
+                    KeyCode::Tab => {
+                        self.overlay = Some(Overlay::BoardPicker {
+                            input,
+                            selected,
+                            scroll,
+                            focus: focus.toggled(),
+                        });
                     }
                     // The details pane pages by the rows the renderer drew
                     // (`docs_viewport`, the log pane's own contract).
@@ -452,6 +480,7 @@ impl App {
                             input,
                             selected,
                             scroll,
+                            focus,
                         });
                     }
                     KeyCode::Enter => {
@@ -465,6 +494,7 @@ impl App {
                 input,
                 selected,
                 scroll,
+                focus,
             } => {
                 // Same grammar as the board picker, over a list whose row 0
                 // is the `(none)` row --- the shield is optional, and that
@@ -480,6 +510,7 @@ impl App {
                         input,
                         selected,
                         scroll: 0,
+                        focus,
                     });
                 };
                 let count = self
@@ -499,6 +530,19 @@ impl App {
                         input.push(c);
                         rebuild(self, input, selected);
                     }
+                    KeyCode::Up | KeyCode::Down if focus == DocsFocus::Details => {
+                        let scroll = if key.code == KeyCode::Up {
+                            scroll.saturating_sub(1)
+                        } else {
+                            scroll.saturating_add(1)
+                        };
+                        self.overlay = Some(Overlay::ShieldPicker {
+                            input,
+                            selected,
+                            scroll,
+                            focus,
+                        });
+                    }
                     KeyCode::Up => {
                         let selected = (selected + count - 1) % count;
                         rebuild(self, input, selected);
@@ -506,6 +550,14 @@ impl App {
                     KeyCode::Down => {
                         let selected = (selected + 1) % count;
                         rebuild(self, input, selected);
+                    }
+                    KeyCode::Tab => {
+                        self.overlay = Some(Overlay::ShieldPicker {
+                            input,
+                            selected,
+                            scroll,
+                            focus: focus.toggled(),
+                        });
                     }
                     KeyCode::PageUp | KeyCode::PageDown => {
                         let page = self.docs_viewport.max(1) as u16;
@@ -518,6 +570,7 @@ impl App {
                             input,
                             selected,
                             scroll,
+                            focus,
                         });
                     }
                     KeyCode::Enter => {

@@ -210,6 +210,30 @@ pub struct MonitorView {
     pub width: usize,
 }
 
+/// Which half of a board/shield picker's body holds the navigation keys:
+/// the west list (the default --- filtering and cursor movement) or the
+/// details pane. `Tab` hands the keyboard over so the arrows and
+/// pgup/pgdn scroll the docs text instead of walking the list; printable
+/// keys and `Enter` belong to the list either way, because filtering is
+/// the picker's primary interaction and `Enter` always applies the row
+/// under the list cursor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DocsFocus {
+    #[default]
+    List,
+    Details,
+}
+
+impl DocsFocus {
+    /// The other half --- `Tab`'s whole effect.
+    pub const fn toggled(self) -> Self {
+        match self {
+            Self::List => Self::Details,
+            Self::Details => Self::List,
+        }
+    }
+}
+
 /// A modal layer drawn above the panes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Overlay {
@@ -279,22 +303,26 @@ pub enum Overlay {
     /// viewer's content lives in `App::viewer` --- an overlay holds only
     /// what a keypress changes, so rebuilding it per key never re-clones
     /// the list. `input` is the filter text; `scroll` the details pane's
-    /// line offset (pgup/pgdn).
+    /// line offset (the arrows with the details focused, pgup/pgdn always);
+    /// `focus` which half `Tab` last handed the keyboard ([`DocsFocus`]).
     BoardPicker {
         input: String,
         selected: usize,
         scroll: u16,
+        focus: DocsFocus,
     },
     /// The shield picker: the same filterable list grammar over `west
     /// shields`, with a leading `(none)` row --- the shield is optional, and
     /// that row is how an existing pick gets cleared. The list itself lives
     /// in [`App::build`] ([`crate::build::BuildPanel::shields`]) like the
     /// boards do. `input` is the filter text; `scroll` the details pane's
-    /// line offset (pgup/pgdn).
+    /// line offset (the arrows with the details focused, pgup/pgdn always);
+    /// `focus` which half `Tab` last handed the keyboard ([`DocsFocus`]).
     ShieldPicker {
         input: String,
         selected: usize,
         scroll: u16,
+        focus: DocsFocus,
     },
     /// The installation-directory picker: a real filesystem browser (no
     /// discovery guesses --- the user knows where their Zephyr lives).
@@ -2859,15 +2887,13 @@ impl App {
                 vec![("name/", "for a directory")]
             }
             Some(Overlay::RenameEntry { .. }) => vec![],
-            // The docs pane on the right is the only thing pgup/pgdn
-            // scrolls --- which half of the modal answers those keys is
-            // not guessable.
-            Some(Overlay::BoardPicker { .. }) => {
-                vec![("pgup/pgdn", "scroll the docs pane")]
-            }
-            Some(Overlay::ShieldPicker { .. }) => {
-                vec![("pgup/pgdn", "scroll the docs pane")]
-            }
+            // The docs pane on the right answers the scrolling keys ---
+            // but only after `Tab` hands it the keyboard, which is the
+            // one key a user cannot guess.
+            Some(Overlay::BoardPicker { .. }) | Some(Overlay::ShieldPicker { .. }) => vec![
+                ("tab", "swap the list/docs focus"),
+                ("pgup/pgdn", "scroll the docs pane"),
+            ],
             Some(Overlay::DirPicker { .. }) => vec![],
             Some(Overlay::BuildDirPicker { .. }) => vec![],
             Some(Overlay::ProjectPicker { .. }) => vec![],

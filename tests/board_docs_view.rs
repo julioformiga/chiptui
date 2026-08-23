@@ -9,7 +9,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use chiptui::app::{App, Overlay};
+use chiptui::app::{App, DocsFocus, Overlay};
 use chiptui::backend::BackendKind;
 use chiptui::backend::zephyr::workspace::{Workspace, WorkspaceOrigin};
 use chiptui::board_docs::{DocsEvent, IndexState};
@@ -208,10 +208,12 @@ fn the_board_picker_enriches_the_row_under_the_cursor() {
         frame.contains("Nordic Semiconductor ASA"),
         "the vendor:\n{frame}"
     );
-    // The pane wraps at its own width, so the assertion is wrap-agnostic.
+    // The pane wraps at its own width, so the assertions are
+    // wrap-agnostic: each fragment fits the column even at the minimum.
+    assert!(frame.contains("Bluetooth 5,"), "the detail text:\n{frame}");
     assert!(
-        frame.contains("Bluetooth 5, NFC,"),
-        "the detail text:\n{frame}"
+        frame.contains("NFC,"),
+        "the detail text continues:\n{frame}"
     );
     assert!(
         frame.contains("Thread and Zigbee."),
@@ -250,11 +252,9 @@ fn a_board_without_a_docs_entry_says_so() {
         frame.contains("not in the Zephyr docs index"),
         "an unmatched target is a named state:\n{frame}"
     );
-    // The west description still tells the user what the board is.
-    assert!(
-        frame.contains("Raspberry Pi Pico"),
-        "the west row:\n{frame}"
-    );
+    // The west description still tells the user what the board is
+    // (truncated at the list's fixed column, like every list row).
+    assert!(frame.contains("Raspberry Pi"), "the west row:\n{frame}");
 }
 
 #[test]
@@ -270,8 +270,8 @@ fn the_shield_picker_enriches_and_none_has_nothing_to_look_up() {
         "the clear row must stay:\n{frame}"
     );
     assert!(
-        frame.contains("the shield is optional"),
-        "the (none) row explains itself:\n{frame}"
+        frame.contains("the shield is"),
+        "the (none) row explains itself (wrapped at the pane's width):\n{frame}"
     );
 
     // The west list has to be here before the cursor can step past the
@@ -361,6 +361,179 @@ fn the_details_pane_pages_and_a_new_row_resets_it() {
     );
 }
 
+/// `Tab` hands the details pane the keyboard: the arrows scroll the docs
+/// text instead of walking the list, while printable keys keep filtering
+/// and `Enter` keeps answering the row under the list cursor --- the same
+/// single keyboard, pointed at the pane the user is reading.
+#[test]
+fn tab_hands_the_details_the_keyboard_and_back() {
+    let mut app = picker_app("focus");
+    app.docs.set_fetch(docs_fetch());
+    open_board_picker(&mut app);
+    let loaded = pump_until(
+        &mut app,
+        |app| {
+            matches!(
+                app.build.as_ref().unwrap().boards.state,
+                chiptui::build::ListState::Loaded(_)
+            )
+        },
+        10,
+    );
+    assert!(loaded);
+    focus_nrf(&mut app);
+
+    // A page longer than the pane, so line scrolling has somewhere to go.
+    let detail = (0..100)
+        .map(|line| format!("pin mux line {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    app.handle(AppEvent::Docs(DocsEvent::Entry {
+        id: "nrf52840dk".to_string(),
+        detail: Some(detail),
+        image: None,
+    }));
+    let frame = render(&mut app, 100, 32);
+    assert!(frame.contains("pin mux line 0"), "the page top:\n{frame}");
+
+    // Over to the details: Down scrolls one line, and the list cursor
+    // stays exactly where it was.
+    app.handle(key(KeyCode::Tab));
+    assert!(
+        matches!(
+            &app.overlay,
+            Some(Overlay::BoardPicker {
+                focus: DocsFocus::Details,
+                selected: 0,
+                ..
+            })
+        ),
+        "tab hands the details the keyboard"
+    );
+    app.handle(key(KeyCode::Down));
+    assert!(
+        matches!(
+            &app.overlay,
+            Some(Overlay::BoardPicker {
+                focus: DocsFocus::Details,
+                selected: 0,
+                scroll: 1,
+                ..
+            })
+        ),
+        "the arrow scrolls the details, not the list"
+    );
+    let frame = render(&mut app, 100, 32);
+    assert!(
+        !frame.contains("Vendor Nordic"),
+        "the pane scrolled past its first row:\n{frame}"
+    );
+    assert!(
+        frame.contains("pin mux line 1"),
+        "and one line is all it moved:\n{frame}"
+    );
+
+    // Typing is still filtering, keyboard or no keyboard: the details
+    // pane never eats the filter, and a changed row restarts at the top.
+    app.handle(key(KeyCode::Char('z')));
+    assert!(
+        matches!(
+            &app.overlay,
+            Some(Overlay::BoardPicker {
+                input, scroll: 0, focus: DocsFocus::Details, ..
+            }) if input == "nrfz"
+        ),
+        "printable keys keep filtering while the details hold the keyboard"
+    );
+    app.handle(key(KeyCode::Backspace));
+
+    // Back to the list: the arrows walk it again, the details restart.
+    app.handle(key(KeyCode::Tab));
+    app.handle(key(KeyCode::Down));
+    assert!(
+        matches!(
+            &app.overlay,
+            Some(Overlay::BoardPicker {
+                focus: DocsFocus::List,
+                selected: 1,
+                scroll: 0,
+                ..
+            })
+        ),
+        "the arrows walk the list once it holds the keyboard again"
+    );
+
+    // Enter answers the list even while the details hold the keyboard.
+    app.handle(key(KeyCode::Tab));
+    app.handle(key(KeyCode::Enter));
+    assert!(app.overlay.is_none(), "enter applies and closes");
+    assert_eq!(
+        app.build.as_ref().unwrap().board_name(),
+        Some("nrf52840dk/nrf52840/qspi"),
+        "the row under the list cursor is what applied"
+    );
+}
+
+/// Both panes carry a scrollbar only when their content overflows the
+/// pane (`┃` is the shared bar's thumb, drawn by nothing else).
+#[test]
+fn the_panes_show_a_scrollbar_only_when_they_overflow() {
+    let mut app = picker_app("scrollbar");
+    app.docs.set_fetch(docs_fetch());
+    open_board_picker(&mut app);
+    let loaded = pump_until(
+        &mut app,
+        |app| {
+            *app.docs.state() == IndexState::Loaded
+                && matches!(
+                    app.build.as_ref().unwrap().boards.state,
+                    chiptui::build::ListState::Loaded(_)
+                )
+        },
+        10,
+    );
+    assert!(loaded);
+
+    // One board, a short details pane: nothing overflows, so no thumb
+    // anywhere (`rpi` leaves exactly the Pico row, whose target the docs
+    // index does not know --- a one-line named state).
+    for c in ['r', 'p', 'i'] {
+        app.handle(key(KeyCode::Char(c)));
+    }
+    let frame = render(&mut app, 100, 32);
+    assert!(!frame.contains('┃'), "nothing overflows:\n{frame}");
+
+    // A docs page longer than the pane: the details scrollbar appears.
+    for _ in 0..3 {
+        app.handle(key(KeyCode::Backspace));
+    }
+    focus_nrf(&mut app);
+    let detail = (0..100)
+        .map(|line| format!("pin mux line {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    app.handle(AppEvent::Docs(DocsEvent::Entry {
+        id: "nrf52840dk".to_string(),
+        detail: Some(detail),
+        image: None,
+    }));
+    let frame = render(&mut app, 100, 32);
+    assert!(frame.contains('┃'), "the details overflow:\n{frame}");
+
+    // And the list itself: with the filter cleared the sixteen rows no
+    // longer fit the pane (the board back under the cursor has no docs
+    // entry, so the short details cannot be the source).
+    for _ in 0..3 {
+        app.handle(key(KeyCode::Backspace));
+    }
+    let frame = render(&mut app, 100, 32);
+    assert!(frame.contains('┃'), "the list overflows:\n{frame}");
+    assert!(
+        frame.contains("native/native64"),
+        "the unfiltered list's rows:\n{frame}"
+    );
+}
+
 #[test]
 fn the_docs_label_follows_the_resolved_workspace() {
     let mut app = picker_app("label");
@@ -408,14 +581,17 @@ fn the_picker_fits_the_declared_minimum() {
     );
     assert!(settled);
 
-    // 80x32 is the dashboard's declared minimum; the enlarged picker must
-    // live inside it, both panes and the picture included.
+    // 80x32 is the dashboard's declared minimum; the full-frame picker
+    // must live inside it, both panes and the picture included. The
+    // details column is narrow there, so a long vendor wraps with a
+    // hanging indent rather than truncating --- both halves pinned.
     let frame = render(&mut app, 80, 32);
     assert!(frame.contains("nrf52840dk/nrf52840"), "the list:\n{frame}");
     assert!(
-        frame.contains("Nordic Semiconductor ASA"),
-        "the details:\n{frame}"
+        frame.contains("Vendor Nordic Semiconductor"),
+        "the vendor's first row:\n{frame}"
     );
+    assert!(frame.contains("ASA"), "the vendor's wrapped tail:\n{frame}");
 }
 
 #[test]
