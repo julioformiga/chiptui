@@ -46,7 +46,11 @@ fn run() -> Result<()> {
         &ProjectRegistry::load(&config_dir, &home),
     );
 
-    let mut guard = terminal::init()?;
+    // Read before the terminal is taken over: mouse capture is decided by
+    // the user config, not probed from the terminal, and the flag rides the
+    // guard for the whole session (suspend re-applies it after $EDITOR).
+    let mouse = chiptui::settings::mouse(&config_dir);
+    let mut guard = terminal::init(mouse)?;
     let mut events = EventSource::new(TICK_RATE);
 
     // Probed before the TUI takes over: ratatui-image's query talks to the
@@ -97,19 +101,35 @@ fn home_loop(
     let theme = chiptui::app::resolve_theme(config_dir)
         .resolve(None)
         .palette();
+    // The same opt-in `[ui] mouse` answer the dashboard runs under; a
+    // gesture is only forwarded when the session asked for reporting.
+    let mouse = chiptui::settings::mouse(config_dir);
     loop {
         guard
             .terminal()
             .draw(|frame| ui::home::draw(frame, &screen, theme))?;
-        let AppEvent::Key(key) = events.next_event()? else {
+        match events.next_event()? {
+            AppEvent::Key(key) => match screen.handle_key(key) {
+                Some(HomeOutcome::Open(dir)) => return Ok(Some(dir)),
+                Some(HomeOutcome::Quit) => return Ok(None),
+                None => {}
+            },
+            AppEvent::Mouse(gesture) if mouse => {
+                // The area the drawn frame filled (a resize between the
+                // draw and the gesture gets its own redraw first).
+                let Ok(size) = guard.terminal().size() else {
+                    continue;
+                };
+                let area = ratatui::layout::Rect::new(0, 0, size.width, size.height);
+                match screen.on_mouse(gesture, area) {
+                    Some(HomeOutcome::Open(dir)) => return Ok(Some(dir)),
+                    Some(HomeOutcome::Quit) => return Ok(None),
+                    None => {}
+                }
+            }
             // Ticks and resizes only need the redraw above; the home screen
             // has no processes to poll.
-            continue;
-        };
-        match screen.handle_key(key) {
-            Some(HomeOutcome::Open(dir)) => return Ok(Some(dir)),
-            Some(HomeOutcome::Quit) => return Ok(None),
-            None => {}
+            _ => {}
         }
     }
 }
@@ -130,6 +150,9 @@ fn project_loop(
     // a bare Ctrl press/release where the terminal's Kitty keyboard
     // protocol answered `terminal::init`'s probe, `ctrl+k` alone otherwise.
     app.set_keyboard_enhanced(guard.keyboard_enhanced());
+    // Mirror of the guard's mouse-capture flag: the app trusts gestures
+    // only for the sessions whose terminal was asked to report them.
+    app.set_mouse_enabled(guard.mouse());
     // The board/shield pickers' online enrichment, wired exactly once per
     // project session: the HTTP transport, the re-fetchable disk cache
     // under the app's own directory conventions, and the terminal-probed
@@ -178,6 +201,11 @@ fn event_loop(
         let event = events.next_event()?;
         app.handle(event);
 
+        // A copy gesture (the MAC row's click) becomes the terminal's own
+        // clipboard escape here, between frames, where stdout is ours.
+        if let Some(text) = app.take_clipboard_request() {
+            terminal::set_clipboard(&text)?;
+        }
         if let Some(pending) = app.take_pending_edit() {
             run_editor(app, guard, pending)?;
         }

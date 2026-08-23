@@ -8,7 +8,7 @@
 //! module and both panes share them).
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
@@ -20,15 +20,9 @@ use crate::ui::{
 };
 use crate::workspace::WorkspacePanel;
 
-/// Draws the full second row for a workspace+build backend: the workspace
-/// pane on the left, the project panel (already its own module) on the right.
-pub fn draw_row(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
-    let [left, right] =
-        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(area);
-    draw(frame, left, app, palette);
-    super::build::draw(frame, right, app, palette);
-}
-
+/// Draws the workspace pane over its pre-computed rect from
+/// `ui::layout` --- the workspace+build pair's geometry lives there, shared
+/// with the mouse hit-testing, so this module renders and never splits.
 pub fn draw(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
     let Some(panel) = &app.workspace else {
         return;

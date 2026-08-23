@@ -30,6 +30,50 @@ pub enum HomeOutcome {
     Quit,
 }
 
+/// Whether a screen point sits inside `rect` (Ratatui `Rect` has no
+/// contains for positions; the mouse side of the screen shares the one in
+/// `app::mouse`, this is the model-side copy the same way).
+fn in_rect(rect: ratatui::layout::Rect, point: (u16, u16)) -> bool {
+    rect.x <= point.0
+        && point.0 < rect.x + rect.width
+        && rect.y <= point.1
+        && point.1 < rect.y + rect.height
+}
+
+/// A click inside one of the flow modals: only the folder picker has rows
+/// to select; the name prompt and the forget question are typed answers
+/// with no click surface.
+fn click_flow(flow: &mut Flow, point: (u16, u16), area: ratatui::layout::Rect) {
+    let Flow::CreateDir {
+        path,
+        selected,
+        error,
+    } = flow
+    else {
+        return;
+    };
+    let popup = crate::ui::centered(area, 72, 18);
+    let (rows, _) = dir_rows(path);
+    let len = rows.len();
+    let height = popup.height.saturating_sub(2 + 1 + 2) as usize; // borders, path line, footer
+    if len == 0 || height == 0 {
+        return;
+    }
+    let inner_y = popup.y + 1 + 1; // border, path line
+    let inner_bottom = popup.y + popup.height - 1 - 2; // border, footer
+    if point.1 < inner_y || point.1 >= inner_bottom {
+        return;
+    }
+    let offset = (*selected).saturating_sub(height - 1);
+    let index = offset + (point.1 - inner_y) as usize;
+    if index < len {
+        *selected = index;
+        // Selecting a row is navigation: like every key move, it clears the
+        // picker's last refusal.
+        *error = None;
+    }
+}
+
 /// One row of the list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Row<'a> {
@@ -191,6 +235,93 @@ impl HomeScreen {
             Some(Row::Project(entry)) => Some((*entry).clone()),
             _ => None,
         }
+    }
+
+    /// Mouse gestures on the home screen --- the same opt-in reporting the
+    /// dashboard answers (`main.rs` gates on `[ui] mouse` before a gesture
+    /// ever reaches here). The grammar: this screen is a launcher, every
+    /// row's `Enter` leads somewhere reversible, so a click *selects and
+    /// accepts* the row it lands on; the folder-picker flow's rows select
+    /// only (`Enter` stays the accept, the same rule the dashboard's
+    /// pickers follow); the wheel steps the list's cursor, clamped at the
+    /// ends. A gesture over a text-input flow (`CreateName`) or the forget
+    /// prompt has no surface --- those are typed answers.
+    pub fn on_mouse(
+        &mut self,
+        event: ratatui::crossterm::event::MouseEvent,
+        area: ratatui::layout::Rect,
+    ) -> Option<HomeOutcome> {
+        use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+
+        let point = (event.column, event.row);
+        match event.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                if let Some(flow) = &mut self.flow {
+                    click_flow(flow, point, area);
+                } else {
+                    return self.click_list(point, area);
+                }
+                None
+            }
+            MouseEventKind::ScrollUp => {
+                self.wheel(-1, point, area);
+                None
+            }
+            MouseEventKind::ScrollDown => {
+                self.wheel(1, point, area);
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// A click on the launcher itself: the create row opens the flow, a
+    /// project row selects and opens it (`accept_row`, the `Enter` path).
+    fn click_list(
+        &mut self,
+        point: (u16, u16),
+        area: ratatui::layout::Rect,
+    ) -> Option<HomeOutcome> {
+        let areas = crate::ui::home::hit_areas(area);
+        if in_rect(areas.create, point) {
+            self.selected = 0;
+            return self.accept_row();
+        }
+        if !in_rect(areas.list, point) || areas.list.height == 0 {
+            return None;
+        }
+        // The list draws `rows[1..]` with a fresh `ListState` (selected =
+        // `self.selected - 1`), so the minimal-scroll math maps the click
+        // back onto a row the same way the dashboard's lists do.
+        let rows = self.rows();
+        let projects = rows.len() - 1;
+        if projects == 0 {
+            return None;
+        }
+        let selected = self.selected.saturating_sub(1);
+        let height = areas.list.height as usize;
+        let offset = selected.saturating_sub(height - 1);
+        let index = offset + (point.1 - areas.list.y) as usize;
+        if index >= projects {
+            return None;
+        }
+        self.selected = index + 1;
+        self.accept_row()
+    }
+
+    /// The wheel over the list steps the cursor, clamped at the ends (the
+    /// keyboard's arrows wrap; a wheel that wraps feels like a bug).
+    fn wheel(&mut self, direction: isize, point: (u16, u16), area: ratatui::layout::Rect) {
+        let areas = crate::ui::home::hit_areas(area);
+        if !in_rect(areas.list, point) {
+            return;
+        }
+        let len = self.rows().len();
+        if len == 0 {
+            return;
+        }
+        let moved = self.selected as isize + direction * 3;
+        self.selected = moved.clamp(0, len as isize - 1) as usize;
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<HomeOutcome> {

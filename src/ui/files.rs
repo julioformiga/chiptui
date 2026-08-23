@@ -15,7 +15,6 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Gauge, List, ListItem, ListState, Paragraph, Tabs, Wrap};
 
 use crate::app::{App, Focus};
-use crate::backend::Capability;
 use crate::browser::{Browser, PaneState};
 use crate::device::{DiscoveryState, ScriptState};
 use crate::files::SyncStatus;
@@ -26,48 +25,35 @@ use crate::ui::{
     shortcut_highlight_style, shortcut_letter,
 };
 
-pub fn draw(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
+pub fn draw(frame: &mut Frame, row: &super::layout::BrowserRow, app: &App, palette: Palette) {
     let Some(browser) = &app.browser else {
+        // `layout::dashboard` only builds a `Browser` row when the browser
+        // exists; this is the defensive half of that contract.
         let title = pane_title(app.icon_set().folder(), "Files");
         let block = pane_block(&title, false, palette, None);
         frame.render_widget(
             Paragraph::new("the file listing has not started yet".fg(palette.muted)).block(block),
-            area,
+            row.local,
         );
         return;
     };
 
-    // The legend explains the comparison markers, which only exist when
-    // there is a device pane to compare against; without it the row's last
-    // line is dead weight for the local pane. The actions tab claims the
-    // row's full height instead (its stack is the tallest content the row
-    // shows), so the legend yields its line while that tab is showing.
-    let has_filesystem = app.manager.capabilities().contains(Capability::Filesystem);
-    let (body, legend) = if has_filesystem && !app.device_actions_tab_active() {
-        let [body, legend] =
-            Layout::vertical([Constraint::Min(3), Constraint::Length(1)]).areas(area);
-        (body, Some(legend))
-    } else {
-        (area, None)
-    };
-    let [left, right] =
-        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(body);
-
     let statuses = browser.statuses();
-    draw_local(frame, left, app, browser, &statuses, palette);
-    if has_filesystem {
-        draw_device(frame, right, app, browser, &statuses, palette);
-    } else if app.build_pane_visible() {
-        super::build::draw(frame, right, app, palette);
-    } else {
-        draw_no_device(frame, right, app, palette);
+    draw_local(frame, row.local, app, browser, &statuses, palette);
+    match row.right_kind {
+        super::layout::RightKind::Device => {
+            draw_device(frame, row.right, app, browser, &statuses, palette);
+        }
+        super::layout::RightKind::Build => super::build::draw(frame, row.right, app, palette),
+        super::layout::RightKind::NoDevice => draw_no_device(frame, row.right, app, palette),
     }
-    if let Some(legend) = legend {
+    if let Some(legend) = row.legend {
         draw_legend(frame, legend, palette);
     }
 }
 
-/// The right half of row 2 for a backend with no [`Capability::Filesystem`]
+/// The right half of row 2 for a backend with no
+/// [`Capability::Filesystem`](crate::backend::Capability::Filesystem)
 /// (today: Zephyr): there is no device filesystem to browse, and this is the
 /// space its build panel will occupy. Kept capability-gated, never
 /// backend-kind-gated (`AGENTS.md` §3).

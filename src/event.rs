@@ -8,7 +8,10 @@
 
 use std::time::{Duration, Instant};
 
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, ModifierKeyCode};
+use ratatui::crossterm::event::{
+    self, Event, KeyCode, KeyEvent, KeyEventKind, ModifierKeyCode, MouseButton, MouseEvent,
+    MouseEventKind,
+};
 
 use crate::error::Result;
 
@@ -27,6 +30,12 @@ pub enum AppEvent {
         width: u16,
         height: u16,
     },
+    /// A mouse gesture the dashboard gives a meaning to: a left click or
+    /// a wheel step. Reporting is opt-in (`[ui] mouse`,
+    /// `crate::terminal::init`), and [`EventSource`] narrows the stream to
+    /// exactly these kinds --- drag/motion reports fire per cell crossed
+    /// and would flood the loop with nothing the UI answers.
+    Mouse(MouseEvent),
     /// Idle heartbeat: drives spinners and, later, process polling.
     Tick,
     /// Output or completion of an external command. Produced by
@@ -86,6 +95,12 @@ impl EventSource {
                     // storm of keypresses, which is what lets the shell
                     // tell a pasted command from a typed one.
                     Event::Paste(text) => return Ok(AppEvent::Paste(text)),
+                    // Only the gestures with a meaning become events;
+                    // everything else crossterm reports is dropped here, at
+                    // the source, before it costs a dispatch.
+                    Event::Mouse(mouse) if is_gesture(mouse.kind) => {
+                        return Ok(AppEvent::Mouse(mouse));
+                    }
                     Event::Resize(width, height) => return Ok(AppEvent::Resize { width, height }),
                     _ => continue,
                 }
@@ -102,5 +117,55 @@ impl EventSource {
 impl Default for EventSource {
     fn default() -> Self {
         Self::new(DEFAULT_TICK_RATE)
+    }
+}
+
+/// The mouse kinds that ever become an [`AppEvent::Mouse`]: a left click
+/// activates what it lands on and a wheel step scrolls. Motion and drag
+/// reports arrive per cell crossed and have no meaning here, other buttons
+/// and the release half of a click are not gestures the dashboard answers.
+fn is_gesture(kind: MouseEventKind) -> bool {
+    matches!(
+        kind,
+        MouseEventKind::Down(MouseButton::Left)
+            | MouseEventKind::ScrollUp
+            | MouseEventKind::ScrollDown
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::crossterm::event::KeyModifiers;
+
+    fn mouse(kind: MouseEventKind) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column: 1,
+            row: 1,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    #[test]
+    fn only_left_clicks_and_wheel_steps_are_gestures() {
+        assert!(is_gesture(MouseEventKind::Down(MouseButton::Left)));
+        assert!(is_gesture(MouseEventKind::ScrollUp));
+        assert!(is_gesture(MouseEventKind::ScrollDown));
+        // The noise half: per-cell motion/drag floods, other buttons,
+        // releases, and the horizontal wheel nobody asks for here.
+        assert!(!is_gesture(MouseEventKind::Down(MouseButton::Right)));
+        assert!(!is_gesture(MouseEventKind::Down(MouseButton::Middle)));
+        assert!(!is_gesture(MouseEventKind::Up(MouseButton::Left)));
+        assert!(!is_gesture(MouseEventKind::Drag(MouseButton::Left)));
+        assert!(!is_gesture(MouseEventKind::Moved));
+        assert!(!is_gesture(MouseEventKind::ScrollLeft));
+        assert!(!is_gesture(MouseEventKind::ScrollRight));
+    }
+
+    #[test]
+    fn the_gesture_kinds_round_trip_through_the_variant() {
+        let click = mouse(MouseEventKind::Down(MouseButton::Left));
+        assert_eq!(AppEvent::Mouse(click), AppEvent::Mouse(click));
     }
 }

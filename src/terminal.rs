@@ -14,10 +14,9 @@ use std::sync::Once;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::cursor::{Hide, Show};
-use ratatui::crossterm::event::DisableMouseCapture;
 use ratatui::crossterm::event::{
-    DisableBracketedPaste, EnableBracketedPaste, KeyboardEnhancementFlags,
-    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
@@ -60,14 +59,22 @@ pub struct TerminalGuard {
     /// (a `$EDITOR`/menuconfig hand-off drops it like everything else raw
     /// mode owns).
     keyboard_enhanced: bool,
+    /// Whether mouse capture is on for this session --- set once by
+    /// [`init`] from `[ui] mouse` and re-applied by `suspend` every time
+    /// raw mode is re-entered, the same way `keyboard_enhanced` is: a
+    /// `$EDITOR`/menuconfig hand-off drops capture with everything else
+    /// raw mode owns (`restore_raw` always sends `DisableMouseCapture`).
+    mouse: bool,
 }
 
 /// Enters raw mode and the alternate screen.
 ///
-/// Mouse capture is *not* enabled: `SPEC.md` §11 makes keyboard primary, and
-/// leaving mouse reporting off keeps the terminal's own selection/scrollback
-/// working.
-pub fn init() -> Result<TerminalGuard> {
+/// Mouse capture is opt-in (`mouse = true`, from `[ui] mouse` in the user
+/// config): `SPEC.md` §11 makes keyboard primary, and leaving reporting off
+/// keeps the terminal's own selection/scrollback working. `restore_raw`
+/// disables capture unconditionally on every teardown path, so a panic or
+/// early exit can never leave the terminal reporting mouse to the shell.
+pub fn init(mouse: bool) -> Result<TerminalGuard> {
     if !io::stdout().is_tty() {
         return Err(Error::NotATerminal);
     }
@@ -103,6 +110,19 @@ pub fn init() -> Result<TerminalGuard> {
         return Err(source.into());
     }
 
+    // Mouse capture is asked for *after* the alternate screen: reporting
+    // on makes the terminal send clicks to the app instead of selecting
+    // text, so it rides the same opt-in flag and is undone with the same
+    // half-applied-setup care as the block above.
+    if mouse && let Err(source) = execute!(stdout, EnableMouseCapture) {
+        if keyboard_enhanced {
+            let _ = execute!(stdout, PopKeyboardEnhancementFlags);
+        }
+        let _ = execute!(stdout, LeaveAlternateScreen, DisableBracketedPaste, Show);
+        let _ = disable_raw_mode();
+        return Err(source.into());
+    }
+
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
     terminal.clear()?;
 
@@ -110,6 +130,7 @@ pub fn init() -> Result<TerminalGuard> {
         terminal,
         restored: false,
         keyboard_enhanced,
+        mouse,
     })
 }
 
@@ -122,6 +143,13 @@ impl TerminalGuard {
     /// terminal --- see [`App::set_keyboard_enhanced`](crate::app::App).
     pub fn keyboard_enhanced(&self) -> bool {
         self.keyboard_enhanced
+    }
+
+    /// Whether mouse capture is on for this session --- the same `[ui]
+    /// mouse` answer `init` was given, kept so the app can mirror it
+    /// (`App::set_mouse_enabled`) without re-reading the config.
+    pub fn mouse(&self) -> bool {
+        self.mouse
     }
 
     /// Restores the terminal, reporting failures. Safe to call more than once.
@@ -160,6 +188,9 @@ impl TerminalGuard {
                 io::stdout(),
                 PushKeyboardEnhancementFlags(KEYBOARD_ENHANCEMENT_FLAGS)
             )?;
+        }
+        if self.mouse {
+            execute!(io::stdout(), EnableMouseCapture)?;
         }
         execute!(io::stdout(), EnterAlternateScreen, Hide)?;
         self.terminal.clear()?;
@@ -216,4 +247,65 @@ fn install_panic_hook() {
             previous(info);
         }));
     });
+}
+
+/// Puts `text` on the system clipboard by writing the terminal's own
+/// clipboard escape (OSC 52) --- no subprocess, no dependency, and it
+/// works over SSH where `xclip`-style tools cannot reach the local
+/// clipboard. Support is the terminal's call (kitty, ghostty, wezterm,
+/// alacritty and foot write it; tmux needs `set-clipboard on`; a terminal
+/// that does not know the sequence ignores it, which leaves the log line
+/// as the honest record of what was asked).
+///
+/// Written between frames, like any other escape: the sequence draws
+/// nothing, so the next `draw` repaints over it untouched.
+pub fn set_clipboard(text: &str) -> io::Result<()> {
+    let mut stdout = io::stdout();
+    write!(stdout, "\x1b]52;c;{}\x07", base64(text.as_bytes()))?;
+    stdout.flush()
+}
+
+/// Standard base64 (RFC 4648, with padding) over the ASCII payloads the
+/// clipboard ever carries here --- small enough that a dependency would
+/// cost more than these few lines.
+fn base64(data: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let bytes = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
+        let triple = (u32::from(bytes[0]) << 16) | (u32::from(bytes[1]) << 8) | u32::from(bytes[2]);
+        out.push(ALPHABET[(triple >> 18) as usize & 0x3f] as char);
+        out.push(ALPHABET[(triple >> 12) as usize & 0x3f] as char);
+        out.push(if chunk.len() > 1 {
+            ALPHABET[(triple >> 6) as usize & 0x3f] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            ALPHABET[triple as usize & 0x3f] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::base64;
+
+    #[test]
+    fn base64_matches_the_standard_vectors() {
+        assert_eq!(base64(b""), "");
+        assert_eq!(base64(b"f"), "Zg==");
+        assert_eq!(base64(b"fo"), "Zm8=");
+        assert_eq!(base64(b"foo"), "Zm9v");
+        assert_eq!(base64(b"foob"), "Zm9vYg==");
+        // A MAC, the payload the clipboard actually carries.
+        assert_eq!(base64(b"24:6F:28:AA:BB:CC"), "MjQ6NkY6Mjg6QUE6QkI6Q0M=");
+    }
 }

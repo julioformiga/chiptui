@@ -43,6 +43,7 @@ pub mod file_browser;
 pub mod flash_view;
 pub mod help;
 mod install_view;
+mod mouse;
 pub mod overlay;
 pub mod probe;
 pub mod project_view;
@@ -787,6 +788,12 @@ pub struct App {
     /// Height of the log pane, published by the renderer so page-scrolling and
     /// clamping match what is actually on screen.
     pub log_viewport: usize,
+    /// The last drawn frame's full area, published by `ui::draw` each frame
+    /// (the same contract [`Self::log_viewport`] has for the log pane) so the
+    /// mouse hit-testing can recompute the very layout the user is looking
+    /// at. `None` before the first frame or while the terminal is too small
+    /// to draw the dashboard --- a gesture then has no geometry to land on.
+    pub frame_area: Option<ratatui::layout::Rect>,
     /// Height of the docs pane inside the board/shield pickers, published by
     /// the renderer the same way: page-scrolling the details moves by the
     /// rows that were actually drawn.
@@ -1003,6 +1010,21 @@ pub struct App {
     /// is live, on top of the `ctrl+k` toggle every terminal gets.
     /// [`Self::set_keyboard_enhanced`] is the test seam.
     keyboard_enhanced: bool,
+    /// Whether mouse reporting is on for this session (`terminal::init`'s
+    /// flag, from `[ui] mouse` in the user config, mirrored by `main.rs`).
+    /// A gesture that arrives while this is off is dropped before any
+    /// handler sees it --- a terminal reporting mouse unasked must not move
+    /// the cursor. [`Self::set_mouse_enabled`] is the test seam.
+    mouse_enabled: bool,
+    /// Text the UI asked to put on the system clipboard (the MAC row's
+    /// click) --- consumed by the binary's loop, like
+    /// [`Self::take_pending_command`], because only the loop owns stdout
+    /// between frames (`terminal::set_clipboard` writes the escape).
+    clipboard_request: Option<String>,
+    /// The last list click (pane, row index, when) --- the double-click
+    /// detector [`crate::app::mouse`] resets per gesture. Not a click
+    /// counter: a click on a different row is a fresh single click.
+    last_click: Option<(Focus, usize, std::time::Instant)>,
     /// The shortcuts overlay is showing: every pane dims
     /// (`ui::mod`'s `dashboard_focused`/`dashboard_behind_dialog`) except
     /// the initial letter of each reachable one. Deliberately not an
@@ -1040,6 +1062,7 @@ impl App {
             monitor_view: MonitorView::default(),
             overlay: None,
             log_viewport: 1,
+            frame_area: None,
             docs_viewport: 1,
             ticks: 0,
             processes: ProcessManager::new(),
@@ -1097,6 +1120,9 @@ impl App {
             should_quit: false,
             last_port_count: None,
             keyboard_enhanced: false,
+            mouse_enabled: false,
+            clipboard_request: None,
+            last_click: None,
             shortcuts_overlay_active: false,
         }
     }
@@ -1506,6 +1532,15 @@ impl App {
                 }
             }
             AppEvent::Resize { .. } => self.logs.scroll_to_bottom(),
+            // A mouse gesture is only ever an alternative trigger for an
+            // action the keyboard already owns, and only when the session
+            // asked for reporting --- otherwise it is dropped here, before
+            // any handler sees it.
+            AppEvent::Mouse(event) => {
+                if self.mouse_enabled {
+                    self.on_mouse(event);
+                }
+            }
             AppEvent::Tick => {
                 self.ticks = self.ticks.wrapping_add(1);
                 self.check_device_hotplug();
@@ -2242,6 +2277,27 @@ impl App {
         self.keyboard_enhanced = enhanced;
     }
 
+    /// Test seam for the session's mouse-reporting flag, the same standing
+    /// `set_keyboard_enhanced` has: `main.rs` sets the real answer once per
+    /// project session from the guard; tests enable it to exercise click
+    /// handling without a terminal.
+    pub fn set_mouse_enabled(&mut self, enabled: bool) {
+        self.mouse_enabled = enabled;
+    }
+
+    /// Queues `text` for the clipboard and says so in the log --- the
+    /// gesture half of the MAC row's copy; the binary's loop performs the
+    /// write.
+    fn copy_to_clipboard(&mut self, what: &str, text: String) {
+        self.logs.success(format!("{what} copied to the clipboard"));
+        self.clipboard_request = Some(text);
+    }
+
+    /// Consumed by the binary's loop, like [`Self::take_pending_command`].
+    pub fn take_clipboard_request(&mut self) -> Option<String> {
+        self.clipboard_request.take()
+    }
+
     /// The shortcuts overlay's own key handling, checked before every other
     /// dashboard binding (like `ctrl+←/→`): opening it, closing it,
     /// and resolving a letter to a jump. Returns whether the key was
@@ -2903,8 +2959,38 @@ mod tests {
         AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE))
     }
 
+    fn click(row: u16, column: u16) -> AppEvent {
+        AppEvent::Mouse(ratatui::crossterm::event::MouseEvent {
+            kind: ratatui::crossterm::event::MouseEventKind::Down(
+                ratatui::crossterm::event::MouseButton::Left,
+            ),
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        })
+    }
+
     fn app() -> App {
         App::new("/nonexistent-project-dir")
+    }
+
+    #[test]
+    fn mouse_gestures_are_dropped_while_reporting_is_off() {
+        let mut app = app();
+        let before = app.focus;
+        // The default: `[ui] mouse` unset (or false) means the session
+        // never asked the terminal to report, so a stray gesture --- a
+        // terminal reporting unasked --- must not move anything, wherever
+        // it lands. The coordinates are meaningless while `on_mouse` is a
+        // stub; they stay so the assertion keeps guarding the flag once
+        // hit-testing gives them meaning.
+        app.handle(click(1, 1));
+        assert_eq!(app.focus, before);
+        assert!(!app.should_quit);
+        // And with reporting on the same gesture is at least harmless.
+        app.set_mouse_enabled(true);
+        app.handle(click(1, 1));
+        assert_eq!(app.focus, before);
     }
 
     /// A live-enough monitor session: a slow fake process owns the monitor

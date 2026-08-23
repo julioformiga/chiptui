@@ -172,6 +172,29 @@ three values
 focus-tour meaning), applying and persisting the answer like the theme picker does
 (`App::cycle_icon_set`).
 
+Mouse support is the third `[ui]` preference: `mouse = true` opts in to click/wheel reporting
+for the session (default off --- reporting on makes the terminal send clicks to the app instead
+of selecting text; `terminal::init` enables capture, `TerminalGuard::suspend` re-applies it
+after `$EDITOR`, teardown always disables it). `event.rs` narrows the stream to left clicks and
+wheel steps (`is_gesture`; motion/drag die at the source), `App::handle` drops every gesture
+unless `mouse_enabled` (`set_mouse_enabled` is `main.rs`'s mirror of the guard), and
+`app::mouse`'s `on_mouse` meets the *drawn* geometry: `ui::draw` publishes `App::frame_area`,
+`ui::layout::dashboard` (the extracted pane-rect tree `draw_dashboard` also consumes) is
+recomputed per gesture, list clicks reproduce the fresh-`ListState` minimal scroll
+(`list_row`), stacked buttons land on their label rows through `run_build_action`/
+`run_flash_pane_action`, tab strips are walked by their `Tabs` ranges
+(`log_strip_tabs`/`device_strip_tabs`), and the wheel scrolls row 3 by `WHEEL_STEP`. An open
+overlay routes to `on_overlay_mouse` instead: confirm dialogs answer through their drawn
+No/Yes buttons by *synthesizing* `y`/`n` into `on_overlay_key` (every per-variant gate for
+free), pickers select without activating, stacked menus press via `Enter`, the SDK checklist
+toggles via `Space`, and a click outside a dialog is ignored (never dismisses). The home
+screen answers clicks too (`HomeScreen::on_mouse` + `ui::home::hit_areas`): a launcher row
+selects *and accepts* (the `Enter` path), the wheel steps clamped at the ends, and
+`main.rs`'s `home_loop` forwards gestures only under the same opt-in. Click tests are
+render-pinned: they find the label in the drawn frame and click its column (byte offsets are
+not columns --- multi-byte borders). The footer `Stop` box and text-input dialogs are
+deliberately not clickable.
+
 Dimming has **two** rules, not one. `ui::content_style` is the *selection* rule --- an unfocused
 pane's content goes `Modifier::DIM`, which is what makes the column the cursor sits in obvious ---
 and belongs only to panes whose content is a list the cursor walks (the file columns, the Environment

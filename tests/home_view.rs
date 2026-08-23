@@ -63,6 +63,130 @@ fn press(screen: &mut HomeScreen, code: KeyCode) {
     screen.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
 }
 
+/// A left click at (column, row) over a frame of the given size, returning
+/// whatever the screen decided.
+fn click(
+    screen: &mut HomeScreen,
+    column: u16,
+    row: u16,
+    width: u16,
+    height: u16,
+) -> Option<chiptui::home::HomeOutcome> {
+    use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    screen.on_mouse(
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        },
+        ratatui::layout::Rect::new(0, 0, width, height),
+    )
+}
+
+/// The screen column of `label`'s first char in a drawn line (a *byte*
+/// offset is not a column: the frame carries multi-byte borders).
+fn column_of(line: &str, label: &str) -> Option<u16> {
+    line.find(label)
+        .map(|byte| line[..byte].chars().count() as u16)
+}
+
+#[test]
+fn a_click_on_a_project_row_opens_it() {
+    let fixture = Fixture::new("mouse-open");
+    let blinky = fixture.record("blinky", BackendKind::Zephyr);
+    fixture.record("sensor-node", BackendKind::MicroPython);
+
+    let mut screen = fixture.screen();
+    let theme = ratatui_themes::ThemeName::TokyoNight.palette();
+    let mut terminal = Terminal::new(TestBackend::new(100, 20)).expect("test terminal");
+    terminal
+        .draw(|frame| chiptui::ui::home::draw(frame, &screen, theme))
+        .expect("draw succeeds");
+    let lines: Vec<String> = terminal
+        .backend()
+        .to_string()
+        .lines()
+        .map(String::from)
+        .collect();
+
+    let row = lines
+        .iter()
+        .position(|line| line.contains("blinky"))
+        .expect("the project row is drawn") as u16;
+    let col = column_of(&lines[row as usize], "blinky").unwrap();
+    assert_eq!(
+        click(&mut screen, col, row, 100, 20),
+        Some(chiptui::home::HomeOutcome::Open(blinky)),
+        "a click on a launcher row selects and accepts it, like Enter"
+    );
+}
+
+#[test]
+fn a_click_on_the_create_row_opens_the_folder_flow() {
+    let fixture = Fixture::new("mouse-create");
+    fixture.record("blinky", BackendKind::Zephyr);
+
+    let mut screen = fixture.screen();
+    let theme = ratatui_themes::ThemeName::TokyoNight.palette();
+    let mut terminal = Terminal::new(TestBackend::new(100, 20)).expect("test terminal");
+    terminal
+        .draw(|frame| chiptui::ui::home::draw(frame, &screen, theme))
+        .expect("draw succeeds");
+    let lines: Vec<String> = terminal
+        .backend()
+        .to_string()
+        .lines()
+        .map(String::from)
+        .collect();
+
+    let row = lines
+        .iter()
+        .position(|line| line.contains("+ New project"))
+        .expect("the create row is drawn") as u16;
+    click(&mut screen, 3, row, 100, 20);
+    assert!(
+        screen.flow().is_some(),
+        "the create click opened the folder flow"
+    );
+}
+
+#[test]
+fn the_wheel_steps_the_selection_clamped_at_the_ends() {
+    let fixture = Fixture::new("mouse-wheel");
+    fixture.record("blinky", BackendKind::Zephyr);
+    fixture.record("sensor-node", BackendKind::MicroPython);
+    fixture.record("third", BackendKind::Zephyr);
+
+    let mut screen = fixture.screen();
+    assert_eq!(
+        screen.selected(),
+        0,
+        "a fresh screen sits on the create row"
+    );
+    use ratatui::crossterm::event::{MouseEvent, MouseEventKind};
+    let wheel = |screen: &mut HomeScreen, kind: MouseEventKind| {
+        screen.on_mouse(
+            MouseEvent {
+                kind,
+                column: 5,
+                row: 6,
+                modifiers: KeyModifiers::NONE,
+            },
+            ratatui::layout::Rect::new(0, 0, 100, 20),
+        )
+    };
+    wheel(&mut screen, MouseEventKind::ScrollDown);
+    assert_eq!(screen.selected(), 3, "a wheel step moved down three rows");
+    // Clamped, never wrapped: past the end the selection stays.
+    wheel(&mut screen, MouseEventKind::ScrollDown);
+    assert_eq!(screen.selected(), 3);
+    wheel(&mut screen, MouseEventKind::ScrollUp);
+    assert_eq!(screen.selected(), 0, "and back up to the create row");
+    wheel(&mut screen, MouseEventKind::ScrollUp);
+    assert_eq!(screen.selected(), 0, "clamped at the top too");
+}
+
 #[test]
 fn the_none_icon_set_hides_the_backend_marks() {
     let fixture = Fixture::new("icons-none");

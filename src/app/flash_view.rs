@@ -172,8 +172,10 @@ impl App {
     /// Runs the row the actions tab's cursor sits on: an esptool action
     /// through the same gate the menu always used (firmware pick or
     /// confirmation first, `SPEC.md` §15), the online-firmware search as
-    /// its dialog, `Stop` as a cancel.
-    fn run_flash_pane_action(&mut self, action: FlashPaneAction) {
+    /// its dialog, `Stop` as a cancel. Also the click path
+    /// (`app::mouse`): a click on the tab's button row lands here, the
+    /// same way `Enter` does.
+    pub(super) fn run_flash_pane_action(&mut self, action: FlashPaneAction) {
         match action {
             FlashPaneAction::Stop => self.stop_flash(),
             FlashPaneAction::Run(action) => self.trigger_flash_action(action),

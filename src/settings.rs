@@ -479,6 +479,21 @@ pub fn icons(config_dir: &Path) -> Option<String> {
     section_value(&text, "ui", "icons")
 }
 
+/// Reads `[ui] mouse` from the user config: `true` opts in to mouse
+/// reporting. Absent (or any other value) means `false` --- the default
+/// keeps the terminal's own click-drag selection and scrollback working,
+/// which `SPEC.md` §11 prefers (keyboard is primary; mouse is optional).
+/// User-config-only, the same operator preference `[ui] theme` is. Unlike
+/// the theme there is deliberately no runtime toggle: enabling capture
+/// mid-session would strand the terminal state that `terminal::init`
+/// set up, and nothing in the UI writes this key.
+pub fn mouse(config_dir: &Path) -> bool {
+    std::fs::read_to_string(user_config_path(config_dir))
+        .ok()
+        .and_then(|text| section_value(&text, "ui", "mouse"))
+        .is_some_and(|value| value == "true")
+}
+
 /// Persists `[ui] icons = slug`, the same one-line replace-or-insert shape
 /// as [`save_theme`]. Written by the dashboard's `ctrl+i` cycle (the
 /// picker-less counterpart of `apply_theme_picker`), so a switched
@@ -834,6 +849,33 @@ mod tests {
     fn icons_is_none_when_unset() {
         let dir = temp_dir("icons-unset");
         assert_eq!(icons(&dir), None);
+    }
+
+    #[test]
+    fn mouse_reads_true_and_only_true() {
+        for (text, expected) in [
+            ("[ui]\nmouse = true\n", true),
+            ("[ui]\nmouse = false\n", false),
+            // Quoting is optional in every parser here, so the quoted form
+            // is the same answer; anything but `true` means off --- an
+            // absent or malformed value must never turn reporting on.
+            ("[ui]\nmouse = \"true\"\n", true),
+            ("[ui]\nmouse = yes\n", false),
+            ("[ui]\n", false),
+            ("[other]\nmouse = true\n", false),
+        ] {
+            let dir = temp_dir("mouse-parse");
+            std::fs::create_dir_all(dir.join("chiptui")).unwrap();
+            std::fs::write(dir.join("chiptui/config.toml"), text).unwrap();
+            assert_eq!(mouse(&dir), expected, "text: {text:?}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn mouse_is_false_when_unset() {
+        let dir = temp_dir("mouse-unset");
+        assert!(!mouse(&dir));
     }
 
     #[test]

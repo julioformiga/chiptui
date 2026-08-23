@@ -371,7 +371,7 @@ fn truncate(text: &str, max: usize) -> String {
 /// needs room and the one that was silently losing it. Thirteen keeps the
 /// box visually the same as the half-width one at a typical width and stops
 /// it from eating half the pane at [`crate::ui::MIN_WIDTH`].
-pub(super) const STOP_BOX_WIDTH: u16 = 13;
+pub(crate) const STOP_BOX_WIDTH: u16 = 13;
 
 /// Splits a command pane's footer into `(state, stop)` widths.
 ///

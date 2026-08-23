@@ -307,6 +307,30 @@ fn board_shield_row(app: &App, width: u16, palette: Palette, selected: bool) -> 
     super::workspace::checklist_row(board.is_some(), false, "Board", Line::from(spans), palette)
 }
 
+/// Whether a click on the merged `Board · Shield` row landed on the *board*
+/// half (false = the shield half). Built by walking the exact spans
+/// [`board_shield_row`] draws --- the boundary is where the ` · Shield: `
+/// separator begins, since that label names the shield's half --- so the
+/// halves the pointer sees are the halves the frame drew, budget math
+/// included. `column` is relative to the row's first cell (the mark).
+pub(crate) fn board_shield_click_is_board(
+    app: &App,
+    inner_width: u16,
+    palette: Palette,
+    column: u16,
+) -> bool {
+    const SEPARATOR: &str = " · Shield: ";
+    let line = board_shield_row(app, inner_width, palette, true);
+    let mut x = 0usize;
+    for span in line.spans {
+        if span.content.as_ref() == SEPARATOR {
+            break;
+        }
+        x += span.width();
+    }
+    (column as usize) < x
+}
+
 /// The pane's content when the backend asks nothing: where the project is
 /// and what it is (the pre-checklist Project pane, kept for the
 /// no-backend/window-before-detection states).
@@ -466,6 +490,20 @@ pub fn draw_detection(frame: &mut Frame, area: Rect, app: &App, palette: Palette
             .wrap(Wrap { trim: false }),
         area,
     );
+}
+
+/// The content-row index the MAC's line occupies in the Device Info pane
+/// (`device_content`'s padded lines, which the paragraph draws in order),
+/// or `None` when no MAC has been read. The mouse's copy gesture needs
+/// exactly the row the frame drew.
+pub(crate) fn device_mac_row(app: &App, width: usize) -> Option<usize> {
+    let palette = app.theme_palette();
+    let lines = device_content(app, width, palette);
+    lines.iter().position(|line| {
+        line.spans
+            .first()
+            .is_some_and(|span| span.content.as_ref().starts_with("MAC:"))
+    })
 }
 
 /// Builds the Device info pane's content lines (placeholder or details),

@@ -37,7 +37,7 @@ const FIXED_ROWS: u16 = 1 + 1 + 1 + 4 + 1 + 1 + 12 + 1 + 1;
 /// The dialog fills the screen bar a margin: the step list alone is twelve
 /// rows and the output needs room to be worth reading. Capped so it does
 /// not sprawl on a very wide terminal.
-pub(super) fn area(body: Rect) -> Rect {
+pub(crate) fn area(body: Rect) -> Rect {
     centered(
         body,
         body.width.saturating_sub(4).min(96),

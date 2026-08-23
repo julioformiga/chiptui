@@ -25,6 +25,40 @@ use super::{centered, icon_column, muted_style, selection_style};
 /// Widest the panel gets; beyond this the path column stops being scannable.
 const MAX_WIDTH: u16 = 100;
 
+/// The clickable rects of the home panel --- the same splits [`draw`]
+/// walks, published for the mouse hit-testing the same way `ui::layout`
+/// publishes the dashboard's tree (one definition, so a click lands on the
+/// row the frame drew).
+pub(crate) struct HitAreas {
+    /// The `+ New project` row.
+    pub(crate) create: Rect,
+    /// The project list's body (the create row is drawn above it, not in
+    /// it; the list's own `ListState` indexes projects only).
+    pub(crate) list: Rect,
+}
+
+pub(crate) fn hit_areas(area: Rect) -> HitAreas {
+    let panel = centered(
+        area,
+        MAX_WIDTH.min(area.width.saturating_sub(4)),
+        area.height,
+    );
+    let [body, _footer] =
+        Layout::vertical([Constraint::Min(3), Constraint::Length(1)]).areas(panel);
+    let inner = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .inner(body);
+    let [create, _search, _gap, list, _status] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Min(1),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
+    HitAreas { create, list }
+}
+
 /// The screen exists before any [`crate::app::App`] --- `main.rs`'s
 /// `home_loop` resolves the theme straight from the user config and passes
 /// it down. Named `theme` here (not `palette`) because every row already

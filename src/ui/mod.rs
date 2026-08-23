@@ -12,13 +12,19 @@
 
 mod build;
 mod button;
+pub(crate) use button::STOP_BOX_WIDTH;
 mod files;
 mod flash;
+pub(crate) use flash::dialog_size as flash_dialog_size;
 pub mod home;
 mod install;
+pub(crate) use install::area as install_area;
+pub(crate) mod layout;
 mod monitor;
 mod overlay;
 mod panels;
+pub(crate) use panels::board_shield_click_is_board;
+pub(crate) use panels::device_mac_row;
 mod terminal;
 mod workspace;
 
@@ -34,7 +40,6 @@ use ratatui::widgets::{
 
 use crate::app::{App, Focus, LogTab, View};
 use crate::backend::BackendKind;
-use crate::flash::FlashAction;
 
 /// Below this the dashboard cannot be rendered legibly --- and the number
 /// is the *measured* one, not an aspiration: at 80x32 the row-2 button
@@ -99,8 +104,15 @@ fn icon_column(mark: &str, single_cell: bool) -> String {
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
-
-    if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
+    // Published before anything else: the mouse hit-testing recomputes the
+    // layout from this area, and a frame that cannot draw the dashboard
+    // leaves no geometry to click on (`None`, not a stale rect).
+    app.frame_area = if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
+        None
+    } else {
+        Some(area)
+    };
+    if app.frame_area.is_none() {
         draw_too_small(frame, area);
         return;
     }
@@ -145,8 +157,10 @@ fn draw_flash_dialog(frame: &mut Frame, body: Rect, app: &App, palette: Palette)
 
 /// Centers a `width`×`height` box inside `area`, shrinking to fit. Shared
 /// with `overlay::draw` --- every modal in this app sizes itself off its own
-/// content rather than a fraction of the screen.
-fn centered(area: Rect, width: u16, height: u16) -> Rect {
+/// content rather than a fraction of the screen --- and with the mouse
+/// hit-testing, which re-derives a dialog's button rects through the same
+/// call so a click lands on exactly the box that was drawn.
+pub(crate) fn centered(area: Rect, width: u16, height: u16) -> Rect {
     let [row] = Layout::vertical([Constraint::Length(height.min(area.height))])
         .flex(Flex::Center)
         .areas(area);
@@ -162,50 +176,33 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
 /// Log/Monitor tab strip over the selected tab's body, full width
 /// (`SPEC.md` §11).
 ///
+/// The geometry itself lives in [`layout::dashboard`] --- one tree shared
+/// with the mouse hit-testing, so a click lands on exactly the rect the
+/// frame drew. This function only dispatches each pane's renderer onto
+/// its rect.
+///
 /// Row 1 is a fixed height: both info panes pad their content to
 /// [`panels::INFO_ROWS`] lines in every backend and state, so the rows below
 /// never shift when a workspace resolves or device details accumulate. Both
 /// are informational (never focused).
 fn draw_dashboard(frame: &mut Frame, body: Rect, app: &mut App, palette: Palette) {
-    // The info panes' content rows plus their borders.
-    let info_height = panels::INFO_ROWS as u16 + 2;
+    let areas = layout::dashboard(app, body);
 
-    let [row1, rest] =
-        Layout::vertical([Constraint::Length(info_height), Constraint::Min(0)]).areas(body);
-    // Row 2 leans on its content when the workspace/project panes or the
-    // device pane's strip claim it: their stacked button groups (checklist
-    // rows, a separator, a rule per button edge, the pinned state line)
-    // are the tallest content on the dashboard, so the row is sized to
-    // fit them and the log pane (which scrolls) takes the remainder. The
-    // device pane sizes the row whenever its *strip* exists, not only
-    // while the actions tab is showing: switching the two tabs must not
-    // reflow the rows below, so the files tab rides at the actions tab's
-    // height instead of the browser's historical 60/40 split.
-    let [row2, row3] = if app.workspace_pane_visible() || app.device_actions_tab_available() {
-        let needed = row2_content_height(app)
-            .saturating_add(2) // the pane's borders (the state line is content, already counted)
-            .min(rest.height.saturating_sub(3).max(1));
-        Layout::vertical([Constraint::Length(needed), Constraint::Min(0)]).areas(rest)
-    } else {
-        Layout::vertical([Constraint::Percentage(60), Constraint::Percentage(40)]).areas(rest)
-    };
-    let [project, device] =
-        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(row1);
-
-    panels::draw_project(frame, project, app, palette);
-    panels::draw_detection(frame, device, app, palette);
+    panels::draw_project(frame, areas.project, app, palette);
+    panels::draw_detection(frame, areas.device, app, palette);
 
     // Row 2 belongs to whichever panes the backend's capabilities give it:
     // the dual-pane file browser under `Capability::Filesystem`, the
     // workspace+build pair for a backend that builds without a device
     // filesystem (`SPEC.md` §11), and a placeholder only in the window
     // before the panes exist at all.
-    if app.workspace_pane_visible() {
-        workspace::draw_row(frame, row2, app, palette);
-    } else if app.browser.is_some() {
-        files::draw(frame, row2, app, palette);
-    } else {
-        panels::draw_no_filesystem(frame, row2, app, palette);
+    match &areas.row2 {
+        layout::Row2::WorkspaceBuild { workspace, build } => {
+            workspace::draw(frame, *workspace, app, palette);
+            build::draw(frame, *build, app, palette);
+        }
+        layout::Row2::Browser(row) => files::draw(frame, row, app, palette),
+        layout::Row2::Placeholder(rect) => panels::draw_no_filesystem(frame, *rect, app, palette),
     }
 
     // Row 3 is one bordered pane for the whole width: the Log/Monitor/
@@ -213,57 +210,11 @@ fn draw_dashboard(frame: &mut Frame, body: Rect, app: &mut App, palette: Palette
     // §11), like the Ratatui `Tabs` example, and the selected tab's body
     // fills the pane.
     match app.log_tab {
-        LogTab::Log => panels::draw_logs(frame, row3, app, palette),
-        LogTab::Monitor => monitor::draw(frame, row3, app, palette),
-        LogTab::Terminal => terminal::draw(frame, row3, app, palette),
+        LogTab::Log => panels::draw_logs(frame, areas.row3, app, palette),
+        LogTab::Monitor => monitor::draw(frame, areas.row3, app, palette),
+        LogTab::Terminal => terminal::draw(frame, areas.row3, app, palette),
     }
-    panels::draw_log_tabs(frame, row3, app, palette);
-}
-
-/// The minimum rows the workspace pane's embedded file list gets, past the
-/// checklist and its header line --- enough to show a handful of entries
-/// without scrolling. Row 2 is sized to fit exactly this much (like the
-/// checklist rows above it); a taller terminal gives the remainder to row 3
-/// (the log/monitor pane), the same trade-off row 2 already makes today.
-const MIN_FILES_ROWS: u16 = 6;
-
-/// The taller row-2 pane's inner content height: the project-files pane's
-/// minimum listing rows on one side (the walked path lives on its border
-/// now, so the listing is the whole content); the project pane's stacked
-/// button group --- one row per button, one rule at each edge and one
-/// divider between each pair --- on the other.
-fn row2_content_height(app: &App) -> u16 {
-    let caps = app.manager.capabilities();
-    let workspace = app.workspace.as_ref().map_or(0, |_| MIN_FILES_ROWS);
-    let build = app.build.as_ref().map_or(0, |panel| {
-        // The stacked group plus a three-row footer, reserved whether or
-        // not the `Stop` box is showing (`Stop` is appended to the list,
-        // never a stacked row, so the group itself never changes size):
-        // the pane's height must not change when a command starts.
-        let mains = panel.actions(&caps).len() - usize::from(panel.is_busy());
-        (2 * mains + 1 + 3) as u16
-    });
-    // The device pane's strip sizes the row by the same rule whenever it
-    // exists: its stack is the tallest content the browser row has, a
-    // clipped button is one the user cannot press, and the files tab must
-    // not sit at a different height than the actions tab beside it. With
-    // no panel yet (nothing background-created one), the stack the first
-    // entry onto the tab will draw is `FlashAction::ALL` --- ChipInfo is
-    // filtered out and SearchOnline added back, so the idle count equals
-    // it, and `Stop` is pinned in the reserved footer rather than the
-    // stack, so busy does not change the number either.
-    let actions = if app.device_actions_tab_available() {
-        // The no-panel fallback goes through the same stack formula: the
-        // row is sized for the stack the first entry onto the tab will
-        // draw, so creating the panel must not reflow the rows below.
-        let mains = app.flash.as_ref().map_or(FlashAction::ALL.len(), |flash| {
-            flash.pane_actions().len() - usize::from(flash.is_busy())
-        });
-        (2 * mains + 1 + 3) as u16
-    } else {
-        0
-    };
-    workspace.max(build).max(actions)
+    panels::draw_log_tabs(frame, areas.row3, app, palette);
 }
 
 fn draw_too_small(frame: &mut Frame, area: Rect) {
@@ -396,6 +347,35 @@ fn project_spans(app: &App, palette: Palette, zone: usize) -> Option<Vec<Span<'s
 
 fn spans_width(spans: &[Span<'_>]) -> usize {
     spans.iter().map(|span| span.width()).sum()
+}
+
+/// The rect the header draws the project *name* in, `None` when no name is
+/// drawn (no project answered, or the free zone cannot hold one). Built
+/// from the same spans [`draw_header`] renders, so the mouse hit-test and
+/// the frame cannot disagree about where the name sits; only the name's
+/// own span is returned --- "Project" prefix excluded --- because that is
+/// the part a click means.
+pub(crate) fn header_project_name_rect(area: Rect, app: &App, palette: Palette) -> Option<Rect> {
+    let left_width = spans_width(&backend_spans(app, palette));
+    let right_width = spans_width(&device_status(app, palette));
+    let zone_start = left_width + 1;
+    let zone = (area.width as usize)
+        .saturating_sub(right_width + 1)
+        .saturating_sub(zone_start);
+    let center = project_spans(app, palette, zone)?;
+    let center_width = spans_width(&center) as u16;
+    let x = (area.width.saturating_sub(center_width) / 2)
+        .max(zone_start as u16)
+        .min(area.width.saturating_sub(right_width as u16 + center_width));
+    // `Project ` leads the name; its width is the offset of the name span.
+    let prefix = center[0].width() + center[1].width();
+    let name = &center[2];
+    Some(Rect {
+        x: x + prefix as u16,
+        y: area.y,
+        width: name.width() as u16,
+        height: 1,
+    })
 }
 
 /// The header's right edge: the connection icon plus the port when a

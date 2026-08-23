@@ -189,6 +189,15 @@ only behind the opt-in `[ui] icons = "nerd"` in the user config; the
 default rendering stays plain Unicode (`"unicode"`), with `"none"` drawing
 no glyphs at all, so a terminal without a Nerd Font never meets one.
 
+Mouse support is opt-in (`[ui] mouse = true`, default off so the
+terminal's own selection and scrollback keep working) and stays an
+alternative trigger for actions the keyboard already owns: a gesture lands
+through the same handlers `Enter`/arrows reach, never beside their gates.
+Left clicks and wheel steps only --- no motion, drag or hover. Hit-testing
+recomputes the drawn geometry (`ui::layout`, the published frame area,
+`ui::home::hit_areas`) rather than caching rects; a gesture that arrives
+while reporting is off, under a modal, or before a frame is dropped.
+
 ## Testing
 
 Every new feature should include tests where practical.

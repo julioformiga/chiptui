@@ -1100,11 +1100,19 @@ projects = "~/zephyrapps"
 
 [ui]
 log_panel = true
-mouse = false
+# mouse = true   # opt in to click/wheel reporting (see below)
 ```
 
 The `[zephyr]` keys are implemented (§10); the same section in a project's
 `chiptui.toml` overrides the user-level values for that project.
+
+`[ui] mouse = true` opts in to mouse reporting for the session (§4.7):
+left clicks focus panes, select rows and press the buttons and tabs they
+land on --- always through the same handlers the keyboard uses, so every
+gate (dimmed rows, destructive confirms) applies unchanged --- and the
+wheel scrolls the log/monitor pane. Off by default: reporting on makes
+the terminal send clicks to the app instead of selecting text, and
+keyboard stays primary (§4.7). Motion, drag and hover are not reported.
 
 ### Project registry
 
