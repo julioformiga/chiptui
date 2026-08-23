@@ -10,7 +10,9 @@ use crate::build::BuildAction;
 use crate::device::ScriptState;
 
 use super::help::{self, HelpSection};
-use super::{App, DocsFocus, FileAction, Overlay, PendingEdit, ThemeChoice, View, ViewerSource};
+use super::{
+    App, DocsFocus, FileAction, OVERLAY_HELP, Overlay, PendingEdit, ThemeChoice, View, ViewerSource,
+};
 
 impl App {
     /// Shared key handling for every Yes/No confirm overlay
@@ -60,6 +62,21 @@ impl App {
         let Some(overlay) = self.overlay.clone() else {
             return;
         };
+        // These overlays carry no per-variant hint of their own
+        // (`App::shortcuts` returns nothing to guess for them), which
+        // otherwise leaves no reachable way to open help while one is up
+        // --- `on_key` never lets the dashboard's own `?`/F1 handler see a
+        // keystroke while an overlay owns the screen. `F1` always reaches
+        // it, since it is never a character a text field could want; `?`
+        // joins it everywhere except the three overlays that take free
+        // text (`?` typed there must land in the field, not open help).
+        if is_help_reachable_overlay(&overlay) {
+            let text_entry = is_text_entry_overlay(&overlay);
+            if key.code == KeyCode::F(1) || (!text_entry && key.code == KeyCode::Char('?')) {
+                self.overlay = Some(OVERLAY_HELP);
+                return;
+            }
+        }
         match overlay {
             Overlay::Help {
                 filter,
@@ -402,7 +419,7 @@ impl App {
                 // printable keys and `Enter` keep answering the list.
                 let rebuild = |app: &mut Self, input: String, mut selected: usize| {
                     if let Some(panel) = app.build.as_ref() {
-                        let count = panel.filtered_boards(&input).len();
+                        let count = panel.filtered_boards_count(&input);
                         // An empty result leaves row 0 highlighted rather
                         // than an impossible index; `apply` re-checks anyway.
                         selected = selected.min(count.saturating_sub(1));
@@ -417,7 +434,7 @@ impl App {
                 let count = self
                     .build
                     .as_ref()
-                    .map(|panel| panel.filtered_boards(&input).len())
+                    .map(|panel| panel.filtered_boards_count(&input))
                     .unwrap_or(0)
                     .max(1);
                 match key.code {
@@ -425,11 +442,15 @@ impl App {
                     KeyCode::Backspace => {
                         let mut input = input;
                         input.pop();
+                        // A changed filter is a different list --- it starts
+                        // from its top, not from wherever the old one sat.
+                        self.docs_list_offset = 0;
                         rebuild(self, input, selected);
                     }
                     KeyCode::Char(c) => {
                         let mut input = input;
                         input.push(c);
+                        self.docs_list_offset = 0;
                         rebuild(self, input, selected);
                     }
                     // The keyboard follows the focus: with the details
@@ -503,7 +524,7 @@ impl App {
                     let count = app
                         .build
                         .as_ref()
-                        .map(|panel| panel.filtered_shields(&input).len() + 1)
+                        .map(|panel| panel.filtered_shields_count(&input) + 1)
                         .unwrap_or(1);
                     selected = selected.min(count.saturating_sub(1));
                     app.overlay = Some(Overlay::ShieldPicker {
@@ -516,18 +537,20 @@ impl App {
                 let count = self
                     .build
                     .as_ref()
-                    .map(|panel| panel.filtered_shields(&input).len() + 1)
+                    .map(|panel| panel.filtered_shields_count(&input) + 1)
                     .unwrap_or(1);
                 match key.code {
                     KeyCode::Esc | KeyCode::Char('q') => self.overlay = None,
                     KeyCode::Backspace => {
                         let mut input = input;
                         input.pop();
+                        self.docs_list_offset = 0;
                         rebuild(self, input, selected);
                     }
                     KeyCode::Char(c) => {
                         let mut input = input;
                         input.push(c);
+                        self.docs_list_offset = 0;
                         rebuild(self, input, selected);
                     }
                     KeyCode::Up | KeyCode::Down if focus == DocsFocus::Details => {
@@ -1000,4 +1023,36 @@ impl App {
             self.logs.push(level, message);
         }
     }
+}
+
+/// Whether `overlay` is one of the "silent" modals --- no hint of its own
+/// in `App::shortcuts`, and otherwise no reachable path to help while it is
+/// up.
+fn is_help_reachable_overlay(overlay: &Overlay) -> bool {
+    matches!(
+        overlay,
+        Overlay::RenameEntry { .. }
+            | Overlay::DirPicker { .. }
+            | Overlay::BuildDirPicker { .. }
+            | Overlay::ProjectPicker { .. }
+            | Overlay::PackageInstall { .. }
+            | Overlay::DevicePicker { .. }
+            | Overlay::ThemePicker { .. }
+            | Overlay::FirmwarePicker { .. }
+            | Overlay::ProjectSetup { .. }
+            | Overlay::FileActions { .. }
+            | Overlay::RestoreDeviceScript { .. }
+            | Overlay::ZephyrActions { .. }
+    )
+}
+
+/// The subset of [`is_help_reachable_overlay`] that also takes free-text
+/// input --- `?` must land in the field there, so only `F1` may open help.
+fn is_text_entry_overlay(overlay: &Overlay) -> bool {
+    matches!(
+        overlay,
+        Overlay::RenameEntry { .. }
+            | Overlay::BuildDirPicker { .. }
+            | Overlay::PackageInstall { .. }
+    )
 }

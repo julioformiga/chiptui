@@ -56,6 +56,7 @@ impl App {
             scroll: 0,
             focus: DocsFocus::default(),
         });
+        self.docs_list_offset = 0;
         self.docs.ensure_index(&self.docs_label());
         let Some(backend) = self.manager.backend() else {
             return;
@@ -183,6 +184,7 @@ impl App {
             scroll: 0,
             focus: DocsFocus::default(),
         });
+        self.docs_list_offset = 0;
         self.docs.ensure_index(&self.docs_label());
         let Some(backend) = self.manager.backend() else {
             return;

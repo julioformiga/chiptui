@@ -147,13 +147,40 @@ impl Button {
 /// Buttons are summed rather than counted because a detailed one takes two
 /// rows ([`Button::detail`]); for a stack of plain buttons this is still
 /// `2N + 1`, which is the number `ui::MIN_HEIGHT` was measured against.
-pub(super) fn stack_height(buttons: &[Button]) -> u16 {
+pub(crate) fn stack_height(buttons: &[Button]) -> u16 {
     if buttons.is_empty() {
         return 0;
     }
     let rows: u16 = buttons.iter().map(Button::rows).sum();
     let dividers = buttons.len() as u16 - 1;
     rows + dividers + 2
+}
+
+/// The button at `row`, counted from the stack's own top rule (row 0) the
+/// way [`stack_height`] counts it --- `None` on a rule or divider row, or
+/// past the stack. This is the one place a click maps a row to a button
+/// index: a mouse handler that instead hand-rolls its own `row / N`
+/// arithmetic silently drifts the moment a button here grows a
+/// [`Button::detail`] line and that handler is not updated to match.
+pub(crate) fn button_at_row(buttons: &[Button], row: u16) -> Option<usize> {
+    if row == 0 {
+        return None;
+    }
+    let mut cursor = 1u16;
+    for (index, button) in buttons.iter().enumerate() {
+        let rows = button.rows();
+        if row < cursor + rows {
+            return Some(index);
+        }
+        cursor += rows;
+        if index + 1 < buttons.len() {
+            if row == cursor {
+                return None; // the divider between this pair and the next
+            }
+            cursor += 1;
+        }
+    }
+    None
 }
 
 /// One shared-border stack of [`Button`]s.
@@ -506,6 +533,37 @@ mod tests {
             Button::new("↻  Update").detail("west update"),
             Button::new("▦  Dashboard").detail("west build -t dashboard"),
         ];
+        assert_eq!(stack_height(&detailed), 7);
+    }
+
+    #[test]
+    fn button_at_row_agrees_with_stack_height_for_plain_buttons() {
+        let plain: Vec<Button> = (0..3).map(|_| Button::new("▶ Build")).collect();
+        // Row 0 is the top rule; rows 6 is the bottom rule (`stack_height`
+        // reports 7 for three one-row buttons) --- neither names a button.
+        assert_eq!(button_at_row(&plain, 0), None, "the top rule");
+        assert_eq!(button_at_row(&plain, 1), Some(0));
+        assert_eq!(button_at_row(&plain, 2), None, "the divider after button 0");
+        assert_eq!(button_at_row(&plain, 3), Some(1));
+        assert_eq!(button_at_row(&plain, 4), None, "the divider after button 1");
+        assert_eq!(button_at_row(&plain, 5), Some(2));
+        assert_eq!(button_at_row(&plain, 6), None, "the bottom rule");
+        assert_eq!(stack_height(&plain), 7);
+    }
+
+    #[test]
+    fn button_at_row_covers_both_rows_of_a_detailed_button() {
+        let detailed = [
+            Button::new("↻  Update").detail("west update"),
+            Button::new("▦  Dashboard").detail("west build -t dashboard"),
+        ];
+        assert_eq!(button_at_row(&detailed, 0), None, "the top rule");
+        assert_eq!(button_at_row(&detailed, 1), Some(0), "the label row");
+        assert_eq!(button_at_row(&detailed, 2), Some(0), "the detail row");
+        assert_eq!(button_at_row(&detailed, 3), None, "the divider");
+        assert_eq!(button_at_row(&detailed, 4), Some(1));
+        assert_eq!(button_at_row(&detailed, 5), Some(1));
+        assert_eq!(button_at_row(&detailed, 6), None, "the bottom rule");
         assert_eq!(stack_height(&detailed), 7);
     }
 

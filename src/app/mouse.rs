@@ -10,12 +10,13 @@
 //! frame area and all, is the same geometry the renderer drew), a wheel
 //! step scrolls the row-3 pane under it.
 //!
-//! What a click deliberately does *not* do: confirm. Rows, buttons and
-//! tabs all land through the same handlers `Enter` and `←/→` reach, so a
-//! click can select, activate and switch exactly what the keyboard can
-//! --- and nothing more. A destructive confirm stays a keyboard `Enter`:
-//! the shared confirmation overlay is deliberately out of the click's
-//! reach until the overlay stage gives it a target it can name.
+//! A click never does more than the keyboard can: rows, buttons and tabs
+//! all land through the same handlers `Enter` and `←/→` reach, so a click
+//! can select, activate and switch --- and nothing more. A destructive
+//! confirm is no exception once the overlay stage gives it a target it can
+//! name: a click on the drawn Yes/No button synthesizes exactly the `y`/`n`
+//! keypress `on_overlay_key` would answer it with (`on_overlay_mouse`),
+//! never a meaning of the click's own.
 
 use ratatui::crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
@@ -306,14 +307,14 @@ impl App {
     /// switch, the same targets `ctrl+←/→` flip), then the tab's own
     /// content --- the files listing or the actions stack.
     fn click_device_pane(&mut self, point: (u16, u16), rect: Rect) {
-        if strip_tab(point, rect, &self.device_strip_tabs()).is_some() {
-            // A click on the strip flips the tab the same way the chord
-            // does: the target tab, created if the click is what brings
-            // the panel into being.
-            if self.device_actions_tab_active() {
-                self.device_pane_tab = DevicePaneTab::Files;
-            } else {
-                self.show_device_actions_tab();
+        if let Some(tab) = strip_tab(point, rect, &self.device_strip_tabs()) {
+            // A click on the strip lands on the tab it names, the same
+            // target the chord flips to --- not merely the opposite of
+            // whichever tab is active, or a click on the already-active
+            // label would flip away from it.
+            match tab {
+                DevicePaneTab::Files => self.device_pane_tab = DevicePaneTab::Files,
+                DevicePaneTab::Actions => self.show_device_actions_tab(),
             }
             return;
         }
@@ -364,20 +365,18 @@ impl App {
         let actions = panel.actions(&caps);
         let stop = usize::from(panel.is_busy() && actions.last() == Some(&BuildAction::Stop));
         let mains = actions.len() - stop;
-        // The stack starts at the pane's inner top row; button i's label
-        // sits `1 + 2i` rows below it (a rule between each pair).
-        let stack_y = rect.y + 1;
-        let Some(row) = point
-            .1
-            .checked_sub(stack_y)
-            .filter(|row| *row < 2 * mains as u16 + 1)
-        else {
+        // The stack starts at the pane's inner top row. None of this
+        // pane's buttons carry a `.detail()` line (`SPEC.md` §15: the rows
+        // stay bare), so a bare placeholder per action has the same row
+        // shape `ui::button::render_stack` actually drew --- `button_at_row`
+        // is the one place that shape is turned into a button index, kept
+        // in step with [`crate::ui::button::stack_height`].
+        let Some(row) = point.1.checked_sub(rect.y + 1) else {
             return;
         };
-        // Odd offsets are button labels (the top rule is 0, a divider
-        // follows every button); `row / 2` is the button's index.
-        if row % 2 == 1 {
-            let index = (row / 2) as usize;
+        let placeholders: Vec<crate::ui::Button> =
+            (0..mains).map(|_| crate::ui::Button::new("")).collect();
+        if let Some(index) = crate::ui::button_at_row(&placeholders, row) {
             let action = actions[index];
             self.build.as_mut().unwrap().cursor = index;
             self.run_build_action(action);
@@ -395,18 +394,14 @@ impl App {
         let actions = flash.pane_actions();
         let stop = usize::from(flash.is_busy() && actions.last() == Some(&FlashPaneAction::Stop));
         let mains = actions.len() - stop;
-        let stack_y = rect.y + 1;
-        let Some(row) = point
-            .1
-            .checked_sub(stack_y)
-            .filter(|row| *row < 2 * mains as u16 + 1)
-        else {
+        // Same bare-button row shape as the build pane's stack, and the
+        // same shared `button_at_row` --- see `click_build_stack`.
+        let Some(row) = point.1.checked_sub(rect.y + 1) else {
             return;
         };
-        // Odd offsets are button labels, the same stack grammar the build
-        // pane follows.
-        if row % 2 == 1 {
-            let index = (row / 2) as usize;
+        let placeholders: Vec<crate::ui::Button> =
+            (0..mains).map(|_| crate::ui::Button::new("")).collect();
+        if let Some(index) = crate::ui::button_at_row(&placeholders, row) {
             let action = actions[index];
             self.flash.as_mut().unwrap().pane_cursor = index;
             self.run_flash_pane_action(action);
@@ -464,13 +459,18 @@ impl App {
     /// through `Enter`; the SDK checklist's rows toggle, the way a checkbox
     /// click means `Space`. Input dialogs, the viewer and the help window
     /// have no click surface --- their gestures fall through, swallowed.
+    /// The wheel is the one non-click gesture an overlay answers, and only
+    /// the docs pickers have panes worth scrolling ([`Self::on_overlay_wheel`]).
     fn on_overlay_mouse(&mut self, event: MouseEvent) {
-        if event.kind != MouseEventKind::Down(MouseButton::Left) {
-            return;
+        match event.kind {
+            MouseEventKind::Down(MouseButton::Left) => {}
+            MouseEventKind::ScrollUp => return self.on_overlay_wheel(-1, event),
+            MouseEventKind::ScrollDown => return self.on_overlay_wheel(1, event),
+            _ => return,
         }
         let Some(frame) = self.frame_area else { return };
         let point = (event.column, event.row);
-        let Some(overlay) = self.overlay.clone() else {
+        let Some(overlay) = self.overlay.as_ref() else {
             return;
         };
         match overlay {
@@ -486,7 +486,7 @@ impl App {
             | Overlay::ConfirmUpload { .. }
             | Overlay::SyncPreview { .. }
             | Overlay::ConfirmInstallHere { .. } => {
-                let Some((no, yes)) = confirm_buttons(frame, self.confirm_size(&overlay, frame))
+                let Some((no, yes)) = confirm_buttons(frame, self.confirm_size(overlay, frame))
                 else {
                     return;
                 };
@@ -503,7 +503,7 @@ impl App {
                 if let Some(index) = list_row(
                     point,
                     crate::ui::centered(frame, 64, len as u16 + 2),
-                    selected,
+                    *selected,
                     len,
                     0,
                     0,
@@ -516,7 +516,7 @@ impl App {
                 if let Some(index) = list_row(
                     point,
                     crate::ui::centered(frame, 44, len as u16 + 2),
-                    selected,
+                    *selected,
                     len,
                     0,
                     0,
@@ -534,7 +534,7 @@ impl App {
                 if let Some(index) = list_row(
                     point,
                     crate::ui::centered(frame, 64, len as u16 + 2),
-                    selected,
+                    *selected,
                     len,
                     0,
                     0,
@@ -547,7 +547,7 @@ impl App {
                 if let Some(index) = list_row(
                     point,
                     crate::ui::centered(frame, 60, len as u16 + 4),
-                    selected,
+                    *selected,
                     len,
                     2,
                     0,
@@ -558,7 +558,7 @@ impl App {
             Overlay::RestoreDeviceScript { selected } => {
                 // Three constant choices under a two-row message.
                 if let Some(index) =
-                    list_row(point, crate::ui::centered(frame, 64, 7), selected, 3, 2, 0)
+                    list_row(point, crate::ui::centered(frame, 64, 7), *selected, 3, 2, 0)
                 {
                     self.set_overlay_selected(index);
                 }
@@ -570,19 +570,19 @@ impl App {
                 status,
                 selected,
             } => {
-                let is_text = crate::files::is_text_like(&name);
+                let is_text = crate::files::is_text_like(name);
                 let actions = FileAction::for_entry(
-                    side,
-                    is_dir,
+                    *side,
+                    *is_dir,
                     is_text,
-                    status,
+                    *status,
                     self.manager.capabilities(),
                 );
                 let len = actions.len();
                 if let Some(index) = list_row(
                     point,
                     crate::ui::centered(frame, 44, len as u16 + 2),
-                    selected,
+                    *selected,
                     len,
                     0,
                     0,
@@ -591,11 +591,11 @@ impl App {
                 }
             }
             Overlay::DirPicker { path, selected, .. } => {
-                let len = crate::workspace::dir_rows(&path).0.len();
+                let len = crate::workspace::dir_rows(path).0.len();
                 if let Some(index) = list_row(
                     point,
                     crate::ui::centered(frame, 72, 18),
-                    selected,
+                    *selected,
                     len,
                     1,
                     2,
@@ -604,6 +604,7 @@ impl App {
                 }
             }
             Overlay::ProjectPicker { mpy, selected, .. } => {
+                let mpy = *mpy;
                 let dir = if mpy {
                     self.mpy_projects.clone()
                 } else {
@@ -617,7 +618,7 @@ impl App {
                 if let Some(index) = list_row(
                     point,
                     crate::ui::centered(frame, 72, 18),
-                    selected,
+                    *selected,
                     len,
                     1,
                     2,
@@ -629,14 +630,14 @@ impl App {
                 let Some(len) = self
                     .build
                     .as_ref()
-                    .map(|panel| panel.filtered_build_dirs(&input).len())
+                    .map(|panel| panel.filtered_build_dirs(input).len())
                 else {
                     return;
                 };
                 if let Some(index) = list_row(
                     point,
                     crate::ui::centered(frame, 60, 16),
-                    selected,
+                    *selected,
                     len,
                     3,
                     0,
@@ -644,9 +645,7 @@ impl App {
                     self.set_overlay_selected(index);
                 }
             }
-            Overlay::BoardPicker {
-                input, selected, ..
-            } => {
+            Overlay::BoardPicker { input, .. } => {
                 // A click on the details pane hands it the keyboard (the
                 // mouse's way of `Tab`); a click on the list side hands it
                 // back and selects the row under the pointer.
@@ -655,21 +654,29 @@ impl App {
                     self.set_docs_picker_focus(DocsFocus::Details);
                     return;
                 }
+                if !contains(areas.list, point) {
+                    // Neither pane: the preview thumbnail or the frame
+                    // around the modal --- selects nothing, and must not
+                    // silently steal the keyboard back from Details.
+                    return;
+                }
+                // Owned before the focus set releases `self.overlay`'s
+                // borrow --- `input`/`selected` still name the overlay's
+                // own fields either way, just no longer through it.
+                let input = input.clone();
                 self.set_docs_picker_focus(DocsFocus::List);
                 let Some(len) = self
                     .build
                     .as_ref()
-                    .map(|panel| panel.filtered_boards(&input).len())
+                    .map(|panel| panel.filtered_boards_count(&input))
                 else {
                     return;
                 };
-                if let Some(index) = docs_list_row(frame, point, selected, len) {
+                if let Some(index) = docs_list_row(frame, point, self.docs_list_offset, len) {
                     self.set_docs_picker_selection(index);
                 }
             }
-            Overlay::ShieldPicker {
-                input, selected, ..
-            } => {
+            Overlay::ShieldPicker { input, .. } => {
                 // Same grammar as the board picker, over a list whose row 0
                 // is the `(none)` row --- it is included in the count.
                 let areas = layout::docs_picker(frame);
@@ -677,15 +684,22 @@ impl App {
                     self.set_docs_picker_focus(DocsFocus::Details);
                     return;
                 }
+                if !contains(areas.list, point) {
+                    // Neither pane: the preview thumbnail or the frame
+                    // around the modal --- selects nothing, and must not
+                    // silently steal the keyboard back from Details.
+                    return;
+                }
+                let input = input.clone();
                 self.set_docs_picker_focus(DocsFocus::List);
                 let Some(len) = self
                     .build
                     .as_ref()
-                    .map(|panel| 1 + panel.filtered_shields(&input).len())
+                    .map(|panel| 1 + panel.filtered_shields_count(&input))
                 else {
                     return;
                 };
-                if let Some(index) = docs_list_row(frame, point, selected, len) {
+                if let Some(index) = docs_list_row(frame, point, self.docs_list_offset, len) {
                     self.set_docs_picker_selection(index);
                 }
             }
@@ -694,7 +708,7 @@ impl App {
             Overlay::SdkToolchains { selected } => {
                 let len = crate::install::steps::TOOLCHAINS.len();
                 let popup = crate::ui::centered(frame, 56, frame.height.saturating_sub(4));
-                if let Some(index) = list_row(point, popup, selected, len, 0, 1) {
+                if let Some(index) = list_row(point, popup, *selected, len, 0, 1) {
                     self.set_overlay_selected(index);
                     self.overlay_key(KeyCode::Char(' '));
                 }
@@ -702,19 +716,21 @@ impl App {
 
             // ---- stacked buttons: select and press ---------------------
             Overlay::ZephyrActions { .. } => {
-                // Three two-row buttons (label + detail) with dividers and
-                // the outer rules: popup height is the stack's 10 + borders.
-                let popup = crate::ui::centered(frame, 64, 12);
-                let Some(row) = point.1.checked_sub(popup.y + 1).filter(|row| *row < 10) else {
+                // `ZEPHYR_ACTIONS_COUNT` detailed (label + description)
+                // buttons, the same row shape `draw_zephyr_actions` renders
+                // --- `button_at_row` is the shared source of truth for
+                // turning that shape into a button index (`click_build_stack`
+                // and `click_flash_stack` follow the same rule for their own,
+                // undetailed stacks).
+                let placeholders: Vec<crate::ui::Button> = (0..crate::ui::ZEPHYR_ACTIONS_COUNT)
+                    .map(|_| crate::ui::Button::new("").detail(""))
+                    .collect();
+                let height = crate::ui::stack_height(&placeholders).saturating_add(2);
+                let popup = crate::ui::centered(frame, 64, height);
+                let Some(row) = point.1.checked_sub(popup.y + 1) else {
                     return;
                 };
-                // Bands start after the top rule; each button owns two rows
-                // (label + detail) with a divider between pairs, so the
-                // *skip* rows are exactly the multiples of three (the top
-                // rule and the two dividers) and both the label and the
-                // command's description under it press the button.
-                let index = (row / 3) as usize;
-                if row % 3 != 0 && index < 3 {
+                if let Some(index) = crate::ui::button_at_row(&placeholders, row) {
                     self.set_overlay_selected(index);
                     self.overlay_key(KeyCode::Enter);
                 }
@@ -745,6 +761,77 @@ impl App {
             // Input dialogs, the viewer and the help window: no click
             // surface (their one meaningful gesture is typing).
             _ => {}
+        }
+    }
+
+    /// A wheel step inside a docs picker (the board/shield pickers' modal)
+    /// scrolls the pane under the pointer, the same split its arrows make
+    /// once `Tab` hands them a side: a step over the west list walks its
+    /// rows one per event (a notch is a nudge, not a page --- and a notch
+    /// that reports several events still moves one row each, the way a
+    /// list scrolls everywhere else), clamped at the ends (the home
+    /// screen's wheel rule: the arrows wrap, a wheel that wraps feels like
+    /// a bug) and the new row restarts the details pane from its top, like
+    /// every cursor move; a step over the details scrolls its text a line
+    /// at a time the way the row-3 wheel scrolls the log (the renderer
+    /// clamps the tail, the same contract the arrows rely on). Focus never
+    /// moves: scrolling past a pane is not pointing at it, the rule the
+    /// dashboard's own wheel follows.
+    fn on_overlay_wheel(&mut self, direction: isize, event: MouseEvent) {
+        let Some(frame) = self.frame_area else { return };
+        let point = (event.column, event.row);
+        // The filtered list the keyboard walks; shields add the `(none)`
+        // row that clears the pick. Owned before the write-back releases
+        // `self.overlay`'s borrow.
+        let (selected, scroll, len) = match self.overlay.as_ref() {
+            Some(Overlay::BoardPicker {
+                input,
+                selected,
+                scroll,
+                ..
+            }) => {
+                let len = self
+                    .build
+                    .as_ref()
+                    .map(|panel| panel.filtered_boards_count(input))
+                    .unwrap_or(0);
+                (*selected, *scroll, len)
+            }
+            Some(Overlay::ShieldPicker {
+                input,
+                selected,
+                scroll,
+                ..
+            }) => {
+                let len = self
+                    .build
+                    .as_ref()
+                    .map(|panel| panel.filtered_shields_count(input) + 1)
+                    .unwrap_or(1);
+                (*selected, *scroll, len)
+            }
+            _ => return,
+        };
+        let areas = layout::docs_picker(frame);
+        if contains(areas.list, point) {
+            if len == 0 {
+                return;
+            }
+            let moved = selected as isize + direction;
+            let index = moved.clamp(0, len as isize - 1) as usize;
+            self.set_docs_picker_selection(index);
+        } else if contains(areas.details, point) {
+            let moved = if direction < 0 {
+                scroll.saturating_sub(1)
+            } else {
+                scroll.saturating_add(1)
+            };
+            if let Some(
+                Overlay::BoardPicker { scroll, .. } | Overlay::ShieldPicker { scroll, .. },
+            ) = &mut self.overlay
+            {
+                *scroll = moved;
+            }
         }
     }
 
@@ -951,8 +1038,12 @@ fn bare_list_row(
     if height <= header {
         return None;
     }
+    let row_in_list = (point.1 - list.y) as usize;
+    if row_in_list < header {
+        return None;
+    }
     let offset = selected.saturating_sub(height - 1 - header);
-    let index = offset + (point.1 - list.y) as usize - header;
+    let index = offset + row_in_list - header;
     (index < len).then_some(index)
 }
 
@@ -1088,9 +1179,12 @@ fn confirm_buttons(area: Rect, size: (u16, u16)) -> Option<(Rect, Rect)> {
 
 /// A row click inside a docs picker's west list (the board/shield pickers'
 /// two-column modal): the rows sit inside the pane's border, on the shared
-/// geometry the frame drew ([`layout::docs_picker`]). Same fresh-`ListState`
-/// minimal-scroll math as [`list_row`], over the list's explicit rect.
-fn docs_list_row(area: Rect, point: (u16, u16), selected: usize, len: usize) -> Option<usize> {
+/// geometry the frame drew ([`layout::docs_picker`]). The row is mapped
+/// through the offset the frame actually settled on (`App::docs_list_offset`,
+/// published by the renderer) --- not recomputed from the selection, which
+/// would assume a bottom-anchored list and land the click below the row the
+/// pointer rested on.
+fn docs_list_row(area: Rect, point: (u16, u16), offset: usize, len: usize) -> Option<usize> {
     if len == 0 {
         return None;
     }
@@ -1104,8 +1198,6 @@ fn docs_list_row(area: Rect, point: (u16, u16), selected: usize, len: usize) -> 
     if !contains(inner, point) || inner.height == 0 {
         return None;
     }
-    let height = inner.height as usize;
-    let offset = selected.saturating_sub(height - 1);
     let index = offset + (point.1 - inner.y) as usize;
     (index < len).then_some(index)
 }
@@ -1309,6 +1401,18 @@ mod tests {
     }
 
     #[test]
+    fn bare_list_row_never_selects_the_header_row() {
+        // A table with a leading header row (the online-boards screen's
+        // own shape, `header=1`): a click on the header itself must not
+        // underflow the `usize` math and must select nothing, not the
+        // first entry.
+        let list = Rect::new(0, 5, 40, 6);
+        assert_eq!(bare_list_row((3, list.y), list, 0, 3, 1), None);
+        // The row right below the header still resolves normally.
+        assert_eq!(bare_list_row((3, list.y + 1), list, 0, 3, 1), Some(0));
+    }
+
+    #[test]
     fn a_click_on_the_workspace_pane_selects_its_row() {
         let root = project_dir("ws", 3);
         let mut app = app_with_backend(BackendKind::Zephyr, &root);
@@ -1461,6 +1565,28 @@ mod tests {
     }
 
     #[test]
+    fn a_click_on_the_already_active_device_tab_stays_put() {
+        let root = project_dir("devtab-active", 1);
+        let mut app = app_with_backend(BackendKind::MicroPython, &root);
+        app.browser = Some(Browser::new(&root));
+        app.show_device_actions_tab();
+        let lines = render(&mut app, 100, 40);
+        let row = lines
+            .iter()
+            .position(|line| line.contains("Device Files"))
+            .expect("the strip names its tabs") as u16;
+        let strip_line = &lines[row as usize];
+        let actions_col = column_of(strip_line, "Actions").unwrap();
+        assert!(app.device_actions_tab_active());
+        click(&mut app, actions_col, row);
+        assert!(
+            app.device_actions_tab_active(),
+            "clicking the already-active label must not flip away from it"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn a_click_on_a_build_button_selects_and_presses_it() {
         let root = project_dir("buildbtn", 1);
         let mut app = app_with_backend(BackendKind::Zephyr, &root);
@@ -1505,6 +1631,36 @@ mod tests {
         click(&mut app, col, row + 1);
         assert_eq!(app.focus, Focus::Build, "the pane still took focus");
         assert!(app.overlay.is_none(), "nothing ran");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `click_flash_stack`'s own safety net --- `click_build_stack` had one
+    /// already, this one did not.
+    #[test]
+    fn a_click_on_a_flash_button_selects_and_presses_it() {
+        let root = project_dir("flashbtn", 1);
+        let mut app = app_with_backend(BackendKind::MicroPython, &root);
+        app.browser = Some(Browser::new(&root));
+        app.show_device_actions_tab();
+        let lines = render(&mut app, 100, 40);
+        let row = lines
+            .iter()
+            .position(|line| line.contains("Search firmware online"))
+            .expect("the stack draws Search firmware online") as u16;
+        let col = column_of(&lines[row as usize], "Search firmware online").unwrap();
+        let before = app.logs.len();
+        click(&mut app, col, row);
+        assert_eq!(app.focus, Focus::FilesDevice);
+        let flash = app.flash.as_ref().unwrap();
+        assert_eq!(
+            flash.pane_cursor, 0,
+            "the clicked row (the stack's leading one) took the cursor"
+        );
+        assert!(
+            app.logs.len() > before,
+            "the click ran the button, not just its selection --- with no \
+             chip connected, pressing it logs the same warning `Enter` would"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1872,6 +2028,276 @@ mod tests {
                 })
             ),
             "a click on the details pane hands it the keyboard"
+        );
+
+        // A click that lands on neither pane (the preview thumbnail, below
+        // the list) must not steal the keyboard back from Details.
+        let frame = app.frame_area.unwrap();
+        let preview = crate::ui::layout::docs_picker(frame).preview;
+        click(&mut app, preview.x + 1, preview.y + 1);
+        assert!(
+            matches!(
+                app.overlay,
+                Some(Overlay::BoardPicker {
+                    focus: DocsFocus::Details,
+                    ..
+                })
+            ),
+            "a click on the preview pane must not reset focus to the list"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A wheel step inside a docs picker scrolls the pane under the
+    /// pointer, pinned against the drawn frame: over the west list it
+    /// walks the rows one per event (clamped at the ends, never wrapping)
+    /// and restarts the details from its top like every cursor move; over
+    /// the details it scrolls the text one line at a time without handing
+    /// it the keyboard.
+    #[test]
+    fn a_docs_picker_wheel_scrolls_the_pane_under_the_pointer() {
+        let root = project_dir("docswheel", 0);
+        let mut app = app_with_backend(BackendKind::Zephyr, &root);
+        app.build.as_mut().unwrap().set_tool_path(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/bin/west"
+        ));
+        app.open_board_picker();
+
+        // Drain the background `west boards` fetch to its list.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            for event in app.processes.drain() {
+                app.handle(AppEvent::Process(event));
+            }
+            if matches!(
+                app.build.as_ref().unwrap().boards.state,
+                crate::build::ListState::Loaded(_)
+            ) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the fake west boards never finished"
+            );
+        }
+
+        // Publish the frame's geometry, then aim the steps at the panes
+        // the frame drew (the same shared `docs_picker` tree the click
+        // hit-tests through).
+        render(&mut app, 100, 40);
+        let frame = app.frame_area.unwrap();
+        let areas = crate::ui::layout::docs_picker(frame);
+
+        // Up at the top of the list clamps: the selection stays put (the
+        // arrows wrap; a wheel that wraps feels like a bug).
+        wheel(&mut app, -1, areas.list.x + 2, areas.list.y + 2);
+        assert!(
+            matches!(app.overlay, Some(Overlay::BoardPicker { selected: 0, .. })),
+            "a wheel step at the top of the list clamps"
+        );
+
+        // Down walks one row per event, not a page.
+        wheel(&mut app, 1, areas.list.x + 2, areas.list.y + 2);
+        if let Some(Overlay::BoardPicker { selected, .. }) = &app.overlay {
+            assert_eq!(*selected, 1, "one wheel step down walks one row");
+        }
+
+        // A step over the details scrolls its text and never moves the
+        // keyboard --- the row cursor stays where it was.
+        wheel(&mut app, 1, areas.details.x + 2, areas.details.y + 2);
+        let picker = std::matches!(&app.overlay, Some(Overlay::BoardPicker { .. }));
+        assert!(picker, "the picker is still open");
+        if let Some(Overlay::BoardPicker {
+            selected,
+            scroll,
+            focus,
+            ..
+        }) = &app.overlay
+        {
+            assert_eq!(*selected, 1, "the row cursor did not move");
+            assert_eq!(*scroll, 1, "the details scrolled a line");
+            assert_eq!(*focus, DocsFocus::List, "the keyboard did not move");
+        }
+
+        // The next list step resets the details to the top --- the new
+        // row's text starts where every cursor move starts it.
+        wheel(&mut app, 1, areas.list.x + 2, areas.list.y + 2);
+        if let Some(Overlay::BoardPicker {
+            selected, scroll, ..
+        }) = &app.overlay
+        {
+            assert_eq!(*selected, 2, "the walk continued");
+            assert_eq!(*scroll, 0, "a moved row restarts the details from its top");
+        }
+
+        // The preview pane below the list scrolls nothing.
+        wheel(&mut app, 1, areas.preview.x + 1, areas.preview.y + 1);
+        if let Some(Overlay::BoardPicker {
+            selected, scroll, ..
+        }) = &app.overlay
+        {
+            assert_eq!(*selected, 2, "the row cursor did not move");
+            assert_eq!(*scroll, 0, "a wheel step over the preview pane is ignored");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The shield picker answers the same wheel grammar over its own list:
+    /// row 0 is the `(none)` row, so the count --- and the clamp at the
+    /// bottom --- includes it.
+    #[test]
+    fn a_shield_picker_wheel_counts_the_none_row() {
+        let root = project_dir("shieldwheel", 0);
+        let mut app = app_with_backend(BackendKind::Zephyr, &root);
+        app.build.as_mut().unwrap().set_tool_path(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/bin/west"
+        ));
+        app.open_shield_picker();
+
+        // Drain the background `west shields` fetch to its list.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            for event in app.processes.drain() {
+                app.handle(AppEvent::Process(event));
+            }
+            if matches!(
+                app.build.as_ref().unwrap().shields.state,
+                crate::build::ListState::Loaded(_)
+            ) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the fake west shields never finished"
+            );
+        }
+
+        render(&mut app, 100, 40);
+        let frame = app.frame_area.unwrap();
+        let areas = crate::ui::layout::docs_picker(frame);
+
+        // The fixture carries three shields, so the list is four rows
+        // (`(none)` included): steps walk it a row at a time and clamp at
+        // the last instead of wrapping back to `(none)`.
+        wheel(&mut app, 1, areas.list.x + 2, areas.list.y + 2);
+        if let Some(Overlay::ShieldPicker { selected, .. }) = &app.overlay {
+            assert_eq!(*selected, 1, "one step walks one row");
+        }
+        for _ in 0..5 {
+            wheel(&mut app, 1, areas.list.x + 2, areas.list.y + 2);
+        }
+        if let Some(Overlay::ShieldPicker { selected, .. }) = &app.overlay {
+            assert_eq!(*selected, 3, "steps past the end clamp on the last row");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A click on a visible row keeps the list exactly where it was. The
+    /// west list used to render with a fresh `ListState` every frame, so
+    /// its offset was recomputed from zero --- anchoring any selection in
+    /// the lower half of a long list at the pane's bottom edge --- and a
+    /// click (mapped through that assumed offset) jumped the view downward
+    /// to re-anchor the row it selected. The offset now persists across
+    /// frames (`App::docs_list_offset`), pinned here against a long list:
+    /// the clicked row is the row the pointer rested on, and the top
+    /// visible row does not move.
+    #[test]
+    fn a_docs_picker_click_keeps_the_list_where_it_was() {
+        let root = project_dir("docsstay", 0);
+        let mut app = app_with_backend(BackendKind::Zephyr, &root);
+        app.build.as_mut().unwrap().set_tool_path(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/bin/west"
+        ));
+        app.open_board_picker();
+
+        // Drain the background `west boards` fetch, then replace the list
+        // with one long enough that the pane cannot hold it.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            for event in app.processes.drain() {
+                app.handle(AppEvent::Process(event));
+            }
+            if matches!(
+                app.build.as_ref().unwrap().boards.state,
+                crate::build::ListState::Loaded(_)
+            ) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the fake west boards never finished"
+            );
+        }
+        let boards: Vec<crate::build::Board> = (0..60)
+            .map(|i| crate::build::Board {
+                name: format!("board_{i:02}"),
+                description: format!("test board {i}"),
+            })
+            .collect();
+        app.build.as_mut().unwrap().boards.state = crate::build::ListState::Loaded(boards);
+
+        // Wheel well past the pane's bottom edge, then render so the
+        // settled offset is published and the rows are drawn.
+        render(&mut app, 100, 40);
+        let frame = app.frame_area.unwrap();
+        let areas = crate::ui::layout::docs_picker(frame);
+        let inner_top = areas.list.y + 1;
+        for _ in 0..20 {
+            wheel(&mut app, 1, areas.list.x + 2, inner_top);
+        }
+        let lines = render(&mut app, 100, 40);
+        let offset = app.docs_list_offset;
+        assert!(offset > 0, "the wheel scrolled the list (offset {offset})");
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains(&format!("board_{offset:02}"))),
+            "the row at the settled offset leads the pane"
+        );
+
+        // Click a row in the middle of the pane: it must select exactly
+        // the row under the pointer, and the view must not shift.
+        let clicked = offset + 4;
+        click(&mut app, areas.list.x + 2, inner_top + 4);
+        if let Some(Overlay::BoardPicker { selected, .. }) = &app.overlay {
+            assert_eq!(*selected, clicked, "the click selected the drawn row");
+        }
+        let lines = render(&mut app, 100, 40);
+        assert_eq!(
+            app.docs_list_offset, offset,
+            "clicking a visible row does not move the list"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains(&format!("board_{offset:02}"))),
+            "the same row still leads the pane after the click"
+        );
+
+        // And the keyboard keeps working over the same geometry: the view
+        // follows the cursor only once it leaves the window, and then
+        // slides one row at a time --- the persistent offset is the
+        // arrows' anchor too, not just the mouse's.
+        let mut presses = 0;
+        while app.docs_list_offset == offset && presses < 40 {
+            app.on_key(ratatui::crossterm::event::KeyEvent::new(
+                KeyCode::Down,
+                KeyModifiers::NONE,
+            ));
+            render(&mut app, 100, 40);
+            presses += 1;
+        }
+        assert!(
+            presses < 40,
+            "the cursor eventually reaches the window's edge"
+        );
+        assert_eq!(
+            app.docs_list_offset,
+            offset + 1,
+            "the view slides exactly one row past the bottom edge"
         );
         let _ = std::fs::remove_dir_all(&root);
     }

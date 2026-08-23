@@ -199,7 +199,20 @@ fn event_loop(
         }
 
         let event = events.next_event()?;
+        let overlay_was_open = app.overlay.is_some();
         app.handle(event);
+        if overlay_was_open && app.overlay.is_none() {
+            // Belt-and-suspenders: some terminals can mishandle a partial
+            // diff that repaints only part of a wide glyph sitting
+            // mid-screen, compared to when that same cell is part of a
+            // full repaint. Closing a modal exposes exactly that kind of
+            // region as a partial diff; forcing a full repaint here
+            // sidesteps the class of inconsistency, on top of every
+            // decorative glyph in this app now being picked so no
+            // terminal can disagree with `ratatui` about its width in
+            // the first place.
+            guard.terminal().clear()?;
+        }
 
         // A copy gesture (the MAC row's click) becomes the terminal's own
         // clipboard escape here, between frames, where stdout is ours.

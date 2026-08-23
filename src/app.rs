@@ -505,21 +505,24 @@ pub enum FileAction {
 impl FileAction {
     /// Every label buffer-widths to the same 3 cells before its word: a
     /// genuinely wide emoji gets one space, a narrow glyph like `▶` gets two.
-    /// `🗑`/`👁` look narrow to `unicode-width` (East Asian Width Neutral)
-    /// but most emoji fonts draw them two cells wide regardless, so the old
-    /// two-space compensation matched the buffer and not the terminal.
-    /// `\u{FE0F}` (VS16) fixes that: it makes `unicode-width` score them 2,
-    /// same trick already used for the file-listing's `⚙️`.
+    /// Every emoji here is picked to be `Emoji_Presentation=Yes` on its own
+    /// --- `🗑`/`👁` used to be forced wide with a trailing `\u{FE0F}`
+    /// (VS16), the same trick `ui::files`'s file-listing icons used for
+    /// `⚙️`, and for the same reason it was dropped there: `unicode-width`
+    /// scores the VS16 sequence 2, but not every terminal's own font
+    /// support agrees, so the two disagreeing about a glyph's width is a
+    /// terminal-dependent bug no width math on this side can fix. A
+    /// dedicated pictograph codepoint has no such disagreement to have.
     pub fn label(self) -> &'static str {
         match self {
             Self::Open => "📂 Open",
             Self::SendToDevice => "📤 Send to device",
             Self::Download => "📥 Download",
             Self::Run => "▶  Run",
-            Self::View => "👁️ View",
+            Self::View => "🔍 View",
             Self::Edit => "📝 Edit",
             Self::Diff => "🔀 Diff",
-            Self::Delete => "🗑️ Delete",
+            Self::Delete => "🚮 Delete",
         }
     }
 
@@ -830,6 +833,14 @@ pub struct App {
     /// the renderer the same way: page-scrolling the details moves by the
     /// rows that were actually drawn.
     pub docs_viewport: usize,
+    /// Where the board/shield pickers' west list is scrolled to. The list
+    /// renders from the offset the previous frame settled on (ratatui
+    /// adjusts it minimally to keep the selection visible) and publishes the
+    /// settled value back here --- so a frame never re-anchors a visible
+    /// selection at the pane's bottom edge, and a click maps its row through
+    /// the offset that was actually drawn. Reset when a picker opens and
+    /// when the filter changes (a different list starts from its top).
+    pub docs_list_offset: usize,
     /// Ticks observed, used for the "detecting" spinner and as a liveness hint.
     pub ticks: u64,
     /// External commands. Owned here so every view shares one drain point.
@@ -1096,6 +1107,7 @@ impl App {
             log_viewport: 1,
             frame_area: None,
             docs_viewport: 1,
+            docs_list_offset: 0,
             ticks: 0,
             processes: ProcessManager::new(),
             docs: crate::board_docs::BoardDocs::new(),
@@ -2896,7 +2908,10 @@ impl App {
             Some(Overlay::CreateEntry { .. }) => {
                 vec![("name/", "for a directory")]
             }
-            Some(Overlay::RenameEntry { .. }) => vec![],
+            // These three take free text, so `?` must land in the field ---
+            // `F1` is their only way to help (`on_overlay_key`'s
+            // `is_text_entry_overlay`).
+            Some(Overlay::RenameEntry { .. }) => vec![("F1", "help")],
             // The docs pane on the right answers the scrolling keys ---
             // but only after `Tab` hands it the keyboard, which is the
             // one key a user cannot guess.
@@ -2904,10 +2919,10 @@ impl App {
                 ("tab", "swap the list/docs focus"),
                 ("pgup/pgdn", "scroll the docs pane"),
             ],
-            Some(Overlay::DirPicker { .. }) => vec![],
-            Some(Overlay::BuildDirPicker { .. }) => vec![],
-            Some(Overlay::ProjectPicker { .. }) => vec![],
-            Some(Overlay::PackageInstall { .. }) => vec![],
+            Some(Overlay::DirPicker { .. }) => vec![("?", "help")],
+            Some(Overlay::BuildDirPicker { .. }) => vec![("F1", "help")],
+            Some(Overlay::ProjectPicker { .. }) => vec![("?", "help")],
+            Some(Overlay::PackageInstall { .. }) => vec![("F1", "help")],
             Some(
                 Overlay::DevicePicker { .. }
                 | Overlay::ThemePicker { .. }
@@ -2916,7 +2931,7 @@ impl App {
                 | Overlay::FileActions { .. }
                 | Overlay::RestoreDeviceScript { .. }
                 | Overlay::ZephyrActions { .. },
-            ) => vec![],
+            ) => vec![("?", "help")],
             Some(
                 Overlay::Confirm { .. }
                 | Overlay::ConfirmBuild { .. }
@@ -4117,6 +4132,83 @@ mod tests {
             !keys.contains(&"r"),
             "pane keys are inert while a modal is open"
         );
+    }
+
+    /// The 12 overlays whose `shortcuts()` carries no per-variant hint of
+    /// its own: `F1` must still open help from every one of them, and `?`
+    /// must join it everywhere except the three that take free text (where
+    /// `?` has to land in the field instead).
+    #[test]
+    fn overlays_with_no_hint_of_their_own_still_reach_help() {
+        let text_entry_overlays: Vec<Overlay> = vec![
+            Overlay::RenameEntry {
+                name: "old".into(),
+                input: "old".into(),
+            },
+            Overlay::BuildDirPicker {
+                input: String::new(),
+                selected: 0,
+            },
+            Overlay::PackageInstall {
+                input: String::new(),
+            },
+        ];
+        let other_silent_overlays: Vec<Overlay> = vec![
+            Overlay::DirPicker {
+                purpose: crate::workspace::DirPurpose::Installation,
+                path: std::path::PathBuf::new(),
+                selected: 0,
+                error: None,
+            },
+            Overlay::ProjectPicker {
+                mpy: false,
+                selected: 0,
+                error: None,
+            },
+            Overlay::DevicePicker { selected: 0 },
+            Overlay::ThemePicker { selected: 0 },
+            Overlay::FirmwarePicker { selected: 0 },
+            Overlay::ProjectSetup { selected: 0 },
+            Overlay::FileActions {
+                side: Side::Local,
+                name: "file.py".into(),
+                is_dir: false,
+                status: None,
+                selected: 0,
+            },
+            Overlay::RestoreDeviceScript { selected: 0 },
+            Overlay::ZephyrActions { selected: 0 },
+        ];
+
+        for overlay in text_entry_overlays.iter().chain(&other_silent_overlays) {
+            let mut app = app();
+            app.overlay = Some(overlay.clone());
+            app.handle(key(KeyCode::F(1)));
+            assert!(
+                matches!(app.overlay, Some(Overlay::Help { .. })),
+                "F1 must open help from {overlay:?}"
+            );
+        }
+
+        for overlay in &other_silent_overlays {
+            let mut app = app();
+            app.overlay = Some(overlay.clone());
+            app.handle(key(KeyCode::Char('?')));
+            assert!(
+                matches!(app.overlay, Some(Overlay::Help { .. })),
+                "? must open help from {overlay:?}"
+            );
+        }
+
+        for overlay in &text_entry_overlays {
+            let mut app = app();
+            app.overlay = Some(overlay.clone());
+            app.handle(key(KeyCode::Char('?')));
+            assert!(
+                !matches!(app.overlay, Some(Overlay::Help { .. })),
+                "? must be typed into the field, not open help, for {overlay:?}"
+            );
+        }
     }
 
     #[test]

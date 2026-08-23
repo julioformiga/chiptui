@@ -531,6 +531,12 @@ fn draw_restore_device_script(frame: &mut Frame, area: Rect, selected: usize, pa
 /// to say what it runs: `Update Zephyr` goes on to a confirm that quotes
 /// `west update`, `Add SDK toolchains` opens a picker, and this one starts
 /// a command outright with nothing anywhere naming it.
+/// How many buttons [`draw_zephyr_actions`] draws --- tied to `CHOICES`'
+/// own array length so the two can never silently disagree, and the one
+/// number the click handler needs to reconstruct the same row shape
+/// (`app::mouse`'s `on_overlay_mouse`, `Overlay::ZephyrActions` arm).
+pub(crate) const ZEPHYR_ACTIONS_COUNT: usize = 3;
+
 fn draw_zephyr_actions(
     frame: &mut Frame,
     area: Rect,
@@ -539,7 +545,7 @@ fn draw_zephyr_actions(
     palette: Palette,
 ) {
     type Glyph = fn(crate::icons::IconSet) -> &'static str;
-    const CHOICES: [(Glyph, &str, &str); 3] = [
+    const CHOICES: [(Glyph, &str, &str); ZEPHYR_ACTIONS_COUNT] = [
         (
             crate::icons::IconSet::update,
             "Update Zephyr",
@@ -1850,8 +1856,13 @@ fn draw_docs_picker(
     // The west list, the picker's spine: the focused border is the same
     // grammar the dashboard's panes use, and the scrollbar's column stays
     // reserved beside the list so the descriptions never shift when it
-    // appears. `ListState` keeps the selection visible; the offset it
-    // settles on is the position the scrollbar reports.
+    // appears. `ListState` starts from the offset the previous frame
+    // settled on (published into `App::docs_list_offset`) and adjusts it
+    // minimally to keep the selection visible --- with a fresh state every
+    // frame the offset was recomputed from zero, anchoring any selection
+    // past half the pane at the bottom edge, so a click on a visible row
+    // jumped the list downward to re-anchor it. The settled offset is what
+    // the scrollbar reports and what a click maps its row through.
     let total = items.len();
     let list_block = pane(list_title, focus == DocsFocus::List, palette);
     let list_inner = list_block.inner(areas.list);
@@ -1860,12 +1871,15 @@ fn draw_docs_picker(
         width: list_inner.width.saturating_sub(1),
         ..list_inner
     };
-    let mut state = ListState::default().with_selected(Some(selected));
+    let mut state = ListState::default()
+        .with_offset(app.docs_list_offset)
+        .with_selected(Some(selected));
     frame.render_stateful_widget(
         List::new(items).highlight_style(selection_style(palette)),
         list_view,
         &mut state,
     );
+    app.docs_list_offset = state.offset();
     draw_scrollbar(
         frame,
         list_inner,

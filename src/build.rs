@@ -576,6 +576,34 @@ impl BuildPanel {
         }
     }
 
+    /// [`Self::filtered_boards`]'s count without collecting the list ---
+    /// for callers (a click's row count) that never read the boards
+    /// themselves, so a click no longer pays for a `Vec<&Board>` over
+    /// Zephyr's 1000+-entry list just to discard it.
+    pub fn filtered_boards_count(&self, filter: &str) -> usize {
+        let filter = filter.to_lowercase();
+        match &self.boards.state {
+            ListState::Loaded(boards) => boards
+                .iter()
+                .filter(|board| matches_filter(&board.name, &board.description, &filter))
+                .count(),
+            _ => 0,
+        }
+    }
+
+    /// [`Self::filtered_shields`]'s count, same trade as
+    /// [`Self::filtered_boards_count`].
+    pub fn filtered_shields_count(&self, filter: &str) -> usize {
+        let filter = filter.to_lowercase();
+        match &self.shields.state {
+            ListState::Loaded(shields) => shields
+                .iter()
+                .filter(|shield| matches_filter(&shield.name, &shield.description, &filter))
+                .count(),
+            _ => 0,
+        }
+    }
+
     /// Starts the background `west boards` fetch the picker needs. A no-op
     /// when one is already running or the list is already here: the fetch is
     /// once per session, like every other "load this eagerly, once" seam.
@@ -1420,6 +1448,14 @@ mod tests {
             2,
             "an empty filter shows everything"
         );
+        // `filtered_boards_count` must never diverge from the list it
+        // avoids collecting.
+        for filter in ["NRF52", "carbon", "st", ""] {
+            assert_eq!(
+                panel.filtered_boards_count(filter),
+                panel.filtered_boards(filter).len()
+            );
+        }
     }
 
     #[test]
@@ -1443,6 +1479,13 @@ mod tests {
         assert_eq!(panel.filtered_shields("eth").len(), 1);
         assert_eq!(panel.filtered_shields("wiznet").len(), 1);
         assert_eq!(panel.filtered_shields("").len(), 2);
+        // Same equivalence as the boards count.
+        for filter in ["eth", "wiznet", ""] {
+            assert_eq!(
+                panel.filtered_shields_count(filter),
+                panel.filtered_shields(filter).len()
+            );
+        }
     }
 
     #[test]

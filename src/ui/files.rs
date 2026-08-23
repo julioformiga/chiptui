@@ -479,15 +479,15 @@ fn row_spans(
         human_size(size)
     };
 
-    // Every icon is exactly one emoji, and every terminal draws an emoji
-    // two cells wide --- however unicode-width scores the codepoint (⚙️
-    // U+2699 is East-Asian *ambiguous*, scored 1, which budgeted the
-    // column one too narrow and pushed the name into the icon). The
-    // column is fixed at 2 cells + the trailing space, and the Nerd
-    // set's width-1 glyphs (`icon_column`) center into it so a `.py`
-    // row lines up with the emoji rows beside it. A marker costs 2
-    // more. The `none` icon set drops the column (and its 3 cells)
-    // whole.
+    // Every non-Nerd icon here is a *dedicated* pictograph codepoint
+    // (`Emoji_Presentation=Yes`, never a dual-presentation symbol forced
+    // wide with a variation selector --- see `icon`'s doc), so every
+    // terminal draws it two cells wide the same way `unicode-width` scores
+    // it: no glyph here can disagree with the terminal about its own
+    // width. The column is fixed at 2 cells + the trailing space, and the
+    // Nerd set's width-1 glyphs (`icon_column`) center into it so a `.py`
+    // row lines up with the emoji rows beside it. A marker costs 2 more.
+    // The `none` icon set drops the column (and its 3 cells) whole.
     let icon_width = usize::from(icons.shows_decorations()) * 3;
     let marker_width = usize::from(status.is_some()) * 2;
     let name_width =
@@ -525,15 +525,23 @@ fn row_spans(
 /// language/purpose. Purely cosmetic --- unknown extensions fall back to a
 /// generic file glyph rather than nothing, so the column stays aligned.
 /// A `.py` file follows the backend's own mark under the Nerd set
-/// ([`IconSet::python`](crate::icons::IconSet::python)): the file list
-/// reads in the same vocabulary the header and the home rows do, instead
-/// of mixing an emoji logo into a nerd-rendered UI. Every other extension
-/// keeps its emoji in every set (none of them has a backend to borrow
-/// from), and the `none` set never reaches here --- the whole column is
+/// ([`IconSet::python`](crate::icons::IconSet::python)), and a C-family
+/// file follows [`IconSet::c_lang`] the same way: the file list reads in
+/// the same vocabulary the header and the home rows do, instead of mixing
+/// an emoji logo into a nerd-rendered UI. Every other extension keeps its
+/// emoji in every set (none of them has a dedicated Nerd glyph in the
+/// project's vetted `custom-*`/seti range --- see [`IconSet::c_lang`]'s
+/// doc), and the `none` set never reaches here --- the whole column is
 /// decoration and hides first (`shows_decorations`).
-/// The kind glyph plus whether it draws a single cell wide --- true only
-/// for the Nerd set's Python logo, [`icon_column`]'s caller-declared
-/// width rather than a guess from the codepoint.
+///
+/// Every emoji here is picked to be `Emoji_Presentation=Yes` on its own
+/// (never a dual-presentation symbol needing a variation selector to force
+/// width --- `⚙️`/`👁️`/`🗑️` used to be exactly that, and different
+/// terminals disagreed with `unicode-width` about their column count; see
+/// `row_spans`' doc). The kind glyph plus whether it draws a single cell
+/// wide --- true only for the Nerd set's language logos,
+/// [`icon_column`]'s caller-declared width rather than a guess from the
+/// codepoint.
 fn icon(name: &str, is_dir: bool, icons: crate::icons::IconSet) -> (&'static str, bool) {
     if is_dir {
         return ("📁", false);
@@ -547,11 +555,14 @@ fn icon(name: &str, is_dir: bool, icons: crate::icons::IconSet) -> (&'static str
             crate::icons::IconSet::Nerd => (icons.python(), true),
             _ => ("🐍", false),
         },
+        Some("c" | "h" | "cc" | "cpp" | "hpp") => match icons {
+            crate::icons::IconSet::Nerd => (icons.c_lang(), true),
+            _ => ("🔧", false),
+        },
         Some("rs") => ("🦀", false),
-        Some("c" | "h" | "cc" | "cpp" | "hpp") => ("🔧", false),
         Some("dts" | "dtsi" | "overlay") => ("🔌", false),
         Some("md" | "rst") => ("📝", false),
-        Some("conf" | "cfg" | "ini" | "toml" | "yaml" | "yml" | "json") => ("⚙️", false),
+        Some("conf" | "cfg" | "ini" | "toml" | "yaml" | "yml" | "json") => ("🔩", false),
         Some("sh") => ("🐚", false),
         _ => ("📄", false),
     }
@@ -679,7 +690,7 @@ mod tests {
     fn known_extensions_get_a_distinct_icon() {
         assert_eq!(icon("main.py", false, IconSet::Unicode), ("🐍", false));
         assert_eq!(icon("readme.TXT", false, IconSet::Unicode), ("📄", false));
-        assert_eq!(icon("prj.conf", false, IconSet::Unicode), ("⚙️", false));
+        assert_eq!(icon("prj.conf", false, IconSet::Unicode), ("🔩", false));
         assert_eq!(
             icon("board.overlay", false, IconSet::Unicode),
             ("🔌", false)
@@ -688,15 +699,23 @@ mod tests {
 
     /// A `.py` row borrows the backend's own mark under the Nerd set ---
     /// the same Python logo the header and the home rows carry, single
-    /// cell wide --- while every other extension keeps its two-cell
-    /// emoji there (none of them has a backend to borrow from).
+    /// cell wide --- and a C-family row follows [`IconSet::c_lang`] the
+    /// same way, while every other extension keeps its two-cell emoji
+    /// there (neither has a dedicated Nerd glyph in the project's vetted
+    /// range).
     #[test]
-    fn a_py_file_follows_the_backend_mark_under_the_nerd_set() {
+    fn a_py_or_c_file_follows_its_language_mark_under_the_nerd_set() {
         assert_eq!(
             icon("main.py", false, IconSet::Nerd),
             ("\u{E73C}", true),
             "the Python logo, straight off the backend's mark"
         );
+        assert_eq!(
+            icon("main.c", false, IconSet::Nerd),
+            ("\u{E61E}", true),
+            "nf-custom-c"
+        );
+        assert_eq!(icon("device.h", false, IconSet::Nerd), ("\u{E61E}", true));
         assert_eq!(icon("lib.rs", false, IconSet::Nerd), ("🦀", false));
         assert_eq!(icon("firmware.bin", false, IconSet::Nerd), ("📄", false));
     }
@@ -704,10 +723,14 @@ mod tests {
     #[test]
     fn every_icon_reserves_the_same_column_and_leaves_the_name_its_space() {
         // The icon column is budgeted for one two-cell emoji regardless of
-        // the codepoint's unicode-width score (⚙️ is scored 1 but drawn 2,
-        // which used to glue the name onto the icon). Whatever the entry,
-        // the drawn spans stay inside `width` and the name keeps at least
-        // one space before the size.
+        // the codepoint's unicode-width score --- historically a dual-
+        // presentation glyph (the old `⚙️`, scored 1 by `unicode-width`
+        // but meant to draw 2) glued the name onto the icon; `icon` now
+        // only ever picks `Emoji_Presentation=Yes` codepoints, so the
+        // score and the intended width always agree, but the fixed budget
+        // stays as the belt-and-suspenders guard. Whatever the entry, the
+        // drawn spans stay inside `width` and the name keeps at least one
+        // space before the size.
         let palette = ratatui_themes::ThemeName::TokyoNight.palette();
         for name in [
             "src",

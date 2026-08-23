@@ -12,7 +12,7 @@
 
 mod build;
 mod button;
-pub(crate) use button::STOP_BOX_WIDTH;
+pub(crate) use button::{Button, STOP_BOX_WIDTH, button_at_row, stack_height};
 mod files;
 mod flash;
 pub(crate) use flash::dialog_size as flash_dialog_size;
@@ -22,6 +22,7 @@ pub(crate) use install::area as install_area;
 pub(crate) mod layout;
 mod monitor;
 mod overlay;
+pub(crate) use overlay::ZEPHYR_ACTIONS_COUNT;
 mod panels;
 pub(crate) use panels::board_shield_click_is_board;
 pub(crate) use panels::device_mac_row;
@@ -239,28 +240,19 @@ fn draw_too_small(frame: &mut Frame, area: Rect) {
 /// when not even `Project …` fits. The right side --- the volatile half
 /// (a board plugs in, a scan finishes) --- never truncates.
 fn draw_header(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
-    let left = backend_spans(app, palette);
-    let right = device_status(app, palette);
-    let left_width = spans_width(&left);
-    let right_width = spans_width(&right);
-
-    frame.render_widget(Paragraph::new(Line::from(left)), area);
     frame.render_widget(
-        Paragraph::new(Line::from(right)).alignment(Alignment::Right),
+        Paragraph::new(Line::from(backend_spans(app, palette))),
+        area,
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(device_status(app, palette))).alignment(Alignment::Right),
         area,
     );
 
-    let zone_start = left_width + 1;
-    let zone = (area.width as usize)
-        .saturating_sub(right_width + 1)
-        .saturating_sub(zone_start);
-    let Some(center) = project_spans(app, palette, zone) else {
+    let Some((center, x)) = header_center(area, app, palette) else {
         return;
     };
     let center_width = spans_width(&center) as u16;
-    let x = (area.width.saturating_sub(center_width) / 2)
-        .max(zone_start as u16)
-        .min(area.width.saturating_sub(right_width as u16 + center_width));
     frame.render_widget(
         Paragraph::new(Line::from(center)),
         Rect {
@@ -270,6 +262,25 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
             height: 1,
         },
     );
+}
+
+/// The header's centered zone: the project spans that fit between the
+/// backend and device sides, and the column they start at --- the one
+/// computation [`draw_header`] and [`header_project_name_rect`] must never
+/// disagree on, or a click aimed at the drawn name would silently miss it.
+fn header_center(area: Rect, app: &App, palette: Palette) -> Option<(Vec<Span<'static>>, u16)> {
+    let left_width = spans_width(&backend_spans(app, palette));
+    let right_width = spans_width(&device_status(app, palette));
+    let zone_start = left_width + 1;
+    let zone = (area.width as usize)
+        .saturating_sub(right_width + 1)
+        .saturating_sub(zone_start);
+    let center = project_spans(app, palette, zone)?;
+    let center_width = spans_width(&center) as u16;
+    let x = (area.width.saturating_sub(center_width) / 2)
+        .max(zone_start as u16)
+        .min(area.width.saturating_sub(right_width as u16 + center_width));
+    Some((center, x))
 }
 
 /// The header's left side: the badge, then the backend icon and name. The
@@ -361,17 +372,7 @@ fn spans_width(spans: &[Span<'_>]) -> usize {
 /// own span is returned --- "Project" prefix excluded --- because that is
 /// the part a click means.
 pub(crate) fn header_project_name_rect(area: Rect, app: &App, palette: Palette) -> Option<Rect> {
-    let left_width = spans_width(&backend_spans(app, palette));
-    let right_width = spans_width(&device_status(app, palette));
-    let zone_start = left_width + 1;
-    let zone = (area.width as usize)
-        .saturating_sub(right_width + 1)
-        .saturating_sub(zone_start);
-    let center = project_spans(app, palette, zone)?;
-    let center_width = spans_width(&center) as u16;
-    let x = (area.width.saturating_sub(center_width) / 2)
-        .max(zone_start as u16)
-        .min(area.width.saturating_sub(right_width as u16 + center_width));
+    let (center, x) = header_center(area, app, palette)?;
     // `Project ` leads the name; its width is the offset of the name span.
     // The label itself may be split into more than one span (the shortcuts
     // overlay highlighting its `p`), so the name is always the *last* span
@@ -407,8 +408,10 @@ fn device_status(app: &App, palette: Palette) -> Vec<Span<'static>> {
 ///
 /// It shows only what a user cannot guess, so it is short --- but more
 /// hints than columns is still possible on a narrow terminal, and the one
-/// that must survive is the last (`?` help --- the way to the rest). So
-/// hints are dropped whole, from the *middle*, rather than letting the
+/// that must survive is the last (on the dashboard, `?` help --- the way
+/// to the rest; an overlay with no per-variant hint of its own carries its
+/// own `?`/`F1` help entry last for the same reason, `App::shortcuts`).
+/// So hints are dropped whole, from the *middle*, rather than letting the
 /// line truncate mid-word: a cut-off " ?  he" is worse than one fewer
 /// hint.
 fn draw_footer(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {

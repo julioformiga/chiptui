@@ -371,6 +371,24 @@ impl IconSet {
         }
     }
 
+    /// A C-family source file's kind glyph under the Nerd set (`.c/.h/.cc/
+    /// .cpp/.hpp`, the file browser's own vocabulary --- see
+    /// `ui::files::icon`): `nf-custom-c`, `\u{E61E}`. From the same
+    /// vetted `custom-*`/seti range [`Self::python`]'s `nf-custom-python`
+    /// comes from (shipped whole since the first Nerd Fonts release,
+    /// unlike the FA5 brands or the Material Design icons Nerd Fonts v3
+    /// moved to the supplementary planes --- both avoided elsewhere in
+    /// this module for the same reason). `Unicode`/`None` never call this
+    /// --- the file browser keeps its plain `🔧` wrench there, the same
+    /// glyph every C-family extension already shared.
+    pub const fn c_lang(self) -> &'static str {
+        match self {
+            Self::Unicode => "",
+            Self::Nerd => "\u{E61E}",
+            Self::None => "",
+        }
+    }
+
     /// The Zephyr backend's mark under the Nerd set: the header's own
     /// `◆` diamond ([`crate::ui::backend_spans`], which draws it
     /// directly in every icon set), reused here so a Zephyr row in the
@@ -450,6 +468,30 @@ mod tests {
                 first as u32
             );
         }
+    }
+
+    /// `c_lang` is Nerd-only by design (`Unicode`/`None` both answer ""
+    /// --- the file browser never calls it there), so it is not part of
+    /// [`IconSet::glyphs`]'s "every set has a real glyph" contract and
+    /// needs its own check for the same single-width, BMP-PUA rule
+    /// [`nerd_glyphs_are_single_chars_in_the_bmp_pua`] enforces for the
+    /// shared vocabulary.
+    #[test]
+    fn c_lang_is_a_single_bmp_pua_char_under_nerd_and_empty_elsewhere() {
+        let glyph = IconSet::Nerd.c_lang();
+        let mut chars = glyph.chars();
+        let first = chars.next().expect("c_lang must not be empty under Nerd");
+        assert!(
+            chars.next().is_none(),
+            "glyph must be a single char: {glyph:?}"
+        );
+        assert!(
+            (0xE000..=0xF8FF).contains(&(first as u32)),
+            "glyph left the BMP PUA: U+{:04X}",
+            first as u32
+        );
+        assert_eq!(IconSet::Unicode.c_lang(), "");
+        assert_eq!(IconSet::None.c_lang(), "");
     }
 
     /// The default set stays PUA-free --- that is the whole arrangement:
