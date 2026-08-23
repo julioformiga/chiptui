@@ -1172,7 +1172,10 @@ fn dashboard_help_describes_file_browser_keys_when_a_files_pane_is_focused() {
         shortcuts.contains(&"c"),
         "compare is offered: {shortcuts:?}"
     );
-    assert!(shortcuts.contains(&"tab"));
+    assert!(
+        !shortcuts.contains(&"tab"),
+        "navigation keys live in the help window, not the footer: {shortcuts:?}"
+    );
     assert!(
         !shortcuts.contains(&"o"),
         "the backend picker is gone: files are a focus, not a separate screen to leave"
@@ -1185,12 +1188,7 @@ fn dashboard_help_describes_file_browser_keys_when_a_files_pane_is_focused() {
     });
     assert_eq!(
         app.shortcuts(),
-        vec![
-            ("↑/↓", "select"),
-            ("/", "filter"),
-            ("enter", "activate"),
-            ("esc", "close")
-        ]
+        vec![("/", "filter"), ("enter", "activate")]
     );
 }
 
@@ -2373,7 +2371,7 @@ fn the_footer_swaps_to_the_repl_exit_hint_while_a_monitor_session_is_active() {
     let keys: Vec<&str> = app.shortcuts().iter().map(|(k, _)| *k).collect();
     assert_eq!(
         keys,
-        vec!["ctrl+]", "type"],
+        vec!["ctrl+]"],
         "every other binding is unreachable while the REPL owns the keyboard"
     );
 }

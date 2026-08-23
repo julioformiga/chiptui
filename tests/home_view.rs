@@ -260,8 +260,8 @@ fn the_list_shows_each_project_with_its_backend_and_path() {
         "paths abbreviate:\n{frame}"
     );
     assert!(
-        frame.contains("enter open"),
-        "the footer names the keys:\n{frame}"
+        frame.contains("del forget"),
+        "the footer names the keys a user cannot guess:\n{frame}"
     );
 }
 

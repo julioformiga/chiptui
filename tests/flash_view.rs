@@ -667,7 +667,7 @@ fn help_in_the_flash_view_describes_flash_keys() {
     let mut app = app_with_flash(&project);
 
     let shortcuts: Vec<&str> = app.shortcuts().iter().map(|(key, _)| *key).collect();
-    assert!(shortcuts.contains(&"enter"));
+    assert!(shortcuts.contains(&"?"), "{shortcuts:?}");
 
     app.overlay = Some(Overlay::Help {
         filter: String::new(),

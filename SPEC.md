@@ -1005,6 +1005,12 @@ tab, where its output streams --- there is no separate output screen.
 
 The exact proportions (row heights, column widths) are not fixed.
 
+The contextual footer is deliberately sparse: it shows only the keys a user
+cannot guess --- pane-specific actions, chords, one-chord escapes. Plain
+navigation (`tab`, arrows, `enter`, `esc`, `q`) is never advertised there;
+the help window (`?`, always the footer's last hint) is the complete
+reference, and the same rule governs the dialog footers.
+
 ### Required UX
 
 -   keyboard-first navigation;

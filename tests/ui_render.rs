@@ -70,10 +70,12 @@ fn a_narrow_footer_drops_whole_hints_and_keeps_the_way_out() {
     // closing quote come off before looking at how the line ends.
     let footer = frame.lines().last().unwrap().trim_matches('"').to_string();
 
-    assert!(footer.contains("quit"), "the way out survives:\n{footer}");
-    assert!(footer.contains("help"), "and so does help:\n{footer}");
     assert!(
-        footer.trim_end().ends_with("quit"),
+        footer.contains("help"),
+        "the way to the rest survives:\n{footer}"
+    );
+    assert!(
+        footer.trim_end().ends_with("help"),
         "the line ends on a whole hint, never mid-word:\n{footer}"
     );
 }
@@ -198,7 +200,7 @@ fn dashboard_shows_project_device_and_log_panes() {
     );
 
     // Footer shortcuts.
-    assert!(frame.contains("quit"), "missing footer shortcuts:\n{frame}");
+    assert!(frame.contains("help"), "missing footer shortcuts:\n{frame}");
 }
 
 /// A Zephyr fixture with a buildable project root and one connected board.

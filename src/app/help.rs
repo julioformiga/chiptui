@@ -243,61 +243,26 @@ const fn site(
 const ANY_FOCUS: &[Focus] = &[];
 const FILES: &[Focus] = &[Focus::FilesLocal, Focus::FilesDevice];
 
-/// Footer ranks: 0 the focus tour key, 10..=49 the focused pane's own
-/// rows, 50..=59 the dashboard-wide commands, 60..=69 the Logs extras,
-/// 70..=72 the tail every context keeps. Flash screens reuse the same
-/// bands per screen (their sites never co-match).
+/// Footer ranks: 10..=49 the focused pane's own rows, 50..=59 the
+/// dashboard-wide commands, 60..=69 the Logs extras, 70..=71 the tail
+/// every context keeps. Flash screens reuse the same bands per screen
+/// (their sites never co-match).
+///
+/// The footer shows only what a user cannot guess: navigation rows (and
+/// rarely used cosmetic ones) carry no sites at all, staying documented
+/// here in the help window instead.
 const DASHBOARD_NAVIGATION: [HelpBinding; 10] = [
-    sited(
-        "tab / shift+tab",
-        "move focus between panes",
-        &[site("tab", "focus", 0, ANY_FOCUS, &[], When::Always)],
-    ),
+    binding("tab / shift+tab", "move focus between panes"),
     // Help-only: the footer's width budget is already tight at the
     // minimum terminal size, and this binding needs no footer chip to be
     // discoverable --- pressing Ctrl (or `ctrl+k`) reveals its own letters
     // directly on the panes it jumps to.
     binding("ctrl+k", "reveal pane letters; press one to jump"),
-    sited(
-        "↑ ↓ / k j",
-        "navigate inside the focused pane",
-        &[
-            site(
-                "↑/↓",
-                "select",
-                10,
-                &[Focus::Project, Focus::Workspace, Focus::Build],
-                &[],
-                When::Always,
-            ),
-            site(
-                "↑/↓",
-                "select",
-                10,
-                &[Focus::FilesDevice],
-                &[Capability::Flash, Capability::EraseFlash],
-                When::ActionsTab,
-            ),
-            site("↑/↓", "scroll", 63, &[Focus::Logs], &[], When::LogTab),
-        ],
-    ),
+    binding("↑ ↓ / k j", "navigate inside the focused pane"),
     binding("page up/down", "scroll the log by one screen"),
     binding("home / end", "jump to start / end"),
-    sited(
-        "→",
-        "descend into the selected directory",
-        // Both file panes: the device pane's Files tab keeps its arrow for
-        // directories --- switching its tabs moved to the ctrl chord
-        // (below), so the grammar matches the local pane again.
-        &[site("→", "descend", 11, FILES, &[], When::FilesTab)],
-    ),
-    sited(
-        "backspace / ←",
-        "go to the parent directory",
-        // `←` ascends on every files pane: the device side's Files tab got
-        // its arrow back with the tab chord (below).
-        &[site("←/bksp", "up", 12, FILES, &[], When::FilesTab)],
-    ),
+    binding("→", "descend into the selected directory"),
+    binding("backspace / ←", "go to the parent directory"),
     sited(
         "ctrl+← / ctrl+→",
         "switch the device pane's tabs from any pane",
@@ -380,21 +345,19 @@ const DASHBOARD_COMMANDS: [HelpBinding; 22] = [
             site("r", "re-detect", 10, &[Focus::Logs], &[], When::Always),
         ],
     ),
-    action(
-        "t",
-        "pick a color theme",
-        KeyCode::Char('t'),
-        &[site("t", "theme", 51, ANY_FOCUS, &[], When::Always)],
-    ),
+    // Help-only: a theme is picked once and remembered, so the chip had
+    // no context left to earn (same call as `ctrl+i` below).
+    action("t", "pick a color theme", KeyCode::Char('t'), &[]),
     // The chord only exists where the Kitty keyboard protocol answered:
     // a legacy terminal sends Ctrl+I as plain Tab (byte 0x09), which keeps
     // its focus-tour meaning there --- a caveat the one-line budget cannot
-    // carry, so it lives here and in `App::cycle_icon_set`'s doc.
+    // carry, so it lives here and in `App::cycle_icon_set`'s doc. Help-only
+    // beside `t`: icons are configured once.
     ctrl(
         "ctrl+i",
         "cycle icons (unicode/nerd/none)",
         KeyCode::Char('i'),
-        &[site("ctrl+i", "icons", 53, ANY_FOCUS, &[], When::Always)],
+        &[],
     ),
     action(
         "x",
@@ -409,22 +372,12 @@ const DASHBOARD_COMMANDS: [HelpBinding; 22] = [
             When::Always,
         )],
     ),
+    // Help-only: `Enter` activating the highlighted row is universal.
     action(
         "enter (files)",
         "browser: entry menu; workspace: open or answer",
         KeyCode::Enter,
-        &[
-            site("enter", "menu", 10, FILES, &[], When::FilesTab),
-            site(
-                "enter",
-                "open / edit",
-                11,
-                &[Focus::Workspace],
-                &[],
-                When::Always,
-            ),
-            site("enter", "answer", 11, &[Focus::Project], &[], When::Always),
-        ],
+        &[],
     ),
     action(
         "v (workspace files)",
@@ -493,34 +446,20 @@ const DASHBOARD_COMMANDS: [HelpBinding; 22] = [
         KeyCode::Char('h'),
         &[site("h", "hidden", 17, FILES, &[], When::FilesTab)],
     ),
+    // Help-only, like the other `Enter` rows.
     action(
         "enter (build pane)",
         "run the selected action (build or flash pane)",
         KeyCode::Enter,
-        &[
-            site(
-                "enter",
-                "run / stop",
-                11,
-                &[Focus::Build],
-                &[],
-                When::Always,
-            ),
-            site(
-                "enter",
-                "run / stop",
-                11,
-                &[Focus::FilesDevice],
-                &[Capability::Flash, Capability::EraseFlash],
-                When::ActionsTab,
-            ),
-        ],
+        &[],
     ),
+    // Help-only: the hotplug poll rescans on its own every second, so
+    // the manual scan is a recovery path, not something to advertise.
     action(
         "d",
         "scan for devices (mpremote or USB serial)",
         KeyCode::Char('d'),
-        &[site("d", "scan devices", 49, ANY_FOCUS, &[], When::Always)],
+        &[],
     ),
     action(
         "i",
@@ -610,198 +549,44 @@ const DASHBOARD_COMMANDS: [HelpBinding; 22] = [
         "q / ctrl+c",
         "quit; interrupts a running script",
         KeyCode::Char('q'),
-        &[
-            site("q", "quit", 72, ANY_FOCUS, &[], When::Always),
-            site(
-                "ctrl+c",
-                "interrupt",
-                61,
-                &[Focus::Logs],
-                &[],
-                When::RunActive,
-            ),
-        ],
+        // `q` itself is help-only (universal way out); the interrupt is
+        // the non-obvious half: it depends on a run being active, and it
+        // replaces quitting rather than adding to it.
+        &[site(
+            "ctrl+c",
+            "interrupt",
+            61,
+            &[Focus::Logs],
+            &[],
+            When::RunActive,
+        )],
     ),
 ];
 
 const FLASH_NAVIGATION: [HelpBinding; 3] = [
-    sited(
-        "↑ ↓ / k j",
-        "move the menu cursor",
-        &[
-            site(
-                "↑/↓",
-                "select",
-                10,
-                ANY_FOCUS,
-                &[],
-                When::Screen(Some(FlashScreen::Menu)),
-            ),
-            site(
-                "↑/↓",
-                "select",
-                10,
-                ANY_FOCUS,
-                &[],
-                When::Screen(Some(FlashScreen::OnlineBoards)),
-            ),
-            site(
-                "↑/↓",
-                "select",
-                10,
-                ANY_FOCUS,
-                &[],
-                When::Screen(Some(FlashScreen::OnlineFirmware)),
-            ),
-            site("↑/↓", "select", 10, ANY_FOCUS, &[], When::Screen(None)),
-        ],
-    ),
-    sited(
-        "tab",
-        "move between option fields",
-        &[site(
-            "tab",
-            "field",
-            10,
-            ANY_FOCUS,
-            &[],
-            When::Screen(Some(FlashScreen::Options)),
-        )],
-    ),
-    sited(
-        "q / esc",
-        "back one screen, then the dashboard",
-        &[
-            site(
-                "q",
-                "back",
-                14,
-                ANY_FOCUS,
-                &[],
-                When::Screen(Some(FlashScreen::Menu)),
-            ),
-            site(
-                "q",
-                "menu",
-                14,
-                ANY_FOCUS,
-                &[],
-                When::Screen(Some(FlashScreen::Options)),
-            ),
-            site(
-                "q",
-                "menu",
-                12,
-                ANY_FOCUS,
-                &[],
-                When::Screen(Some(FlashScreen::OnlineBoards)),
-            ),
-            site(
-                "q",
-                "menu",
-                12,
-                ANY_FOCUS,
-                &[],
-                When::Screen(Some(FlashScreen::OnlineFirmware)),
-            ),
-            site(
-                "q",
-                "menu",
-                12,
-                ANY_FOCUS,
-                &[],
-                When::Screen(Some(FlashScreen::CustomUrl)),
-            ),
-            site("q", "back", 12, ANY_FOCUS, &[], When::Screen(None)),
-        ],
-    ),
+    // Help-only: the menu cursor follows the arrows everywhere.
+    binding("↑ ↓ / k j", "move the menu cursor"),
+    // Help-only: Tab between fields is a form convention.
+    binding("tab", "move between option fields"),
+    // Help-only: `q`/`Esc` leaving a screen is universal.
+    binding("q / esc", "back one screen, then the dashboard"),
 ];
 
-const FLASH_COMMANDS: [HelpBinding; 6] = [
-    action(
-        "enter",
-        "run the selected action",
-        KeyCode::Enter,
-        &[
-            site(
-                "enter",
-                "run",
-                11,
-                ANY_FOCUS,
-                &[],
-                When::Screen(Some(FlashScreen::Menu)),
-            ),
-            site(
-                "enter",
-                "run",
-                13,
-                ANY_FOCUS,
-                &[],
-                When::Screen(Some(FlashScreen::Options)),
-            ),
-            site(
-                "enter",
-                "choose",
-                11,
-                ANY_FOCUS,
-                &[],
-                When::Screen(Some(FlashScreen::OnlineBoards)),
-            ),
-            site(
-                "enter",
-                "choose",
-                11,
-                ANY_FOCUS,
-                &[],
-                When::Screen(Some(FlashScreen::OnlineFirmware)),
-            ),
-            site(
-                "enter",
-                "download",
-                11,
-                ANY_FOCUS,
-                &[],
-                When::Screen(Some(FlashScreen::CustomUrl)),
-            ),
-            site("enter", "run", 11, ANY_FOCUS, &[], When::Screen(None)),
-        ],
-    ),
-    action(
-        "← →",
-        "cycle an option's value",
-        KeyCode::Right,
-        &[site(
-            "←/→",
-            "cycle",
-            11,
-            ANY_FOCUS,
-            &[],
-            When::Screen(Some(FlashScreen::Options)),
-        )],
-    ),
-    sited(
-        "type / backspace",
-        "edit offset, flags, or a URL",
-        &[
-            site(
-                "type",
-                "edit",
-                12,
-                ANY_FOCUS,
-                &[],
-                When::Screen(Some(FlashScreen::Options)),
-            ),
-            site(
-                "type",
-                "edit",
-                10,
-                ANY_FOCUS,
-                &[],
-                When::Screen(Some(FlashScreen::CustomUrl)),
-            ),
-        ],
-    ),
+const FLASH_COMMANDS: [HelpBinding; 7] = [
+    // Help-only: activating the highlighted row is universal.
+    action("enter", "run the selected action", KeyCode::Enter, &[]),
+    // Help-only: cycling a field's value is what arrows do in a form.
+    action("← →", "cycle an option's value", KeyCode::Right, &[]),
+    // Help-only: a field with a cursor in it invites typing.
+    binding("type / backspace", "edit offset, flags, or a URL"),
     action("ctrl+c", "quit", KeyCode::Char('q'), &[]),
+    // The tail every flash screen keeps: with the navigation rows gone,
+    // this is the one pointer to the rest of the keys.
+    sited(
+        "?",
+        "toggle this help",
+        &[site("?", "help", 71, ANY_FOCUS, &[], When::Always)],
+    ),
     action(
         "s",
         "search boards and firmware online",
@@ -1017,35 +802,29 @@ mod tests {
 
     #[test]
     fn the_footer_lists_every_live_site_in_rank_order() {
-        // The files columns: the browser's own grammar first, then the
-        // dashboard-wide commands, then the tail. MicroPython's device pane
-        // carries a strip, so the chord is advertised from the local pane
-        // too (it drives that strip from wherever the cursor sits).
+        // The files columns: only the keys a user cannot guess --- the
+        // pane's own grammar plus the dashboard-wide commands, then the
+        // tail. Navigation (tab, arrows, enter) stays in the help window.
+        // MicroPython's device pane carries a strip, so the chord is
+        // advertised from the local pane too (it drives that strip from
+        // wherever the cursor sits).
         let mut files_ctx = ctx(micropython(), Focus::FilesLocal);
         files_ctx.device_strip = true;
         let files = footer(View::Dashboard, &files_ctx);
         assert_eq!(
             files,
             vec![
-                ("tab", "focus"),
-                ("enter", "menu"),
-                ("→", "descend"),
-                ("←/bksp", "up"),
                 ("r", "reload"),
                 ("a", "new"),
                 ("c", "compare"),
                 ("shift+s", "sync"),
                 ("h", "hidden"),
-                ("d", "scan devices"),
-                ("t", "theme"),
                 ("x", "flash"),
-                ("ctrl+i", "icons"),
                 ("m", "monitor/REPL"),
                 ("shift+r", "restart device"),
                 ("ctrl+←/→", "actions"),
                 ("shift+p", "projects"),
                 ("?", "help"),
-                ("q", "quit"),
             ]
         );
 
@@ -1061,36 +840,21 @@ mod tests {
         assert_eq!(
             footer_keys(View::Dashboard, &logs),
             vec![
-                "tab", "r", "d", "t", "x", "ctrl+i", "m", "shift+r", "←/→", "ctrl+c", "s", "↑/↓",
-                "shift+p", "?", "q",
+                "r", "x", "m", "shift+r", "←/→", "ctrl+c", "s", "shift+p", "?",
             ]
         );
 
-        // The scroll hint belongs to the Log tab only.
+        // The tab strip's arrows survive on the Monitor tab too.
         let mut monitor = logs;
         monitor.log_tab = LogTab::Monitor;
         let keys = footer_keys(View::Dashboard, &monitor);
-        assert!(!keys.contains(&"↑/↓"), "{keys:?}");
+        assert!(keys.contains(&"←/→"), "{keys:?}");
 
         // Zephyr's build pane: no device strip, so the chord falls to
         // row 3's strip and is advertised as such.
         assert_eq!(
             footer_keys(View::Dashboard, &ctx(zephyr(), Focus::Build)),
-            vec![
-                "tab",
-                "↑/↓",
-                "enter",
-                "d",
-                "t",
-                "x",
-                "ctrl+i",
-                "m",
-                "s",
-                "ctrl+←/→",
-                "shift+p",
-                "?",
-                "q",
-            ]
+            vec!["x", "m", "s", "ctrl+←/→", "shift+p", "?"]
         );
 
         // The project-files pane (all of it, now that the checklist moved
@@ -1098,96 +862,47 @@ mod tests {
         assert_eq!(
             footer_keys(View::Dashboard, &ctx(zephyr(), Focus::Workspace)),
             vec![
-                "tab",
-                "↑/↓",
-                "enter",
                 "v",
                 "del",
                 "a",
                 "r",
-                "d",
-                "t",
                 "x",
-                "ctrl+i",
                 "m",
                 "s",
                 "ctrl+←/→",
                 "shift+p",
-                "?",
-                "q",
+                "?"
             ]
         );
 
         // The Project pane: the questions' own grammar.
         assert_eq!(
             footer_keys(View::Dashboard, &ctx(zephyr(), Focus::Project)),
-            vec![
-                "tab",
-                "↑/↓",
-                "enter",
-                "d",
-                "t",
-                "x",
-                "ctrl+i",
-                "m",
-                "s",
-                "ctrl+←/→",
-                "shift+p",
-                "?",
-                "q",
-            ]
+            vec!["x", "m", "s", "ctrl+←/→", "shift+p", "?"]
         );
     }
 
     #[test]
     fn the_flash_footer_follows_the_screen() {
+        // Navigation and the way out stay in the help window; what remains
+        // is the one action each screen offers that cannot be guessed,
+        // plus the help tail that points at the rest.
         for (screen, expected) in [
             (
                 Some(FlashScreen::Menu),
-                vec![
-                    ("↑/↓", "select"),
-                    ("enter", "run"),
-                    ("s", "search online"),
-                    ("u", "paste URL"),
-                    ("q", "back"),
-                ],
+                vec![("s", "search online"), ("u", "paste URL"), ("?", "help")],
             ),
-            (
-                Some(FlashScreen::Options),
-                vec![
-                    ("tab", "field"),
-                    ("←/→", "cycle"),
-                    ("type", "edit"),
-                    ("enter", "run"),
-                    ("q", "menu"),
-                ],
-            ),
+            (Some(FlashScreen::Options), vec![("?", "help")]),
             (
                 Some(FlashScreen::OnlineBoards),
-                vec![
-                    ("↑/↓", "select"),
-                    ("enter", "choose"),
-                    ("q", "menu"),
-                    ("u", "paste URL"),
-                ],
+                vec![("u", "paste URL"), ("?", "help")],
             ),
             (
                 Some(FlashScreen::OnlineFirmware),
-                vec![
-                    ("↑/↓", "select"),
-                    ("enter", "choose"),
-                    ("q", "menu"),
-                    ("u", "paste URL"),
-                ],
+                vec![("u", "paste URL"), ("?", "help")],
             ),
-            (
-                Some(FlashScreen::CustomUrl),
-                vec![("type", "edit"), ("enter", "download"), ("q", "menu")],
-            ),
-            (
-                None,
-                vec![("↑/↓", "select"), ("enter", "run"), ("q", "back")],
-            ),
+            (Some(FlashScreen::CustomUrl), vec![("?", "help")]),
+            (None, vec![("?", "help")]),
         ] {
             let mut context = ctx(zephyr(), Focus::Logs);
             context.flash_screen = screen;

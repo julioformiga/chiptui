@@ -1353,10 +1353,7 @@ fn draw_dir_picker(
     let footer = match (error, read_error.as_deref()) {
         (Some(error), _) => Line::from(error.to_string().fg(palette.error)),
         (None, Some(read)) => Line::from(read.fg(palette.warning)),
-        (None, None) => Line::from(
-            "enter: open / accept · ←: up · esc: cancel — the choice is saved to the config"
-                .fg(palette.muted),
-        ),
+        (None, None) => Line::from("the choice is saved to the config".fg(palette.muted)),
     };
     frame.render_widget(
         Paragraph::new(footer).wrap(ratatui::widgets::Wrap { trim: false }),
@@ -1470,14 +1467,8 @@ fn draw_project_picker(
             "no subdirectories here — put a project in the folder, or choose another"
                 .fg(palette.warning),
         )
-    } else if mpy {
-        Line::from(
-            "enter: open this one · esc: cancel — the choice is session-only".fg(palette.muted),
-        )
     } else {
-        Line::from(
-            "enter: build this one · esc: cancel — the choice is session-only".fg(palette.muted),
-        )
+        Line::from("the choice is session-only".fg(palette.muted))
     };
     frame.render_widget(
         Paragraph::new(footer).wrap(ratatui::widgets::Wrap { trim: false }),

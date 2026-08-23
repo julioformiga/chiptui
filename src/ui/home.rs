@@ -135,7 +135,7 @@ pub fn draw(frame: &mut Frame, screen: &HomeScreen, theme: super::Palette) {
 
     frame.render_widget(
         Paragraph::new(Line::from(
-            " ↑/↓ move · enter open · del forget · esc clear / quit ".fg(theme.muted),
+            " del forget · esc clear / quit ".fg(theme.muted),
         )),
         footer,
     );
@@ -308,7 +308,7 @@ fn draw_create_dir(
     let footer = match (error, read_error.as_deref()) {
         (Some(error), _) => Line::from(error.to_string().fg(theme.error)),
         (None, Some(read)) => Line::from(read.fg(theme.warning)),
-        (None, None) => Line::from("enter: open / accept · ←: up · esc: cancel".fg(theme.muted)),
+        (None, None) => Line::from("".fg(theme.muted)),
     };
     frame.render_widget(
         Paragraph::new(footer).wrap(ratatui::widgets::Wrap { trim: false }),

@@ -2754,7 +2754,7 @@ impl App {
         // actually works (`mpremote repl`'s own, via `key_to_bytes`'s
         // generic Ctrl+letter handling).
         if self.is_monitor_active() {
-            return vec![("ctrl+]", "exit REPL/monitor"), ("type", "send to device")];
+            return vec![("ctrl+]", "exit REPL/monitor")];
         }
         // The same truth for the Terminal tab's shell: while it owns the
         // keyboard only two escapes exist --- the shell's own exit (`ctrl+d`
@@ -2764,99 +2764,58 @@ impl App {
                 ("ctrl+d", "exit shell"),
                 ("ctrl+]", "detach"),
                 ("shift+pgup", "scroll back"),
-                ("type", "send to shell"),
             ];
         }
         // The shortcuts overlay owns the footer while it is up: its own
         // two-key grammar, not whatever the underlying pane would show.
         if self.shortcuts_overlay_active {
-            return vec![("letter", "jump to pane"), ("esc", "close")];
+            return vec![("letter", "jump to pane")];
         }
         match self.overlay {
             Some(Overlay::Help { filtering, .. }) => {
+                // The footer carries only the two keys a reader cannot
+                // guess: `/` starts a filter, and `Enter` *activates* the
+                // row --- it replays the key after the window closes,
+                // which makes the help a launcher, not just a list.
                 if filtering {
-                    vec![
-                        ("type", "filter"),
-                        ("↑/↓", "select"),
-                        ("enter", "activate"),
-                        ("esc", "done"),
-                    ]
+                    vec![("enter", "activate")]
                 } else {
-                    vec![
-                        ("↑/↓", "select"),
-                        ("/", "filter"),
-                        ("enter", "activate"),
-                        ("esc", "close"),
-                    ]
+                    vec![("/", "filter"), ("enter", "activate")]
                 }
             }
             Some(Overlay::ZephyrInstall) => {
                 if self.installer.as_ref().is_some_and(Installer::is_busy) {
-                    vec![("enter", "stop"), ("j/k", "scroll output")]
+                    // The pane's own Stop button carries the way out; the
+                    // footer keeps nothing the user cannot guess.
+                    vec![]
                 } else {
-                    vec![
-                        ("enter", "install"),
-                        ("r", "re-check"),
-                        ("s", "skip SDK"),
-                        ("t", "toolchains"),
-                        ("esc", "close"),
-                    ]
+                    vec![("r", "re-check"), ("s", "skip SDK"), ("t", "toolchains")]
                 }
             }
             Some(Overlay::ConfirmInstallHere { .. }) => {
-                vec![("←/→", "choose"), ("enter", "confirm"), ("esc", "cancel")]
+                vec![("y/n", "quick reply")]
             }
-            Some(Overlay::SdkToolchains { .. }) => {
-                vec![("↑/↓", "select"), ("space", "toggle"), ("enter", "done")]
+            Some(Overlay::SdkToolchains { .. }) => vec![("space", "toggle")],
+            Some(Overlay::FileViewer) => vec![("e", "edit with $EDITOR")],
+            // The trailing-/ convention is the one thing a user cannot
+            // guess about the name being typed.
+            Some(Overlay::CreateEntry { .. }) => {
+                vec![("name/", "for a directory")]
             }
-            Some(Overlay::FileViewer) => vec![
-                ("↑/↓", "scroll"),
-                ("pgup/pgdn", "page"),
-                ("e", "edit with $EDITOR"),
-                ("q/esc", "close"),
-            ],
-            Some(Overlay::CreateEntry { .. }) => vec![
-                ("type", "name"),
-                ("enter", "create ('name/' for a directory)"),
-                ("esc", "cancel"),
-            ],
-            Some(Overlay::RenameEntry { .. }) => {
-                vec![("type", "new name"), ("enter", "rename"), ("esc", "cancel")]
+            Some(Overlay::RenameEntry { .. }) => vec![],
+            // The docs pane on the right is the only thing pgup/pgdn
+            // scrolls --- which half of the modal answers those keys is
+            // not guessable.
+            Some(Overlay::BoardPicker { .. }) => {
+                vec![("pgup/pgdn", "scroll the docs pane")]
             }
-            Some(Overlay::BoardPicker { .. }) => vec![
-                ("type", "filter"),
-                ("↑/↓", "select"),
-                ("pgup/pgdn", "scroll the docs pane"),
-                ("enter", "pick (saved for this project)"),
-                ("esc", "cancel"),
-            ],
-            Some(Overlay::ShieldPicker { .. }) => vec![
-                ("type", "filter"),
-                ("↑/↓", "select"),
-                ("pgup/pgdn", "scroll the docs pane"),
-                ("enter", "pick / (none) clears"),
-                ("esc", "cancel"),
-            ],
-            Some(Overlay::DirPicker { .. }) => vec![
-                ("↑/↓", "select"),
-                ("enter", "open / accept"),
-                ("←", "up"),
-                ("esc", "cancel"),
-            ],
-            Some(Overlay::BuildDirPicker { .. }) => vec![
-                ("type", "name"),
-                ("↑/↓", "select"),
-                ("enter", "choose/create"),
-                ("esc", "cancel"),
-            ],
-            Some(Overlay::ProjectPicker { .. }) => vec![
-                ("↑/↓", "select"),
-                ("enter", "build this one (this session)"),
-                ("esc", "cancel"),
-            ],
-            Some(Overlay::PackageInstall { .. }) => {
-                vec![("type", "package"), ("enter", "install"), ("esc", "cancel")]
+            Some(Overlay::ShieldPicker { .. }) => {
+                vec![("pgup/pgdn", "scroll the docs pane")]
             }
+            Some(Overlay::DirPicker { .. }) => vec![],
+            Some(Overlay::BuildDirPicker { .. }) => vec![],
+            Some(Overlay::ProjectPicker { .. }) => vec![],
+            Some(Overlay::PackageInstall { .. }) => vec![],
             Some(
                 Overlay::DevicePicker { .. }
                 | Overlay::ThemePicker { .. }
@@ -2865,9 +2824,7 @@ impl App {
                 | Overlay::FileActions { .. }
                 | Overlay::RestoreDeviceScript { .. }
                 | Overlay::ZephyrActions { .. },
-            ) => {
-                vec![("↑/↓", "select"), ("enter", "apply"), ("esc", "cancel")]
-            }
+            ) => vec![],
             Some(
                 Overlay::Confirm { .. }
                 | Overlay::ConfirmBuild { .. }
@@ -2880,12 +2837,9 @@ impl App {
                 | Overlay::ConfirmSwitchProject { .. }
                 | Overlay::SyncPreview { .. },
             ) => {
-                vec![
-                    ("←/→", "choose"),
-                    ("enter", "confirm"),
-                    ("y/n", "quick reply"),
-                    ("esc", "cancel"),
-                ]
+                // `y`/`n` answer straight from muscle memory --- the only
+                // non-obvious key a confirm offers.
+                vec![("y/n", "quick reply")]
             }
             None => help::footer(
                 self.view,
@@ -4033,13 +3987,12 @@ mod tests {
     #[test]
     fn shortcuts_are_contextual() {
         let mut app = app();
-        assert!(app.shortcuts().iter().any(|(key, _)| *key == "q"));
+        assert!(app.shortcuts().iter().any(|(key, _)| *key == "?"));
 
         app.overlay = Some(Overlay::ProjectSetup { selected: 0 });
         let keys: Vec<&str> = app.shortcuts().iter().map(|(key, _)| *key).collect();
-        assert!(keys.contains(&"enter"));
         assert!(
-            !keys.contains(&"tab"),
+            !keys.contains(&"r"),
             "pane keys are inert while a modal is open"
         );
     }

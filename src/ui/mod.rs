@@ -415,13 +415,14 @@ fn device_status(app: &App, palette: Palette) -> Vec<Span<'static>> {
 
 /// The contextual shortcut line.
 ///
-/// More hints than columns is normal on a narrow terminal, and the two that
-/// must survive are the last ones (`?` help, `q` quit --- the way out and
-/// the way to the rest). So hints are dropped whole, from the *middle*,
-/// rather than letting the line truncate mid-word: a cut-off " q  qui" is
-/// worse than one fewer hint.
+/// It shows only what a user cannot guess, so it is short --- but more
+/// hints than columns is still possible on a narrow terminal, and the one
+/// that must survive is the last (`?` help --- the way to the rest). So
+/// hints are dropped whole, from the *middle*, rather than letting the
+/// line truncate mid-word: a cut-off " ?  he" is worse than one fewer
+/// hint.
 fn draw_footer(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
-    const KEEP_LAST: usize = 2;
+    const KEEP_LAST: usize = 1;
 
     let mut hints = app.shortcuts();
     let width = |hints: &[(&str, &str)]| -> usize {
