@@ -111,6 +111,11 @@ impl FlashAction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FlashPaneAction {
     Run(FlashAction),
+    /// Opens the package manager (`Overlay::Packages`). The board's `/lib`
+    /// is device state like any other, so managing it belongs beside the
+    /// esptool actions --- and this is the only door onto it that does not
+    /// go through the Project pane.
+    Packages,
     /// Searches micropython.org/download/ for the known chip
     /// (`FlashPanel::search_online`), as a button instead of the menu's
     /// old `s` key. A direct download URL has no button of its own: the
@@ -470,13 +475,24 @@ impl FlashPanel {
     /// is already asked in the background of every device selection
     /// ([`Self::query_device_info`]) and shown in the Device info pane, so
     /// a button for it would only re-run work the pane has done.
+    /// [`FlashAction::VerifyFlash`] left for a related reason --- it is a
+    /// check, not a step of the flashing workflow, and it needs a firmware
+    /// file chosen first --- so it answers to `v` on this tab instead. It
+    /// stays in [`FlashAction::ALL`], which is what the dialog form of the
+    /// menu still draws.
+    ///
+    /// The count is **six idle rows**, the same as `FlashAction::ALL`, and
+    /// `ui::layout::row2_content_height` leans on that equality for its
+    /// no-panel fallback. `Packages` taking the row `VerifyFlash` gave up
+    /// is what keeps it true --- and with it row 2's height and the
+    /// declared 80x32 minimum.
     pub fn pane_actions(&self) -> Vec<FlashPaneAction> {
-        let mut rows: Vec<FlashPaneAction> = vec![FlashPaneAction::SearchOnline];
+        let mut rows: Vec<FlashPaneAction> =
+            vec![FlashPaneAction::SearchOnline, FlashPaneAction::Packages];
         rows.extend(
             [
                 FlashAction::FlashInfo,
                 FlashAction::Reset,
-                FlashAction::VerifyFlash,
                 FlashAction::EraseFlash,
                 FlashAction::WriteFlash,
             ]

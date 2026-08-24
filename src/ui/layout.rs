@@ -256,6 +256,62 @@ pub(crate) fn docs_picker(area: Rect) -> DocsPickerAreas {
     }
 }
 
+/// Where the package manager's panes sit inside `area`.
+///
+/// The docs pickers' modal geometry ([`docs_picker`]) without the preview
+/// split: a package has no picture to fetch, so the whole left column is
+/// the list. The left column is wider than the pickers' 32 --- a row
+/// carries a mark, a name and a version --- and every column a wider
+/// terminal adds still goes to the details pane.
+pub(crate) struct PackagesAreas {
+    /// The modal itself (border included) --- the `Clear` rect.
+    pub(crate) popup: Rect,
+    /// The filter line, which doubles as the manual-spec field.
+    pub(crate) filter: Rect,
+    /// The wrapped hint line(s) between the filter and the body.
+    pub(crate) hint: Rect,
+    /// The row list (border included).
+    pub(crate) list: Rect,
+    /// The details column (border included).
+    pub(crate) details: Rect,
+}
+
+/// Columns the row list keeps whatever the terminal's width: a mark, a
+/// name and a version fit; the description lives in the details pane.
+pub(crate) const PACKAGES_LIST_WIDTH: u16 = 44;
+
+pub(crate) fn packages(area: Rect) -> PackagesAreas {
+    let popup = super::centered(
+        area,
+        area.width.saturating_sub(2),
+        area.height.saturating_sub(4),
+    );
+    let inner = Rect {
+        x: popup.x + 1,
+        y: popup.y + 1,
+        width: popup.width.saturating_sub(2),
+        height: popup.height.saturating_sub(2),
+    };
+    let [filter, hint, body] = Layout::vertical([
+        Constraint::Length(1), // the filter/spec line
+        Constraint::Length(2), // the wrapped hint
+        Constraint::Min(1),
+    ])
+    .areas(inner);
+    let [list, details] = Layout::horizontal([
+        Constraint::Length(PACKAGES_LIST_WIDTH.min(body.width)),
+        Constraint::Min(1),
+    ])
+    .areas(body);
+    PackagesAreas {
+        popup,
+        filter,
+        hint,
+        list,
+        details,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -272,6 +328,28 @@ mod tests {
     /// and two rows above and below, and the west list's column stays
     /// fixed at 32 --- every extra column a wider terminal adds belongs
     /// to the details pane.
+    #[test]
+    fn packages_modal_keeps_its_list_column_and_gives_width_to_details() {
+        let areas = packages(area());
+        assert_eq!(
+            areas.popup,
+            Rect::new(1, 2, 98, 36),
+            "centered, the docs picker's own margins"
+        );
+        assert_eq!(areas.list.width, PACKAGES_LIST_WIDTH);
+        let narrow_details = areas.details.width;
+
+        let wide = packages(Rect::new(0, 0, 140, 40));
+        assert_eq!(
+            wide.list.width, PACKAGES_LIST_WIDTH,
+            "the list keeps its column"
+        );
+        assert!(
+            wide.details.width > narrow_details,
+            "every added column goes to the details pane"
+        );
+    }
+
     #[test]
     fn docs_picker_modal_margins_and_fixed_list_column() {
         let areas = docs_picker(area());

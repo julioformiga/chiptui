@@ -542,6 +542,29 @@ impl App {
                     self.set_overlay_selected(index);
                 }
             }
+            Overlay::Packages => {
+                // Picker grammar: a click selects, never activates ---
+                // installing and removing stay behind `Enter`/`Del`, whose
+                // gates the keyboard owns. A click on either pane also
+                // hands it the keyboard, the docs pickers' own rule.
+                let areas = crate::ui::layout::packages(frame);
+                if areas.details.contains(point.into()) {
+                    self.packages.focus = super::DocsFocus::Details;
+                    return;
+                }
+                if !areas.list.contains(point.into()) {
+                    return;
+                }
+                self.packages.focus = super::DocsFocus::List;
+                let len = self.package_rows().len();
+                // `list_row` takes the *bordered* rect and subtracts the
+                // two rules itself.
+                if let Some(index) = list_row(point, areas.list, self.packages.selected, len, 0, 0)
+                {
+                    self.packages.selected = index;
+                    self.packages.scroll = 0;
+                }
+            }
             Overlay::ProjectSetup { selected } => {
                 let len = BackendKind::ALL.len();
                 if let Some(index) = list_row(

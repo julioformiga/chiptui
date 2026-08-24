@@ -25,6 +25,16 @@ case "$args" in
         exit 1
         ;;
 
+    "fs --no-verbose sha256sum :/boot.py")
+        printf '2222222222222222222222222222222222222222222222222222222222222222\n'
+        ;;
+
+    "fs --no-verbose sha256sum :"*)
+        # Not on this board --- named as such, not as a missing device.
+        echo 'mpremote: sha256sum: No such file or directory.' >&2
+        exit 1
+        ;;
+
     df)
         printf '%s\n' 'filesystem     size     used    avail use% mounted on'
         printf '%s %9d %8d %8d %4d %s\n' 'vfs       ' 524288 65536 458752 12 '/'

@@ -368,7 +368,8 @@ The backend should expose:
 -   REPL/serial monitor;
 -   soft reset;
 -   reset;
--   package installation via `mip`;
+-   package declaration, installation and removal via `mip` (removal is
+    file deletion: `mip` has no `uninstall` sub-command);
 -   mount/unmount;
 -   filesystem statistics;
 -   firmware/flash operations through `esptool`.
@@ -477,8 +478,11 @@ Potential actions:
 -   flash information;
 -   erase flash;
 -   write/flash firmware;
--   verify;
+-   verify (a check rather than a workflow step, and it needs a firmware
+    file chosen first, so it answers to `v` on the Actions tab instead of
+    spending one of the button stack's six rows);
 -   reset;
+-   manage packages (opens the package manager);
 -   search firmware online;
 -   paste a firmware URL.
 
@@ -921,8 +925,15 @@ one-line contextual shortcut footer:
   riding the same line (`←`/`→` switch which half `Enter` acts on); MicroPython (under
   `ProjectSelect`) asks `Projects base` (`[micropython] projects`) and `Project path` (a
   session-only pick that re-roots the file browser's local pane), then reports
-  `Dependencies` (`requirements.txt`/`manifest.py` presence) and `Script` (whether the
-  board is believed to be running user code right now). The board's firmware version rides
+  `Dependencies` --- how much of `requirements.txt` the board's `/lib` already covers,
+  `Enter` opening the package manager over it --- and `Boot files`, the device's
+  `boot.py`/`main.py` against the project's own copies. That comparison reads the
+  project's **`src/`** when it has one (the directory the scaffold writes the entry
+  points into and the Files pane opens on), not the project root, and the two files'
+  contents are verified by a background `sha256sum` armed by the first root listing,
+  so the row reaches a real `=`/`≠` instead of resting on the `≈` a size match alone
+  produces. The script-running belief lives on the device pane's tab strip and in the
+  interrupt gates, not on a row. The board's firmware version rides
   the Device info pane's `Firmware` row instead, read from the same identification window
   that named the firmware: MicroPython and Zephyr compile their banners into the image
   (`Firmware: MicroPython v1.28.0`, `Firmware: Zephyr v4.0.0`), and a plain ESP-IDF app's
@@ -1192,6 +1203,8 @@ Potentially destructive operations:
 -   flash firmware;
 -   remote file deletion;
 -   recursive remote deletion;
+-   package removal (both halves at once: the line in `requirements.txt`
+    and whatever the package left under `/lib`);
 -   clean operations that remove build artifacts;
 -   workspace updates that rewrite shared checkouts (`west update`).
 

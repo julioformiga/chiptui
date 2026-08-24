@@ -146,11 +146,18 @@ pub fn run(port: Option<&str>, local_path: &Path) -> Command {
         .arg(local_path.to_string_lossy().into_owned())
 }
 
-/// `mpremote [connect PORT] mip install PACKAGE` --- installs a package
-/// (a name, `name@version`, or a `github:`/`gitlab:`/URL spec) into the
-/// device's `/lib`. Not under `fs`: `mip` is a top-level mpremote command.
-pub fn mip_install(port: Option<&str>, package: &str) -> Command {
-    connect(port).args(["mip", "install", package])
+/// `mpremote [connect PORT] mip install SPEC [SPEC ...]` --- installs
+/// packages (a name, `name@version`, or a `github:`/`gitlab:`/URL spec)
+/// into the device's `/lib`, downloading on the host and writing over the
+/// serial connection. Not under `fs`: `mip` is a top-level mpremote
+/// command. mpremote 1.28 has no `-r` flag --- a requirements file is
+/// parsed by the caller ([`crate::backend::micropython::deps`]) and its
+/// specifications passed as arguments, one command per file. Already
+/// installed files are skipped by mip itself.
+pub fn mip_install(port: Option<&str>, packages: &[String]) -> Command {
+    connect(port)
+        .args(["mip", "install"])
+        .args(packages.iter().cloned())
 }
 
 /// Common prefix for `fs` sub-commands.
@@ -370,13 +377,14 @@ mod tests {
     }
 
     #[test]
-    fn mip_install_takes_a_package_spec() {
-        let command = mip_install(None, "urequests");
+    fn mip_install_takes_package_specs() {
+        let command = mip_install(None, &["urequests".to_string()]);
         assert_eq!(command.to_string(), "mpremote mip install urequests");
-        let command = mip_install(Some("/dev/ttyACM0"), "github:org/repo");
+        let specs = ["github:org/repo".to_string(), "pkg@1.2.3".to_string()];
+        let command = mip_install(Some("/dev/ttyACM0"), &specs);
         assert_eq!(
             command.to_string(),
-            "mpremote connect /dev/ttyACM0 mip install github:org/repo"
+            "mpremote connect /dev/ttyACM0 mip install github:org/repo pkg@1.2.3"
         );
     }
 

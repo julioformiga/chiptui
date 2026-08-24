@@ -29,6 +29,29 @@ case "$args" in
         printf '%12d %s\n' 1024 'main.py'
         ;;
 
+    "fs --no-verbose ls :/lib")
+        # A board with main.py and nothing installed: no /lib exists yet.
+        # Real mpremote reports ENOENT for it (the main fake's `ls
+        # :/missing` documents the exact wording), never "no device found".
+        echo 'mpremote: ls: No such file or directory.' >&2
+        exit 1
+        ;;
+
+    "fs --no-verbose sha256sum :/main.py")
+        # The Project pane's boot-file report hashes what both sides hold at
+        # the same size. This board's main.py is not the project's.
+        printf '1111111111111111111111111111111111111111111111111111111111111111\n'
+        ;;
+
+    "fs --no-verbose sha256sum :"*)
+        # Anything else: this board does not have it. Real mpremote turns the
+        # remote OSError into a CommandError naming the sub-command (see the
+        # main fake's `ls :/missing`), never "no device found" --- a fake that
+        # answered otherwise would hide a wrong path behind a plausible error.
+        echo 'mpremote: sha256sum: No such file or directory.' >&2
+        exit 1
+        ;;
+
     df)
         printf '%s\n' 'filesystem     size     used    avail use% mounted on'
         printf '%s %9d %8d %8d %4d %s\n' 'vfs       ' 524288 262144 262144 50 '/'

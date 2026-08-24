@@ -116,6 +116,12 @@ fn choosing_micropython_creates_the_starting_layout() {
     assert!(dir.path.join("firmware").is_dir());
     assert!(dir.path.join("src/main.py").is_file());
     assert!(dir.path.join("src/boot.py").is_file());
+    let requirements = std::fs::read_to_string(dir.path.join("requirements.txt"))
+        .expect("the Dependencies row's file starts in the project");
+    assert!(
+        requirements.starts_with("# MicroPython package requirements"),
+        "the file documents its own grammar:\n{requirements}"
+    );
 }
 
 #[test]

@@ -107,10 +107,19 @@ enum Request {
     Devices,
     List(DevicePath),
     Hash {
-        /// Entry name, used to record the verdict.
+        /// The device directory the file lives in, snapshotted when the
+        /// request is *queued*. Resolving it at dispatch time against
+        /// `device_path` made a queued hash follow the user's navigation
+        /// and land on a different file than the one asked about.
+        dir: DevicePath,
+        /// Entry name, used to record the verdict under `dir`.
         name: String,
         /// The locally computed digest to compare against.
         local_digest: String,
+        /// Whether the verdict is worth a log line. The user's own `c`
+        /// announces; a background check does not --- its consumer is a
+        /// report row, the same silence [`Request::BackgroundList`] keeps.
+        announce: bool,
     },
     /// `cat`, for the viewer's "View" action on a device file. Nothing is
     /// written to disk --- [`Download`](Request::Download) is the only
@@ -170,12 +179,22 @@ enum Request {
     /// copying it, for [`FileAction::Run`](crate::app::FileAction::Run) on a
     /// local file. See [`Browser::request_run`].
     Run(PathBuf),
-    /// `mip install PACKAGE` --- for the package-install prompt (`i` on the
-    /// device pane). See [`Browser::request_mip_install`].
-    MipInstall(String),
+    /// `mip install SPEC [SPEC ...]` --- for the package-install prompt (`i`
+    /// on the device pane, one package) and the Project pane's Dependencies
+    /// row (every line of `requirements.txt`; mpremote 1.28 has no `-r`).
+    /// See [`Browser::request_mip_install`].
+    MipInstall(Vec<String>),
     /// Recursive `ls` for building a [`SyncPlan`] --- like [`Request::List`]
     /// but feeds into [`Browser::sync`] instead of the pane cache.
     SyncList(DevicePath),
+    /// A listing nobody is looking at: `/lib` for the Dependencies row's
+    /// coverage count, and a package directory under it for a dotted name
+    /// (`umqtt.simple` lands in `/lib/umqtt/`). Like [`Request::List`] but
+    /// silent on success --- a report row is the consumer, not a pane ---
+    /// and tolerant of the directory not existing: a board with nothing
+    /// installed has no `/lib`, which is the answer "0/N installed", not an
+    /// error.
+    BackgroundList(DevicePath),
 }
 
 /// A device `cat` finished --- the viewer's content, or the reason it could
@@ -254,7 +273,11 @@ pub struct Browser {
 
     /// Listings by device path: each `ls` costs seconds over serial.
     cache: BTreeMap<DevicePath, Vec<parse::RemoteEntry>>,
-    verdicts: Verdicts,
+    /// sha256 verdicts, **scoped to the directory they were computed in**.
+    /// Keyed by bare name alone they aliased across directories: verifying
+    /// `/lib/main.py` and walking up to `/` handed the root's `main.py` a
+    /// verdict that was never about it, and navigation does not clear them.
+    verdicts: BTreeMap<DevicePath, Verdicts>,
 
     queue: VecDeque<Request>,
     in_flight: Option<(ProcessId, Request)>,
@@ -300,7 +323,7 @@ impl Browser {
             focus: Side::Local,
             show_hidden: false,
             cache: BTreeMap::new(),
-            verdicts: Verdicts::new(),
+            verdicts: BTreeMap::new(),
             queue: VecDeque::new(),
             in_flight: None,
             output: HashMap::new(),
@@ -393,7 +416,7 @@ impl Browser {
     pub fn statuses(&self) -> BTreeMap<String, SyncStatus> {
         let local: Vec<LocalEntry> = self.visible_local().into_iter().cloned().collect();
         let device: Vec<parse::RemoteEntry> = self.visible_device().into_iter().cloned().collect();
-        files::compare(&local, &device, &self.verdicts)
+        files::compare(&local, &device, self.verdicts_for(&self.device_path))
     }
 
     // ---- navigation -----------------------------------------------------
@@ -670,8 +693,47 @@ impl Browser {
         };
 
         let mut notices = vec![(Level::Info, format!("comparing {name} by sha256"))];
-        notices.extend(self.enqueue(Request::Hash { name, local_digest }, processes, port));
+        let request = Request::Hash {
+            dir: self.device_path.clone(),
+            name,
+            local_digest,
+            announce: true,
+        };
+        notices.extend(self.enqueue(request, processes, port));
         notices
+    }
+
+    /// Queues a silent sha256 comparison of `name` in `dir` --- the Project
+    /// pane's boot-file report, which needs a real `=`/`≠` rather than the
+    /// `≈` a size match alone produces. Nothing is logged either way: the
+    /// row is the consumer, exactly as [`Request::BackgroundList`]'s is.
+    pub fn request_background_hash(
+        &mut self,
+        dir: DevicePath,
+        name: &str,
+        local_file: &Path,
+        processes: &mut ProcessManager,
+        port: Option<&str>,
+    ) -> Vec<Notice> {
+        if self
+            .verdicts
+            .get(&dir)
+            .is_some_and(|v| v.contains_key(name))
+        {
+            return Vec::new();
+        }
+        let Ok(local_digest) = hash_local(local_file) else {
+            // An unreadable local file is not worth a device round-trip;
+            // the row keeps its size-based verdict.
+            return Vec::new();
+        };
+        let request = Request::Hash {
+            dir,
+            name: name.to_string(),
+            local_digest,
+            announce: false,
+        };
+        self.enqueue(request, processes, port)
     }
 
     /// Queues a `cat` of `name`, in the current device directory, for the
@@ -907,6 +969,34 @@ impl Browser {
         notices
     }
 
+    /// Queues a deletion of an arbitrary device path --- the package
+    /// manager's uninstall, which acts on `/lib/...` while the device pane
+    /// is wherever the user left it. The name-taking pair above joins onto
+    /// `device_path`, which would be the wrong file entirely here.
+    pub fn request_remove_path(
+        &mut self,
+        target: DevicePath,
+        recursive: bool,
+        processes: &mut ProcessManager,
+        port: Option<&str>,
+    ) -> Vec<Notice> {
+        let mut notices = vec![(
+            Level::Info,
+            if recursive {
+                format!("removing {target}/ (recursive)")
+            } else {
+                format!("removing {target}")
+            },
+        )];
+        let request = if recursive {
+            Request::RemoveDeviceRecursive(target)
+        } else {
+            Request::RemoveDevice(target)
+        };
+        notices.extend(self.enqueue(request, processes, port));
+        notices
+    }
+
     /// Queues a recursive upload of `name`, a directory in the current local
     /// directory, into the device's current directory --- "Send to device"
     /// on a directory entry. The destination is the device's current
@@ -1001,16 +1091,18 @@ impl Browser {
         notices
     }
 
-    /// Queues a `mip install`, for the package-install prompt (`i`) on the
-    /// device pane.
+    /// Queues a `mip install` of every specification --- the package-install
+    /// prompt (`i`) passes one, the Project pane's Dependencies row passes
+    /// every line of `requirements.txt` in one command (mip skips files that
+    /// are already installed, so re-running it is safe).
     pub fn request_mip_install(
         &mut self,
-        package: &str,
+        packages: &[String],
         processes: &mut ProcessManager,
         port: Option<&str>,
     ) -> Vec<Notice> {
-        let mut notices = vec![(Level::Info, format!("installing {package}"))];
-        notices.extend(self.enqueue(Request::MipInstall(package.to_string()), processes, port));
+        let mut notices = vec![(Level::Info, format!("installing {}", packages.join(", ")))];
+        notices.extend(self.enqueue(Request::MipInstall(packages.to_vec()), processes, port));
         notices
     }
 
@@ -1113,7 +1205,7 @@ impl Browser {
         let command = match &request {
             Request::Devices => commands::list_devices(),
             Request::List(path) => commands::list_dir(port, path),
-            Request::Hash { name, .. } => commands::sha256(port, &self.device_path.join(name)),
+            Request::Hash { dir, name, .. } => commands::sha256(port, &dir.join(name)),
             Request::ViewDevice(path) => commands::cat(port, path),
             Request::Download {
                 source, local_path, ..
@@ -1140,6 +1232,7 @@ impl Browser {
             Request::Run(path) => commands::run(port, path),
             Request::MipInstall(package) => commands::mip_install(port, package),
             Request::SyncList(path) => commands::list_dir(port, path),
+            Request::BackgroundList(path) => commands::list_dir(port, path),
         };
         let command = match &self.tool_path {
             Some(program) => command.with_program(program),
@@ -1147,7 +1240,10 @@ impl Browser {
         };
 
         let timeout = match &request {
-            Request::Run(_) => RUN_TIMEOUT,
+            // `run` executes arbitrary user code, and `mip install` downloads
+            // over the network before writing over serial --- both routinely
+            // outlast a filesystem operation.
+            Request::Run(_) | Request::MipInstall(_) => RUN_TIMEOUT,
             _ => DEVICE_TIMEOUT,
         };
         let id = processes.spawn(command, timeout);
@@ -1285,42 +1381,112 @@ impl Browser {
                             .notices
                             .push((Level::Success, format!("{path}: {} entries", entries.len())));
                         self.cache.insert(path.clone(), entries);
+                        update.listed = Some(path.clone());
                         if current {
                             self.device_state = PaneState::Ready;
                             self.clamp_cursors();
                             self.apply_pending_select();
                         }
+                        // A fresh root listing is also the once-per-connection
+                        // hook for the Dependencies row's coverage count:
+                        // `/lib` rides the same cache and is listed right
+                        // after, so it never runs ahead of the pane's own
+                        // content. The cache is cleared on device change and
+                        // reset --- exactly when the coverage answer goes
+                        // stale --- which is what makes this once-per-
+                        // connection rather than once-per-run.
+                        let lib = DevicePath::new("/lib");
+                        if path.is_root()
+                            && !self.cache.contains_key(&lib)
+                            && !self.queue.iter().any(|request| {
+                                matches!(
+                                    request,
+                                    Request::List(p) | Request::BackgroundList(p) if *p == lib
+                                )
+                            })
+                        {
+                            self.queue.push_back(Request::BackgroundList(lib));
+                        }
                     }
                 }
             }
 
-            Request::Hash { name, local_digest } => match failure {
+            Request::BackgroundList(path) => match failure {
+                Some(_) if parse::is_path_not_found_error(&output.stderr) => {
+                    // A board with nothing installed has no `/lib` yet:
+                    // that is the answer "0/N installed", not a failure.
+                    self.cache.insert(path.clone(), Vec::new());
+                    update.listed = Some(path.clone());
+                    update.notices.push((
+                        Level::Info,
+                        format!("{path}: does not exist yet — no packages installed"),
+                    ));
+                }
                 Some(error) => {
                     self.rescan_if_device_lost(output, update);
                     update
                         .notices
-                        .push((Level::Error, format!("{name}: {error}")));
+                        .push((Level::Error, format!("{path}: {error}")));
+                    if *path == self.device_path {
+                        self.device_state = PaneState::Failed(error);
+                    }
+                }
+                None => {
+                    let mut entries = parse::parse_listing(&output.stdout).entries;
+                    files::sort_remote(&mut entries);
+                    self.cache.insert(path.clone(), entries);
+                    update.listed = Some(path.clone());
+                    if *path == self.device_path {
+                        self.device_state = PaneState::Ready;
+                        self.clamp_cursors();
+                        self.apply_pending_select();
+                    }
+                    // No notice on success: the Dependencies row is the
+                    // consumer, and the log already carries the install or
+                    // connection that made the answer interesting.
+                }
+            },
+
+            Request::Hash {
+                dir,
+                name,
+                local_digest,
+                announce,
+            } => match failure {
+                Some(error) => {
+                    self.rescan_if_device_lost(output, update);
+                    if *announce {
+                        update
+                            .notices
+                            .push((Level::Error, format!("{name}: {error}")));
+                    }
                 }
                 None => match parse::parse_sha256(&output.stdout) {
                     Some(remote_digest) => {
                         let identical = remote_digest == *local_digest;
-                        self.verdicts.insert(name.clone(), identical);
-                        update.notices.push((
-                            if identical {
-                                Level::Success
-                            } else {
-                                Level::Warn
-                            },
-                            format!(
-                                "{name}: contents {}",
-                                if identical { "identical" } else { "differ" }
-                            ),
-                        ));
+                        self.verdicts
+                            .entry(dir.clone())
+                            .or_default()
+                            .insert(name.clone(), identical);
+                        if *announce {
+                            update.notices.push((
+                                if identical {
+                                    Level::Success
+                                } else {
+                                    Level::Warn
+                                },
+                                format!(
+                                    "{name}: contents {}",
+                                    if identical { "identical" } else { "differ" }
+                                ),
+                            ));
+                        }
                     }
-                    None => update.notices.push((
+                    None if *announce => update.notices.push((
                         Level::Warn,
                         format!("{name}: could not read a digest from the device"),
                     )),
+                    None => {}
                 },
             },
 
@@ -1436,8 +1602,9 @@ impl Browser {
                     // Reload current dir
                     let dir = path.parent().unwrap_or(crate::device::DevicePath::root());
                     if self.device_path == dir {
-                        self.queue.push_front(Request::List(dir));
+                        self.queue.push_front(Request::List(dir.clone()));
                     }
+                    self.refresh_after_lib_change(&dir);
                 }
             },
 
@@ -1456,8 +1623,9 @@ impl Browser {
                     self.cache.remove(&dir);
                     if self.device_path == dir {
                         self.device_state = PaneState::Loading;
-                        self.queue.push_front(Request::List(dir));
+                        self.queue.push_front(Request::List(dir.clone()));
                     }
+                    self.refresh_after_lib_change(&dir);
                 }
             },
 
@@ -1642,27 +1810,25 @@ impl Browser {
                 }
             },
 
-            Request::MipInstall(package) => match failure {
+            Request::MipInstall(packages) => match failure {
                 Some(error) => {
                     self.rescan_if_device_lost(output, update);
                     update.notices.push((
                         Level::Error,
-                        format!("installing {package} failed: {error}"),
+                        format!("installing {} failed: {error}", packages.join(", ")),
                     ));
                 }
                 None => {
                     update
                         .notices
-                        .push((Level::Success, format!("{package} installed")));
-                    // `mip install` always writes under `/lib`; a stale cache
-                    // entry there would hide the new package until the user
-                    // manually reloads.
-                    let lib = DevicePath::new("/lib");
-                    self.cache.remove(&lib);
-                    if lib == self.device_path {
-                        self.device_state = PaneState::Loading;
-                        self.queue.push_front(Request::List(lib));
-                    }
+                        .push((Level::Success, format!("{} installed", packages.join(", "))));
+                    // `mip install` always writes under `/lib`; a stale
+                    // cache entry there would hide the new package until the
+                    // user manually reloads, and the Dependencies row's
+                    // coverage count reads the same cache.
+                    self.refresh_after_lib_change(&DevicePath::new(
+                        crate::backend::micropython::deps::LIB_ROOT,
+                    ));
                 }
             },
 
@@ -1788,6 +1954,62 @@ impl Browser {
         self.in_flight.is_some()
     }
 
+    /// Re-lists `dir` when it is `/lib` or a package directory under it:
+    /// an install or an uninstall just changed what the Dependencies row
+    /// counts, and a stale cache entry would keep reporting the old answer.
+    /// A directory the user is *looking at* is re-listed through the pane's
+    /// own request so the pane reloads with it.
+    fn refresh_after_lib_change(&mut self, dir: &DevicePath) {
+        let lib = DevicePath::new(crate::backend::micropython::deps::LIB_ROOT);
+        if *dir != lib && dir.parent().as_ref() != Some(&lib) {
+            return;
+        }
+        self.cache.remove(dir);
+        if *dir == self.device_path {
+            self.device_state = PaneState::Loading;
+            self.queue.push_front(Request::BackgroundList(dir.clone()));
+        } else {
+            self.queue.push_back(Request::BackgroundList(dir.clone()));
+        }
+    }
+
+    /// Queues a background listing of `path` --- the package manager's
+    /// sub-listing of a dotted name's package directory. Silent, and
+    /// skipped when the answer is already cached or already queued.
+    pub fn request_background_list(
+        &mut self,
+        path: DevicePath,
+        processes: &mut ProcessManager,
+        port: Option<&str>,
+    ) -> Vec<Notice> {
+        if self.cache.contains_key(&path)
+            || self.in_flight.as_ref().is_some_and(|(_, request)| {
+                matches!(request, Request::List(p) | Request::BackgroundList(p) if *p == path)
+            })
+            || self.queue.iter().any(|request| {
+                matches!(request, Request::List(p) | Request::BackgroundList(p) if *p == path)
+            })
+        {
+            return Vec::new();
+        }
+        self.enqueue(Request::BackgroundList(path), processes, port)
+    }
+
+    /// The cached device listing for `path`, if one has arrived --- the
+    /// Project pane's report rows read `/` (boot files) and `/lib`
+    /// (dependency coverage) from here.
+    pub fn cached_listing(&self, path: &DevicePath) -> Option<&[parse::RemoteEntry]> {
+        self.cache.get(path).map(Vec::as_slice)
+    }
+
+    /// The sha256 verdicts ([`Request::Hash`] results) computed **in
+    /// `dir`**, for the report rows' `=` marks. Empty for a directory
+    /// nothing was verified in --- never another directory's answers.
+    pub fn verdicts_for(&self, dir: &DevicePath) -> &Verdicts {
+        static EMPTY: std::sync::LazyLock<Verdicts> = std::sync::LazyLock::new(Verdicts::new);
+        self.verdicts.get(dir).unwrap_or(&EMPTY)
+    }
+
     /// Whether a sync walk is in progress.
     pub fn is_syncing(&self) -> bool {
         self.sync.is_some()
@@ -1824,6 +2046,13 @@ pub struct BrowserUpdate {
     pub script_running: Option<bool>,
     /// Present when a sync walk finished and produced a plan for review.
     pub sync_plan: Option<SyncPlan>,
+    /// The device directory a finished listing just settled --- either
+    /// pane-driven ([`Request::List`]) or background
+    /// ([`Request::BackgroundList`]), including the "does not exist" answer
+    /// cached as empty. `App` hangs its follow-up policies off this: the
+    /// `/lib` sub-listings a dotted package name needs, and the boot files'
+    /// background sha256.
+    pub listed: Option<DevicePath>,
 }
 
 /// Where a device file bound for `$EDITOR` is downloaded to --- one scratch

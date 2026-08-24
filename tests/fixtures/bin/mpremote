@@ -175,6 +175,13 @@ case "$args" in
         printf 'Installing urequests\n'
         ;;
 
+    "mip install urequests imaginary")
+        # The Dependencies row's one command carrying a whole requirements
+        # file (mpremote 1.28 has no `-r`; the caller parses the file and
+        # passes every spec). Order is the file's order.
+        printf 'Installing urequests\nInstalling imaginary\n'
+        ;;
+
     "mip install rejected")
         echo 'mip: Package rejected.' >&2
         exit 1

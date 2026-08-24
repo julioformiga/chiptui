@@ -308,14 +308,11 @@ impl App {
         caps.contains(Capability::Build) && !caps.contains(Capability::Filesystem)
     }
 
-    /// Files opens on `src/` when the project has one --- the directory kept
-    /// in sync with the device (`SPEC.md` §9) --- so the local pane starts
-    /// showing exactly what a `Filesystem` upload would send. Falls back to
-    /// the project root for projects without a `src/` (Zephyr, or a
-    /// MicroPython project that predates this layout).
+    /// Files opens on the directory kept in sync with the device
+    /// (`crate::files::sync_root`), so the local pane starts showing
+    /// exactly what a `Filesystem` upload would send.
     fn initial_local_dir(root: PathBuf) -> PathBuf {
-        let src = root.join("src");
-        if src.is_dir() { src } else { root }
+        crate::files::sync_root(&root)
     }
 
     pub(super) fn scan_devices(&mut self) {

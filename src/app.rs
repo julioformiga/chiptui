@@ -45,6 +45,7 @@ pub mod help;
 mod install_view;
 mod mouse;
 pub mod overlay;
+pub mod packages;
 pub mod probe;
 pub mod project_view;
 pub mod terminal;
@@ -90,7 +91,7 @@ pub enum Focus {
 /// question the selected backend asks there. The Zephyr rows mirror
 /// [`crate::workspace::WorkspaceAction`] one-to-one (they run through it);
 /// the MicroPython rows are their own state ([`App::mpy_projects`] and
-/// friends), the last two plain reports no key answers.
+/// friends), the first two questions and the last two reports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProjectRow {
     /// "Where is the Zephyr installation?" (the picker validates and
@@ -107,11 +108,13 @@ pub enum ProjectRow {
     MpyProjectsBase,
     /// "Which project to browse?" (re-roots the local pane, session-only).
     MpyProjectPath,
-    /// Dependency files present in the project root (`requirements.txt`/`manifest.py`).
+    /// Dependency coverage: the requirements `requirements.txt` declares
+    /// against what the device's `/lib` already holds. `Enter` installs the
+    /// file through `mip` (one command; mip skips what is already there).
     MpyDependencies,
-    /// Whether the board is believed to be running user code right now
-    /// ([`crate::device::ScriptState`]).
-    MpyScript,
+    /// What the next boot runs: the device's `boot.py`/`main.py` compared
+    /// against the project's own copies ([`crate::files::SyncStatus`]).
+    MpyBoot,
 }
 
 /// Which tab row 3 is showing. `Left`/`Right` switch between them while
@@ -407,11 +410,30 @@ pub enum Overlay {
     /// edit buffer, pre-filled with it --- editing starts from the end, and
     /// an unedited `Enter` is a no-op, not an error.
     RenameEntry { name: String, input: String },
-    /// Inline text entry for `mip install` (`i` on the device pane). Unlike
-    /// [`Overlay::CreateEntry`] this is not tied to `side` or a selected
-    /// entry --- it acts on the device as a whole, not the file under the
-    /// cursor.
-    PackageInstall { input: String },
+    /// The package manager (`Enter` or `s` on the Dependencies row, the
+    /// device pane's `i`, or the Actions tab's own button): one filterable
+    /// list over `requirements.txt`, the board's `/lib` and the
+    /// micropython-lib index, fetched through `curl` when it first opens.
+    ///
+    /// Carries nothing: every field lives on [`App::packages`], so the
+    /// remove confirmation --- which *replaces* this overlay, the slot
+    /// being one deep --- can hand the window back exactly as it was.
+    Packages,
+    /// "Remove this package?" --- the manager's `Del`. Its own variant
+    /// rather than the shared [`Overlay::Confirm`] (already multiplexed
+    /// between the flash panel's `pending` and the installer's start
+    /// question), because accepting acts on *two* things and the wording
+    /// has to name both.
+    ConfirmRemovePackage {
+        /// The package name, or the whole specification for a git/URL line.
+        name: String,
+        /// Paths under `/lib` the removal would delete, with whether each
+        /// needs a recursive `rm`. Empty when only the file declares it.
+        targets: Vec<(crate::device::DevicePath, bool)>,
+        /// Whether `requirements.txt` carries a line for it.
+        declared: bool,
+        confirm: bool,
+    },
     /// A sync plan produced by [`Browser::request_sync`], awaiting the
     /// user's review before execution (`S` in the file browser). Default
     /// is No when the plan includes device-only file deletions, since
@@ -903,6 +925,17 @@ pub struct App {
     /// Whether `[micropython] projects` was read this session (the answer
     /// is refreshed by the pickers, not re-read per frame).
     mpy_projects_loaded: bool,
+    /// The micropython-lib index copy behind [`Overlay::Packages`] ---
+    /// fetched once per session through `curl`, kept for the session after.
+    pub package_index: packages::PackageIndex,
+    /// The package manager's keyboard state, kept off the overlay so a
+    /// confirmation can replace the window and give it back unchanged.
+    pub packages: packages::PackagesState,
+    /// `requirements.txt`, polled on the tick instead of read per frame.
+    pub requirements: packages::RequirementsCache,
+    /// Overrides the `curl` executable used for the index fetch (the test
+    /// seam; `None` means "resolve on PATH").
+    package_curl_path: Option<String>,
     /// The connected board's MicroPython version, read off the REPL banner
     /// the probe (or the monitor) already sees, and dropped with the board
     /// when it disconnects.
@@ -1127,6 +1160,10 @@ impl App {
             mpy_projects_invalid: None,
             mpy_root: None,
             mpy_projects_loaded: false,
+            package_index: packages::PackageIndex::Idle,
+            packages: packages::PackagesState::default(),
+            requirements: packages::RequirementsCache::default(),
+            package_curl_path: None,
             mpy_version: None,
             pending_command: None,
             viewer: None,
@@ -1334,6 +1371,9 @@ impl App {
             self.manager.start_dir().display()
         ));
         self.detect();
+        // Seeded here so the very first frame's Dependencies row is right:
+        // the tick that keeps it fresh has not fired yet.
+        self.reload_requirements();
     }
 
     /// Re-runs detection from the starting directory.
@@ -1589,6 +1629,7 @@ impl App {
                 self.ticks = self.ticks.wrapping_add(1);
                 self.check_device_hotplug();
                 self.refresh_local_listings();
+                self.refresh_requirements();
                 self.tick_probe();
                 self.check_interrupt_gate();
                 self.maybe_offer_restore();
@@ -1681,6 +1722,12 @@ impl App {
     /// process id and is a no-op for an event it did not start, which is
     /// simpler than tracking ownership here.
     fn on_process(&mut self, event: &crate::process::ProcessEvent) {
+        // The package index fetch owns its events before any subsystem:
+        // curl shares the process pool with mpremote/esptool, and an
+        // unrecognized id must still reach whoever it belongs to.
+        if self.on_package_index_process(event) {
+            return;
+        }
         match event {
             // The script-probe session (PTY): raw output arrives as bytes, and
             // its exit is what releases the port for the listing it deferred.
@@ -1849,6 +1896,9 @@ impl App {
                     plan,
                     confirm: false,
                 });
+            }
+            if let Some(path) = update.listed {
+                self.on_device_listing(&path);
             }
         }
 
@@ -2898,7 +2948,7 @@ impl App {
                     vec![("r", "re-check"), ("s", "skip SDK"), ("t", "toolchains")]
                 }
             }
-            Some(Overlay::ConfirmInstallHere { .. }) => {
+            Some(Overlay::ConfirmInstallHere { .. } | Overlay::ConfirmRemovePackage { .. }) => {
                 vec![("y/n", "quick reply")]
             }
             Some(Overlay::SdkToolchains { .. }) => vec![("space", "toggle")],
@@ -2922,7 +2972,15 @@ impl App {
             Some(Overlay::DirPicker { .. }) => vec![("?", "help")],
             Some(Overlay::BuildDirPicker { .. }) => vec![("F1", "help")],
             Some(Overlay::ProjectPicker { .. }) => vec![("?", "help")],
-            Some(Overlay::PackageInstall { .. }) => vec![("F1", "help")],
+            // Free text, so `?` filters rather than opens help --- and no
+            // action can live on a plain letter for the same reason. The
+            // footer names the gestures the field cannot teach.
+            Some(Overlay::Packages) => vec![
+                ("enter", "install"),
+                ("del", "remove"),
+                ("tab", "list/details"),
+                ("F1", "help"),
+            ],
             Some(
                 Overlay::DevicePicker { .. }
                 | Overlay::ThemePicker { .. }
@@ -4148,9 +4206,6 @@ mod tests {
             Overlay::BuildDirPicker {
                 input: String::new(),
                 selected: 0,
-            },
-            Overlay::PackageInstall {
-                input: String::new(),
             },
         ];
         let other_silent_overlays: Vec<Overlay> = vec![

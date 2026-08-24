@@ -9,8 +9,8 @@ use ratatui::widgets::{Paragraph, Tabs, Wrap};
 
 use crate::app::{App, Focus, LogTab, MonitorSource, ProjectRow};
 use crate::backend::Capability;
+use crate::backend::micropython::deps;
 use crate::backend::micropython::esptool::features;
-use crate::device::ScriptState;
 use crate::firmware_id::{FirmwareVerdict, FlashFirmware};
 use crate::flash::RunState;
 use crate::logs::{Level, PREFIX_WIDTH};
@@ -45,7 +45,8 @@ fn pad_info(mut lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
 ///
 /// For a backend that asks any (Zephyr: installation, projects folder,
 /// project, target; MicroPython: projects folder, project, plus the
-/// dependencies and script reports), the pane is the checklist those questions moved
+/// dependency-coverage and boot-file reports), the pane is the checklist
+/// those questions moved
 /// into --- navigable through the shortcuts overlay's `e` letter
 /// (`ctrl+k`), never part of the `Tab` tour. A
 /// backend that asks nothing falls back to plain detection info (root and
@@ -188,44 +189,165 @@ fn project_row_line(
         }
         ProjectRow::MpyDependencies => {
             let root = app.mpy_effective_root();
-            let entry = |name: &str| root.join(name).is_file();
-            let (reqs, manifest) = (entry("requirements.txt"), entry("manifest.py"));
-            let mark = |present: bool| {
-                Span::styled(
-                    if present { "✓" } else { "✗" },
-                    Style::new()
-                        .fg(if present {
-                            palette.success
-                        } else {
-                            palette.error
-                        })
-                        .bold(),
-                )
+            let requirements = root.join("requirements.txt");
+            let manifest_only = !requirements.is_file() && root.join("manifest.py").is_file();
+            if !requirements.is_file() && !manifest_only {
+                return super::workspace::marked_row(
+                    super::workspace::RowMark::Open,
+                    super::workspace::LABEL_WIDTH,
+                    "Dependencies",
+                    Line::from(Span::styled("none", muted_style(palette))),
+                    palette,
+                );
+            }
+            if manifest_only {
+                // Declared, but in the one format `mip` cannot read ---
+                // `Enter` explains the way out.
+                return super::workspace::marked_row(
+                    super::workspace::RowMark::Warn,
+                    super::workspace::LABEL_WIDTH,
+                    "Dependencies",
+                    Line::from(Span::styled("manifest.py only", muted_style(palette))),
+                    palette,
+                );
+            }
+            let name = Span::raw("requirements.txt");
+            // Coverage reads the /lib listing the connection already pulled
+            // (`Request::LibList`); before one arrives the row stays an open
+            // question rather than guessing. Once it has, the fraction is
+            // the answer --- the file's name is worth a column only while
+            // it is the whole answer (`MIN_WIDTH` clips the longer form).
+            let lib_root = crate::device::DevicePath::new(deps::LIB_ROOT);
+            let listed = app
+                .browser
+                .as_ref()
+                .is_some_and(|browser| browser.cached_listing(&lib_root).is_some());
+            if !listed {
+                return super::workspace::marked_row(
+                    super::workspace::RowMark::Open,
+                    super::workspace::LABEL_WIDTH,
+                    "Dependencies",
+                    Line::from(name),
+                    palette,
+                );
+            }
+            // The coverage walk asks for one directory at a time: `/lib`
+            // plus, for a dotted name, the package directory under it.
+            let lookup = |path: &crate::device::DevicePath| {
+                app.browser
+                    .as_ref()
+                    .and_then(|browser| browser.cached_listing(path))
+                    .map(<[_]>::to_vec)
             };
-            super::workspace::checklist_row(
-                reqs || manifest,
-                false,
+            // From the tick-refreshed cache, never a read in the draw path.
+            let specs = deps::parse_requirements(app.requirements.text());
+            let coverage = deps::coverage(&specs, &lookup);
+            let mark = if coverage.total == 0 || coverage.is_complete() {
+                super::workspace::RowMark::Done
+            } else {
+                super::workspace::RowMark::Warn
+            };
+            let detail = if coverage.total == 0 {
+                Span::styled("no packages", muted_style(palette))
+            } else {
+                let color = if coverage.is_complete() {
+                    palette.success
+                } else {
+                    palette.warning
+                };
+                Span::styled(coverage.text(), Style::new().fg(color))
+            };
+            super::workspace::marked_row(
+                mark,
+                super::workspace::LABEL_WIDTH,
                 "Dependencies",
-                Line::from(vec![
-                    mark(reqs),
-                    Span::raw(" requirements.txt "),
-                    mark(manifest),
-                    Span::raw(" manifest.py"),
-                ]),
+                Line::from(detail),
                 palette,
             )
         }
-        ProjectRow::MpyScript => {
-            let (text, style, answered) = match app.devices.script_state() {
-                ScriptState::Running => ("running", Style::new().fg(palette.warning).bold(), true),
-                ScriptState::Stopped => ("idle", Style::new().fg(palette.success).bold(), true),
-                ScriptState::Unknown => ("unknown", muted_style(palette), false),
+        ProjectRow::MpyBoot => {
+            // What the next boot runs, against the project's own copies ---
+            // the same comparison verdicts the file panes show, read off the
+            // cached root listing.
+            let Some(browser) = app.browser.as_ref() else {
+                return super::workspace::marked_row(
+                    super::workspace::RowMark::Open,
+                    super::workspace::LABEL_WIDTH,
+                    "Boot files",
+                    Line::from(Span::styled("no device listing yet", muted_style(palette))),
+                    palette,
+                );
             };
-            super::workspace::checklist_row(
-                answered,
-                false,
-                "Script",
-                Line::from(Span::styled(text, style)),
+            let Some(remote) = browser.cached_listing(&crate::device::DevicePath::root()) else {
+                return super::workspace::marked_row(
+                    super::workspace::RowMark::Open,
+                    super::workspace::LABEL_WIDTH,
+                    "Boot files",
+                    Line::from(Span::styled("no device listing yet", muted_style(palette))),
+                    palette,
+                );
+            };
+            // The device's root against the project's *sync* root --- its
+            // `src/` when it has one, which is where the scaffold puts the
+            // two entry points and where the Files pane opens.
+            let root = crate::device::DevicePath::root();
+            let local = crate::files::read_dir(&app.mpy_sync_root()).unwrap_or_default();
+            let statuses = crate::files::compare(&local, remote, browser.verdicts_for(&root));
+            // `SameSize` is *unchecked*, not wrong: the background sha256
+            // armed by the root listing turns it into a real `=`/`≠` within
+            // a round-trip, so it reads as an open question rather than a
+            // warning. Reporting it as ⚠ is what left the row alarmed for
+            // the whole life of a perfectly synchronised project.
+            let status_mark = |status: crate::files::SyncStatus| match status {
+                crate::files::SyncStatus::Identical => super::workspace::RowMark::Done,
+                crate::files::SyncStatus::SameSize => super::workspace::RowMark::Open,
+                crate::files::SyncStatus::DeviceOnly | crate::files::SyncStatus::Directory => {
+                    super::workspace::RowMark::Warn
+                }
+                crate::files::SyncStatus::Differs
+                | crate::files::SyncStatus::LocalOnly
+                | crate::files::SyncStatus::TypeMismatch => super::workspace::RowMark::Broken,
+            };
+            let mut spans = Vec::new();
+            let mut mark = None;
+            for name in ["boot.py", "main.py"] {
+                let Some(status) = statuses.get(name) else {
+                    continue;
+                };
+                if !spans.is_empty() {
+                    spans.push(Span::styled(" · ", muted_style(palette)));
+                }
+                spans.push(Span::raw(name));
+                spans.push(Span::styled(
+                    format!(" {}", status.marker()),
+                    match status_mark(*status) {
+                        super::workspace::RowMark::Done => Style::new().fg(palette.success),
+                        super::workspace::RowMark::Broken => Style::new().fg(palette.error),
+                        super::workspace::RowMark::Open => muted_style(palette),
+                        super::workspace::RowMark::Warn => Style::new().fg(palette.warning),
+                    },
+                ));
+                // The row's mark is the *worst* of the two files. Letting
+                // `main.py` override outright hid a `boot.py` that differs
+                // behind a green check, which is the one thing a summary
+                // row must never do.
+                let this = status_mark(*status);
+                if mark.is_none_or(|current: super::workspace::RowMark| {
+                    this.severity() > current.severity()
+                }) {
+                    mark = Some(this);
+                }
+            }
+            let value = if spans.is_empty() {
+                Line::from(Span::styled("no boot.py or main.py", muted_style(palette)))
+            } else {
+                Line::from(spans)
+            };
+            super::workspace::marked_row(
+                mark.unwrap_or(super::workspace::RowMark::Open),
+                super::workspace::LABEL_WIDTH,
+                "Boot files",
+                value,
                 palette,
             )
         }

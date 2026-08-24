@@ -44,7 +44,7 @@ impl App {
                 ProjectRow::MpyProjectsBase,
                 ProjectRow::MpyProjectPath,
                 ProjectRow::MpyDependencies,
-                ProjectRow::MpyScript,
+                ProjectRow::MpyBoot,
             ];
         }
         Vec::new()
@@ -70,11 +70,9 @@ impl App {
                 .is_some_and(|panel| panel.board.is_none()),
             ProjectRow::MpyProjectsBase => self.mpy_projects.is_none(),
             // The working directory already answers this until a pick
-            // overrides it; the dependencies/script rows are reports, not
-            // questions.
-            ProjectRow::MpyProjectPath | ProjectRow::MpyDependencies | ProjectRow::MpyScript => {
-                false
-            }
+            // overrides it; the dependencies and boot-file rows are reports,
+            // not questions.
+            ProjectRow::MpyProjectPath | ProjectRow::MpyDependencies | ProjectRow::MpyBoot => false,
         }
     }
 
@@ -110,6 +108,13 @@ impl App {
             KeyCode::Right if current == Some(ProjectRow::BoardShield) => {
                 self.board_segment = false;
             }
+            // The Dependencies row's other door: search the micropython-lib
+            // index without first committing to installing everything the
+            // file lists.
+            KeyCode::Char('s') if current == Some(ProjectRow::MpyDependencies) => {
+                self.open_package_manager();
+                return;
+            }
             KeyCode::Enter => run = current,
             _ => {}
         }
@@ -119,8 +124,9 @@ impl App {
     }
 
     /// Answers one checklist row: the Zephyr rows run through the workspace
-    /// actions they always did, the MicroPython rows open their own flows,
-    /// and the report rows (dependencies, script) carry nothing to run.
+    /// actions they always did, the MicroPython questions open their own
+    /// flows, the dependencies row runs its `mip install`, and the boot-file
+    /// row is a report nothing answers.
     fn run_project_row(&mut self, row: ProjectRow) {
         let action = match row {
             ProjectRow::ZephyrPath => Some(WorkspaceAction::Choose),
@@ -135,7 +141,11 @@ impl App {
                 self.open_mpy_project_flow();
                 return;
             }
-            ProjectRow::MpyDependencies | ProjectRow::MpyScript => return,
+            ProjectRow::MpyDependencies => {
+                self.open_dependencies();
+                return;
+            }
+            ProjectRow::MpyBoot => return,
         };
         if let Some(action) = action {
             self.run_workspace_action(action);
@@ -264,10 +274,15 @@ impl App {
         if let Some(browser) = &mut self.browser {
             browser.set_local_root(dir);
         }
+        // The declarations belong to the project, so they are re-read now
+        // rather than up to a tick later.
+        self.reload_requirements();
     }
 
     /// The MicroPython project root in effect: the session's pick, or the
-    /// detection root when none was made. The Dependencies row reads this.
+    /// detection root when none was made. The Dependencies row reads this
+    /// --- `requirements.txt` lives at the project root, which the scaffold
+    /// is what puts it there.
     pub fn mpy_effective_root(&self) -> PathBuf {
         self.mpy_root.clone().unwrap_or_else(|| {
             self.manager.root().map_or_else(
@@ -275,6 +290,18 @@ impl App {
                 |root| root.to_path_buf(),
             )
         })
+    }
+
+    /// The directory the *device's own root* is compared against: the
+    /// project's `src/` when it has one, else the project root
+    /// ([`crate::files::sync_root`], the same rule the Files pane opens on).
+    ///
+    /// Deliberately not [`Self::mpy_effective_root`]: the scaffold writes
+    /// `boot.py`/`main.py` into `src/` and `requirements.txt` into the root,
+    /// so the two report rows ask about two different directories. Reading
+    /// the root for both is what pinned the Boot files row at `⚠`.
+    pub fn mpy_sync_root(&self) -> PathBuf {
+        crate::files::sync_root(&self.mpy_effective_root())
     }
 
     /// The board's MicroPython version, from whatever REPL/monitor lines
@@ -286,5 +313,55 @@ impl App {
         {
             self.mpy_version = Some(version);
         }
+    }
+
+    /// The Dependencies row's `Enter`: opens the package manager, always.
+    ///
+    /// It used to install the whole file outright, and only open the search
+    /// when no file existed --- so the one gesture on the row did two
+    /// unrelated things depending on state, and there was no way at all to
+    /// *look* at what was declared. Installing everything is now a row
+    /// inside the manager ([`Self::install_project_dependencies`]).
+    ///
+    /// A missing file is created from the shared template first, so the
+    /// manager always opens onto something. A `manifest.py`-only project is
+    /// refused with the reason --- manifests are a firmware-build format,
+    /// not something mip can read.
+    pub(super) fn open_dependencies(&mut self) {
+        let root = self.mpy_effective_root();
+        let requirements = root.join("requirements.txt");
+        if !requirements.is_file() {
+            if root.join("manifest.py").is_file() {
+                self.logs.warn(
+                    "mip installs from requirements.txt — manifest.py is a firmware-build format",
+                );
+                return;
+            }
+            if self.create_requirements_file().is_none() {
+                return;
+            }
+        }
+        self.open_package_manager();
+    }
+
+    /// Installs every specification `requirements.txt` declares, in one
+    /// `mip install` (mpremote 1.28 has no `-r`; mip itself skips files
+    /// that are already installed). The manager's `Install all` row.
+    pub(super) fn install_project_dependencies(&mut self) {
+        let requirements = self.requirements_path();
+        let Ok(text) = std::fs::read_to_string(&requirements) else {
+            self.logs
+                .error(format!("{}: could not read it", requirements.display()));
+            return;
+        };
+        let specs = crate::backend::micropython::deps::parse_requirements(&text);
+        if specs.is_empty() {
+            self.logs
+                .warn("requirements.txt lists no packages — nothing to install");
+            return;
+        }
+        self.dispatch_browser(|browser, processes, port| {
+            browser.request_mip_install(&specs, processes, port)
+        });
     }
 }

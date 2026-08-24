@@ -43,9 +43,69 @@ question too (`Capability::ProjectSelect`) --- `[micropython] projects` in the u
 (`settings::mpy_projects_raw`/`save_mpy_projects`) answers the Projects base row, a pick
 from its subdirectories (`Overlay::ProjectPicker { mpy: true }`, any subdirectory qualifies)
 re-roots the local pane session-only (`App::set_mpy_project`), and the pane's other two rows
-report `Dependencies` (`requirements.txt`/`manifest.py` presence in the project root) and
-`Script` (whether the board is believed to be running user code right now,
-`DeviceState::script_state()`). The board's MicroPython version itself, parsed off the REPL
+report `Dependencies` (mip coverage: the specifications `requirements.txt` declares
+against what the device's `/lib` already holds, `backend::micropython::deps`; the
+file is parsed on the host --- mpremote 1.28 has no `-r` --- with `pkg==1.2.3` pins
+rewritten to mip's `pkg@1.2.3` and ranges degraded to the bare name. A dotted name is
+a *path*: `umqtt.simple` lands at `/lib/umqtt/simple.mpy`, so `deps::lib_target` maps
+name to directory-plus-candidates and `deps::installed` answers `Yes/No/Unknown` ---
+`Unknown` only while the directory it would live in exists but has not been listed,
+which is what bounds the extra listings to one per namespace the board really has
+(matching the dotted name flat against `/lib` reported the template's own example
+missing forever, pinning the row at ⚠). The `/lib` listing rides the connection as a
+background `Request::BackgroundList` queued by the first root listing, where a missing
+`/lib` is cached as empty --- "0/N installed", not an error --- and the sub-listings
+are queued off *its* completion, through `BrowserUpdate::listed`) and `Boot files`
+(the device's root against the project's **sync root** --- `files::sync_root`, the
+`src/`-when-it-exists rule `App::initial_local_dir` also delegates to, since the
+scaffold writes `boot.py`/`main.py` into `src/` and reading the project root instead
+left every scaffolded project reporting `boot.py ←` forever. `Identical` was equally
+unreachable without pressing `c` by hand, so the same root listing arms a silent
+`Request::Hash` for each file the two sides hold at the same size, and `SameSize`
+reads as `□` unchecked rather than a warning; the row's mark is the *worst* of the two
+files, since letting `main.py` override hid a differing `boot.py` behind a green
+check. Verdicts are now keyed by `DevicePath` (`Browser::verdicts_for`) and
+`Request::Hash` snapshots its directory at enqueue --- keyed by bare name they aliased
+across directories, and navigation never cleared them. The script-running *belief*
+lives on the device pane's tab strip and in the interrupt gates, not on a row).
+
+`Enter` or `s` on the Dependencies row --- and `i` on the device pane, and the Actions
+tab's `Manage packages` button --- open `Overlay::Packages` (`src/app/packages.rs`),
+the package **manager**: one filterable list merging what `requirements.txt` declares,
+what `/lib` holds, and the micropython-lib index, read from
+`https://micropython.org/pi/v2/index.json` (the machine-generated listing of the same
+index mip installs from --- `mip` has no search/list subcommand of its own) through
+`curl fetch_page`, the exact delegation the firmware pages use, no bundled HTTP client,
+fetched once per session into `App::package_index` (`Idle/Fetching/Ready/Failed`, events
+consumed in `on_process` before any other subsystem), parsed by the hand-rolled tolerant
+reader in `backend::micropython::packages` (no serde, same bias as the config parsers).
+Each row carries its state (`✓` declared+installed, `□` declared+missing, `⚠` installed
+but undeclared, blank for catalogue-only) and the details pane beside it names the
+declared spec and the `/lib` paths the package occupies; `Tab` swaps the keyboard
+between the two halves (`DocsFocus`, the board/shield pickers' grammar) and the geometry
+is one definition in `ui::layout::packages`, shared with the hit-testing.
+
+The variant is a **unit** one: every field lives on `App::packages` (`PackagesState`),
+because the removal confirmation *replaces* the window --- the overlay slot is one deep
+--- and has to hand it back unchanged. The filter line is free text, so no action can
+live on a plain letter (the same rule that makes `?` filter instead of opening help):
+`Enter` installs the row and declares it first when the file does not
+(`deps::add_line`, which de-duplicates and *replaces* a differently-pinned line rather
+than appending a second), `Del` removes both halves behind `Overlay::ConfirmRemovePackage`
+in the §15 destructive grammar (`mip` has no `uninstall`, so the removal is
+`Request::RemoveDevice`/`RemoveDeviceRecursive` over the paths `lib_target` resolves
+against the listing --- a dotted package's *leaf*, never the directory it shares with
+siblings, and never a namespace directory, which is why `package_rows` suppresses those
+as rows at all), and "install everything" is a **row** rather than a key. Text that
+looks like a spec (`:` or `/`) or matches nothing is offered verbatim as
+`+ install "…"`, which is the dead end the search-only window had. The window stays
+open after every action, and a click selects without activating (picker grammar). The
+`j`/`k` cursor arms are gone with the search: bound before the printable arm, they made
+`json` and `keyboard` untypeable. `requirements.txt` itself is read off the tick
+(`App::requirements`, `RequirementsCache`) on the same 1 s cadence as the local
+listings, not `read_to_string`d inside the draw path once per frame per consumer; the
+app's own writes refresh it immediately. The board's
+MicroPython version itself, parsed off the REPL
 banner by `device::micropython_version` --- fed by the probe and the monitor, dropped with the
 board on disconnect/switch --- rides the Device Info pane's `Firmware` row instead (see below),
 appended to the `MicroPython` label. Editing a device file downloads it to a scratch temp file
@@ -82,10 +142,20 @@ is intercepted before the dispatch, it never leaks into a pane's own arrows (on 
 pane `ctrl+→` must not descend). The tab renders the esptool menu as
 the *same* stacked-button widget the Zephyr build pane uses (`ui::flash::draw_actions_pane`:
 one button per `FlashPanel::pane_actions` row, in workflow order --- `⇩ Search firmware online`
-(the menu's old `s` key as a button) leads, then the read-only esptool actions, the destructive
+(the menu's old `s` key as a button) leads, then `⚙ Manage packages` (the `Overlay::Packages`
+door that does not go through the Project pane; `⚙` is `Zephyr Actions`' own glyph and the same
+role, a button opening a menu of operations), then the read-only esptool actions, the destructive
 erase/write pair last, capitalized like the build pane's; the chip
 identity every device selection already queries in the background gets no button of its own
-(it is not among the pane rows, though the dialog menu still lists it), and a
+(it is not among the pane rows, though the dialog menu still lists it), and `Verify flash`
+left the stack for a related reason --- a check rather than a workflow step, and gated on a
+firmware file being chosen first --- answering to `v` on the tab instead while staying in
+`FlashAction::ALL` for the dialog form of the menu. (`c` was deliberately not used: it already
+means "compare by sha256" in the file panes.) The swap is **height-neutral by construction**:
+`Manage packages` takes exactly the row `Verify flash` gave up, so the idle count stays six and
+matches the `FlashAction::ALL.len()` fallback `row2_content_height` uses before a panel exists
+--- which is what keeps row 2 from reflowing when the panel appears, and the declared 80x32
+minimum where it is. A
 direct download URL is pasted with `u` from the search windows --- over the
 same reserved three-row footer, `■ Stop` as its own half-width box while a command runs,
 the state line with a live counter/last report), row 2 sized to the stack whenever the strip
@@ -116,7 +186,7 @@ prerequisites moved *up* into row 1's **Environment pane**, which is the checkli
 `Zephyr path`, `Projects base`, `Project path`, `Board · Shield` (the last two answered by
 the build panel but asked here; `←`/`→` on the merged target row switch which half `Enter`
 acts on --- `App::board_segment`) for Zephyr, `Projects base`/`Project path`/`Dependencies`/
-`Script` for MicroPython (`src/app/project_view.rs`, `App::project_rows`). The pane is
+`Boot files` for MicroPython (`src/app/project_view.rs`, `App::project_rows`). The pane is
 navigable but deliberately off the `Tab` tour: the shortcuts overlay's `e` letter (`ctrl+k`)
 enters it (the cursor lands on the first question still open), `Tab`
 re-enters the tour at its first stop. The operation buttons they gate live in the **Actions**

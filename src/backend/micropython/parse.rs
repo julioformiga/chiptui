@@ -279,6 +279,13 @@ pub fn is_device_lost_error(stderr: &str) -> bool {
     matches!(classify(stderr), FailureKind::DeviceNotFound)
 }
 
+/// Whether this failure means the path does not exist on the device
+/// (`CommandError("{}: {}: {}."` from an `OSError` with `ENOENT` ---
+/// `mpremote/commands.py`'s filesystem wrapper).
+pub fn is_path_not_found_error(stderr: &str) -> bool {
+    matches!(classify(stderr), FailureKind::PathNotFound)
+}
+
 /// Whether the device is present but did not respond to the command.
 /// This often happens when a board is connected but does not have MicroPython installed.
 pub fn is_device_unresponsive_error(stderr: &str) -> bool {

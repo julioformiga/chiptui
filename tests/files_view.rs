@@ -139,6 +139,68 @@ fn lists_the_device_root() {
 }
 
 #[test]
+fn the_root_listing_schedules_a_lib_coverage_listing() {
+    let project = Project::new("lib-cache");
+    let (mut browser, mut processes) = browser_for(&project);
+
+    browser.load_device(&mut processes, None, false);
+    assert_eq!(
+        browser.cached_listing(&DevicePath::new("/lib")),
+        None,
+        "no /lib answer before the root listing it rides on"
+    );
+    let messages = settle(&mut browser, &mut processes);
+
+    let names: Vec<&str> = browser
+        .cached_listing(&DevicePath::new("/lib"))
+        .expect("/lib listed after the root")
+        .iter()
+        .map(|entry| entry.name.as_str())
+        .collect();
+    assert_eq!(names, ["simple.py"], "the fake board's installed set");
+    assert!(
+        !messages.iter().any(|message| message.contains("/lib")),
+        "the background coverage probe is silent in the log: {messages:?}"
+    );
+
+    // A forced reload (`r` on the device pane) clears the cache, so the
+    // next root listing re-reads /lib too --- coverage follows a reinstall.
+    browser.load_device(&mut processes, None, true);
+    settle(&mut browser, &mut processes);
+    assert!(
+        browser.cached_listing(&DevicePath::new("/lib")).is_some(),
+        "the coverage listing is re-scheduled after a forced reload"
+    );
+}
+
+#[test]
+fn a_board_without_lib_caches_an_empty_coverage_listing() {
+    let project = Project::new("lib-missing");
+    let (mut browser, mut processes) = browser_for(&project);
+    browser.set_tool_path(fake_mpremote_second_board());
+
+    browser.load_device(&mut processes, None, false);
+    let messages = settle(&mut browser, &mut processes);
+
+    assert_eq!(
+        browser.cached_listing(&DevicePath::new("/lib")),
+        Some(&[] as &[chiptui::backend::micropython::parse::RemoteEntry]),
+        "a missing /lib is the answer 'nothing installed', not an error"
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("does not exist yet")),
+        "the one log line explains the zero: {messages:?}"
+    );
+    assert_eq!(
+        browser.device_state,
+        PaneState::Ready,
+        "the pane is unaffected"
+    );
+}
+
+#[test]
 fn a_device_swap_does_not_serve_the_previous_boards_cached_listing() {
     let project = Project::new("swap");
     let (mut browser, mut processes) = browser_for(&project);
@@ -463,7 +525,7 @@ fn installing_a_package_reports_success() {
     let project = Project::new("mip-ok");
     let (mut browser, mut processes) = browser_for(&project);
 
-    let messages = browser.request_mip_install("urequests", &mut processes, None);
+    let messages = browser.request_mip_install(&["urequests".to_string()], &mut processes, None);
     let messages: Vec<String> = messages
         .into_iter()
         .map(|(_, text)| text)
@@ -481,7 +543,7 @@ fn installing_a_rejected_package_reports_the_error() {
     let project = Project::new("mip-fail");
     let (mut browser, mut processes) = browser_for(&project);
 
-    let messages = browser.request_mip_install("rejected", &mut processes, None);
+    let messages = browser.request_mip_install(&["rejected".to_string()], &mut processes, None);
     let messages: Vec<String> = messages
         .into_iter()
         .map(|(_, text)| text)
@@ -509,7 +571,7 @@ fn installing_a_package_refreshes_the_lib_listing_when_viewing_it() {
     settle(&mut browser, &mut processes);
     assert_eq!(browser.device_path.as_str(), "/lib");
 
-    let messages = browser.request_mip_install("urequests", &mut processes, None);
+    let messages = browser.request_mip_install(&["urequests".to_string()], &mut processes, None);
     let messages: Vec<String> = messages
         .into_iter()
         .map(|(_, text)| text)
@@ -520,11 +582,15 @@ fn installing_a_package_refreshes_the_lib_listing_when_viewing_it() {
         messages.iter().any(|m| m.contains("installed")),
         "no success notice: {messages:?}"
     );
-    assert!(
-        messages.iter().any(|m| m.contains("/lib: 1 entries")),
-        "installing while viewing /lib should re-list it: {messages:?}"
-    );
+    // The refresh now rides the background /lib probe (no log line of its
+    // own): the cache answers, and the pane under the cursor stays Ready.
     assert_eq!(browser.device_state, PaneState::Ready);
+    assert!(
+        browser
+            .cached_listing(&DevicePath::new("/lib"))
+            .is_some_and(|entries| entries.iter().any(|entry| entry.name == "simple.py")),
+        "installing while viewing /lib should re-list it"
+    );
 }
 
 #[test]
@@ -1573,26 +1639,20 @@ fn the_run_tab_renders_timestamps_on_each_line() {
 }
 
 #[test]
-fn pressing_i_opens_the_package_install_prompt_on_the_device_pane() {
+fn pressing_i_opens_the_package_manager_on_the_device_pane() {
     use ratatui::crossterm::event::KeyCode;
 
     let project = Project::new("mip-prompt");
     let mut app = app_in_browser(&project);
     app.focus = Focus::FilesDevice;
 
+    // It used to open a bare text prompt that installed whatever was typed
+    // and recorded nothing --- the project's own file never heard about it.
     app.handle(key(KeyCode::Char('i')));
-    assert_eq!(
-        app.overlay,
-        Some(Overlay::PackageInstall {
-            input: String::new(),
-        })
-    );
+    assert_eq!(app.overlay, Some(Overlay::Packages));
 
     let frame = render(&mut app, 110, 32);
-    assert!(
-        frame.contains("Install package"),
-        "prompt not shown:\n{frame}"
-    );
+    assert!(frame.contains("Packages"), "manager not shown:\n{frame}");
 }
 
 #[test]
@@ -1610,7 +1670,7 @@ fn pressing_i_on_the_local_pane_does_nothing() {
 }
 
 #[test]
-fn installing_a_package_via_the_prompt_logs_success() {
+fn installing_a_typed_spec_records_it_and_keeps_the_manager_open() {
     use ratatui::crossterm::event::KeyCode;
 
     let project = Project::new("mip-install-flow");
@@ -1618,11 +1678,13 @@ fn installing_a_package_via_the_prompt_logs_success() {
     app.focus = Focus::FilesDevice;
 
     app.handle(key(KeyCode::Char('i')));
+    // With no index fetched the filter matches nothing, so the manager
+    // offers what was typed as a literal specification --- the escape
+    // hatch the old search lacked entirely.
     for c in "urequests".chars() {
         app.handle(key(KeyCode::Char(c)));
     }
     app.handle(key(KeyCode::Enter));
-    assert_eq!(app.overlay, None);
 
     settle_app(&mut app);
 
@@ -1631,6 +1693,18 @@ fn installing_a_package_via_the_prompt_logs_success() {
             .visible(50)
             .any(|entry| entry.message.contains("installed")),
         "no success notice in the log"
+    );
+    // The install is also *recorded*: the old prompt installed and told the
+    // project nothing, so the next machine rebuilt a different board.
+    let text = std::fs::read_to_string(project.root.join("requirements.txt")).unwrap();
+    assert!(
+        text.lines().any(|line| line == "urequests"),
+        "the typed spec lands in the file too:\n{text}"
+    );
+    assert_eq!(
+        app.overlay,
+        Some(Overlay::Packages),
+        "the window stays open for the next package"
     );
 }
 

@@ -267,6 +267,24 @@ impl SyncStatus {
     }
 }
 
+/// The project directory that is kept in sync with the device: `src/` when
+/// the project has one (`SPEC.md` §9, and what the MicroPython scaffold
+/// writes `boot.py`/`main.py` into), else the project root --- a project
+/// predating the layout, or a Zephyr one.
+///
+/// One definition, because two consumers must not drift: the Files pane
+/// opens here, and the Project pane's boot-file report compares against it.
+/// It read the project *root* instead, where a scaffolded project's entry
+/// points never are, so the row sat on `boot.py ←` (device-only) forever.
+pub fn sync_root(root: &std::path::Path) -> std::path::PathBuf {
+    let src = root.join("src");
+    if src.is_dir() {
+        src
+    } else {
+        root.to_path_buf()
+    }
+}
+
 /// sha256 verdicts by file name: `true` when both sides hashed the same.
 pub type Verdicts = BTreeMap<String, bool>;
 

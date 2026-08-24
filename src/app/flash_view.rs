@@ -164,6 +164,17 @@ impl App {
                 }
                 return;
             }
+            // Verify is a check rather than a step, and it needs a firmware
+            // file picked first, so it answers to its own key instead of
+            // spending one of the stack's six rows. `c` was the obvious
+            // alternative and is deliberately not used: it already means
+            // "compare by sha256" in the file panes, and one UI should not
+            // carry two senses of "verify".
+            KeyCode::Char('v') => {
+                self.flash = Some(flash);
+                self.trigger_flash_action(FlashAction::VerifyFlash);
+                return;
+            }
             _ => {}
         }
         self.flash = Some(flash);
@@ -183,6 +194,7 @@ impl App {
                 self.search_online();
                 self.show_flash_dialog();
             }
+            FlashPaneAction::Packages => self.open_package_manager(),
         }
     }
 

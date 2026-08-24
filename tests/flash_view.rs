@@ -1098,7 +1098,10 @@ fn the_actions_tab_keeps_focus_and_parks_the_cursor_on_stop() {
     let project = Project::new("pane-run");
     let mut app = app_in_actions_tab(&project);
 
-    for _ in 0..2 {
+    for _ in 0..3 {
+        // Search online, Manage packages, Flash information, then Reset:
+        // the row `Verify flash` gave up is `Manage packages`, so the
+        // read-only run this test wants sits one lower than it did.
         app.handle(key(KeyCode::Down)); // Reset, read-only
     }
     app.handle(key(KeyCode::Enter));
@@ -1126,7 +1129,7 @@ fn the_actions_tab_keeps_focus_and_parks_the_cursor_on_stop() {
     assert_eq!(app.focus, Focus::FilesDevice);
     assert_eq!(
         app.flash.as_ref().unwrap().pane_cursor,
-        2,
+        3,
         "a finished command lands back on its own row"
     );
     let frame = render(&mut app, 110, 40);
@@ -1493,5 +1496,54 @@ fn the_strip_carries_each_tabs_own_status() {
     assert!(
         strip.contains("/lib · script running"),
         "the walked path comes back with it: {strip}"
+    );
+}
+
+#[test]
+fn the_actions_tab_offers_packages_where_verify_used_to_sit() {
+    let project = Project::new("pane-packages");
+    let mut app = app_in_actions_tab(&project);
+
+    let frame = render(&mut app, 110, 40);
+    assert!(
+        frame.contains("Manage packages"),
+        "the package manager is a row of the stack:\n{frame}"
+    );
+    assert!(
+        !frame.contains("Verify flash"),
+        "and verify no longer spends one:\n{frame}"
+    );
+
+    // The swap is deliberately height-neutral: `row2_content_height`'s
+    // no-panel fallback is `FlashAction::ALL.len()`, so the row would
+    // reflow the moment the panel appeared if these two disagreed --- and
+    // the declared 80x32 minimum is measured against the same number.
+    let idle = app.flash.as_ref().unwrap().pane_actions().len();
+    assert_eq!(
+        idle,
+        chiptui::flash::FlashAction::ALL.len(),
+        "six idle rows, before and after"
+    );
+
+    // Enter on the row opens the manager.
+    app.handle(key(KeyCode::Down));
+    app.handle(key(KeyCode::Enter));
+    assert_eq!(app.overlay, Some(Overlay::Packages));
+}
+
+#[test]
+fn v_verifies_the_flash_from_the_actions_tab() {
+    let project = Project::new("pane-verify");
+    let mut app = app_in_actions_tab(&project);
+
+    // No firmware file in the project, so the action is refused rather than
+    // run --- but it is *reached*, which is the point: the key replaces the
+    // row it used to have.
+    app.handle(key(KeyCode::Char('v')));
+    assert!(
+        app.logs
+            .visible(50)
+            .any(|entry| entry.message.to_lowercase().contains("firmware")),
+        "verify was dispatched and answered for itself"
     );
 }

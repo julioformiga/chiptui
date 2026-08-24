@@ -1,0 +1,83 @@
+#!/bin/sh
+# Fake `mpremote` for ChipTUI tests: a board whose root holds the same two
+# boot files the project does, so the Project pane's boot report has
+# something real to compare.
+#
+# `main.py` matches the project's byte for byte; `boot.py` is the same
+# *length* with different contents --- the case a size comparison cannot
+# catch, and the whole reason the row hashes in the background rather than
+# resting on the `≈` a size match alone produces.
+
+args="$*"
+
+case "$args" in
+    "connect "*) args=$(printf '%s' "$args" | cut -d' ' -f3-) ;;
+esac
+
+case "$args" in
+    devs)
+        printf '/dev/ttyACM0 bb22cc33dd44ee55 2e8a:0005 MicroPython Board in FS mode\n'
+        ;;
+
+    "fs --no-verbose ls :/")
+        printf '%12d %s\n' 7 'boot.py'
+        printf '%12d %s\n' 12 'main.py'
+        ;;
+
+    "fs --no-verbose ls :/lib")
+        printf '%12d %s\n' 0 'umqtt/'
+        printf '%12d %s\n' 512 'urequests.mpy'
+        ;;
+
+    "fs --no-verbose ls :/lib/umqtt")
+        # What `mip install umqtt.simple` actually writes: a dotted name is a
+        # path, so the package lands *under* a directory of its own.
+        printf '%12d %s\n' 256 'simple.mpy'
+        ;;
+
+    "fs --no-verbose ls :/lib/"*)
+        echo 'mpremote: ls: No such file or directory.' >&2
+        exit 1
+        ;;
+
+    "fs --no-verbose sha256sum :/main.py")
+        # sha256 of "print('hi')\n" --- identical to the project's copy.
+        printf 'caf026f25d7140209f98072605307a438914b9ce6f3c14b23d15d9667241de52\n'
+        ;;
+
+    "fs --no-verbose sha256sum :/boot.py")
+        # Seven bytes, like the project's, but not the same seven.
+        printf '0000000000000000000000000000000000000000000000000000000000000000\n'
+        ;;
+
+    "fs --no-verbose sha256sum :"*)
+        echo 'mpremote: sha256sum: No such file or directory.' >&2
+        exit 1
+        ;;
+
+    "fs --no-verbose rm :/lib/urequests.mpy")
+        # A single-file module: a plain `rm` is right for it.
+        ;;
+
+    "fs --no-verbose --recursive rm :/lib/umqtt")
+        # A package directory needs the recursive form.
+        ;;
+
+    "fs --no-verbose rm :/lib/umqtt")
+        # And a plain `rm` on a directory must fail, the way real mpremote
+        # does --- a fake that quietly accepted it would let the wrong
+        # command ship (`AGENTS.md`: reproduce the tool, not the belief).
+        echo 'mpremote: rm: Is a directory.' >&2
+        exit 1
+        ;;
+
+    df)
+        printf '%s\n' 'filesystem     size     used    avail use% mounted on'
+        printf '%s %9d %8d %8d %4d %s\n' 'vfs       ' 524288 131072 393216 25 '/'
+        ;;
+
+    *)
+        echo "mpremote: no device found" >&2
+        exit 1
+        ;;
+esac

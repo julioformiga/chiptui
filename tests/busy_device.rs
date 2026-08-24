@@ -628,11 +628,14 @@ fn the_device_info_query_runs_once_the_restore_choice_is_made() {
         20
     ));
 
-    // The restore prompt is open: the esptool query must not fire underneath
-    // a decision that may also want the port (a reset, say).
-    assert!(matches!(
-        app.overlay,
-        Some(Overlay::RestoreDeviceScript { .. })
+    // The restore prompt opens once the accepted operations drain --- the
+    // chain now ends with the /lib coverage listing, so it lands a moment
+    // after the pane itself is ready. The esptool query must not fire
+    // underneath a decision that may also want the port (a reset, say).
+    assert!(pump_until(
+        &mut app,
+        |app| matches!(app.overlay, Some(Overlay::RestoreDeviceScript { .. })),
+        20
     ));
     assert!(
         !app.flash.as_ref().unwrap().is_busy(),

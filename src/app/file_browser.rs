@@ -136,9 +136,7 @@ impl App {
                         .capabilities()
                         .contains(Capability::PackageInstall) =>
             {
-                self.overlay = Some(Overlay::PackageInstall {
-                    input: String::new(),
-                });
+                self.open_package_manager();
                 Vec::new()
             }
             _ => Vec::new(),
@@ -436,20 +434,6 @@ impl App {
                 .logs
                 .error(format!("{}: rename failed: {e}", from.display())),
         }
-    }
-
-    /// Runs the package-install prompt (`i` on the device pane): queues
-    /// `mip install` for the typed package name/spec through [`Browser`],
-    /// like every other action here that touches the port.
-    pub(super) fn install_package(&mut self, input: &str) {
-        let package = input.trim();
-        if package.is_empty() {
-            self.logs.warn("type a package name first");
-            return;
-        }
-        self.dispatch_browser(|browser, processes, port| {
-            browser.request_mip_install(package, processes, port)
-        });
     }
 
     /// Takes `self.browser` for the duration of `f`, supplying the selected

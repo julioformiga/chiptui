@@ -291,7 +291,15 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
         Overlay::RenameEntry { name, input } => {
             draw_rename_entry(frame, area, &name, &input, palette)
         }
-        Overlay::PackageInstall { input } => draw_package_install(frame, area, &input, palette),
+        Overlay::Packages => draw_packages(frame, area, app, palette),
+        Overlay::ConfirmRemovePackage {
+            name,
+            targets,
+            declared,
+            confirm,
+        } => draw_confirm_remove_package(
+            frame, area, app, &name, &targets, declared, confirm, palette,
+        ),
         Overlay::SyncPreview { plan, confirm } => {
             draw_sync_preview(frame, area, &plan, confirm, palette)
         }
@@ -949,39 +957,322 @@ fn draw_rename_entry(frame: &mut Frame, area: Rect, name: &str, input: &str, pal
     );
 }
 
-/// Inline text entry for `mip install` (`i` on the device pane) --- same
-/// shape as [`draw_create_entry`], just with no `side` (it always acts on
-/// the device) and a hint describing a package spec instead of a filename.
-fn draw_package_install(frame: &mut Frame, area: Rect, input: &str, palette: Palette) {
-    let popup = centered(area, 54, 6);
-    let block = modal("Install package (mip)", palette);
-    let inner = block.inner(popup);
+/// "Remove this package?" --- the manager's `Del`, in the destructive
+/// grammar every other one follows (`SPEC.md` §15): the action as a
+/// question, *what it happens to* in the warning color, what is lost in a
+/// plain sentence, then the literal command muted underneath.
+///
+/// Two things can be lost and the wording has to name whichever apply: the
+/// line in `requirements.txt`, and whatever the package left in `/lib`.
+#[allow(clippy::too_many_arguments)]
+fn draw_confirm_remove_package(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    name: &str,
+    targets: &[(crate::device::DevicePath, bool)],
+    declared: bool,
+    confirm: bool,
+    palette: Palette,
+) {
+    let paths: Vec<String> = targets.iter().map(|(path, _)| path.to_string()).collect();
+    let target = if paths.is_empty() {
+        format!("{name} — declared only, nothing on the board")
+    } else {
+        format!("{} · {}", board_target(app), paths.join(", "))
+    };
+    let consequence = match (declared, paths.is_empty()) {
+        (true, false) => "Deletes it from the board and drops its line from requirements.txt.",
+        (true, true) => "Drops its line from requirements.txt. Nothing is deleted from the board.",
+        (false, false) => "Deletes it from the board. requirements.txt does not declare it.",
+        (false, true) => "Nothing to remove.",
+    };
+    // The literal commands, built from the same constructors the requests
+    // will run, so the quote cannot drift from what happens.
+    let port = app.devices.selected_port();
+    let command = targets
+        .iter()
+        .map(|(path, recursive)| {
+            if *recursive {
+                crate::backend::micropython::commands::rm_recursive(port, path).to_string()
+            } else {
+                crate::backend::micropython::commands::rm(port, path).to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ; ");
+    draw_destructive(
+        frame,
+        area,
+        Destructive {
+            title: "Remove this package?",
+            target,
+            consequence,
+            command,
+        },
+        confirm,
+        palette,
+    );
+}
 
-    frame.render_widget(Clear, popup);
-    frame.render_widget(block, popup);
+/// The package manager: one filterable list over what the project
+/// declares, what the board carries and what micropython-lib offers, with
+/// a details pane beside it. `Tab` swaps which half the keyboard drives,
+/// and the focused pane's border takes the accent --- the board/shield
+/// pickers' grammar, reused rather than reinvented.
+fn draw_packages(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
+    use crate::app::packages::{PackageIndex, RowKind};
+    use crate::ui::layout;
 
-    let [hint_area, input_area] =
-        Layout::vertical([Constraint::Length(1), Constraint::Length(3)]).areas(inner);
+    let state = app.packages_state();
+    let areas = layout::packages(area);
+    let list_focused = state.focus == crate::app::DocsFocus::List;
 
-    frame.render_widget(
-        Paragraph::new(
-            "package name, e.g. urequests, or name@version, github:org/repo".fg(palette.muted),
+    frame.render_widget(Clear, areas.popup);
+    frame.render_widget(modal("Packages", palette), areas.popup);
+
+    // The filter line carries the counts on its right edge, so the window
+    // and the Dependencies row can never disagree about the fraction.
+    let rows = app.package_rows();
+    let declared = rows
+        .iter()
+        .filter(|row| matches!(row, RowKind::Package(package) if package.declared()))
+        .count();
+    let installed = rows
+        .iter()
+        .filter(|row| {
+            matches!(row, RowKind::Package(package)
+                if package.installed == crate::backend::micropython::deps::Installed::Yes)
+        })
+        .count();
+    let counts = format!("{declared} declared · {installed} in /lib");
+    let icons = app.icon_set();
+    let typed = Line::from(vec![
+        Span::styled(
+            format!("{} ", icons.search()),
+            Style::new().fg(palette.accent),
         ),
-        hint_area,
+        Span::styled(state.input.clone(), Style::new().fg(palette.fg)),
+        Span::raw("_").fg(palette.accent),
+    ]);
+    frame.render_widget(Paragraph::new(typed), areas.filter);
+    let counts_width = counts.chars().count() as u16;
+    if areas.filter.width > counts_width {
+        let right = Rect {
+            x: areas.filter.x + areas.filter.width - counts_width,
+            width: counts_width,
+            ..areas.filter
+        };
+        frame.render_widget(Paragraph::new(counts.fg(palette.muted)), right);
+    }
+    // The hint line doubles as the index fetch's status. A failure has to
+    // stay visible even when the file and the board contribute rows of
+    // their own: the catalogue being gone changes what the window can do,
+    // and hiding that behind a populated list would be a lie by omission.
+    let hint = match &app.package_index {
+        PackageIndex::Fetching { .. } => Line::from(vec![
+            Span::styled(
+                crate::ui::SPINNER[(app.ticks % crate::ui::SPINNER.len() as u64) as usize]
+                    .to_string(),
+                Style::new().fg(palette.accent),
+            ),
+            Span::styled(" fetching the package index…", muted_style(palette)),
+        ]),
+        PackageIndex::Failed(reason) => Line::from(reason.clone().fg(palette.error)),
+        _ => Line::from(
+            "type to filter, or paste a github:/URL spec; enter installs, del removes"
+                .fg(palette.muted),
+        ),
+    };
+    frame.render_widget(
+        Paragraph::new(hint).wrap(ratatui::widgets::Wrap { trim: true }),
+        areas.hint,
     );
 
-    let field = Block::bordered()
+    let list_block = Block::bordered()
         .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(palette.accent));
-    let field_inner = field.inner(input_area);
-    frame.render_widget(field, input_area);
+        .border_style(border_style(list_focused, palette));
+    let list_inner = list_block.inner(areas.list);
+    frame.render_widget(list_block, areas.list);
+
+    if rows.is_empty() {
+        // Reachable only with an empty filter and nothing from any of the
+        // three sources: a typed filter always offers itself as a spec.
+        frame.render_widget(
+            Paragraph::new("nothing declared, installed or offered".fg(palette.muted)),
+            list_inner,
+        );
+    } else {
+        let items: Vec<ListItem> = rows.iter().map(|row| package_item(row, palette)).collect();
+        let mut list_state = ListState::default();
+        list_state.select(Some(state.selected.min(rows.len() - 1)));
+        frame.render_stateful_widget(
+            List::new(items).highlight_style(selection_style(palette)),
+            list_inner,
+            &mut list_state,
+        );
+    }
+
+    let details_block = Block::bordered()
+        .title(" Details ")
+        .border_type(BorderType::Rounded)
+        .border_style(border_style(!list_focused, palette));
+    let details_inner = details_block.inner(areas.details);
+    frame.render_widget(details_block, areas.details);
     frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(input.to_string(), Style::new().fg(palette.fg)),
-            Span::raw("_").fg(palette.accent),
-        ])),
-        field_inner,
+        Paragraph::new(package_details(app, rows.get(state.selected), palette))
+            .wrap(ratatui::widgets::Wrap { trim: true })
+            .scroll((state.scroll, 0)),
+        details_inner,
     );
+}
+
+/// One drawn row: the action rows lead with the accent, a package row with
+/// its state mark. The marks are the checklist's own vocabulary and carry
+/// no [`crate::icons::IconSet`] --- they say what *is*, not what a button
+/// does.
+fn package_item(row: &crate::app::packages::RowKind, palette: Palette) -> ListItem<'static> {
+    use crate::app::packages::RowKind;
+    let spans = match row {
+        RowKind::InstallAll { total, installed } => vec![
+            Span::styled(" ▶ ", Style::new().fg(palette.accent)),
+            Span::styled(
+                format!("Install all declared ({installed}/{total})"),
+                Style::new().fg(palette.fg).bold(),
+            ),
+        ],
+        RowKind::ManualSpec(spec) => vec![
+            Span::styled(" + ", Style::new().fg(palette.accent)),
+            Span::styled("install ".to_string(), Style::new().fg(palette.fg)),
+            Span::styled(
+                format!("\u{201c}{spec}\u{201d}"),
+                Style::new().fg(palette.fg).bold(),
+            ),
+        ],
+        RowKind::Package(package) => {
+            let mark_color = match (package.declared(), package.installed) {
+                (true, crate::backend::micropython::deps::Installed::Yes) => palette.success,
+                (false, crate::backend::micropython::deps::Installed::Yes) => palette.warning,
+                _ => palette.muted,
+            };
+            let mut spans = vec![
+                Span::styled(format!(" {} ", package.mark()), Style::new().fg(mark_color)),
+                Span::styled(package.name.clone(), Style::new().fg(palette.fg).bold()),
+            ];
+            if let Some(version) = &package.version
+                && !version.is_empty()
+            {
+                spans.push(Span::styled(format!("  {version}"), muted_style(palette)));
+            }
+            spans
+        }
+    };
+    ListItem::new(Line::from(spans))
+}
+
+/// The details pane's text for the row under the cursor.
+fn package_details(
+    app: &App,
+    row: Option<&crate::app::packages::RowKind>,
+    palette: Palette,
+) -> Vec<Line<'static>> {
+    use crate::app::packages::RowKind;
+    use crate::backend::micropython::deps;
+
+    let label = |text: &str| Span::styled(format!("{text}: "), muted_style(palette));
+    match row {
+        None => vec![Line::from("nothing selected".fg(palette.muted))],
+        Some(RowKind::InstallAll { total, installed }) => vec![
+            Line::from("Install all declared".fg(palette.fg).bold()),
+            Line::from(""),
+            Line::from(format!(
+                "Runs one `mip install` carrying every specification \
+                 requirements.txt declares. {installed} of {total} are already \
+                 in /lib; mip skips those, so re-running is cheap."
+            )),
+        ],
+        Some(RowKind::ManualSpec(spec)) => vec![
+            Line::from(spec.clone().fg(palette.fg).bold()),
+            Line::from(""),
+            Line::from("Installed verbatim and written into requirements.txt."),
+            Line::from(""),
+            Line::from(
+                "mip takes a name, name@version, github:org/repo, gitlab:org/repo \
+                 or a URL to a .py/.mpy/package.json."
+                    .fg(palette.muted),
+            ),
+        ],
+        Some(RowKind::Package(package)) => {
+            let mut lines = vec![Line::from(package.name.clone().fg(palette.fg).bold())];
+            if let Some(description) = &package.description
+                && !description.is_empty()
+            {
+                lines.push(Line::from(description.clone()));
+            }
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                label("state"),
+                Span::raw(package.state().to_string()),
+            ]));
+            if let Some(version) = &package.version
+                && !version.is_empty()
+            {
+                lines.push(Line::from(vec![
+                    label("latest"),
+                    Span::raw(version.clone()),
+                ]));
+            }
+            match &package.spec {
+                Some(spec) => lines.push(Line::from(vec![
+                    label("declared as"),
+                    Span::raw(spec.clone()),
+                ])),
+                None => lines.push(Line::from(vec![
+                    label("declared"),
+                    Span::styled("no", muted_style(palette)),
+                ])),
+            }
+            // Where it lives, or would live: the same mapping the coverage
+            // count walks, so the pane explains the mark beside it.
+            let target = deps::lib_target(&package.name);
+            let present: Vec<String> = app
+                .browser
+                .as_ref()
+                .and_then(|browser| browser.cached_listing(&target.dir))
+                .map(|entries| {
+                    entries
+                        .iter()
+                        .filter(|entry| target.candidates.contains(&entry.name))
+                        .map(|entry| target.dir.join(&entry.name).to_string())
+                        .collect()
+                })
+                .unwrap_or_default();
+            if present.is_empty() {
+                lines.push(Line::from(vec![
+                    label("on the board"),
+                    Span::styled(
+                        match package.installed {
+                            deps::Installed::Unknown => "not checked".to_string(),
+                            _ => "not installed".to_string(),
+                        },
+                        muted_style(palette),
+                    ),
+                ]));
+            } else {
+                for (index, path) in present.iter().enumerate() {
+                    lines.push(Line::from(vec![
+                        label(if index == 0 {
+                            "on the board"
+                        } else {
+                            "            "
+                        }),
+                        Span::raw(path.clone()),
+                    ]));
+                }
+            }
+            lines
+        }
+    }
 }
 
 /// Empty or unrecognized project (`SPEC.md` §7): asks which backend this

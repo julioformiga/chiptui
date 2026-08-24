@@ -334,7 +334,7 @@ const DASHBOARD_NAVIGATION: [HelpBinding; 10] = [
     ),
 ];
 
-const DASHBOARD_COMMANDS: [HelpBinding; 22] = [
+const DASHBOARD_COMMANDS: [HelpBinding; 25] = [
     action(
         "r",
         "re-detect, reload, or rename (file list)",
@@ -463,15 +463,50 @@ const DASHBOARD_COMMANDS: [HelpBinding; 22] = [
     ),
     action(
         "i",
-        "install a package via mip",
+        "open the package manager",
         KeyCode::Char('i'),
         &[site(
             "i",
-            "install pkg",
+            "packages",
             18,
             &[Focus::FilesDevice],
             &[Capability::PackageInstall],
             When::FilesTab,
+        )],
+    ),
+    action(
+        "v (actions tab)",
+        "verify the flash against a firmware file",
+        KeyCode::Char('v'),
+        &[site(
+            "v",
+            "verify",
+            19,
+            &[Focus::FilesDevice],
+            &[Capability::EraseFlash],
+            When::ActionsTab,
+        )],
+    ),
+    // Help-only: inside the manager the footer is `App::shortcuts`, and
+    // no action can live on a plain letter there (the filter line takes
+    // every printable character), so these two are worth spelling out.
+    action(
+        "del (packages)",
+        "remove a package from requirements.txt and the board",
+        KeyCode::Delete,
+        &[],
+    ),
+    action(
+        "s (dependencies row)",
+        "open the package manager",
+        KeyCode::Char('s'),
+        &[site(
+            "s",
+            "packages",
+            20,
+            &[Focus::Project],
+            &[Capability::PackageInstall],
+            When::Always,
         )],
     ),
     action(

@@ -8,8 +8,10 @@
 
 pub mod commands;
 pub mod curl;
+pub mod deps;
 pub mod esptool;
 pub mod firmware;
+pub mod packages;
 pub mod parse;
 pub mod projects;
 
@@ -149,6 +151,13 @@ impl Backend for MicroPythonBackend {
                          if __name__ == \"__main__\":\n\
                          \x20   main()\n"
                     ),
+                ),
+                // The Dependencies row's file starts in the project from the
+                // first minute: an empty-but-present requirements.txt is the
+                // answer the row reads, and the header documents the grammar.
+                crate::project::ScaffoldFile::new(
+                    "requirements.txt",
+                    crate::backend::micropython::deps::REQUIREMENTS_TEMPLATE,
                 ),
             ],
         }

@@ -141,6 +141,17 @@ pub(crate) enum RowMark {
 }
 
 impl RowMark {
+    /// How alarming the mark is, so a row summarising several facts can
+    /// report the worst of them rather than whichever came last.
+    pub(crate) const fn severity(self) -> u8 {
+        match self {
+            Self::Done => 0,
+            Self::Open => 1,
+            Self::Warn => 2,
+            Self::Broken => 3,
+        }
+    }
+
     /// The glyph and its color. All four are plain BMP characters --- no
     /// Private Use Area, which `tests/no_private_use_glyphs.rs` enforces.
     fn span(self, palette: Palette) -> Span<'static> {

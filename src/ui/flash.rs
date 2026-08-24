@@ -541,6 +541,12 @@ fn draw_action_rows(
             FlashPaneAction::SearchOnline => {
                 Button::new("Search firmware online").icon(icons.search(), palette.info)
             }
+            // `⚙` is `Zephyr Actions`' own glyph, and the same role: a
+            // button that opens a menu of operations rather than running
+            // one.
+            FlashPaneAction::Packages => {
+                Button::new("Manage packages").icon(icons.cogs(), palette.info)
+            }
             FlashPaneAction::Stop => unreachable!("Stop is drawn as the footer box"),
         }
         .enabled(enabled)

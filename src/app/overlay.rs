@@ -783,24 +783,36 @@ impl App {
                 }
                 _ => {}
             },
-            Overlay::PackageInstall { input } => match key.code {
-                KeyCode::Esc => self.overlay = None,
-                KeyCode::Backspace => {
-                    let mut input = input;
-                    input.pop();
-                    self.overlay = Some(Overlay::PackageInstall { input });
-                }
-                KeyCode::Char(c) => {
-                    let mut input = input;
-                    input.push(c);
-                    self.overlay = Some(Overlay::PackageInstall { input });
-                }
-                KeyCode::Enter => {
-                    self.overlay = None;
-                    self.install_package(&input);
-                }
-                _ => {}
-            },
+            Overlay::Packages => self.on_packages_key(key),
+            Overlay::ConfirmRemovePackage {
+                name,
+                targets,
+                declared,
+                confirm,
+            } => {
+                let accepted = (name.clone(), targets.clone());
+                self.dispatch_confirm(
+                    key.code,
+                    confirm,
+                    move |app, confirm| {
+                        app.overlay = Some(Overlay::ConfirmRemovePackage {
+                            name,
+                            targets,
+                            declared,
+                            confirm,
+                        });
+                    },
+                    move |app| {
+                        let (name, targets) = accepted;
+                        app.remove_package(&name, &targets, declared);
+                        // The manager comes back either way: the slot is
+                        // one deep, so this replaced it rather than
+                        // covering it, and its state waited on `App`.
+                        app.overlay = Some(Overlay::Packages);
+                    },
+                    |app| app.overlay = Some(Overlay::Packages),
+                );
+            }
             Overlay::FileViewer => match key.code {
                 KeyCode::Esc | KeyCode::Char('q') => {
                     self.overlay = None;
@@ -1035,7 +1047,6 @@ fn is_help_reachable_overlay(overlay: &Overlay) -> bool {
             | Overlay::DirPicker { .. }
             | Overlay::BuildDirPicker { .. }
             | Overlay::ProjectPicker { .. }
-            | Overlay::PackageInstall { .. }
             | Overlay::DevicePicker { .. }
             | Overlay::ThemePicker { .. }
             | Overlay::FirmwarePicker { .. }
@@ -1051,8 +1062,6 @@ fn is_help_reachable_overlay(overlay: &Overlay) -> bool {
 fn is_text_entry_overlay(overlay: &Overlay) -> bool {
     matches!(
         overlay,
-        Overlay::RenameEntry { .. }
-            | Overlay::BuildDirPicker { .. }
-            | Overlay::PackageInstall { .. }
+        Overlay::RenameEntry { .. } | Overlay::BuildDirPicker { .. } | Overlay::Packages
     )
 }
