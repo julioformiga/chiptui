@@ -3,6 +3,11 @@ name = "chiptui"
 version = "0.1.0"
 edition = "2024"
 description = "Terminal UI for embedded development workflows"
+repository = "https://github.com/julioformiga/chiptui"
+license = "MIT"
+readme = "README.md"
+keywords = ["embedded", "tui", "micropython", "zephyr", "esp32"]
+categories = ["command-line-utilities", "embedded", "development-tools"]
 
 [dependencies]
 # The device serial monitor runs `mpremote repl`, which requires a real tty
