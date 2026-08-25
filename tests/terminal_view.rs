@@ -203,17 +203,19 @@ fn the_terminal_answers_the_queries_a_prompt_blocks_on() {
     app.set_terminal_tool(
         Command::new("/bin/sh")
             .arg("-c")
-            // Ask, then hold the session open. The reply is written back
-            // into the PTY, and the tty's own echo brings it round to the
-            // screen --- which is the observable proof that something
-            // answered, since nothing else can put those bytes there.
-            .arg("printf '\\033[6n'; sleep 30"),
+            // Ask, read the six bytes of the report (`ESC [ 1 ; 1 R`),
+            // and print them as hex: the pty's input discipline no longer
+            // echoes (ChipTUI sets it at spawn, the way a terminal owns
+            // its own line settings), so the child itself is the
+            // observation --- raw would be pointless, the emulator parses
+            // a cursor-position report back into invisibility.
+            .arg("printf '\\033[6n'; dd bs=1 count=6 2>/dev/null | od -An -t x1; sleep 30"),
     );
     app.show_terminal_tab();
     let id = app.terminal_process.expect("the shell session started");
 
     let deadline = Instant::now() + Duration::from_secs(20);
-    while !app.terminal.screen().contents().contains('R') && Instant::now() < deadline {
+    while !app.terminal.screen().contents().contains("1b 5b") && Instant::now() < deadline {
         for event in app.processes.drain() {
             app.handle(AppEvent::Process(event));
         }
@@ -223,7 +225,7 @@ fn the_terminal_answers_the_queries_a_prompt_blocks_on() {
     app.processes.cancel(id);
 
     assert!(
-        screen.contains("1;1R"),
+        screen.contains("1b 5b 31 3b 31 52"),
         "the query was answered with a cursor-position report: {screen:?}"
     );
 }

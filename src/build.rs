@@ -746,7 +746,10 @@ impl BuildPanel {
         Some(self.decorated(command.current_dir(&self.root)))
     }
 
-    fn has_build_dir(&self) -> bool {
+    /// Whether the lifecycle's build directory exists (configured by a
+    /// previous build). The monitor asks the same fact: the platform
+    /// monitor reads the build's runner configuration.
+    pub fn has_build_dir(&self) -> bool {
         self.root.join(&self.build_dir).is_dir()
     }
 

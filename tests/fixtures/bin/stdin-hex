@@ -1,0 +1,13 @@
+#!/bin/sh
+# Echoes each stdin byte as `BYTE <hex>` the moment it arrives, until a
+# read on the closed pty fails. The child deliberately does NOT touch the
+# terminal mode: ChipTUI sets the pty's input discipline itself at spawn
+# (the same mode miniterm/idf_monitor set with `console.setup()`), so a
+# test asserting here proves control bytes (Ctrl+T 0x14, Ctrl+R 0x12,
+# Ctrl+] 0x1d) survive the default canonical discipline that would
+# otherwise swallow them during the child's startup window.
+while :; do
+    b=$(dd bs=1 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n')
+    [ -n "$b" ] || exit 0
+    printf 'BYTE %s\n' "$b"
+done

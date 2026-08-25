@@ -674,48 +674,94 @@ impl App {
         self.place_startup_focus();
     }
 
-    /// Starts an interactive device monitor.
+    /// Starts an interactive device monitor, in the form the board's
+    /// platform calls for: the backend picks from
+    /// [`crate::backend::MonitorContext`] --- the selected port, the
+    /// auto-detected firmware, the build's board answer and configuration,
+    /// the workspace's west invocation and the project root. A missing
+    /// fact is a refusal naming it (a cohesive environment over a monitor
+    /// at any cost).
     pub fn open_monitor(&mut self) {
         let port = self.devices.selected_port().map(str::to_string);
-        if let Some(command) = self
+        let firmware = self
+            .flash
+            .as_ref()
+            .and_then(|flash| flash.details.firmware.clone());
+        let board = self
+            .build
+            .as_ref()
+            .and_then(|panel| panel.board_name().map(str::to_string));
+        let build_configured = self
+            .build
+            .as_ref()
+            .is_some_and(|panel| panel.has_build_dir());
+        // `west_env()` answers the bare-`west` fallback while unresolved,
+        // which would be a guess about the environment; only a resolved
+        // workspace's invocation counts here.
+        let west_env = self
+            .workspace
+            .as_ref()
+            .filter(|panel| panel.resolved.is_some())
+            .map(|panel| panel.west_env());
+        let project_root = self.manager.root().map(Path::to_path_buf);
+        let context = crate::backend::MonitorContext {
+            port: port.as_deref(),
+            firmware: firmware.as_ref(),
+            board: board.as_deref(),
+            build_configured,
+            west: west_env.as_ref(),
+            project_root: project_root.as_deref(),
+        };
+        match self
             .manager
             .backend()
-            .and_then(|b| b.monitor_command(port.as_deref()))
+            .and_then(|backend| backend.monitor_command(&context).ok())
             .map(|mut command| {
-                // Same `[tools]` override seam the browser and run session
-                // use, so tests (and user overrides) point every mpremote
-                // invocation at the same binary. The browser owns the
-                // mpremote override; the build panel owns west's.
-                let tool = self
-                    .browser
-                    .as_ref()
-                    .and_then(Browser::tool_path)
-                    .or_else(|| self.build.as_ref().and_then(|panel| panel.tool_path()));
-                if let Some(tool) = tool {
+                // The mpremote override seam the browser owns, applied to
+                // mpremote invocations only (the same binary every browser
+                // command runs): the west invocation comes resolved from
+                // the workspace, not from a `PATH` lookup to replace.
+                if command.program() == crate::backend::micropython::commands::PROGRAM
+                    && let Some(tool) = self.browser.as_ref().and_then(Browser::tool_path)
+                {
                     command = command.with_program(tool.to_string());
                 }
                 command
-            })
-        {
-            // Otherwise the process starts receiving keystrokes only once the
-            // user separately tabs over to the pane that just opened for it.
-            self.focus = super::Focus::Logs;
-            self.log_tab = LogTab::Monitor;
-            self.set_monitor_source(MonitorSource::Device);
-            self.device_monitor_output.clear();
-            self.monitor_console.reset();
+            }) {
+            Some(command) => {
+                // Otherwise the process starts receiving keystrokes only once the
+                // user separately tabs over to the pane that just opened for it.
+                self.focus = super::Focus::Logs;
+                self.log_tab = LogTab::Monitor;
+                self.set_monitor_source(MonitorSource::Device);
+                self.device_monitor_output.clear();
+                self.monitor_console.reset();
 
-            // Spawn the monitor in a PTY so it stays inside the tab
-            match self
-                .processes
-                .spawn_pty(command, std::time::Duration::from_secs(86400))
-            {
-                // 24h timeout
-                Ok(id) => self.device_monitor_process = Some(id),
-                Err(e) => {
-                    self.logs.error(format!("could not open monitor: {}", e));
-                    self.device_monitor_process = None;
+                // Spawn the monitor in a PTY so it stays inside the tab
+                match self
+                    .processes
+                    .spawn_pty(command, std::time::Duration::from_secs(86400))
+                {
+                    // 24h timeout
+                    Ok(id) => self.device_monitor_process = Some(id),
+                    Err(e) => {
+                        self.logs.error(format!("could not open monitor: {}", e));
+                        self.device_monitor_process = None;
+                    }
                 }
+            }
+            None => {
+                // The key is gated on `Capability::Monitor`, so reaching
+                // here means either no backend or a refusal: ask the
+                // backend which, and log the reason it names.
+                let why = self.manager.backend().map_or_else(
+                    || "no backend selected".to_string(),
+                    |backend| match backend.monitor_command(&context) {
+                        Ok(_) => unreachable!("a command existed a moment ago"),
+                        Err(reason) => reason,
+                    },
+                );
+                self.logs.warn(format!("monitor unavailable: {why}"));
             }
         }
     }

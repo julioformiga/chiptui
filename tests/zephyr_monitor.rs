@@ -1,6 +1,9 @@
 //! The Zephyr monitor end to end: USB serial port discovery without
-//! mpremote, the device picker for several ports, and `west monitor` in a
-//! PTY session (`SPEC.md` §10's monitor, wired to the Monitor tab).
+//! mpremote, the device picker for several ports, and the platform's own
+//! monitor --- `west espressif monitor -p PORT`, the west extension the
+//! workspace ships for ESP32 boards (there is no `west monitor`) --- in a
+//! PTY session (`SPEC.md` §10's monitor, wired to the Monitor tab), with
+//! every missing fact refused by name.
 
 #![cfg(unix)]
 
@@ -8,9 +11,11 @@ use std::time::{Duration, Instant};
 
 use chiptui::app::{App, Focus, LogTab, MonitorSource, Overlay};
 use chiptui::backend::BackendKind;
+use chiptui::backend::zephyr::workspace::{Resolution, Workspace, WorkspaceOrigin};
 use chiptui::device::DiscoveryState;
 use chiptui::event::AppEvent;
 use chiptui::flash::FlashPanel;
+use chiptui::workspace::WorkspacePanel;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 fn fake(tool: &str) -> String {
@@ -171,12 +176,35 @@ fn the_chip_identity_is_queried_even_on_the_zephyr_backend() {
     assert!(frame.contains("ESP32"), "missing chip identity:\n{frame}");
 }
 
+/// Gives the app a resolved Zephyr workspace whose west is the fake ---
+/// the invocation every monitor of the Zephyr environment runs through.
+fn resolve_workspace_with_fake_west(app: &mut App, root: &std::path::Path) {
+    let workspace = Workspace {
+        dir: root.join("ws"),
+        origin: WorkspaceOrigin::UserConfig,
+        zephyr_base: root.join("ws/zephyr"),
+        venv: Some(root.join("ws/.venv")),
+        west: fake("west"),
+        sdk: None,
+    };
+    app.workspace = Some(WorkspacePanel::new(Resolution::Single(workspace), ""));
+}
+
+/// Answers the board question the platform monitor needs and creates the
+/// configured build directory it reads the runner configuration from.
+fn answer_board(app: &mut App, root: &std::path::Path, board: &str) {
+    std::fs::create_dir_all(root.join("build")).unwrap();
+    app.build.as_mut().unwrap().set_picked(board);
+}
+
 #[test]
-fn m_starts_west_monitor_in_a_pty_on_the_selected_port() {
+fn m_runs_the_platforms_own_espressif_monitor_on_the_selected_port() {
     let (mut app, root) = zephyr_app("monitor");
     std::fs::write(root.join("dev/ttyACM0"), b"").unwrap();
     app.handle(key(KeyCode::Char('d')));
     assert!(app.devices.selected_port().is_some());
+    resolve_workspace_with_fake_west(&mut app, &root);
+    answer_board(&mut app, &root, "adafruit_feather_esp32s3/esp32s3/procpu");
 
     app.handle(key(KeyCode::Char('m')));
 
@@ -196,19 +224,77 @@ fn m_starts_west_monitor_in_a_pty_on_the_selected_port() {
         |app| {
             app.device_monitor_output
                 .iter()
-                .any(|l| l.contains("monitor"))
+                .any(|l| l.contains("espressif"))
         },
         10,
     );
-    assert!(echoed, "no west monitor output arrived");
+    assert!(echoed, "no espressif monitor output arrived");
     let port = root.join("dev/ttyACM0").display().to_string();
     assert!(
         app.device_monitor_output
             .iter()
-            .any(|l| l.contains(&port) && l.contains("--port")),
-        "the monitor must name the selected port: {:?}",
+            .any(|l| l.contains("espressif monitor") && l.contains("-p") && l.contains(&port)),
+        "the monitor must run the workspace's own espressif extension with \
+         the selected port: {:?}",
         app.device_monitor_output
     );
+}
+
+#[test]
+fn m_without_a_workspace_refuses_instead_of_guessing() {
+    let (mut app, root) = zephyr_app("no-ws");
+    std::fs::write(root.join("dev/ttyACM0"), b"").unwrap();
+    app.handle(key(KeyCode::Char('d')));
+    assert!(app.devices.selected_port().is_some());
+    answer_board(&mut app, &root, "esp32_devkitc_wrover/esp32/procpu");
+
+    // No resolved workspace: the platform monitor runs through its west,
+    // and a bare `west` from `PATH` would be a guess about the environment.
+    app.handle(key(KeyCode::Char('m')));
+
+    assert!(
+        app.device_monitor_process.is_none(),
+        "nothing may spawn without the workspace's west"
+    );
+    let last = last_log(&app);
+    assert!(
+        last.contains("monitor unavailable") && last.contains("workspace"),
+        "the refusal must name the missing fact: {last}"
+    );
+}
+
+#[test]
+fn m_on_a_non_espressif_board_refuses_not_improvises_a_console() {
+    let (mut app, root) = zephyr_app("nrf");
+    std::fs::write(root.join("dev/ttyACM0"), b"").unwrap();
+    app.handle(key(KeyCode::Char('d')));
+    assert!(app.devices.selected_port().is_some());
+    resolve_workspace_with_fake_west(&mut app, &root);
+    answer_board(&mut app, &root, "nrf52840dk/nrf52840");
+
+    // Zephyr ships no monitor for nRF: a generic serial viewer would be a
+    // monitor at any cost rather than the environment's own form. The
+    // refusal names the platform so the user can open their own terminal.
+    app.handle(key(KeyCode::Char('m')));
+
+    assert!(
+        app.device_monitor_process.is_none(),
+        "nothing may spawn for a platform the environment has no monitor for"
+    );
+    let last = last_log(&app);
+    assert!(
+        last.contains("monitor unavailable") && last.contains("nrf52840dk"),
+        "the refusal must name the platform: {last}"
+    );
+}
+
+/// The newest log entry's message.
+fn last_log(app: &App) -> String {
+    app.logs
+        .visible(1000)
+        .last()
+        .map(|entry| entry.message.clone())
+        .unwrap_or_default()
 }
 
 #[test]
@@ -339,18 +425,29 @@ fn hotplug_updates_the_device_status() {
 }
 
 #[test]
-fn m_without_a_selected_port_still_lets_west_auto_detect() {
-    // Symmetric with the mpremote monitor: `m` is an explicit user action,
-    // and west's own auto-detection is its documented default --- ChipTUI
-    // only avoids guessing for its *automatic* operations (SPEC.md §8).
+fn m_without_a_selected_port_refuses_instead_of_guessing() {
+    // The platform monitor attaches through the selected port: portless,
+    // the espressif extension probes every candidate port with esptool,
+    // resetting each board --- exactly the guess this app never makes. A
+    // refusal that names the fact beats a silent reset.
     let (mut app, _root) = zephyr_app("auto");
     assert!(app.devices.selected_port().is_none());
 
     app.handle(key(KeyCode::Char('m')));
 
     assert!(
-        app.device_monitor_process.is_some(),
-        "west monitor without --port must still start"
+        app.device_monitor_process.is_none(),
+        "nothing may spawn without a selected port"
+    );
+    let last = app
+        .logs
+        .visible(1000)
+        .last()
+        .map(|entry| entry.message.clone())
+        .unwrap_or_default();
+    assert!(
+        last.contains("monitor unavailable") && last.contains("no device selected"),
+        "the refusal must name the missing fact: {last}"
     );
 }
 

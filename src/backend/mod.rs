@@ -311,6 +311,28 @@ impl FromIterator<Capability> for Capabilities {
     }
 }
 
+/// What the app knows about the board a monitor was asked for.
+///
+/// Every field may be unknown: `port` is the device pane's selection,
+/// `firmware` is the auto-detected verdict the identification chain read
+/// off the board's flash ([`crate::firmware_id::FirmwareVerdict`]), `board`
+/// and `build_configured` are the build panel's answers (the platform the
+/// monitor must pick a form for, and whether a configured build directory
+/// exists to read the runner configuration from), `west` is the resolved
+/// workspace's west invocation, and `project_root` is the directory build
+/// commands run in. Each backend decides which facts its monitor needs; an
+/// unknown fact must lead to a refusal naming it, never to a guess --- the
+/// priority is a cohesive environment, not a monitor at any cost.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MonitorContext<'a> {
+    pub port: Option<&'a str>,
+    pub firmware: Option<&'a crate::firmware_id::FirmwareVerdict>,
+    pub board: Option<&'a str>,
+    pub build_configured: bool,
+    pub west: Option<&'a crate::backend::zephyr::workspace::WestEnv>,
+    pub project_root: Option<&'a std::path::Path>,
+}
+
 /// A framework-specific backend.
 pub trait Backend {
     fn kind(&self) -> BackendKind;
@@ -343,11 +365,14 @@ pub trait Backend {
         crate::project::Scaffold::default()
     }
 
-    /// Returns the command to launch an interactive serial monitor/REPL.
-    /// Returns `None` if the backend doesn't support a monitor, or if it isn't implemented.
-    fn monitor_command(&self, port: Option<&str>) -> Option<crate::process::Command> {
-        let _ = port;
-        None
+    /// Returns the command to launch an interactive serial monitor, in the
+    /// form [`MonitorContext`] says the board's platform calls for. `Err`
+    /// carries the reason a monitor cannot run --- a missing fact, named,
+    /// so the refusal reads as an answer (the priority is a cohesive
+    /// environment, not a monitor at any cost).
+    fn monitor_command(&self, ctx: &MonitorContext<'_>) -> Result<crate::process::Command, String> {
+        let _ = ctx;
+        Err("this backend has no monitor".to_string())
     }
 
     /// Returns the command for one flavor of the build lifecycle

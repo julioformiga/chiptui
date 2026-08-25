@@ -573,8 +573,35 @@ runner from `runner.yml` — never a hard-coded programmer) sits last under
 routes a build-panel backend there instead of esptool's dialog, and the "Device Info" pane shows
 esptool's report for any backend whose board answers the background `chip-id` query (Zephyr
 included; without an answer it falls back to its honest placeholder).
-The Zephyr monitor is wired too: `m` runs `west monitor [--port P]` (`Backend::monitor_command`)
-in the same PTY session MicroPython uses, and port discovery for a backend without `mpremote
+The Zephyr monitor is wired too: `m` runs the monitor the board's *platform* calls for
+(`Backend::monitor_command` fed a `MonitorContext` --- the selected port, the
+auto-detected firmware verdict, the build's board answer and configuration, the
+workspace's west invocation --- and returning `Err(reason)` for a refusal the log
+names). There is no `west monitor` (Zephyr's own extensions include none), and the
+priority is a cohesive environment, not a monitor at any cost: a board read as
+MicroPython gets `mpremote` whatever the project is; a Zephyr board whose target is
+ESP32 (`is_espressif`: every Espressif SoC Zephyr names carries the `esp32` token,
+even mid-name in HWMv2 vendor-qualified targets) gets `west espressif monitor -p
+PORT` through the workspace's west (`WestEnv::apply`, cwd = project root) --- the
+extension `hal_espressif`'s own `west-commands.yml` ships into every workspace,
+wrapping ESP-IDF's idf_monitor (ELF backtrace decoding, baud from the build's runner
+configuration, and no port-probing resets since the port rides along); and every
+other platform (nRF, STM32, ...) is *refused* --- Zephyr ships no monitor for them,
+a generic serial viewer would be the environment's form nowhere, and anything
+outside the Zephyr environment is the user's to run. Missing facts (no port, no
+workspace west, no board/build answer, ESP-IDF or erased flash) refuse the same
+way, each named. On the Monitor tab **`ctrl+]` is ChipTUI's stop chord** (both key
+events the byte arrives as: `]` and crossterm's relabeled `5`) --- the session is
+cancelled from here, SIGTERM to the child's group, port released --- because the
+child's own exit key cannot be relied on: the idf_monitor `west espressif monitor`
+runs (1.1, vendored in hal_espressif) hangs on *any* exit key on kernels without
+TIOCSTI (>= 6.2) --- its stop path unblocks the blocked key read by injecting a byte
+via TIOCSTI and then joins the reader thread, and the removed ioctl leaves that join
+stuck forever (reproduced against the vendored code, pty and all; esp-idf-monitor
+1.9 replaced the whole mechanism with a busy read for exactly this reason). Every
+other key still forwards, so in-tool exits keep working where the child implements
+them. The session is
+the same PTY session MicroPython uses, and port discovery for a backend without `mpremote
 devs` is `device::usb_serial_ports` — a synchronous `/dev` walk (no subprocess) feeding the
 same `DeviceState`/picker flow (`App::scan_serial_devices`, `serial_dir` overridable for
 deterministic tests; `home_dir` is the equivalent seam for workspace discovery). Connect/
@@ -736,7 +763,20 @@ These are the decisions that shape most code, and getting them wrong causes wide
   deadlocks on the very hang it exists to escape). A *natural* exit instead waits (bounded,
   `READ_DRAIN_TIMEOUT`) on a reader counter before reporting, keeping the invariant that
   "Finished implies all output arrived" without joining threads. And `ProcessManager` is dropped
-  with `cancel_all`, so no child keeps a serial port after the TUI exits.
+  with `cancel_all`, so no child keeps a serial port after the TUI exits. A PTY session's *input
+  discipline is the app's to set* (`pty_input_mode`, applied to the master fd — master and slave
+  share the one line discipline — right after `openpty`, before any byte is written): a fresh pty
+  answers the kernel's canonical default, which swallows control bytes before any child reads them
+  (Ctrl+R is VREPRINT, Ctrl+C is VINTR — a signal, never delivered — and every typed key echoes a
+  second time), so the interactive children that set their own mode when they start
+  (miniterm/idf_monitor's `console.setup()`, a shell's readline) were fine *after* startup but lost
+  every key typed into the spawn-to-setup window — and `west espressif monitor` spawns idf_monitor
+  as a grandchild, a long one. The app applies the mode those children apply for themselves
+  (ECHO/ICANON/ISIG/IEXTEN off; byte mappings untouched, so ICRNL still turns Enter's CR into the LF
+  REPLs read and OPOST/ONLCR keep breaking bare-`\n` output). `tests/fixtures/bin/stdin-hex` +
+  `monitor_control_keys_reach_the_session_as_their_bytes` lock the whole path: Ctrl+T, Ctrl+R,
+  Ctrl+] and a plain letter reach the child as 14 12 1d 41, in order, with no terminal mode of the
+  child's own.
 - **`Browser` emits, never logs** (`src/browser.rs`): device results come back as `Notice` values
   and a `BrowserUpdate` that `App` forwards to the log and to `DeviceState`. That is what makes the
   whole state machine testable without a UI.

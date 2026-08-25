@@ -181,14 +181,107 @@ impl Backend for ZephyrBackend {
         Some(commands::update())
     }
 
-    fn monitor_command(&self, port: Option<&str>) -> Option<crate::process::Command> {
-        Some(commands::monitor(port))
+    fn monitor_command(
+        &self,
+        ctx: &crate::backend::MonitorContext<'_>,
+    ) -> Result<crate::process::Command, String> {
+        use crate::firmware_id::{FirmwareVerdict, FlashFirmware};
+        if matches!(
+            ctx.firmware,
+            Some(FirmwareVerdict::Firmware(FlashFirmware::MicroPython, _))
+        ) {
+            // Auto-detection: the identification chain read MicroPython off
+            // this board's flash, so whatever the project is, the board runs
+            // MicroPython --- and mpremote is that firmware's own monitor
+            // (protocol-aware where a serial console is only transparent).
+            return Ok(crate::backend::micropython::commands::repl(ctx.port));
+        }
+        match ctx.firmware {
+            // Wrong firmware: a monitor would only show the wrong
+            // environment's output. Flashing a Zephyr image first is the
+            // fix this backend can name.
+            Some(FirmwareVerdict::Firmware(FlashFirmware::EspIdf, _)) => {
+                return Err(
+                    "the device runs ESP-IDF, not Zephyr --- flash a Zephyr image first"
+                        .to_string(),
+                );
+            }
+            Some(FirmwareVerdict::Erased) => {
+                return Err(
+                    "the device's flash is erased --- flash a Zephyr image first".to_string(),
+                );
+            }
+            _ => {}
+        }
+        let port = ctx
+            .port
+            .ok_or_else(|| "no device selected (d rescans)".to_string())?;
+        let west = ctx.west.ok_or_else(|| {
+            "no Zephyr workspace resolved --- the platform monitor runs through its west"
+                .to_string()
+        })?;
+        // The platform decides the form. ESP32 boards have one in the
+        // environment itself (`hal_espressif`'s west extension); Zephyr
+        // ships no monitor for any other platform, and a generic serial
+        // viewer would be a monitor at any cost rather than the
+        // environment's own form --- so each missing fact is refused by
+        // name, and non-Espressif platforms are refused outright.
+        let board = ctx.board.ok_or_else(|| {
+            "no board answer --- build (or pick a board) first: the platform \
+             monitor reads the build's runner configuration"
+                .to_string()
+        })?;
+        if !ctx.build_configured {
+            return Err(
+                "no configured build directory --- build first: the platform \
+                 monitor reads the build's runner configuration"
+                    .to_string(),
+            );
+        }
+        if !is_espressif(board) {
+            return Err(format!(
+                "the Zephyr environment ships no monitor for {board} --- its \
+                 console is a plain serial port, outside the Zephyr environment"
+            ));
+        }
+        let command = match ctx.project_root {
+            Some(root) => commands::monitor(port).current_dir(root),
+            None => commands::monitor(port),
+        };
+        Ok(west.apply(command))
     }
+}
+
+/// Whether `board` names an ESP32-family target. Every Espressif SoC
+/// Zephyr names carries the `esp32` token (`esp32`, `esp32c3`, `esp32s3`,
+/// ...), anywhere in the name --- HWMv2 vendor-qualified names put it in
+/// the middle (`adafruit_feather_esp32s3/esp32s3/procpu`).
+fn is_espressif(board: &str) -> bool {
+    board.contains("esp32")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::MonitorContext;
+    use crate::backend::zephyr::workspace::WestEnv;
+    use crate::firmware_id::{FirmwareVerdict, FlashFirmware};
+
+    /// A context with every fact the ESP32 monitor route needs.
+    fn esp32_context<'a>(
+        west: &'a WestEnv,
+        firmware: Option<&'a FirmwareVerdict>,
+        board: &'a str,
+    ) -> MonitorContext<'a> {
+        MonitorContext {
+            port: Some("/dev/ttyACM0"),
+            firmware,
+            board: Some(board),
+            build_configured: true,
+            west: Some(west),
+            project_root: Some(std::path::Path::new("/proj")),
+        }
+    }
 
     #[test]
     fn declares_no_filesystem_or_repl_capability() {
@@ -198,6 +291,85 @@ mod tests {
         assert!(!caps.contains(Capability::Filesystem));
         assert!(!caps.contains(Capability::Repl));
         assert!(!caps.contains(Capability::Upload));
+    }
+
+    #[test]
+    fn a_board_identified_as_micropython_gets_mpremote_whatever_the_project() {
+        let west = WestEnv::from_path();
+        let firmware =
+            FirmwareVerdict::Firmware(FlashFirmware::MicroPython, Some("v1.28.0".into()));
+        let context = MonitorContext {
+            firmware: Some(&firmware),
+            ..esp32_context(&west, None, "esp32_devkitc_wrover/esp32/procpu")
+        };
+        assert_eq!(
+            ZephyrBackend.monitor_command(&context).unwrap().to_string(),
+            "mpremote connect /dev/ttyACM0 repl"
+        );
+    }
+
+    #[test]
+    fn an_esp32_board_gets_the_workspaces_own_espressif_monitor() {
+        let west = WestEnv::from_path();
+        let zephyr = FirmwareVerdict::Firmware(FlashFirmware::Zephyr, None);
+        // An HWMv2 vendor-qualified name: the esp32 token sits in the
+        // middle, which is why the check cannot be a prefix.
+        let context = esp32_context(
+            &west,
+            Some(&zephyr),
+            "adafruit_feather_esp32s3/esp32s3/procpu",
+        );
+        assert_eq!(
+            ZephyrBackend.monitor_command(&context).unwrap().to_string(),
+            "west espressif monitor -p /dev/ttyACM0"
+        );
+        // Unidentified firmware does not block the route: the board answer
+        // is the platform fact.
+        let context = esp32_context(&west, None, "esp32c3_devkitm/esp32c3");
+        assert!(ZephyrBackend.monitor_command(&context).is_ok());
+    }
+
+    #[test]
+    fn every_missing_fact_is_refused_by_name() {
+        let west = WestEnv::from_path();
+        let zephyr = FirmwareVerdict::Firmware(FlashFirmware::Zephyr, None);
+        let board = "esp32_devkitc_wrover/esp32/procpu";
+        let refusal =
+            |context: &MonitorContext<'_>| ZephyrBackend.monitor_command(context).unwrap_err();
+        // Wrong firmware is refused even with everything else in place.
+        let idf = FirmwareVerdict::Firmware(FlashFirmware::EspIdf, None);
+        assert!(refusal(&esp32_context(&west, Some(&idf), board)).contains("ESP-IDF"));
+        // No selected port.
+        let mut context = esp32_context(&west, Some(&zephyr), board);
+        context.port = None;
+        assert!(refusal(&context).contains("no device selected"));
+        // No workspace: the platform monitor runs through its west.
+        let mut context = esp32_context(&west, Some(&zephyr), board);
+        context.west = None;
+        assert!(refusal(&context).contains("workspace"));
+        // No board answer.
+        let mut context = esp32_context(&west, Some(&zephyr), board);
+        context.board = None;
+        assert!(refusal(&context).contains("board"));
+        // No configured build directory.
+        let mut context = esp32_context(&west, Some(&zephyr), board);
+        context.build_configured = false;
+        assert!(refusal(&context).contains("build"));
+    }
+
+    #[test]
+    fn a_non_espressif_platform_is_refused_not_improvised() {
+        let west = WestEnv::from_path();
+        // Zephyr ships no monitor for nRF, STM32, ... and a generic serial
+        // viewer would be a monitor at any cost --- the refusal names the
+        // platform so the user can open their own terminal.
+        let zephyr = FirmwareVerdict::Firmware(FlashFirmware::Zephyr, None);
+        let context = esp32_context(&west, Some(&zephyr), "nrf52840dk/nrf52840");
+        let reason = ZephyrBackend.monitor_command(&context).unwrap_err();
+        assert!(
+            reason.contains("nrf52840dk") && reason.contains("no monitor"),
+            "the refusal must name the platform: {reason}"
+        );
     }
 
     #[test]

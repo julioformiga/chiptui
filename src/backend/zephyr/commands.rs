@@ -146,15 +146,25 @@ pub fn flash(dir: &str) -> Command {
     build_dir(Command::new(PROGRAM).arg("flash"), dir)
 }
 
-/// `west monitor [--port PORT]` --- interactive serial monitor for the
-/// flashed board. Runs in a PTY (the app's monitor session), so Ctrl+C
-/// reaches west as a real key and exits the session.
-pub fn monitor(port: Option<&str>) -> Command {
-    let mut command = Command::new(PROGRAM).arg("monitor");
-    if let Some(port) = port {
-        command = command.arg("--port").arg(port);
-    }
-    command
+/// `west espressif monitor -p PORT` --- the serial monitor for an ESP32
+/// board, from the west extension the Zephyr workspace itself ships
+/// (`hal_espressif`'s `west-commands.yml`, so `west update` installs it).
+/// There is no `west monitor`: Zephyr's own extensions are
+/// build/flash/debug/sign/... with no monitor among them. The extension
+/// wraps ESP-IDF's idf_monitor (backtrace address decoding against the
+/// build's ELF), reads its baud from the build's runner configuration
+/// instead of a hard-coded one, and --- given the port --- attaches without
+/// the esptool probing that would reset the board; portless it *probes
+/// every candidate port*, which is exactly the guess this app never makes,
+/// so the port always rides along. The command runs with the project root
+/// as cwd (the extension searches it for the build directory) and the
+/// workspace's west ([`WestEnv::apply`], the caller's decoration).
+pub fn monitor(port: &str) -> Command {
+    Command::new(PROGRAM)
+        .arg("espressif")
+        .arg("monitor")
+        .arg("-p")
+        .arg(port)
 }
 
 #[cfg(test)]
@@ -280,11 +290,13 @@ mod tests {
     }
 
     #[test]
-    fn monitor_names_the_port_when_one_is_known() {
-        assert_eq!(monitor(None).to_string(), "west monitor");
+    fn monitor_is_the_workspaces_espressif_extension_with_the_port() {
+        // The port always rides along: portless, the extension probes every
+        // candidate port with esptool, resetting each board --- the guess
+        // this app never makes.
         assert_eq!(
-            monitor(Some("/dev/ttyACM0")).to_string(),
-            "west monitor --port /dev/ttyACM0"
+            monitor("/dev/ttyACM0").to_string(),
+            "west espressif monitor -p /dev/ttyACM0"
         );
     }
 

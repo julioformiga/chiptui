@@ -355,6 +355,23 @@ impl ProcessManager {
                 pixel_height: 0,
             })
             .map_err(|e| e.to_string())?;
+        // The pty's line discipline must be terminal-like from the first
+        // byte written. A freshly opened pty answers the kernel's default
+        // --- canonical mode --- which swallows control bytes before any
+        // child can read them: Ctrl+R is VREPRINT, Ctrl+C is VINTR (a
+        // signal, never delivered), every typed key is echoed a second
+        // time. Interactive children set their own mode when they start
+        // (miniterm/idf_monitor's `console.setup()`, a shell's readline),
+        // but keys typed during that child's startup window --- `west
+        // espressif monitor` spawns idf_monitor as a grandchild --- die in
+        // the canonical discipline first. Setting the input side to the
+        // mode those children set themselves (ECHO/ICANON/ISIG/IEXTEN off,
+        // byte mappings untouched, exactly miniterm's `setup()`) closes
+        // the window and covers children that never touch termios.
+        #[cfg(unix)]
+        if let Some(fd) = pair.master.as_raw_fd() {
+            pty_input_mode(fd);
+        }
 
         let mut cmd = pty_command(&command);
         // The structured command's whole setting: a working directory and
@@ -580,6 +597,29 @@ impl Default for ProcessManager {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Sets a pty's input-side discipline to the mode interactive children set
+/// for themselves (miniterm/idf_monitor's `console.setup()`, a shell's
+/// readline): no echo, no line buffering, no signal generation, no extended
+/// input processing. Input and output byte mappings stay as the kernel
+/// defaults, matching what those children leave in place --- `ICRNL`, so an
+/// Enter written as CR still reaches the child as the LF every REPL of
+/// this ecosystem expects, and `OPOST`/`ONLCR`, so children that print
+/// bare `\n` still get their lines broken. Called on a *master-side* fd of
+/// the pty: master and slave share the one line discipline, so this is
+/// visible to the child from its first read.
+fn pty_input_mode(fd: std::os::fd::RawFd) {
+    #[cfg(unix)]
+    unsafe {
+        let mut termios: libc::termios = std::mem::zeroed();
+        if libc::tcgetattr(fd, &mut termios) == 0 {
+            termios.c_lflag &= !(libc::ECHO | libc::ICANON | libc::ISIG | libc::IEXTEN);
+            libc::tcsetattr(fd, libc::TCSANOW, &termios);
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = fd;
 }
 
 impl Drop for ProcessManager {

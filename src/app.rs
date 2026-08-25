@@ -2105,6 +2105,28 @@ impl App {
 
     fn on_key(&mut self, key: KeyEvent) {
         if self.is_monitor_active() {
+            // `ctrl+]` is ChipTUI's chord on this tab --- the session stops
+            // here, deterministically (crossterm relabels the byte Ctrl+5).
+            // The child's own exit key is the child's business and cannot be
+            // relied on: the idf_monitor `west espressif monitor` runs (the
+            // 1.1 vendored in hal_espressif) hangs on *any* exit key on
+            // kernels without TIOCSTI (>= 6.2) --- its stop path unblocks the
+            // blocked key read by injecting a byte with TIOCSTI, then joins
+            // the reader thread, and the removed ioctl leaves that join
+            // stuck forever. Stopping from here (SIGTERM to the child's
+            // group) ends any monitor, mpremote's included, and releases the
+            // port. The child's other keys still forward untouched, so the
+            // documented in-tool exits (idf_monitor's Ctrl+T menu) keep
+            // working where the child implements them.
+            if key.modifiers.contains(KeyModifiers::CONTROL)
+                && matches!(key.code, KeyCode::Char(']') | KeyCode::Char('5'))
+            {
+                if let Some(id) = self.device_monitor_process {
+                    self.logs.info("stopping monitor (ctrl+])");
+                    self.processes.cancel(id);
+                }
+                return;
+            }
             if let Some((id, bytes)) = self.device_monitor_process.zip(key_to_bytes(key)) {
                 self.processes.write_stdin(id, &bytes);
             }
@@ -3249,6 +3271,122 @@ mod tests {
         }));
         assert!(app.device_monitor_process.is_none());
         assert_eq!(app.monitor_cursor(), None);
+    }
+
+    /// The monitor's control keys reach the session's pty as their exact
+    /// bytes, through the whole running app: idf_monitor/miniterm (the
+    /// `west espressif monitor` form) and mpremote both speak control-byte
+    /// grammars --- Ctrl+T arms miniterm's menu, Ctrl+] exits it --- so a
+    /// key lost or translated anywhere between `on_key` and the child's
+    /// stdin breaks every one of them at once. The fixture echoes each
+    /// byte it reads without touching the terminal mode itself: the pty's
+    /// input discipline is ChipTUI's to set (see `pty_input_mode`), and
+    /// this test is the proof it is set --- the same contract the real
+    /// monitor's own `console.setup()` relies on, from the first
+    /// keystroke instead of from the child's startup.
+    #[test]
+    fn monitor_control_keys_reach_the_session_as_their_bytes() {
+        let mut app = app();
+        let command = crate::process::Command::new(format!(
+            "{}/tests/fixtures/bin/stdin-hex",
+            env!("CARGO_MANIFEST_DIR")
+        ));
+        let id = app
+            .processes
+            .spawn_pty(command, Duration::from_secs(30))
+            .expect("the session spawned");
+        app.device_monitor_process = Some(id);
+        app.focus = Focus::Logs;
+        app.log_tab = LogTab::Monitor;
+        app.set_monitor_source(MonitorSource::Device);
+
+        let ctrl = |c: char| AppEvent::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL));
+        // Ctrl+T (menu), Ctrl+R (reset), Ctrl+I (timestamps; byte 0x09,
+        // not a Tab event here), a plain letter, then Enter. (Ctrl+] is
+        // excluded: it is ChipTUI's stop chord on this tab, never forwarded.)
+        app.handle(ctrl('t'));
+        app.handle(ctrl('r'));
+        app.handle(ctrl('i'));
+        app.handle(key(KeyCode::Char('A')));
+        app.handle(key(KeyCode::Enter));
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let output = loop {
+            for event in app.processes.drain() {
+                app.handle(AppEvent::Process(event));
+            }
+            let text = app.device_monitor_output.join(" ");
+            if text.matches("BYTE").count() >= 5 || Instant::now() > deadline {
+                break text;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        app.processes.cancel(id);
+        // The input side is raw from spawn (no echo, no canonical
+        // buffering, no signals), and the byte mappings stay kernel
+        // defaults like miniterm leaves them: ICRNL turns the CR written
+        // for Enter into the LF every REPL of this ecosystem reads.
+        let expected = ["BYTE 14", "BYTE 12", "BYTE 09", "BYTE 41", "BYTE 0a"];
+        for byte in expected {
+            assert!(
+                output.contains(byte),
+                "the session never received {byte}:\n{output}"
+            );
+        }
+        let positions: Vec<_> = expected
+            .iter()
+            .map(|byte| output.find(byte).expect("asserted above"))
+            .collect();
+        assert!(
+            positions.windows(2).all(|pair| pair[0] < pair[1]),
+            "the bytes must arrive in the order they were typed:\n{output}"
+        );
+    }
+
+    /// `ctrl+]` on the Monitor tab is ChipTUI's stop chord: the session is
+    /// cancelled from here (both key events crossterm may deliver for the
+    /// byte --- `]` and the relabeled `5`), because the child's own exit key
+    /// cannot be relied on: the idf_monitor `west espressif monitor` runs
+    /// hangs on *any* exit key on kernels without TIOCSTI (>= 6.2; its stop
+    /// path unblocks the key read by injecting a byte with TIOCSTI, then
+    /// joins the reader --- the removed ioctl leaves the join stuck
+    /// forever, reproduced against the vendored 1.1).
+    #[test]
+    fn ctrl_rbracket_stops_the_monitor_session() {
+        let (mut app, id) = app_in_monitor();
+
+        let ctrl = |c: char| AppEvent::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL));
+        app.handle(ctrl(']'));
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while app.device_monitor_process.is_some() && Instant::now() < deadline {
+            for event in app.processes.drain() {
+                app.handle(AppEvent::Process(event));
+            }
+        }
+        assert!(
+            app.device_monitor_process.is_none(),
+            "the session must end when ctrl+] stops it"
+        );
+        assert_eq!(id, id); // the cancelled process id, kept for clarity
+    }
+
+    /// The relabeled form of the same byte (crossterm reports the terminal's
+    /// raw 0x1d as Ctrl+5) must stop the session exactly like Ctrl+].
+    #[test]
+    fn the_relabeled_ctrl5_stops_the_monitor_session_too() {
+        let (mut app, _id) = app_in_monitor();
+
+        let ctrl = |c: char| AppEvent::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL));
+        app.handle(ctrl('5'));
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while app.device_monitor_process.is_some() && Instant::now() < deadline {
+            for event in app.processes.drain() {
+                app.handle(AppEvent::Process(event));
+            }
+        }
+        assert!(app.device_monitor_process.is_none());
     }
 
     /// A live-enough Terminal-tab session: the fake `slow` executable owns

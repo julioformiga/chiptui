@@ -163,8 +163,11 @@ impl Backend for MicroPythonBackend {
         }
     }
 
-    fn monitor_command(&self, port: Option<&str>) -> Option<crate::process::Command> {
-        Some(commands::repl(port))
+    fn monitor_command(
+        &self,
+        ctx: &crate::backend::MonitorContext<'_>,
+    ) -> Result<crate::process::Command, String> {
+        Ok(commands::repl(ctx.port))
     }
 }
 

@@ -871,8 +871,20 @@ The monitor should be independent from the build process so that a
 build/flash failure does not corrupt the terminal state.
 
 > **Status**: implemented for both backends, as one PTY session in the
-> Monitor tab (`m`). MicroPython connects through `mpremote`; Zephyr runs
-> `west monitor`, with the port named when discovery found one. Port
+> Monitor tab (`m`), in the form the board's *platform* calls for
+> (`Backend::monitor_command` + `MonitorContext`: the selected port, the
+> auto-detected firmware verdict, the build's board answer and
+> configuration, the workspace's west invocation). MicroPython firmware
+> gets `mpremote` whatever the project is; a Zephyr board on an ESP32
+> target gets `west espressif monitor -p PORT` --- the west extension the
+> Zephyr workspace itself ships (`hal_espressif`), which wraps ESP-IDF's
+> idf_monitor and reads its baud from the build's runner configuration
+> (there is no `west monitor`). Zephyr ships no monitor for any other
+> platform (nRF, STM32, ...), and a generic serial viewer would be a
+> monitor at any cost rather than the environment's own form, so those are
+> refused with a log line naming the platform --- anything outside the
+> Zephyr environment is the user's to run. Every missing fact (no port, no
+> workspace, no board/build answer) is likewise refused by name. Port
 > discovery for a backend without `mpremote devs` is a plain USB serial
 > walk (`device::usb_serial_ports`: `/dev/ttyACM*`, `ttyUSB*`, …) feeding
 > the same selection/picker flow.
