@@ -279,3 +279,25 @@ fn the_tab_shell_starts_as_a_login_shell_and_sources_its_login_files() {
         "the login file was sourced into the tab's shell: {screen:?}"
     );
 }
+
+/// `ctrl+f` is caught by `App::on_key` ahead of the Terminal tab's keyboard
+/// capture, so it still reaches `toggle_row3_fullscreen` while the shell
+/// owns every other key --- the footer has to say so, mirroring
+/// `is_monitor_active`'s equivalent hint.
+#[test]
+fn the_footer_advertises_the_fullscreen_toggle_while_a_terminal_session_is_active() {
+    let mut app = App::new("/nonexistent-project-dir");
+    app.set_terminal_tool(Command::new("/bin/sh"));
+    app.focus = chiptui::app::Focus::Logs;
+    app.show_terminal_tab();
+    let id = app.terminal_process.expect("the shell session started");
+    assert!(app.is_terminal_active(), "the keyboard is captured");
+
+    let keys: Vec<&str> = app.shortcuts().iter().map(|(k, _)| *k).collect();
+    app.processes.cancel(id);
+    assert_eq!(
+        keys,
+        vec!["ctrl+d", "ctrl+]", "ctrl+f", "shift+pgup"],
+        "the fullscreen toggle is reachable, and advertised, even while the shell owns the keyboard"
+    );
+}

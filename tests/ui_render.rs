@@ -36,6 +36,13 @@ fn key(code: KeyCode) -> chiptui::event::AppEvent {
     ))
 }
 
+fn ctrl(c: char) -> chiptui::event::AppEvent {
+    chiptui::event::AppEvent::Key(ratatui::crossterm::event::KeyEvent::new(
+        KeyCode::Char(c),
+        ratatui::crossterm::event::KeyModifiers::CONTROL,
+    ))
+}
+
 /// A home directory that does not exist, unique per call. `bootstrap`
 /// reads the user config out of `$HOME`, so without this the frames
 /// assert against whatever the developer happens to have configured ---
@@ -824,6 +831,90 @@ fn the_declared_minimum_fits_the_whole_dashboard() {
         app.log_viewport >= 4,
         "the log pane is starved at the declared minimum: {} rows\n{frame}",
         app.log_viewport
+    );
+}
+
+/// `ctrl+f` toggles row 3 (Log/Monitor/Terminal) to fill the whole
+/// dashboard body, panes 1 and 2 undrawn, and hands focus to the only
+/// pane still visible; a second press restores the normal layout.
+#[test]
+fn ctrl_f_toggles_row_3_fullscreen() {
+    let mut app = app_with_backend(BackendKind::Zephyr);
+    app.focus = Focus::Project;
+
+    let normal = render(&mut app, 80, 32);
+    assert!(
+        normal.contains("Environment") && normal.contains("Device Info"),
+        "rows 1/2 show before the toggle:\n{normal}"
+    );
+
+    app.handle(ctrl('f'));
+    assert!(app.row3_fullscreen, "ctrl+f arms the toggle");
+    assert_eq!(
+        app.focus,
+        Focus::Logs,
+        "fullscreen parks focus on the only pane still visible"
+    );
+
+    let full = render(&mut app, 80, 32);
+    assert!(
+        !full.contains("Environment") && !full.contains("Device Info"),
+        "rows 1/2 stay undrawn while row 3 is fullscreen:\n{full}"
+    );
+    assert!(
+        full.contains("Log"),
+        "row 3's own tab strip still shows:\n{full}"
+    );
+
+    app.handle(ctrl('f'));
+    assert!(
+        !app.row3_fullscreen,
+        "a second ctrl+f gives the layout back"
+    );
+    let restored = render(&mut app, 80, 32);
+    assert!(
+        restored.contains("Environment") && restored.contains("Device Info"),
+        "rows 1/2 return once fullscreen is off:\n{restored}"
+    );
+}
+
+/// While row 3 is fullscreen, `Tab`/`BackTab` are a no-op --- every other
+/// pane is undrawn, so there is nowhere to step focus to.
+#[test]
+fn fullscreen_row_3_blocks_focus_stepping() {
+    let mut app = app_with_backend(BackendKind::Zephyr);
+    app.handle(ctrl('f'));
+    assert_eq!(app.focus, Focus::Logs);
+
+    app.handle(key(KeyCode::Tab));
+    assert_eq!(
+        app.focus,
+        Focus::Logs,
+        "Tab must not move focus off the only visible pane"
+    );
+
+    app.handle(key(KeyCode::BackTab));
+    assert_eq!(
+        app.focus,
+        Focus::Logs,
+        "BackTab must not move focus off the only visible pane"
+    );
+}
+
+/// The footer advertises `ctrl+f` whenever row 3 holds focus --- the way
+/// into fullscreen has to be discoverable from the Log tab, not just known
+/// once already toggled.
+#[test]
+fn the_footer_advertises_ctrl_f_on_row_3() {
+    let mut app = app_with_backend(BackendKind::Zephyr);
+    app.focus = Focus::Logs;
+
+    let frame = render(&mut app, 140, 32);
+    let footer = frame.lines().last().unwrap().trim_matches('"').to_string();
+
+    assert!(
+        footer.contains("ctrl+f") && footer.contains("fullscreen"),
+        "row 3's footer is missing the fullscreen hint:\n{footer}"
     );
 }
 

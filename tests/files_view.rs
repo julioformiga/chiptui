@@ -2445,8 +2445,8 @@ fn the_footer_swaps_to_the_repl_exit_hint_while_a_monitor_session_is_active() {
     let keys: Vec<&str> = app.shortcuts().iter().map(|(k, _)| *k).collect();
     assert_eq!(
         keys,
-        vec!["ctrl+]"],
-        "every other binding is unreachable while the REPL owns the keyboard"
+        vec!["ctrl+f", "ctrl+]"],
+        "every binding but the fullscreen toggle is unreachable while the REPL owns the keyboard"
     );
 }
 

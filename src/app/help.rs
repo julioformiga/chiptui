@@ -334,7 +334,7 @@ const DASHBOARD_NAVIGATION: [HelpBinding; 10] = [
     ),
 ];
 
-const DASHBOARD_COMMANDS: [HelpBinding; 25] = [
+const DASHBOARD_COMMANDS: [HelpBinding; 26] = [
     action(
         "r",
         "re-detect, reload, or rename (file list)",
@@ -358,6 +358,23 @@ const DASHBOARD_COMMANDS: [HelpBinding; 25] = [
         "cycle icons (unicode/nerd/none)",
         KeyCode::Char('i'),
         &[],
+    ),
+    // Reaches row 3 from any of its three tabs, and even through the
+    // Monitor/Terminal keyboard capture (`App::on_key` intercepts it ahead
+    // of both) --- the captive footers in `App::shortcuts` carry their own
+    // copy of this hint since they bypass this table entirely.
+    ctrl(
+        "ctrl+f",
+        "toggle row 3 (Log/Monitor/Terminal) fullscreen",
+        KeyCode::Char('f'),
+        &[site(
+            "ctrl+f",
+            "fullscreen",
+            63,
+            &[Focus::Logs],
+            &[],
+            When::Always,
+        )],
     ),
     action(
         "x",
@@ -875,7 +892,7 @@ mod tests {
         assert_eq!(
             footer_keys(View::Dashboard, &logs),
             vec![
-                "r", "x", "m", "shift+r", "←/→", "ctrl+c", "s", "shift+p", "?",
+                "r", "x", "m", "shift+r", "←/→", "ctrl+c", "s", "ctrl+f", "shift+p", "?",
             ]
         );
 

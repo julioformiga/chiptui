@@ -79,6 +79,19 @@ pub(crate) struct DashboardAreas {
 /// to its stacked content when a pane claims it, else the historical 60/40;
 /// each row split into halves by percentage.
 pub(crate) fn dashboard(app: &App, body: Rect) -> DashboardAreas {
+    // `ctrl+f`: row 3 claims the whole body, panes 1/2 degenerate to
+    // zero-size rects --- the one shared definition mouse hit-testing and
+    // the renderer both read, so a click cannot land on a pane that was
+    // never drawn and `draw_dashboard` can skip drawing it outright.
+    if app.row3_fullscreen {
+        return DashboardAreas {
+            project: Rect::default(),
+            device: Rect::default(),
+            row2: Row2::Placeholder(Rect::default()),
+            row3: body,
+        };
+    }
+
     let info_height = super::panels::INFO_ROWS as u16 + 2;
 
     let [row1, rest] =

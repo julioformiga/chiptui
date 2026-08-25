@@ -189,21 +189,28 @@ pub(crate) fn centered(area: Rect, width: u16, height: u16) -> Rect {
 fn draw_dashboard(frame: &mut Frame, body: Rect, app: &mut App, palette: Palette) {
     let areas = layout::dashboard(app, body);
 
-    panels::draw_project(frame, areas.project, app, palette);
-    panels::draw_detection(frame, areas.device, app, palette);
+    // `ctrl+f`: row 3 alone, full body --- panes 1/2 are undrawn rather
+    // than drawn into the zero-size rects `layout::dashboard` handed back
+    // for them, which would be wasted work at best.
+    if !app.row3_fullscreen {
+        panels::draw_project(frame, areas.project, app, palette);
+        panels::draw_detection(frame, areas.device, app, palette);
 
-    // Row 2 belongs to whichever panes the backend's capabilities give it:
-    // the dual-pane file browser under `Capability::Filesystem`, the
-    // workspace+build pair for a backend that builds without a device
-    // filesystem (`SPEC.md` §11), and a placeholder only in the window
-    // before the panes exist at all.
-    match &areas.row2 {
-        layout::Row2::WorkspaceBuild { workspace, build } => {
-            workspace::draw(frame, *workspace, app, palette);
-            build::draw(frame, *build, app, palette);
+        // Row 2 belongs to whichever panes the backend's capabilities give it:
+        // the dual-pane file browser under `Capability::Filesystem`, the
+        // workspace+build pair for a backend that builds without a device
+        // filesystem (`SPEC.md` §11), and a placeholder only in the window
+        // before the panes exist at all.
+        match &areas.row2 {
+            layout::Row2::WorkspaceBuild { workspace, build } => {
+                workspace::draw(frame, *workspace, app, palette);
+                build::draw(frame, *build, app, palette);
+            }
+            layout::Row2::Browser(row) => files::draw(frame, row, app, palette),
+            layout::Row2::Placeholder(rect) => {
+                panels::draw_no_filesystem(frame, *rect, app, palette)
+            }
         }
-        layout::Row2::Browser(row) => files::draw(frame, row, app, palette),
-        layout::Row2::Placeholder(rect) => panels::draw_no_filesystem(frame, *rect, app, palette),
     }
 
     // Row 3 is one bordered pane for the whole width: the Log/Monitor/

@@ -1107,6 +1107,14 @@ pub struct App {
     /// handler sees it --- a terminal reporting mouse unasked must not move
     /// the cursor. [`Self::set_mouse_enabled`] is the test seam.
     mouse_enabled: bool,
+    /// `ctrl+f`'s toggle: row 3 (Log/Monitor/Terminal) claims the whole
+    /// dashboard body, panes 1/2 undrawn. Checked at the very top of
+    /// [`Self::on_key`], ahead of the monitor/terminal keyboard capture, so
+    /// the chord works exactly where it is most wanted --- watching a live
+    /// monitor or shell session full width. Turning it on parks focus on
+    /// [`Focus::Logs`] (the only pane still visible) and `Tab`/`BackTab`
+    /// no-op while it holds, since there is nowhere else to step to.
+    pub row3_fullscreen: bool,
     /// Text the UI asked to put on the system clipboard (the MAC row's
     /// click) --- consumed by the binary's loop, like
     /// [`Self::take_pending_command`], because only the loop owns stdout
@@ -1217,6 +1225,7 @@ impl App {
             last_port_count: None,
             keyboard_enhanced: false,
             mouse_enabled: false,
+            row3_fullscreen: false,
             clipboard_request: None,
             last_click: None,
             shortcuts_overlay_active: false,
@@ -2104,6 +2113,17 @@ impl App {
     }
 
     fn on_key(&mut self, key: KeyEvent) {
+        // `ctrl+f`: the row 3 fullscreen toggle. Checked ahead of the
+        // monitor/terminal keyboard capture below (both `return` before
+        // reaching `on_dashboard_key`'s own chords) so it works exactly
+        // where it is most wanted --- full width on a live monitor or
+        // shell session, not only from the dashboard's other panes.
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(key.code, KeyCode::Char('f') | KeyCode::Char('F'))
+        {
+            self.toggle_row3_fullscreen();
+            return;
+        }
         if self.is_monitor_active() {
             // `ctrl+]` is ChipTUI's chord on this tab --- the session stops
             // here, deterministically (crossterm relabels the byte Ctrl+5).
@@ -2243,6 +2263,18 @@ impl App {
     /// the renderer and the key dispatch branch on.
     pub fn device_actions_tab_active(&self) -> bool {
         self.device_pane_tab == DevicePaneTab::Actions && self.device_actions_tab_available()
+    }
+
+    /// `ctrl+f`: row 3 (Log/Monitor/Terminal) takes over the whole
+    /// dashboard body, or gives it back. Turning it on parks focus on
+    /// [`Focus::Logs`] so the pane's own keys (scrolling, the tab strip,
+    /// the terminal/monitor keyboard capture) work the instant the toggle
+    /// lands, with nowhere else visible to have been focused on anyway.
+    fn toggle_row3_fullscreen(&mut self) {
+        self.row3_fullscreen = !self.row3_fullscreen;
+        if self.row3_fullscreen {
+            self.focus = Focus::Logs;
+        }
     }
 
     /// The `ctrl+←/→` chord, live from every pane: switch the tabs of the
@@ -2699,11 +2731,13 @@ impl App {
                 self.quit();
                 return;
             }
-            KeyCode::Tab => {
+            // A no-op while row 3 is fullscreen: every other pane is
+            // undrawn, so there is nowhere else to step focus to.
+            KeyCode::Tab if !self.row3_fullscreen => {
                 self.step_focus(true);
                 return;
             }
-            KeyCode::BackTab => {
+            KeyCode::BackTab if !self.row3_fullscreen => {
                 self.step_focus(false);
                 return;
             }
@@ -2945,17 +2979,21 @@ impl App {
         // keyboard: `on_key` forwards raw bytes into the pty instead of
         // dispatching them, so the footer must switch to the one escape that
         // actually works (`mpremote repl`'s own, via `key_to_bytes`'s
-        // generic Ctrl+letter handling).
+        // generic Ctrl+letter handling) --- plus `ctrl+f`, the one exception:
+        // `on_key` intercepts it ahead of this capture, so it still reaches
+        // `toggle_row3_fullscreen` rather than the pty.
         if self.is_monitor_active() {
-            return vec![("ctrl+]", "exit REPL/monitor")];
+            return vec![("ctrl+f", "fullscreen"), ("ctrl+]", "exit REPL/monitor")];
         }
         // The same truth for the Terminal tab's shell: while it owns the
         // keyboard only two escapes exist --- the shell's own exit (`ctrl+d`
-        // or typing `exit`) and the detach chord.
+        // or typing `exit`) and the detach chord --- plus `ctrl+f`, caught
+        // the same way before the shell ever sees a byte.
         if self.is_terminal_active() {
             return vec![
                 ("ctrl+d", "exit shell"),
                 ("ctrl+]", "detach"),
+                ("ctrl+f", "fullscreen"),
                 ("shift+pgup", "scroll back"),
             ];
         }
