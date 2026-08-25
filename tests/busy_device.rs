@@ -100,7 +100,10 @@ fn the_interrupt_and_restore_prompts_render() {
         "the mechanism should be named:\n{frame}"
     );
 
-    app.overlay = Some(Overlay::RestoreDeviceScript { selected: 2 });
+    app.overlay = Some(Overlay::RestoreDeviceScript {
+        selected: 2,
+        return_to_packages: false,
+    });
     let frame = render(&mut app, 110, 32);
     assert!(
         frame.contains("Restart device script?"),
@@ -444,7 +447,7 @@ fn accepting_the_interruption_lists_and_then_asks_how_to_restore() {
         &mut app,
         |app| matches!(
             app.overlay,
-            Some(Overlay::RestoreDeviceScript { selected: 2 })
+            Some(Overlay::RestoreDeviceScript { selected: 2, .. })
         ),
         20
     ));
@@ -473,7 +476,7 @@ fn restoring_via_hard_reset_marks_the_script_running_again() {
         &mut app,
         |app| matches!(
             app.overlay,
-            Some(Overlay::RestoreDeviceScript { selected: 2 })
+            Some(Overlay::RestoreDeviceScript { selected: 2, .. })
         ),
         20
     ));

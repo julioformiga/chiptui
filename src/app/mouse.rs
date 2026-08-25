@@ -578,7 +578,7 @@ impl App {
                     self.set_overlay_selected(index);
                 }
             }
-            Overlay::RestoreDeviceScript { selected } => {
+            Overlay::RestoreDeviceScript { selected, .. } => {
                 // Three constant choices under a two-row message.
                 if let Some(index) =
                     list_row(point, crate::ui::centered(frame, 64, 7), *selected, 3, 2, 0)

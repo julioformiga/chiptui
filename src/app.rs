@@ -448,7 +448,15 @@ pub enum Overlay {
     /// for. Default is No, like every interruption-confirm here. Accepting
     /// resumes the held queue and arms the restore question for when it
     /// drains; declining drops the queue.
-    ConfirmInterruptDevice { confirm: bool },
+    ///
+    /// `return_to_packages` is true when this replaced
+    /// [`Self::Packages`] rather than opening over nothing --- the manager
+    /// stays the one-deep slot's real content, so answering either way hands
+    /// it back instead of leaving the user at a bare dashboard.
+    ConfirmInterruptDevice {
+        confirm: bool,
+        return_to_packages: bool,
+    },
     /// Leaving this project for the home screen while commands are still
     /// running: they are cancelled with the session, so the count is named
     /// and the default is No, like every other confirm that loses work.
@@ -457,7 +465,14 @@ pub enum Overlay {
     /// bring the stopped script back. A three-row picker rather than a
     /// Yes/No, because "restart" has two honest flavors with different
     /// tradeoffs (see [`Self::apply_restore_device_script`]).
-    RestoreDeviceScript { selected: usize },
+    ///
+    /// `return_to_packages` mirrors [`Self::ConfirmInterruptDevice`]'s field:
+    /// this question can itself replace [`Self::Packages`] when the
+    /// interrupt it follows did.
+    RestoreDeviceScript {
+        selected: usize,
+        return_to_packages: bool,
+    },
     /// The choice menu behind the `Zephyr Actions` button: update the shared
     /// workspace (`west update`), add SDK toolchains, or generate the build
     /// dashboard (`west build -t dashboard`). Same shape as
@@ -4231,7 +4246,10 @@ mod tests {
                 status: None,
                 selected: 0,
             },
-            Overlay::RestoreDeviceScript { selected: 0 },
+            Overlay::RestoreDeviceScript {
+                selected: 0,
+                return_to_packages: false,
+            },
             Overlay::ZephyrActions { selected: 0 },
         ];
 

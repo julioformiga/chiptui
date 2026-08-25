@@ -480,15 +480,20 @@ impl App {
     /// `Enter` on the row under the cursor.
     ///
     /// A package row installs, declaring it first when the file does not
-    /// already --- including a row that is *already* installed, since mip
-    /// skips files that are there and re-running is the natural "update"
-    /// gesture.
+    /// already --- unless it is *already* installed (`✓`/`⚠`), in which
+    /// case `Enter` asks to remove it instead, the same confirmation `Del`
+    /// opens. Re-running an install mip would just skip is not a gesture
+    /// worth a whole key; uninstalling is the thing the user cannot reach
+    /// any other way from an already-installed row.
     pub(super) fn activate_package_row(&mut self, row: &RowKind) {
         match row {
             RowKind::InstallAll { .. } => self.install_project_dependencies(),
             RowKind::ManualSpec(spec) => {
                 let spec = spec.clone();
                 self.declare_and_install(&spec);
+            }
+            RowKind::Package(package) if package.installed == deps::Installed::Yes => {
+                self.ask_remove_package(package);
             }
             RowKind::Package(package) => {
                 let spec = package.spec.clone().unwrap_or_else(|| package.name.clone());

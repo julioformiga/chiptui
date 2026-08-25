@@ -804,11 +804,14 @@ impl App {
                     },
                     move |app| {
                         let (name, targets) = accepted;
-                        app.remove_package(&name, &targets, declared);
-                        // The manager comes back either way: the slot is
-                        // one deep, so this replaced it rather than
-                        // covering it, and its state waited on `App`.
+                        // Landed back on the manager *before* removing, not
+                        // after: `remove_package`'s own device request can be
+                        // gated on a running script, and `check_interrupt_gate`
+                        // only replaces `Packages` when it finds it already
+                        // showing --- setting this after would let that
+                        // dialog open and then get clobbered right back.
                         app.overlay = Some(Overlay::Packages);
+                        app.remove_package(&name, &targets, declared);
                     },
                     |app| app.overlay = Some(Overlay::Packages),
                 );
@@ -930,18 +933,27 @@ impl App {
             // whatever the board is running. Accepting also marks the script
             // stopped --- which releases the held queue --- and arms the
             // restore question for when that queue drains.
-            Overlay::ConfirmInterruptDevice { confirm } => {
+            Overlay::ConfirmInterruptDevice {
+                confirm,
+                return_to_packages,
+            } => {
                 self.dispatch_confirm(
                     key.code,
                     confirm,
-                    |app, confirm| {
-                        app.overlay = Some(Overlay::ConfirmInterruptDevice { confirm });
+                    move |app, confirm| {
+                        app.overlay = Some(Overlay::ConfirmInterruptDevice {
+                            confirm,
+                            return_to_packages,
+                        });
                     },
-                    |app| {
+                    move |app| {
                         app.restore_pending = true;
                         app.set_script_state(ScriptState::Stopped);
+                        if return_to_packages {
+                            app.overlay = Some(Overlay::Packages);
+                        }
                     },
-                    |app| {
+                    move |app| {
                         // The listing held behind the identification chain
                         // (a script believed running keeps the chip query
                         // waiting, and the listing waits on the query) is
@@ -953,6 +965,9 @@ impl App {
                             browser.cancel_held_requests();
                             Vec::new()
                         });
+                        if return_to_packages {
+                            app.overlay = Some(Overlay::Packages);
+                        }
                     },
                 );
             }
@@ -989,24 +1004,34 @@ impl App {
                     _ => {}
                 }
             }
-            Overlay::RestoreDeviceScript { selected } => {
+            Overlay::RestoreDeviceScript {
+                selected,
+                return_to_packages,
+            } => {
                 const COUNT: usize = 3;
+                let closed = if return_to_packages {
+                    Some(Overlay::Packages)
+                } else {
+                    None
+                };
                 match key.code {
                     // Dismissing is itself a choice here --- "leave it
                     // stopped" --- so it needs no separate guard.
-                    KeyCode::Esc | KeyCode::Char('q') => self.overlay = None,
+                    KeyCode::Esc | KeyCode::Char('q') => self.overlay = closed,
                     KeyCode::Up | KeyCode::Char('k') => {
                         self.overlay = Some(Overlay::RestoreDeviceScript {
                             selected: (selected + COUNT - 1) % COUNT,
+                            return_to_packages,
                         });
                     }
                     KeyCode::Down | KeyCode::Char('j') => {
                         self.overlay = Some(Overlay::RestoreDeviceScript {
                             selected: (selected + 1) % COUNT,
+                            return_to_packages,
                         });
                     }
                     KeyCode::Enter => {
-                        self.overlay = None;
+                        self.overlay = closed;
                         self.apply_restore_device_script(selected);
                     }
                     _ => {}

@@ -453,9 +453,12 @@ impl App {
     /// Polled after any key or process event that might have queued a
     /// request, and on every tick, so the overlay appears no matter which
     /// path armed the gate, and defers politely while another overlay is
-    /// open.
+    /// open --- except [`Overlay::Packages`], which this is allowed to
+    /// replace (and hand back once answered): a gated install/remove
+    /// queued from inside the manager must still be able to ask.
     pub(super) fn check_interrupt_gate(&mut self) {
-        if self.overlay.is_some() {
+        let return_to_packages = matches!(self.overlay, Some(Overlay::Packages));
+        if self.overlay.is_some() && !return_to_packages {
             return;
         }
         let browser_gated = self
@@ -466,7 +469,10 @@ impl App {
             && self.flash_query_pending
             && self.devices.script_state() == ScriptState::Running;
         if browser_gated || chain_gated {
-            self.overlay = Some(Overlay::ConfirmInterruptDevice { confirm: false });
+            self.overlay = Some(Overlay::ConfirmInterruptDevice {
+                confirm: false,
+                return_to_packages,
+            });
         }
     }
 
@@ -488,8 +494,9 @@ impl App {
     /// interruption moves the chip query and the firmware read first, and
     /// the restore question must not open on top of the port they hold.
     pub(super) fn maybe_offer_restore(&mut self) {
+        let return_to_packages = matches!(self.overlay, Some(Overlay::Packages));
         if !self.restore_pending
-            || self.overlay.is_some()
+            || (self.overlay.is_some() && !return_to_packages)
             || self.probe.is_some()
             || self.browser.as_ref().is_some_and(Browser::is_busy)
             || self.flash_query_pending
@@ -506,6 +513,7 @@ impl App {
             // "Leave it stopped" is the highlighted default: restarting
             // re-runs code the user may be mid-way through changing.
             selected: 2,
+            return_to_packages,
         });
     }
 

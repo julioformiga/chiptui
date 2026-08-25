@@ -836,6 +836,145 @@ fn del_removes_a_package_from_the_file_and_the_board() {
 }
 
 #[test]
+fn enter_on_an_installed_package_asks_to_remove_it_instead_of_reinstalling() {
+    // The board carries `/lib/urequests.mpy` and the file declares it (the
+    // `✓` mark), so `Enter` is no longer a way to reinstall it --- it opens
+    // the same removal confirmation `Del` does, since re-running an install
+    // mip would just skip is not worth the key, and uninstalling is the one
+    // thing an already-installed row could not reach before.
+    let (mut app, root) = scaffolded_mpy_app("reinstall-asks", "urequests\n");
+    settle(&mut app);
+    open_manager(&mut app);
+    settle(&mut app);
+    for c in "urequests".chars() {
+        app.handle(key(KeyCode::Char(c)));
+    }
+    app.handle(key(KeyCode::Enter));
+
+    let frame = render(&mut app, 100, 32);
+    assert!(
+        matches!(app.overlay, Some(Overlay::ConfirmRemovePackage { .. })),
+        "enter on an installed row must ask to remove it:\n{frame}"
+    );
+    assert!(
+        frame.contains("Remove this package?"),
+        "the same destructive question del opens:\n{frame}"
+    );
+
+    // Declining leaves everything untouched --- no reinstall happened either.
+    app.handle(key(KeyCode::Enter));
+    assert!(matches!(app.overlay, Some(Overlay::Packages)));
+    let text = std::fs::read_to_string(root.join("requirements.txt")).unwrap();
+    assert!(text.lines().any(|line| line == "urequests"), "nothing lost");
+    assert!(
+        !logged(&app, "urequests installed"),
+        "enter must not have reinstalled it under the confirmation:\n{}",
+        log_text(&app)
+    );
+}
+
+#[test]
+fn installing_from_the_manager_asks_before_interrupting_a_busy_device() {
+    // A regression test: installing from inside the manager used to be a
+    // silent no-op on a busy device, because `check_interrupt_gate` refused
+    // to open on top of any overlay --- including `Overlay::Packages` itself.
+    let (mut app, root) = searchable_app("busy-install", "simple\n");
+    open_manager(&mut app);
+    settle(&mut app);
+
+    // Simulate the belief a real probe would have formed: the browser holds
+    // every device request behind the interrupt gate.
+    let mut browser = app.browser.take().unwrap();
+    browser.set_interrupt_gate(true, &mut app.processes, None);
+    app.browser = Some(browser);
+
+    for c in "urequests".chars() {
+        app.handle(key(KeyCode::Char(c)));
+    }
+    app.handle(key(KeyCode::Enter));
+
+    assert!(
+        matches!(
+            app.overlay,
+            Some(Overlay::ConfirmInterruptDevice {
+                return_to_packages: true,
+                ..
+            })
+        ),
+        "a gated install must ask instead of vanishing:\n{:?}",
+        app.overlay
+    );
+
+    // Accepting hands the manager back immediately, not the bare dashboard.
+    app.handle(key(KeyCode::Char('y')));
+    assert!(
+        matches!(app.overlay, Some(Overlay::Packages)),
+        "accepting the interrupt returns to the manager:\n{:?}",
+        app.overlay
+    );
+
+    settle(&mut app);
+    // The restore question may follow once the install drains; its default
+    // ("leave it stopped") is exercised elsewhere, so just clear it here.
+    if matches!(app.overlay, Some(Overlay::RestoreDeviceScript { .. })) {
+        app.handle(key(KeyCode::Enter));
+    }
+
+    let text = std::fs::read_to_string(root.join("requirements.txt")).unwrap();
+    assert!(
+        text.lines().any(|line| line == "urequests"),
+        "the install still completes once the user unblocks it:\n{text}"
+    );
+    assert!(
+        logged(&app, "urequests installed"),
+        "the mip command actually ran:\n{}",
+        log_text(&app)
+    );
+    assert!(
+        matches!(app.overlay, Some(Overlay::Packages)),
+        "and the manager is what's left showing"
+    );
+}
+
+#[test]
+fn removing_a_package_asks_before_interrupting_a_busy_device() {
+    // The sibling of the install-side bug: `ConfirmRemovePackage`'s accept
+    // closure used to overwrite `self.overlay` with `Packages` unconditionally
+    // after calling `remove_package`, clobbering a `ConfirmInterruptDevice`
+    // that call had just opened.
+    let (mut app, _root) = scaffolded_mpy_app("remove-busy", "urequests\n");
+    settle(&mut app);
+    open_manager(&mut app);
+    settle(&mut app);
+    for c in "urequests".chars() {
+        app.handle(key(KeyCode::Char(c)));
+    }
+    app.handle(key(KeyCode::Delete));
+    assert!(matches!(
+        app.overlay,
+        Some(Overlay::ConfirmRemovePackage { .. })
+    ));
+
+    let mut browser = app.browser.take().unwrap();
+    browser.set_interrupt_gate(true, &mut app.processes, None);
+    app.browser = Some(browser);
+
+    app.handle(key(KeyCode::Char('y')));
+
+    assert!(
+        matches!(
+            app.overlay,
+            Some(Overlay::ConfirmInterruptDevice {
+                return_to_packages: true,
+                ..
+            })
+        ),
+        "a gated removal must ask, not get clobbered back to the manager silently:\n{:?}",
+        app.overlay
+    );
+}
+
+#[test]
 fn removing_a_dotted_package_deletes_its_leaf_not_the_shared_directory() {
     // `umqtt.simple` lives at `/lib/umqtt/simple.mpy`. Deleting the
     // `umqtt/` directory would take any sibling package with it.

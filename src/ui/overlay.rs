@@ -303,10 +303,10 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
         Overlay::SyncPreview { plan, confirm } => {
             draw_sync_preview(frame, area, &plan, confirm, palette)
         }
-        Overlay::ConfirmInterruptDevice { confirm } => {
+        Overlay::ConfirmInterruptDevice { confirm, .. } => {
             draw_confirm_interrupt_device(frame, area, confirm, palette)
         }
-        Overlay::RestoreDeviceScript { selected } => {
+        Overlay::RestoreDeviceScript { selected, .. } => {
             draw_restore_device_script(frame, area, selected, palette)
         }
         Overlay::ZephyrActions { selected } => {
@@ -1080,7 +1080,7 @@ fn draw_packages(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
         ]),
         PackageIndex::Failed(reason) => Line::from(reason.clone().fg(palette.error)),
         _ => Line::from(
-            "type to filter, or paste a github:/URL spec; enter installs, del removes"
+            "type to filter, or paste a github:/URL spec; enter installs (or removes what's already there), del removes"
                 .fg(palette.muted),
         ),
     };
