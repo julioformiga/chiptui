@@ -214,8 +214,9 @@ fn event_loop(
             guard.terminal().clear()?;
         }
 
-        // A copy gesture (the MAC row's click) becomes the terminal's own
-        // clipboard escape here, between frames, where stdout is ours.
+        // A copy gesture (the MAC row's click, or `Enter` on a focused
+        // Device Info pane) becomes the terminal's own clipboard escape
+        // here, between frames, where stdout is ours.
         if let Some(text) = app.take_clipboard_request() {
             terminal::set_clipboard(&text)?;
         }

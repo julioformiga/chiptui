@@ -19,7 +19,10 @@ use tui_term::widget::PseudoTerminal;
 
 use crate::app::{App, Focus};
 use crate::ui::monitor::console_block;
-use crate::ui::{Palette, dashboard_behind_dialog, dashboard_focused, output_style, pane_border};
+use crate::ui::{
+    Palette, dashboard_behind_dialog, dashboard_focused, output_style, paint_focus_wash,
+    pane_border,
+};
 
 pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
     let focused = dashboard_focused(app, Focus::Logs);
@@ -29,6 +32,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
         // so this is the spawn-failed state --- the reason is in the log
         // pane, and `r` starts another without leaving the tab.
         let block = pane_border(focused, palette);
+        paint_focus_wash(frame, block.inner(area), focused, palette);
         frame.render_widget(
             Paragraph::new("shell not running — press r to start one".fg(palette.muted))
                 .block(block)
@@ -76,7 +80,10 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
     // the shell's own colour, and a cell the shell never styled maps to
     // `Color::Reset` --- the host terminal's default, which is exactly what
     // the same shell shows outside ChipTUI. Substituting `palette.fg` here
-    // would be the bug, not the feature.
+    // would be the bug, not the feature. For the same reason the focused
+    // pane's tint is not painted under the grid: the emulator resets every
+    // inner cell's background, so the wash could never survive it --- the
+    // border accent is this tab's focus indicator while a shell lives.
     frame.render_widget(
         PseudoTerminal::new(app.terminal.screen())
             .block(block)

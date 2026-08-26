@@ -120,10 +120,12 @@ impl App {
             return;
         }
         if contains(areas.device, point) {
-            // The Device Info pane is informational and never focused ---
-            // a click on it is not a focus claim. Its one clickable fact
+            // A click on the Device Info pane is not a focus claim --- its
+            // way in is the digit `2` or the ctrl-arrow chord, and the
+            // click's job is the row it lands on. The one clickable fact
             // is the MAC: the identity a user copies into a sticker, a
-            // router binding, a bug report.
+            // router binding, a bug report (`Enter` on the focused pane
+            // copies the same thing).
             let mac = self
                 .flash
                 .as_ref()
@@ -412,12 +414,16 @@ impl App {
     /// strips' label sequences, kept beside the hit-tester that maps a
     /// click onto one of them. Built with the session's own icon set, so
     /// the widths match the strip the frame drew (`none` drops the glyph
-    /// and its gap, changing the ranges).
+    /// and its gap, changing the ranges); the leading stop number, when the
+    /// pane carries one, is prepended here the same way the renderer
+    /// prepends it (`files::draw_device_tabs`, `panels::draw_log_tabs`).
     fn log_strip_tabs(&self) -> Vec<(LogTab, String)> {
         let icons = self.icon_set();
+        let number = self.pane_number(Focus::Logs);
         self.available_log_tabs()
             .into_iter()
-            .map(|tab| {
+            .enumerate()
+            .map(|(position, tab)| {
                 let title = match tab {
                     LogTab::Log => "Log",
                     LogTab::Monitor => "Monitor",
@@ -428,19 +434,33 @@ impl App {
                     LogTab::Monitor => icons.screen(),
                     LogTab::Terminal => icons.prompt(),
                 };
-                (tab, crate::ui::pane_title(glyph, title))
+                let title = crate::ui::pane_title(glyph, title);
+                let title = match (position == 0, number) {
+                    (true, Some(number)) => format!("{number} {title}"),
+                    _ => title,
+                };
+                (tab, title)
             })
             .collect()
     }
 
     fn device_strip_tabs(&self) -> Vec<(DevicePaneTab, String)> {
         let icons = self.icon_set();
+        let number = self.pane_number(Focus::FilesDevice);
         [
             (DevicePaneTab::Actions, icons.bolt(), "Actions"),
             (DevicePaneTab::Files, icons.folder(), "Device Files"),
         ]
         .into_iter()
-        .map(|(tab, glyph, title)| (tab, crate::ui::pane_title(glyph, title)))
+        .enumerate()
+        .map(|(position, (tab, glyph, title))| {
+            let title = crate::ui::pane_title(glyph, title);
+            let title = match (position == 0, number) {
+                (true, Some(number)) => format!("{number} {title}"),
+                _ => title,
+            };
+            (tab, title)
+        })
         .collect()
     }
 

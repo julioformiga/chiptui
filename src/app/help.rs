@@ -10,7 +10,7 @@
 //! activates the row by replaying its key (`HelpBinding::event`) once the
 //! help has closed, so the list doubles as a launcher. Help follows the
 //! screen (see [`View`]) and narrows under a `/` filter (the same grammar
-//! the board picker uses): the dashboard alone lists thirty-two rows, so
+//! the board picker uses): the dashboard alone lists thirty-eight rows, so
 //! search is the way through them.
 //!
 //! The descriptions are part of the data, not the rendering: each is
@@ -107,9 +107,8 @@ pub enum When {
     /// grammar's sites, so they stop claiming keys the tab took over.
     FilesTab,
     /// The device pane has a tab strip at all (a filesystem backend that
-    /// can flash or erase). The chord's destination depends on it: with a
-    /// strip the chord drives it from panes without one of their own,
-    /// without one it falls through to the Log • Monitor strip.
+    /// can flash or erase). Reserved for future site grammar; no current
+    /// site keys on it.
     DeviceStrip(bool),
 }
 
@@ -251,8 +250,13 @@ const FILES: &[Focus] = &[Focus::FilesLocal, Focus::FilesDevice];
 /// The footer shows only what a user cannot guess: navigation rows (and
 /// rarely used cosmetic ones) carry no sites at all, staying documented
 /// here in the help window instead.
-const DASHBOARD_NAVIGATION: [HelpBinding; 10] = [
+const DASHBOARD_NAVIGATION: [HelpBinding; 11] = [
     binding("tab / shift+tab", "move focus between panes"),
+    // The vertical half of the focus chords: ctrl+←/→ walks a pane's tab
+    // strips, ctrl+↑/↓ walks the dashboard's rows. Help-only, like `tab`
+    // --- the footer's budget goes to keys the focused pane owns.
+    binding("ctrl+↑ / ctrl+↓", "move focus between the rows of panes"),
+    binding("1..5", "jump to the pane with that number"),
     // Help-only: the footer's width budget is already tight at the
     // minimum terminal size, and this binding needs no footer chip to be
     // discoverable --- pressing Ctrl (or `ctrl+k`) reveals its own letters
@@ -265,58 +269,32 @@ const DASHBOARD_NAVIGATION: [HelpBinding; 10] = [
     binding("backspace / ←", "go to the parent directory"),
     sited(
         "ctrl+← / ctrl+→",
-        "switch the device pane's tabs from any pane",
+        "switch tabs, or move to the pane beside it",
         &[
+            // Row 3 has no pane beside it: its chord switches its own
+            // strip, and it is the one place tabs answer to plain nothing
+            // else --- the chord is the only tab key on every strip now.
+            site("ctrl+←/→", "tabs", 60, &[Focus::Logs], &[], When::Always),
+            // Every other pane spends the chord on its row: the walk to
+            // the stop beside it, the device pane's tabs included (they
+            // are stops of the walk). Its rank sits in the
+            // dashboard-commands band, not beside the files keys: it
+            // reaches *another* pane, and the footer's middle-dropping
+            // may sacrifice it before a key the focused pane itself uses.
             site(
                 "ctrl+←/→",
-                "actions",
-                13,
-                &[Focus::FilesDevice],
-                &[Capability::Flash, Capability::EraseFlash],
-                When::FilesTab,
-            ),
-            // The actions side keeps the plain arrows: its stacked buttons
-            // take ↑/↓ alone, so ←/→ are free to switch.
-            site(
-                "←/→",
-                "files",
-                13,
-                &[Focus::FilesDevice],
-                &[Capability::Flash, Capability::EraseFlash],
-                When::ActionsTab,
-            ),
-            // The chord is dashboard-wide: panes without a strip of their
-            // own drive the device pane's strip without giving up the
-            // cursor. Gated on `DeviceStrip`, not the caps --- Zephyr
-            // declares `Flash` too, but its build row has no device pane
-            // to strip. Its rank sits in the dashboard-commands band, not
-            // beside the files keys: it reaches *another* pane, and the
-            // footer's middle-dropping may sacrifice it before a key the
-            // focused pane itself uses.
-            site(
-                "ctrl+←/→",
-                "actions",
+                "pane",
                 59,
-                &[Focus::FilesLocal, Focus::Project],
+                &[
+                    Focus::Project,
+                    Focus::DeviceInfo,
+                    Focus::FilesLocal,
+                    Focus::FilesDevice,
+                    Focus::Workspace,
+                    Focus::Build,
+                ],
                 &[],
-                When::DeviceStrip(true),
-            ),
-        ],
-    ),
-    sited(
-        "← / →",
-        "switch the Log, Monitor and Terminal tabs",
-        &[
-            site("←/→", "tabs", 60, &[Focus::Logs], &[], When::Always),
-            // Panes with no strip of their own and no device pane beside
-            // them (the Zephyr row): the chord lands on row 3's strip.
-            site(
-                "ctrl+←/→",
-                "tabs",
-                61,
-                &[Focus::Workspace, Focus::Build, Focus::Project],
-                &[],
-                When::DeviceStrip(false),
+                When::Always,
             ),
         ],
     ),
@@ -334,7 +312,7 @@ const DASHBOARD_NAVIGATION: [HelpBinding; 10] = [
     ),
 ];
 
-const DASHBOARD_COMMANDS: [HelpBinding; 26] = [
+const DASHBOARD_COMMANDS: [HelpBinding; 27] = [
     action(
         "r",
         "re-detect, reload, or rename (file list)",
@@ -344,6 +322,22 @@ const DASHBOARD_COMMANDS: [HelpBinding; 26] = [
             site("r", "rename", 15, &[Focus::Workspace], &[], When::Always),
             site("r", "re-detect", 10, &[Focus::Logs], &[], When::Always),
         ],
+    ),
+    // The Device Info pane's one action: the MAC row is selected the moment
+    // focus arrives, and `Enter` copies it --- the same write the row's
+    // click performs.
+    action(
+        "enter",
+        "copy the board's MAC address",
+        KeyCode::Enter,
+        &[site(
+            "enter",
+            "copy mac",
+            10,
+            &[Focus::DeviceInfo],
+            &[],
+            When::Always,
+        )],
     ),
     // Help-only: a theme is picked once and remembered, so the chip had
     // no context left to earn (same call as `ctrl+i` below).
@@ -857,9 +851,8 @@ mod tests {
         // The files columns: only the keys a user cannot guess --- the
         // pane's own grammar plus the dashboard-wide commands, then the
         // tail. Navigation (tab, arrows, enter) stays in the help window.
-        // MicroPython's device pane carries a strip, so the chord is
-        // advertised from the local pane too (it drives that strip from
-        // wherever the cursor sits).
+        // The local pane has no strip of its own, so its chord is the
+        // horizontal step to the device pane beside it.
         let mut files_ctx = ctx(micropython(), Focus::FilesLocal);
         files_ctx.device_strip = true;
         let files = footer(View::Dashboard, &files_ctx);
@@ -874,7 +867,7 @@ mod tests {
                 ("x", "flash"),
                 ("m", "monitor/REPL"),
                 ("shift+r", "restart device"),
-                ("ctrl+←/→", "actions"),
+                ("ctrl+←/→", "pane"),
                 ("shift+p", "projects"),
                 ("?", "help"),
             ]
@@ -885,25 +878,35 @@ mod tests {
         assert!(device_keys.contains(&"i"), "{device_keys:?}");
 
         // Logs while a run is active: the run's own keys ride between the
-        // dashboard commands and the tail.
+        // dashboard commands and the tail. Row 3's tabs answer to the
+        // chord only now --- the plain arrows switch nothing.
         let mut logs = ctx(micropython(), Focus::Logs);
         logs.run_active = true;
         logs.run_view = true;
         assert_eq!(
             footer_keys(View::Dashboard, &logs),
             vec![
-                "r", "x", "m", "shift+r", "←/→", "ctrl+c", "s", "ctrl+f", "shift+p", "?",
+                "r",
+                "x",
+                "m",
+                "shift+r",
+                "ctrl+←/→",
+                "ctrl+c",
+                "s",
+                "ctrl+f",
+                "shift+p",
+                "?",
             ]
         );
 
-        // The tab strip's arrows survive on the Monitor tab too.
+        // The chord's tab hint survives on the Monitor tab too.
         let mut monitor = logs;
         monitor.log_tab = LogTab::Monitor;
         let keys = footer_keys(View::Dashboard, &monitor);
-        assert!(keys.contains(&"←/→"), "{keys:?}");
+        assert!(keys.contains(&"ctrl+←/→"), "{keys:?}");
 
-        // Zephyr's build pane: no device strip, so the chord falls to
-        // row 3's strip and is advertised as such.
+        // Zephyr's build pane: no strips anywhere in its row, so the chord
+        // is advertised as the horizontal step to the workspace pane.
         assert_eq!(
             footer_keys(View::Dashboard, &ctx(zephyr(), Focus::Build)),
             vec!["x", "m", "s", "ctrl+←/→", "shift+p", "?"]
@@ -969,6 +972,7 @@ mod tests {
         for caps in [micropython(), zephyr(), Capabilities::empty()] {
             for focus in [
                 Focus::Project,
+                Focus::DeviceInfo,
                 Focus::FilesLocal,
                 Focus::FilesDevice,
                 Focus::Workspace,

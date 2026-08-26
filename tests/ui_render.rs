@@ -899,6 +899,217 @@ fn fullscreen_row_3_blocks_focus_stepping() {
         Focus::Logs,
         "BackTab must not move focus off the only visible pane"
     );
+
+    // The vertical chord is frozen the same way: the rows it would walk
+    // are undrawn, so stepping anywhere would focus a pane that is not
+    // there.
+    app.handle(ctrl_key(KeyCode::Down));
+    assert_eq!(
+        app.focus,
+        Focus::Logs,
+        "ctrl+down must not step off the only visible pane"
+    );
+    app.handle(ctrl_key(KeyCode::Up));
+    assert_eq!(
+        app.focus,
+        Focus::Logs,
+        "ctrl+up must not step off the only visible pane"
+    );
+}
+
+/// A `KeyEvent` with Ctrl held for codes beyond plain characters (the
+/// arrow chords).
+fn ctrl_key(code: KeyCode) -> chiptui::event::AppEvent {
+    chiptui::event::AppEvent::Key(ratatui::crossterm::event::KeyEvent::new(
+        code,
+        ratatui::crossterm::event::KeyModifiers::CONTROL,
+    ))
+}
+
+/// `ctrl+↓`/`ctrl+↑` walk the dashboard's *rows* following the screen's
+/// geometry: each pane stays in its half (left/right), so the step lands
+/// on the pane directly beneath/above, and row 3 --- full width --- is
+/// entered from either side. The ends of the screen are the ends of the
+/// walk.
+#[test]
+fn ctrl_arrows_step_focus_between_dashboard_rows() {
+    let mut app = header_fixture("focus");
+    // The Zephyr layout: row 1 = Environment | Device Info, row 2 =
+    // Files | Actions, row 3 = Log • Monitor • Terminal.
+
+    // The left half: Environment → the workspace pane beneath it.
+    app.focus = Focus::Project;
+    app.handle(ctrl_key(KeyCode::Down));
+    assert_eq!(
+        app.focus,
+        Focus::Workspace,
+        "ctrl+down from Environment stays in the left half"
+    );
+    // The right half: Device Info → the build panel beneath it (pane 4,
+    // not pane 3).
+    app.focus = Focus::DeviceInfo;
+    app.handle(ctrl_key(KeyCode::Down));
+    assert_eq!(
+        app.focus,
+        Focus::Build,
+        "ctrl+down from Device Info stays in the right half"
+    );
+    // And upward the same way: the build panel rises to Device Info.
+    app.handle(ctrl_key(KeyCode::Up));
+    assert_eq!(
+        app.focus,
+        Focus::DeviceInfo,
+        "ctrl+up from the build panel stays in the right half"
+    );
+    app.handle(ctrl_key(KeyCode::Up));
+    assert_eq!(
+        app.focus,
+        Focus::DeviceInfo,
+        "ctrl+up at the top is a no-op"
+    );
+
+    // Row 3 has no half: either column steps down into it, and leaving it
+    // upward takes the left half, the reading order.
+    app.focus = Focus::FilesDevice;
+    app.handle(ctrl_key(KeyCode::Down));
+    assert_eq!(app.focus, Focus::Logs, "ctrl+down reaches the log row");
+    app.handle(ctrl_key(KeyCode::Down));
+    assert_eq!(app.focus, Focus::Logs, "ctrl+down at the bottom is a no-op");
+    app.handle(ctrl_key(KeyCode::Up));
+    assert_eq!(
+        app.focus,
+        Focus::Workspace,
+        "ctrl+up from row 3 takes the left half"
+    );
+    app.handle(ctrl_key(KeyCode::Up));
+    assert_eq!(
+        app.focus,
+        Focus::Project,
+        "ctrl+up reaches the Environment pane"
+    );
+}
+
+/// `1`..`5` jump to the numbered panes --- numbers fixed per position
+/// (1 Environment, 2 Device Info, 3/4 the working row, 5 row 3), the same
+/// in every backend. A digit with no focusable pane behind it falls
+/// through to the focused pane without moving focus.
+#[test]
+fn digits_jump_to_the_numbered_panes() {
+    let mut app = header_fixture("focus");
+    app.focus = Focus::Logs;
+
+    app.handle(key(KeyCode::Char('1')));
+    assert_eq!(app.focus, Focus::Project, "1 jumps to the Environment pane");
+    app.handle(key(KeyCode::Char('2')));
+    assert_eq!(app.focus, Focus::DeviceInfo, "2 jumps to Device Info");
+    app.handle(key(KeyCode::Char('3')));
+    assert_eq!(
+        app.focus,
+        Focus::Workspace,
+        "3 jumps to the working row's left pane"
+    );
+    app.handle(key(KeyCode::Char('4')));
+    assert_eq!(
+        app.focus,
+        Focus::Build,
+        "4 jumps to the working row's right pane"
+    );
+    app.handle(key(KeyCode::Char('5')));
+    assert_eq!(app.focus, Focus::Logs, "5 jumps to row 3");
+    app.handle(key(KeyCode::Char('6')));
+    assert_eq!(
+        app.focus,
+        Focus::Logs,
+        "a digit with no pane behind it moves nothing"
+    );
+}
+
+/// Every pane's title carries its fixed number at the leading edge --- the
+/// digit `digits_jump_to_the_numbered_panes` presses. The off-tour panes
+/// (Environment, Device Info) are numbered like the rest: the numbers
+/// index the *panes*, not the `Tab` tour, so they are the same in every
+/// backend.
+#[test]
+fn pane_titles_carry_their_shortcut_numbers() {
+    let mut app = header_fixture("focus");
+    let frame = render(&mut app, 100, 40);
+
+    assert!(
+        frame.contains("1 ☰ Environment"),
+        "the Environment pane carries 1:\n{frame}"
+    );
+    assert!(
+        frame.contains("2 ◆ Device Info"),
+        "the Device Info pane carries 2:\n{frame}"
+    );
+    assert!(
+        frame.contains("3 ▣ Files:"),
+        "the workspace pane's title carries 3:\n{frame}"
+    );
+    assert!(
+        frame.contains("4 ↯ Actions"),
+        "the build pane's title carries 4:\n{frame}"
+    );
+    assert!(
+        frame.contains("5 ▤ Log • ◉ Monitor • › Terminal"),
+        "row 3's strip carries 5 at its leading edge:\n{frame}"
+    );
+}
+
+/// The ctrl-arrow chord's horizontal half: a pane without a strip of its
+/// own spends the chord on the pane beside it in the same row. Row 1's two
+/// halves step between each other, and the Zephyr working row (no strips
+/// anywhere) does the same.
+#[test]
+fn ctrl_arrows_step_focus_between_the_panes_of_a_row() {
+    let mut app = header_fixture("focus");
+
+    // Row 1: Environment ↔ Device Info.
+    app.focus = Focus::Project;
+    app.handle(ctrl_key(KeyCode::Right));
+    assert_eq!(app.focus, Focus::DeviceInfo, "ctrl+→ crosses row 1");
+    app.handle(ctrl_key(KeyCode::Left));
+    assert_eq!(app.focus, Focus::Project, "ctrl+← crosses back");
+
+    // Row 2: workspace ↔ build.
+    app.focus = Focus::Workspace;
+    app.handle(ctrl_key(KeyCode::Right));
+    assert_eq!(app.focus, Focus::Build, "ctrl+→ crosses the working row");
+    app.handle(ctrl_key(KeyCode::Left));
+    assert_eq!(app.focus, Focus::Workspace, "ctrl+← crosses back");
+
+    // Row 3 owns a strip, so its chord keeps switching tabs instead.
+    app.focus = Focus::Logs;
+    app.handle(ctrl_key(KeyCode::Right));
+    assert_ne!(app.log_tab, LogTab::Log, "row 3's chord switches its strip");
+}
+
+/// Device Info is focusable (digit `2`, the chord from Environment) and
+/// its MAC row arrives selected: `Enter` copies it through the same
+/// clipboard request the row's click queues.
+#[test]
+fn enter_on_a_focused_device_info_copies_the_mac() {
+    let mut app = header_fixture("focus");
+    let mut flash = FlashPanel::new(std::env::temp_dir());
+    flash.details.mac = Some("24:6f:28:12:34:56".to_string());
+    app.flash = Some(flash);
+
+    app.focus = Focus::DeviceInfo;
+    app.handle(key(KeyCode::Enter));
+    assert_eq!(
+        app.take_clipboard_request(),
+        Some("24:6f:28:12:34:56".to_string()),
+        "Enter queues the MAC for the clipboard, like the row's click"
+    );
+
+    // Without a MAC read there is nothing to copy --- no request, no crash.
+    app.flash = None;
+    app.handle(key(KeyCode::Enter));
+    assert_eq!(
+        app.take_clipboard_request(),
+        None,
+        "no MAC, no clipboard request"
+    );
 }
 
 /// The footer advertises `ctrl+f` whenever row 3 holds focus --- the way
@@ -1220,6 +1431,165 @@ fn selected_rows_carry_the_themes_selection_background() {
     assert_ne!(selection, Color::Reset);
 }
 
+/// The focused pane carries a subtle background tint derived from the
+/// theme: the accent blended 1/16 toward the theme's own background, over
+/// the pane's whole rect, while every other pane stays transparent. The
+/// tint follows focus when it moves, and it stays a whisper --- each
+/// channel of it sits within a few steps of the theme's background
+/// (1/64 toward the accent), far subtler than the home rows' 3/16
+/// resting tint.
+#[test]
+fn the_focused_pane_carries_a_subtle_theme_tint() {
+    use ratatui::style::Color;
+
+    // The expected tint, recomputed here from the palette the app draws
+    // with: `blend(accent, bg, 1, 64)`, one channel at a time.
+    let tint_of = |palette: ratatui_themes::ThemePalette| -> Color {
+        let Color::Rgb(r1, g1, b1) = palette.accent else {
+            panic!("the theme's accent is an RGB value");
+        };
+        let Color::Rgb(r2, g2, b2) = palette.bg else {
+            panic!("the theme's background is an RGB value");
+        };
+        let channel =
+            |toward: u8, from: u8| (from as i32 + (toward as i32 - from as i32) / 64) as u8;
+        Color::Rgb(channel(r1, r2), channel(g1, g2), channel(b1, b2))
+    };
+
+    let mut app = header_fixture("tint");
+    let palette = app.theme_palette();
+    let tint = tint_of(palette);
+    // The wash must still exist: on every shipped theme the accent differs
+    // from the background enough that a 64th moves at least one channel.
+    assert_ne!(
+        tint, palette.bg,
+        "a 64th of the accent still shifts the background"
+    );
+
+    // Nearly imperceptible by construction: each channel of the tint sits
+    // a couple of steps from the theme's background at most (1/64 of the
+    // way toward the accent).
+    if let (Color::Rgb(tr, tg, tb), Color::Rgb(br, bg_, bb)) = (tint, palette.bg) {
+        for (t, b) in [(tr, br), (tg, bg_), (tb, bb)] {
+            assert!(
+                (i16::from(t) - i16::from(b)).unsigned_abs() <= 8,
+                "the tint strays too far from the theme's background"
+            );
+        }
+    }
+
+    let mut terminal = Terminal::new(TestBackend::new(100, 40)).expect("test terminal");
+    let draw = |terminal: &mut Terminal<TestBackend>, app: &mut App| {
+        terminal
+            .draw(|frame| chiptui::ui::draw(frame, app))
+            .expect("draw succeeds");
+        terminal.backend().buffer().clone()
+    };
+
+    // Focus on the workspace pane: its rect is tinted (the header's own
+    // accent cells and the home-style row tints are painted by their own
+    // rules; the pane tint is the only whole-rect wash on the dashboard).
+    app.focus = Focus::Workspace;
+    let buffer = draw(&mut terminal, &mut app);
+    let mut tinted_first: Vec<(u16, u16)> = Vec::new();
+    for y in 0..buffer.area.height {
+        for x in 0..buffer.area.width {
+            if buffer[(x, y)].bg == tint {
+                tinted_first.push((x, y));
+            }
+        }
+    }
+    assert!(
+        tinted_first.len() > 100,
+        "the pane's whole interior is tinted: {} cells",
+        tinted_first.len()
+    );
+    // And the tinted rect is one contiguous pane: a single row through its
+    // middle carries a long unbroken run of it.
+    let longest_run = (0..buffer.area.height)
+        .map(|y| {
+            let mut run = 0;
+            let mut best = 0;
+            for x in 0..buffer.area.width {
+                if buffer[(x, y)].bg == tint {
+                    run += 1;
+                    best = best.max(run);
+                } else {
+                    run = 0;
+                }
+            }
+            best
+        })
+        .max()
+        .unwrap();
+    assert!(
+        longest_run > 40,
+        "the tint covers a pane-wide rect, not scattered cells: {longest_run}"
+    );
+
+    // The borders are *not* tinted: the wash is the pane's interior only,
+    // so the frame stays the terminal's own background. The workspace pane
+    // spans the frame's left edge (column 0 is its left border), and its
+    // top/bottom border rows are the frame's rules --- none of those may
+    // carry the tint. (Rows inside may legitimately break the run where
+    // content paints its own background, e.g. the selected checklist row's
+    // `palette.selection` --- that is the wash sitting *under* the content,
+    // the documented order.)
+    for (x, y) in &tinted_first {
+        assert!(
+            *x != 0 && *x != buffer.area.width - 1,
+            "the pane's left/right border columns carry no tint ({x},{y})"
+        );
+    }
+    let row_text = |buffer: &ratatui::buffer::Buffer, y: u16| -> String {
+        (0..buffer.area.width)
+            .map(|x| buffer[(x, y)].symbol().to_string())
+            .collect()
+    };
+    let mut border_rows_checked = 0;
+    for y in 0..buffer.area.height {
+        let text = row_text(&buffer, y);
+        let border_row = (text.contains("Files:") && text.starts_with('\u{256d}'))
+            || text.starts_with('\u{2570}');
+        if border_row {
+            assert!(
+                (0..buffer.area.width).all(|x| buffer[(x, y)].bg != tint),
+                "a border row of the focused pane carries the tint: {text}"
+            );
+            border_rows_checked += 1;
+        }
+    }
+    assert!(
+        border_rows_checked >= 2,
+        "the pane's top and bottom border rows were both found and checked"
+    );
+
+    // The tint follows focus: moving to the build pane returns every
+    // previously tinted cell to transparency (the panes are disjoint
+    // rects) and paints the sibling instead.
+    app.focus = Focus::Build;
+    let buffer = draw(&mut terminal, &mut app);
+    let mut tinted_second = 0;
+    for (x, y) in &tinted_first {
+        assert_eq!(
+            buffer[(*x, *y)].bg,
+            Color::Reset,
+            "the workspace pane lost the tint when focus moved"
+        );
+    }
+    for y in 0..buffer.area.height {
+        for x in 0..buffer.area.width {
+            if buffer[(x, y)].bg == tint {
+                tinted_second += 1;
+            }
+        }
+    }
+    assert!(
+        tinted_second > 100,
+        "the build pane picked the tint up: {tinted_second} cells"
+    );
+}
+
 #[test]
 fn help_fits_one_line_per_binding_and_scrolls_under_the_cursor() {
     let mut app = app_with_backend(BackendKind::Zephyr);
@@ -1471,9 +1841,10 @@ fn the_log_and_monitor_tabs_live_on_the_panes_border_row() {
         "the tabs must share the border row with the dot divider:\n{frame}"
     );
 
-    // Switching tabs highlights the other title on the same border.
+    // Switching tabs highlights the other title on the same border --- the
+    // chord is the tab key now (the plain arrows switch nothing).
     app.focus = Focus::Logs;
-    app.handle(key(KeyCode::Right));
+    app.handle(ctrl_key(KeyCode::Right));
     assert_eq!(app.log_tab, LogTab::Monitor);
 }
 

@@ -1021,10 +1021,15 @@ fn the_browser_renders_both_panes_with_comparison_markers() {
 
     assert!(frame.contains("Files:"), "missing local pane:\n{frame}");
     assert!(
+        frame.contains("3 ▣ Files:"),
+        "the local pane's title carries its shortcut number:\n{frame}"
+    );
+    assert!(
         // A flash-capable backend renders the device pane as a tabbed pane:
         // the strip names both tabs, with the walked device path riding
-        // the strip's right edge as the files tab's status.
-        frame.contains("↯ Actions • ▣ Device Files"),
+        // the strip's right edge as the files tab's status. The pane's
+        // shortcut number rides the strip's leading edge.
+        frame.contains("4 ↯ Actions • ▣ Device Files"),
         "missing device pane tab strip:\n{frame}"
     );
     assert!(
@@ -1061,6 +1066,176 @@ fn the_browser_renders_both_panes_with_comparison_markers() {
         "missing footer shortcuts:\n{frame}"
     );
     assert!(frame.contains("DIR"), "directories are marked:\n{frame}");
+}
+
+/// The vertical chord over the browser layout follows the screen's
+/// geometry: the device column (right half) rises to Device Info above it
+/// and descends back, the local column (left half) rises to the
+/// Environment checklist, and the digits reach the panes their titles
+/// number (3 local, 4 device, 5 row 3).
+#[test]
+fn ctrl_arrows_and_digits_step_focus_over_the_browser_rows() {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    let ctrl_key = |code: KeyCode| AppEvent::Key(KeyEvent::new(code, KeyModifiers::CONTROL));
+
+    let project = Project::new("focus-rows");
+    let mut app = app_in_browser(&project);
+    app.focus = Focus::FilesDevice;
+
+    // The right half: device column ↔ Device Info (pane 4 ↔ pane 2).
+    app.handle(ctrl_key(KeyCode::Up));
+    assert_eq!(
+        app.focus,
+        Focus::DeviceInfo,
+        "ctrl+up from the device column stays in the right half"
+    );
+    app.handle(ctrl_key(KeyCode::Down));
+    assert_eq!(
+        app.focus,
+        Focus::FilesDevice,
+        "ctrl+down from Device Info returns to the device column"
+    );
+
+    // The left half: Environment ↔ the local column.
+    app.focus = Focus::Project;
+    app.handle(ctrl_key(KeyCode::Down));
+    assert_eq!(
+        app.focus,
+        Focus::FilesLocal,
+        "ctrl+down from Environment stays in the left half"
+    );
+    app.handle(ctrl_key(KeyCode::Down));
+    assert_eq!(app.focus, Focus::Logs, "ctrl+down reaches the log row");
+
+    app.handle(key(KeyCode::Char('4')));
+    assert_eq!(
+        app.focus,
+        Focus::FilesDevice,
+        "4 jumps to the device column"
+    );
+    app.handle(key(KeyCode::Char('5')));
+    assert_eq!(app.focus, Focus::Logs, "5 jumps to the log row");
+}
+
+/// The chord's horizontal half walks the MicroPython working row stop by
+/// stop, the device pane's tabs counting as stops of their own in strip
+/// order: pane 3 → pane 4 Actions → pane 4 Device Files, and back the
+/// same way --- one keypress per stop, clamped at the ends, never
+/// descending a local directory.
+#[test]
+fn ctrl_arrows_step_focus_between_the_browser_columns() {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    let ctrl_key = |code: KeyCode| AppEvent::Key(KeyEvent::new(code, KeyModifiers::CONTROL));
+
+    let project = Project::new("focus-columns");
+    let mut app = app_in_browser(&project);
+    app.focus = Focus::FilesLocal;
+    let root = app.browser.as_ref().unwrap().local_path.clone();
+
+    // Pane 3 → pane 4, arriving on the strip's first tab.
+    app.handle(ctrl_key(KeyCode::Right));
+    assert_eq!(
+        app.focus,
+        Focus::FilesDevice,
+        "ctrl+→ steps from the local column to the device pane"
+    );
+    assert!(
+        app.device_actions_tab_active(),
+        "arriving from pane 3 lands on the Actions tab, the strip's first"
+    );
+    assert!(app.flash.is_some(), "the tab arrives with its panel");
+    assert_eq!(
+        app.browser.as_ref().unwrap().local_path,
+        root,
+        "the chord never descends a local directory"
+    );
+
+    // Actions → Device Files: the strip walks right.
+    app.handle(ctrl_key(KeyCode::Right));
+    assert_eq!(app.focus, Focus::FilesDevice);
+    assert!(
+        !app.device_actions_tab_active(),
+        "ctrl+→ walks onto the Device Files tab"
+    );
+
+    // Device Files is the row's right end: another ctrl+→ moves nothing.
+    app.handle(ctrl_key(KeyCode::Right));
+    assert_eq!(app.focus, Focus::FilesDevice);
+    assert!(!app.device_actions_tab_active());
+
+    // And back: Device Files → Actions → pane 3.
+    app.handle(ctrl_key(KeyCode::Left));
+    assert!(
+        app.device_actions_tab_active(),
+        "ctrl+← walks back onto the Actions tab"
+    );
+    app.handle(ctrl_key(KeyCode::Left));
+    assert_eq!(
+        app.focus,
+        Focus::FilesLocal,
+        "ctrl+← from the Actions tab returns to pane 3"
+    );
+
+    // Pane 3 is the left end of the row.
+    app.handle(ctrl_key(KeyCode::Left));
+    assert_eq!(app.focus, Focus::FilesLocal);
+}
+
+/// A click on a strip's tab label lands on the tab it names. The pane's
+/// stop number rides the strip's leading edge, shifting every tab two
+/// columns right --- this pins the drawn strip and the hit-tester's width
+/// walk together, number budgeted in both (`mouse::strip_tab` beside
+/// `draw_device_tabs`/`draw_log_tabs`).
+#[test]
+fn strip_clicks_land_on_the_tab_they_name() {
+    use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+
+    let click = |column: u16, row: u16| {
+        AppEvent::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        })
+    };
+    // The drawn row and column of `needle`'s first cell; byte offsets are
+    // not columns (multi-byte borders).
+    let find_cell = |frame: &str, needle: &str| {
+        frame.lines().enumerate().find_map(|(row, line)| {
+            line.find(needle)
+                .map(|byte| (row as u16, line[..byte].chars().count() as u16))
+        })
+    };
+
+    let project = Project::new("strip-click");
+    let mut app = app_in_browser(&project);
+    app.set_mouse_enabled(true);
+
+    // The actions tab first, so the click on the files tab has a switch to
+    // make (`x` opens the flash panel's actions side).
+    app.focus = Focus::FilesDevice;
+    app.handle(key(ratatui::crossterm::event::KeyCode::Char('x')));
+    assert!(app.device_actions_tab_active(), "`x` opens the actions tab");
+
+    let frame = render(&mut app, 132, 32);
+    let (row, column) = find_cell(&frame, "▣ Device Files").expect("the files tab is drawn");
+    app.handle(click(column, row));
+    assert!(
+        !app.device_actions_tab_active(),
+        "the click on the Device Files label switches back to the files tab"
+    );
+
+    // Row 3's strip answers the same way: the Monitor label switches the
+    // row to its feed.
+    let (row, column) = find_cell(&frame, "◉ Monitor").expect("the monitor tab is drawn");
+    app.handle(click(column, row));
+    assert_eq!(
+        app.log_tab,
+        chiptui::app::LogTab::Monitor,
+        "the click on the Monitor label switches row 3 to the monitor"
+    );
 }
 
 /// The device strip's right edge carries the walked path --- but not at the
@@ -1795,19 +1970,32 @@ fn the_device_files_tab_keeps_the_arrows_for_directories() {
         DevicePath::new("/lib")
     );
 
-    // The ctrl chord is what switches the tabs --- over and back.
-    app.handle(AppEvent::Key(KeyEvent::new(
-        KeyCode::Right,
-        KeyModifiers::CONTROL,
-    )));
-    assert!(app.device_actions_tab_active());
+    // The ctrl chord walks the row's stops: from the Device Files tab one
+    // ctrl+← lands on the Actions tab, and only the second returns to
+    // pane 3 (the walk is Device Files → Actions → the local column).
     app.handle(AppEvent::Key(KeyEvent::new(
         KeyCode::Left,
         KeyModifiers::CONTROL,
     )));
-    assert!(!app.device_actions_tab_active());
+    assert!(
+        app.device_actions_tab_active(),
+        "ctrl+← walks from Device Files onto the Actions tab"
+    );
+    assert_eq!(app.focus, Focus::FilesDevice);
+    app.handle(AppEvent::Key(KeyEvent::new(
+        KeyCode::Left,
+        KeyModifiers::CONTROL,
+    )));
+    assert_eq!(
+        app.focus,
+        Focus::FilesLocal,
+        "the second ctrl+← leaves the device pane for the local column"
+    );
 
-    // Plain ← ascends back to the root.
+    // Plain ← still ascends back to the root (the device pane keeps its
+    // cursor where it was).
+    app.focus = Focus::FilesDevice;
+    app.device_pane_tab = chiptui::app::DevicePaneTab::Files;
     app.handle(key(KeyCode::Left));
     assert_eq!(
         app.browser.as_ref().unwrap().device_path,

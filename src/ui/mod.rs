@@ -33,7 +33,7 @@ use std::path::Path;
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Flex, Layout, Rect};
-use ratatui::style::{Modifier, Style, Stylize};
+use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, BorderType, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap,
@@ -551,10 +551,58 @@ pub(crate) fn border_style(focused: bool, palette: Palette) -> Style {
     }
 }
 
+/// The focused pane's background: the theme's accent blended a very long
+/// way toward the theme's own background (1/64 --- almost imperceptible by
+/// design; a whole pane interior is washed, and the home rows' 3/16 resting
+/// tint would shout at that scale). The accent keeps the tint on the
+/// theme's own hue --- a theme switch recolors the focus the same way it
+/// recolors everything else --- while the distance keeps it a whisper: two
+/// adjacent panes differ by a channel step or two, felt rather than read.
+/// Every pane reaches this through [`render_pane`]/[`paint_focus_wash`],
+/// applied over the inner area only, so the rule cannot drift between them.
+pub(crate) fn focused_pane_bg(palette: Palette) -> Color {
+    crate::backend::blend(palette.accent, palette.bg, 1, 64)
+}
+
+/// The focused pane's tint painted over `inner` only: the borders keep
+/// the terminal's own background, so the frame stays a line drawing and
+/// the tint reads as a lit interior. Rendered *before* the pane's content
+/// --- anything the content draws covers what it owns (a selected row's
+/// `palette.selection`, the terminal emulator's per-cell colors), and
+/// every cell it leaves untouched keeps the tint.
+pub(crate) fn paint_focus_wash(frame: &mut Frame, inner: Rect, focused: bool, palette: Palette) {
+    if focused && inner.width > 0 && inner.height > 0 {
+        frame.render_widget(
+            Block::default().style(Style::new().bg(focused_pane_bg(palette))),
+            inner,
+        );
+    }
+}
+
+/// The standard pane render: the block over `area`, then the
+/// [`paint_focus_wash`] over its inner rect, so the content rendered
+/// afterwards sits on the tint instead of under it. Returns the inner
+/// rect the content renders into (the same `block.inner(area)` the call
+/// sites used to compute by hand).
+pub(crate) fn render_pane(
+    frame: &mut Frame,
+    area: Rect,
+    block: Block<'static>,
+    focused: bool,
+    palette: Palette,
+) -> Rect {
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    paint_focus_wash(frame, inner, focused, palette);
+    inner
+}
+
 /// An untitled bordered block that shows whether it holds focus: row 3's
 /// pane, whose top border row belongs to the Log/Monitor tab strip and
 /// whose bottom border row carries the active tab's status at its right
-/// --- see `panels::draw_log_tabs`.
+/// --- see `panels::draw_log_tabs`. The focused pane's subtle background
+/// tint is painted by [`render_pane`]/[`paint_focus_wash`] over the
+/// *inner* area only, never by the block itself.
 pub(crate) fn pane_border(focused: bool, palette: Palette) -> Block<'static> {
     Block::bordered()
         .border_type(BorderType::Rounded)
@@ -573,6 +621,24 @@ pub(crate) fn pane_title(glyph: &str, title: &str) -> String {
         title.to_string()
     } else {
         format!("{glyph} {title}")
+    }
+}
+
+/// A pane's title with its shortcut number prefixed (`1 ▣ Files: …`): the
+/// number at the title's leading edge is the digit that jumps straight to
+/// the pane (`App::pane_for_number`), and the numbers are **fixed per pane
+/// position** --- 1 Environment, 2 Device Info, 3/4 the working row's two
+/// panes, 5 row 3 --- so they are the same in every backend and worth
+/// memorizing, unlike the `Tab` tour's dynamic order (which the Project
+/// and Device Info panes sit off entirely). A pane that is not focusable
+/// right now keeps its plain title. The prefix rides *ahead* of the glyph
+/// on purpose: titles clip at their tail, and the number must be the one
+/// cell a narrow pane never eats.
+pub(crate) fn numbered_title(app: &App, focus: Focus, glyph: &str, title: &str) -> String {
+    let base = pane_title(glyph, title);
+    match app.pane_number(focus) {
+        Some(number) => format!("{number} {base}"),
+        None => base,
     }
 }
 

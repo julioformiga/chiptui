@@ -83,39 +83,46 @@ impl BackendKind {
         match self {
             Self::MicroPython => Palette {
                 accent: theme.success,
-                tint: blend(theme.success, theme.bg, 3),
-                tint_selected: blend(theme.success, theme.bg, 6),
+                tint: blend(theme.success, theme.bg, 3, 16),
+                tint_selected: blend(theme.success, theme.bg, 6, 16),
             },
             Self::Zephyr => Palette {
                 accent: theme.info,
-                tint: blend(theme.info, theme.bg, 3),
-                tint_selected: blend(theme.info, theme.bg, 6),
+                tint: blend(theme.info, theme.bg, 3, 16),
+                tint_selected: blend(theme.info, theme.bg, 6, 16),
             },
         }
     }
 }
 
-/// `color` moved `num`/16 of the way toward `background` (an integer lerp,
-/// so it stays `const`). Non-RGB colors cannot be blended; the theme's
+/// `color` moved `num/den` of the way toward `background` (an integer
+/// lerp, so it stays `const`). Non-RGB colors cannot be blended; the theme's
 /// background is returned instead --- an untinted row --- rather than a
 /// guess. Every `ratatui_themes` palette uses RGB values, so this only
-/// guards custom construction.
-const fn blend(color: Color, background: Color, num: u32) -> Color {
+/// guards custom construction. Shared by the backend row tints (16ths,
+/// row-sized washes that must read at a glance) and the focused pane's
+/// background (a 64th --- a pane-sized wash that must stay a whisper,
+/// `ui::focused_pane_bg`), the one blend the whole UI needs.
+pub(crate) const fn blend(color: Color, background: Color, num: u32, den: u32) -> Color {
     if let (Color::Rgb(r1, g1, b1), Color::Rgb(r2, g2, b2)) = (color, background) {
         Color::Rgb(
-            channel(r1, r2, num),
-            channel(g1, g2, num),
-            channel(b1, b2, num),
+            channel(r1, r2, num, den),
+            channel(g1, g2, num, den),
+            channel(b1, b2, num, den),
         )
     } else {
         background
     }
 }
 
-/// One channel of [`blend`]: `from` shifted `num`/16 toward `toward`.
-const fn channel(toward: u8, from: u8, num: u32) -> u8 {
+/// One channel of [`blend`]: `from` shifted `num/den` toward `toward`.
+/// `den` of 0 would divide by zero; the callers pass sane constants, and
+/// the guard is an `if` rather than `max` because this must stay `const`
+/// on stable.
+const fn channel(toward: u8, from: u8, num: u32, den: u32) -> u8 {
     let delta = toward as i32 - from as i32;
-    (from as i32 + delta * num as i32 / 16) as u8
+    let den = if den == 0 { 1 } else { den } as i32;
+    (from as i32 + delta * num as i32 / den) as u8
 }
 
 /// A backend's colors: the accent its name and icon are drawn in, and the

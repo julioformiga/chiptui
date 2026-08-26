@@ -281,6 +281,9 @@ pub(crate) fn render_console(
     palette: Palette,
 ) {
     let (inner, viewport, width) = layout;
+    // Every console lives in row 3: focus is Logs' alone, derived rather
+    // than threaded through as another argument.
+    let focused = dashboard_focused(app, Focus::Logs);
     // Read before the mutable borrow below: the console dims behind a
     // dialog like every other pane, but never merely because the cursor
     // sits elsewhere (see [`crate::ui::output_style`]).
@@ -299,6 +302,9 @@ pub(crate) fn render_console(
     };
 
     let (visible, _) = window_console(doc, width, first, viewport);
+    // The focused tint under the console's text (fg-only styles), borders
+    // excluded --- every pane's interior, same rule.
+    super::paint_focus_wash(frame, inner, focused, palette);
     frame.render_widget(
         Paragraph::new(visible)
             .block(block)

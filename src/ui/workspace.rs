@@ -15,8 +15,8 @@ use ratatui::widgets::{Paragraph, Wrap};
 
 use crate::app::{App, Focus};
 use crate::ui::{
-    Palette, dashboard_focused, muted_style, pane_block, pane_title, selection_style,
-    shortcut_letter, tilde_path,
+    Palette, dashboard_focused, muted_style, numbered_title, pane_block, render_pane,
+    selection_style, shortcut_letter, tilde_path,
 };
 use crate::workspace::WorkspacePanel;
 
@@ -34,20 +34,21 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
     // says it instead and the listing gets the whole pane. The prefix never
     // truncates --- only the path shortens, from the left (11 is
     // "Files: " plus the title's own padding spaces plus the leading glyph
-    // and its gap, budgeted for the worst icon set).
-    let title = pane_title(
+    // and its gap, budgeted for the worst icon set; the stop number's two
+    // cells come off the same budget).
+    let stop = app.pane_number(Focus::Workspace);
+    let budget = area.width.saturating_sub(11 + stop.map_or(0, |_| 2));
+    let title = numbered_title(
+        app,
+        Focus::Workspace,
         app.icon_set().folder(),
         &format!(
             "Files: {}",
-            shorten_start(
-                &files_title(panel, app),
-                area.width.saturating_sub(11) as usize
-            )
+            shorten_start(&files_title(panel, app), budget as usize)
         ),
     );
     let block = pane_block(&title, focused, palette, shortcut_letter(app, 'f'));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let inner = render_pane(frame, area, block, focused, palette);
 
     draw_files_section(frame, inner, app, panel, palette);
 }

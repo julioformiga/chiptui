@@ -130,16 +130,39 @@ files tab, the flag alone for the actions tab (no listing to locate there, but a
 script gates every esptool action). `x`
 (`App::open_flash`) creates the flash panel and switches to the actions tab instead of
 opening a dialog; `ctrl+←/→` is a **dashboard-wide chord** (`App::switch_strip_tabs`,
-handled in `on_dashboard_key` before every pane dispatch, like `m`): it switches the tabs
-of the pane holding focus when that pane has a strip, the device pane's strip when one
-exists beside a pane without its own (the local files pane flips the device pane without
-giving up the cursor), and row 3's Log • Monitor • Terminal strip otherwise (the Zephyr row) — one
-keypress flips exactly one strip, never two. Plain `←/→` join the switch only on the
-actions side (its stacked buttons take `↑/↓` alone); on the files side they keep their
-directory meaning (descend/ascend, `Enter`'s menu descends), the same grammar the local
-pane and an untabbed device pane (no flash capability) always had — and because the chord
-is intercepted before the dispatch, it never leaks into a pane's own arrows (on the local
-pane `ctrl+→` must not descend). The tab renders the esptool menu as
+handled in `on_dashboard_key` before every pane dispatch, like `m`) that walks the row's
+stops *in the arrow's direction* (`App::step_focus_horizontal`): a row holds two panes
+(Environment ↔ Device Info, workspace ↔ build), and a strip-owning device pane contributes
+its tabs as stops of their own in strip order — MicroPython's working row walks pane 3 →
+pane 4 Actions → pane 4 Device Files and back, one keypress per stop, clamped at the ends
+(never a wrap; entering pane 4 from pane 3 lands on Actions, the strip's first tab, and
+creates the flash panel the tab draws). **Tabs answer to the chord only, on every strip**:
+the plain `←/→` no longer switch any tab — not the device pane's (its actions side takes
+`↑/↓` alone for the buttons, the arrows answer to nothing there) and not row 3's either;
+on the files side the plain arrows keep their directory meaning (descend/ascend, `Enter`'s
+menu descends), the same grammar the local pane and an untabbed device pane (no flash
+capability) always had — and because the chord is intercepted before the dispatch, it
+never leaks into a pane's own arrows (on the local pane `ctrl+→` must not descend). Row 3
+has no pane beside it, so its chord switches its own strip instead (`switch_log_tab`).
+`ctrl+↑/↓` is the chord family's vertical half
+(`App::step_focus_vertical`, intercepted beside the strip chord): it steps focus between
+the dashboard's *rows* **staying in the same half of the screen** (`App::focus_column`/
+`focusable_in_row` — `ctrl+↓` from Device Info lands on the device pane/build panel beneath
+it, never the local column to its left), a half with nothing focusable falling back to the
+other, a row with nothing focusable skipped, row 3 (full width) entered from either side
+and left upward onto the left half; a no-op while row 3 is fullscreen, like `Tab`. Focus is also reachable without walking: **every pane's
+title carries a fixed shortcut number** at the leading edge (`ui::numbered_title` over
+`App::pane_number` — 1 Environment, 2 Device Info, 3 the working row's left pane, 4 its
+right one, 5 row 3, fixed per position rather than per tour stop so the digits mean the same
+thing in every backend; strips carry the number as a muted span before the first tab,
+budgeted in `mouse::strip_tab`'s width walk too), and `1`..`5` jump straight to that pane
+(`App::pane_for_number`; a digit with no focusable pane behind it falls through). Both row-1
+panes stay off the `Tab` tour — the tour walks working panes only — but both are reachable
+by digit and chord: Device Info (`Focus::DeviceInfo`, always drawn, never clamped) holds a
+one-row selection grammar whose single actionable row is the MAC, selected the moment focus
+arrives (`draw_detection` renders it through the shared `render_row`/`selection_style`), with
+`Enter` copying it through the same `App::copy_to_clipboard` the row's click uses (`Enter`
+with no MAC read is a quiet no-op). The tab renders the esptool menu as
 the *same* stacked-button widget the Zephyr build pane uses (`ui::flash::draw_actions_pane`:
 one button per `FlashPanel::pane_actions` row, in workflow order --- `⇩ Search firmware online`
 (the menu's old `s` key as a button) leads, then `⚙ Manage packages` (the `Overlay::Packages`
@@ -276,6 +299,25 @@ cursor moves, and the dashboard deliberately parks focus on the build pane while
 exactly what the user was watching, for the whole length of the build. Their focus indicator is the
 pane border and the tab strip. `tests/ui_render.rs`'s
 `output_panes_dim_behind_a_dialog_but_never_for_focus_alone` locks both halves.
+
+Besides the border, **the focused pane carries a nearly imperceptible background tint over its
+inner area only**: `ui::focused_pane_bg` is the theme's accent blended 1/64 toward the theme's
+own background (the shared `backend::blend`, the same integer lerp the home rows' 3/16 tints
+use — the denominators are free because the two scales answer different questions: a row-sized
+wash must read at a glance, a pane-sized one must stay a whisper, two channel steps at most).
+The wash is painted by
+`ui::render_pane` (the standard `block → wash → content` pane render) or `ui::paint_focus_wash`
+(for panes that hand their block to a `Paragraph`/`PseudoTerminal`), always over `block.inner`
+— the borders keep the terminal's own background, so the frame stays a line drawing and the
+tint a lit interior. It is rendered *before* the pane's content: anything the content draws
+covers what it owns (a selected row's `palette.selection`), and every cell it leaves untouched
+keeps the tint. It follows the theme on a switch and disappears while a dialog or the shortcuts
+overlay owns the screen (`dashboard_focused` is false everywhere then); the one documented
+exception is the live Terminal grid, whose per-cell `Style::reset()` would wipe any wash
+under it — the border accent is that tab's focus indicator while a shell lives.
+`the_focused_pane_carries_a_subtle_theme_tint` locks the tint, its subtlety (each channel
+within 8 of `palette.bg`, and still distinct from it), the untinted borders, and that it
+follows focus.
 
 Every destructive confirmation shares one grammar (`SPEC.md` §15, `ui::overlay::Destructive`):
 title = the action as a question, target = *what it happens to* in the warning color (board and

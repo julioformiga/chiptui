@@ -19,17 +19,18 @@ use super::button::{self, Button};
 use super::workspace::label;
 use crate::app::{App, Focus};
 use crate::build::{BuildPanel, BuildReport};
-use crate::ui::{Palette, dashboard_focused, pane_block, pane_title, shortcut_letter};
+use crate::ui::{
+    Palette, dashboard_focused, numbered_title, pane_block, render_pane, shortcut_letter,
+};
 
 pub fn draw(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
     let Some(panel) = &app.build else {
         return;
     };
     let focused = dashboard_focused(app, Focus::Build);
-    let title = pane_title(app.icon_set().bolt(), "Actions");
+    let title = numbered_title(app, Focus::Build, app.icon_set().bolt(), "Actions");
     let block = pane_block(&title, focused, palette, shortcut_letter(app, 'a'));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let inner = render_pane(frame, area, block, focused, palette);
 
     let footer_top = draw_rows(frame, inner, app, panel, palette);
     draw_state(frame, inner, panel, footer_top, palette);

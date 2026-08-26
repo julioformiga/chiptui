@@ -21,8 +21,8 @@ use crate::files::SyncStatus;
 use crate::ui::panels::truncate_start;
 use crate::ui::{
     Palette, SPINNER, border_style, content_style, dashboard_focused, highlighted_line,
-    icon_column, muted_style, pane_block, pane_border, pane_title, selection_style,
-    shortcut_highlight_style, shortcut_letter,
+    icon_column, muted_style, numbered_title, paint_focus_wash, pane_block, pane_border,
+    pane_title, render_pane, selection_style, shortcut_highlight_style, shortcut_letter,
 };
 
 pub fn draw(frame: &mut Frame, row: &super::layout::BrowserRow, app: &App, palette: Palette) {
@@ -101,14 +101,23 @@ fn draw_local(
     } else {
         crate::ui::tilde_path(&browser.local_path, app.home_dir())
     };
-    // The prefix never truncates --- only the path shortens, from the left.
-    let title = pane_title(
+    // The prefix never truncates --- only the path shortens, from the left,
+    // and the stop number's two cells are budgeted off the path, not taken
+    // from the title's tail.
+    let stop = app.pane_number(Focus::FilesLocal);
+    let budget = area.width.saturating_sub(stop.map_or(0, |_| 2));
+    let title = numbered_title(
+        app,
+        Focus::FilesLocal,
         app.icon_set().folder(),
-        &format!("Files: {}", shorten(&title, area.width)),
+        &format!("Files: {}", shorten(&title, budget)),
     );
     let block = pane_block(&title, focused, palette, shortcut_letter(app, 'f'));
 
     if let Some(error) = &browser.local_error {
+        // The wash goes under the paragraph: its text carries fg only, so
+        // the error pane keeps the focused tint too.
+        paint_focus_wash(frame, block.inner(area), focused, palette);
         frame.render_widget(
             Paragraph::new(error.clone().fg(palette.error))
                 .block(block)
@@ -118,8 +127,7 @@ fn draw_local(
         return;
     }
 
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let inner = render_pane(frame, area, block, focused, palette);
 
     let items: Vec<ListItem> = browser
         .visible_local()
@@ -162,7 +170,7 @@ fn draw_device(
     if app.devices.script_state() == ScriptState::Running {
         title.push_str(" · script running");
     }
-    let title = pane_title(app.icon_set().folder(), &title);
+    let title = numbered_title(app, Focus::FilesDevice, app.icon_set().folder(), &title);
     // A backend that can flash or erase gets the pane the flash menu moved
     // into: the border row carries the `Actions • Device Files`
     // tab strip (row 3's grammar) and the walked path rides the strip's
@@ -174,8 +182,7 @@ fn draw_device(
     } else {
         pane_block(&title, focused, palette, shortcut_letter(app, 'd'))
     };
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let inner = render_pane(frame, area, block, focused, palette);
 
     if tabbed && app.device_actions_tab_active() {
         super::flash::draw_actions_pane(frame, inner, app, palette);
@@ -223,7 +230,7 @@ fn draw_device_tabs(frame: &mut Frame, pane: Rect, app: &App, browser: &Browser,
     let highlight_style = shortcut_highlight_style(palette);
     let actions_tab = app.device_actions_tab_active();
 
-    let titles = vec![
+    let mut titles = vec![
         highlighted_line(
             &pane_title(app.icon_set().bolt(), "Actions"),
             if actions_tab {
@@ -245,6 +252,18 @@ fn draw_device_tabs(frame: &mut Frame, pane: Rect, app: &App, browser: &Browser,
             shortcut_letter(app, 'd'),
         ),
     ];
+    // The pane's stop number rides the strip's leading edge --- a span of
+    // the frame's own muted style, deliberately unlike either tab's label
+    // style, because it names the *pane* (one stop), not the tab it
+    // happens to sit beside. `mouse::strip_tab` budgets these cells too.
+    if let Some(number) = app.pane_number(Focus::FilesDevice) {
+        let number_span = Span::styled(format!("{number} "), muted_style(palette));
+        titles[0] = Line::from(
+            std::iter::once(number_span)
+                .chain(titles[0].spans.iter().cloned())
+                .collect::<Vec<_>>(),
+        );
+    }
     // The base style is the border's (`border_style`), not the inactive
     // label's: the strip paints the pane's whole top border row, which must
     // keep reading as the frame it belongs to (accent while focused).

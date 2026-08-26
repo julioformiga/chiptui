@@ -18,7 +18,7 @@ use crate::app::App;
 use crate::flash::{
     Activity, ChipGuess, FlashAction, FlashPaneAction, FlashPanel, FlashScreen, OptionsField,
 };
-use crate::ui::{Palette, SPINNER, muted_style, pane_block, selection_style};
+use crate::ui::{Palette, SPINNER, muted_style, paint_focus_wash, pane_block, selection_style};
 
 /// The dialog's width×height for `flash.screen`, sized to its content like
 /// every other modal in `ui::overlay` rather than a fraction of the screen.
@@ -297,6 +297,9 @@ fn draw_online_frame(
 ) {
     let block = pane_block(online.title, focused, palette, None);
     let inner = block.inner(area);
+    // The wash under the content (this pane renders its block *last*, as a
+    // frame over what it drew --- borders only, so the tint survives).
+    paint_focus_wash(frame, inner, focused, palette);
     let [head, list_area, foot] = Layout::vertical([
         Constraint::Length(2),
         Constraint::Min(0),

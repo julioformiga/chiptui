@@ -17,8 +17,8 @@ use crate::logs::{Level, PREFIX_WIDTH};
 use crate::project::DetectionOutcome;
 use crate::ui::{
     Palette, SPINNER, border_style, content_style, dashboard_focused, highlighted_line,
-    muted_style, output_style, pane_block, pane_border, pane_title, shortcut_highlight_style,
-    shortcut_letter, tilde_path,
+    muted_style, numbered_title, output_style, paint_focus_wash, pane_block, pane_border,
+    pane_title, render_pane, shortcut_highlight_style, shortcut_letter, tilde_path,
 };
 
 /// Row 1's fixed content height: the Project and the Device info panes
@@ -55,10 +55,14 @@ fn pad_info(mut lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
 /// content row.
 pub fn draw_project(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
     let focused = dashboard_focused(app, Focus::Project);
-    let title = pane_title(app.icon_set().environment(), "Environment");
+    let title = numbered_title(
+        app,
+        Focus::Project,
+        app.icon_set().environment(),
+        "Environment",
+    );
     let block = pane_block(&title, focused, palette, shortcut_letter(app, 'e'));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let inner = render_pane(frame, area, block, focused, palette);
 
     let rows = app.project_rows();
     if rows.is_empty() {
@@ -595,23 +599,36 @@ fn shorten_start_owned(text: &str, budget: usize) -> String {
 /// `chip-id`/`flash-id`/flash/erase/verify runs have happened in the Flash
 /// view (`crate::flash::FlashPanel::details`). The backend's own name already
 /// lives in the Project pane above, so this space is spent on the board itself
-/// instead of repeating it. Like the Project pane it is informational only and
-/// never holds focus.
+/// instead of repeating it. Focusable (digit `2`, `ctrl+←/→` from the
+/// Environment pane) but off the `Tab` tour --- it is a report, not a working
+/// pane --- with exactly one actionable row: the MAC, selected while the pane
+/// holds focus, `Enter` (or the row's click) copying it.
 pub fn draw_detection(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
-    // Never a shortcut target --- Device Info never holds focus, so the
-    // overlay dims it like everything else but highlights nothing here.
-    // The glyph is the chip's own (`microchip`): this pane *is* the board's
-    // identity, the same meaning the flash menu's Chip information row
-    // carries.
-    let title = pane_title(app.icon_set().microchip(), "Device Info");
-    let block = pane_block(&title, false, palette, None);
-    let lines = device_content(app, area.width as usize, palette);
-    frame.render_widget(
-        Paragraph::new(lines)
-            .block(block)
-            .wrap(Wrap { trim: false }),
-        area,
+    // Never a shortcut-letter target --- the pane's way in is the digit its
+    // number shows. The glyph is the chip's own (`microchip`): this pane
+    // *is* the board's identity, the same meaning the flash menu's Chip
+    // information row carries.
+    let focused = dashboard_focused(app, Focus::DeviceInfo);
+    let title = numbered_title(
+        app,
+        Focus::DeviceInfo,
+        app.icon_set().microchip(),
+        "Device Info",
     );
+    let block = pane_block(&title, focused, palette, None);
+    let inner = render_pane(frame, area, block, focused, palette);
+
+    let lines = device_content(app, area.width as usize, palette);
+    let mac_row = lines.iter().position(|line| {
+        line.spans
+            .first()
+            .is_some_and(|span| span.content.as_ref().starts_with("MAC:"))
+    });
+    let mut y = inner.y;
+    for (position, line) in lines.into_iter().enumerate() {
+        let selected = focused && Some(position) == mac_row;
+        y = super::workspace::render_row(frame, inner, y, line, selected, palette);
+    }
 }
 
 /// The content-row index the MAC's line occupies in the Device Info pane
@@ -863,6 +880,7 @@ pub fn draw_logs(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette)
         })
         .collect();
 
+    paint_focus_wash(frame, inner, focused, palette);
     frame.render_widget(
         Paragraph::new(lines).block(block).style(output_style(app)),
         area,
@@ -968,6 +986,18 @@ pub fn draw_log_tabs(frame: &mut Frame, pane: Rect, app: &App, palette: Palette)
         highlight_style,
         shortcut_letter(app, 't'),
     ));
+    // The pane's stop number rides the strip's leading edge --- a span of
+    // the frame's own muted style, deliberately unlike any tab's label
+    // style, because it names the *pane* (one `Tab` stop), not the Log tab
+    // it happens to sit beside. `mouse::strip_tab` budgets these cells too.
+    if let Some(number) = app.pane_number(Focus::Logs) {
+        let number_span = Span::styled(format!("{number} "), muted_style(palette));
+        titles[0] = Line::from(
+            std::iter::once(number_span)
+                .chain(titles[0].spans.iter().cloned())
+                .collect::<Vec<_>>(),
+        );
+    }
 
     let selected_index = match app.log_tab {
         LogTab::Log => Some(0),
