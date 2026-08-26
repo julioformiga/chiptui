@@ -659,6 +659,22 @@ fn device_content(app: &App, width: usize, palette: Palette) -> Vec<Line<'static
     // on whether the user has an Actions tab to reach ('x').
     let esptool_flash_view =
         caps.contains(Capability::DeviceInfo) || caps.contains(Capability::EraseFlash);
+    // The one empty state worth its own instruction: a board is connected
+    // and its identification awaits (or was declined) the user's say-so.
+    // The reading stops the board, so it never starts on its own --- the
+    // pane names the gesture that offers the question rather than saying
+    // nothing about the way forward.
+    if app.identification_unanswered()
+        && app
+            .flash
+            .as_ref()
+            .is_none_or(|flash| flash.details.is_empty())
+    {
+        return pad_info(vec![
+            Line::from("device connected --- not identified").style(muted),
+            Line::from("ctrl+r, or Enter here, stops it and reads its data").style(muted),
+        ]);
+    }
     let Some(flash) = app.flash.as_ref() else {
         return pad_info(vec![
             if esptool_flash_view {

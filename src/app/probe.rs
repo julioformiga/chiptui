@@ -173,5 +173,10 @@ impl App {
         }
         self.load_device_root();
         self.check_interrupt_gate();
+        // The probe's exit is what releases the identification question the
+        // selection armed (its own guard waits for the probe): opening it
+        // here rather than on the next tick keeps the two events one
+        // gesture apart for the user.
+        self.maybe_ask_identification();
     }
 }

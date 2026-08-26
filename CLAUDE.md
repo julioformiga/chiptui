@@ -614,7 +614,8 @@ runner from `runner.yml` — never a hard-coded programmer) sits last under
 `Capability::Flash`, always behind `Overlay::ConfirmBuild` (destructive); the dashboard's `x`
 routes a build-panel backend there instead of esptool's dialog, and the "Device Info" pane shows
 esptool's report for any backend whose board answers the background `chip-id` query (Zephyr
-included; without an answer it falls back to its honest placeholder).
+included; the query itself asks first — see the identification-authorization paragraph below —
+and without an answer it falls back to its honest placeholder).
 The Zephyr monitor is wired too: `m` runs the monitor the board's *platform* calls for
 (`Backend::monitor_command` fed a `MonitorContext` --- the selected port, the
 auto-detected firmware verdict, the build's board answer and configuration, the
@@ -909,11 +910,36 @@ These are the decisions that shape most code, and getting them wrong causes wide
   for when it drains. Restore deliberately uses no-follow commands (`mpremote reset`, `exec
   --no-follow "import main"`) because a `soft-reset` leaves the script *stopped* — raw-REPL
   reboots skip `main.py`. The monitor updates the same belief live; a script that swallows
-  Ctrl-C surfaces as the classified `ReplBlocked` error with its way out. The background
+  Ctrl-C surfaces as the classified `ReplBlocked` error with its way out. The whole
+  identification chain is **authorized before it starts** (`App::identify`, an
+  `IdentifyAuth` of Pending/Granted/Declined per port): reading a board's chip
+  and firmware means esptool resetting it into its bootloader, a stop/restart
+  of whatever it runs, so every device selection (the startup scan's
+  auto-pick, a picker choice, `r`'s re-offer after a decline) logs
+  `device connected on PORT` and opens `Overlay::ConfirmIdentifyDevice`
+  (`App::request_device_identify`/`maybe_ask_identification`, tick- and
+  process-polled, never over another overlay or while the probe still holds
+  the port) with **No as the default** — declining skips identification for
+  that port entirely (the pane reports no verdict --- the not-identified
+  hint while nothing was read, `Firmware: undefined` once a MAC exists; the
+  listing proceeds and mpremote answers for the board) and a yes while a
+  script is believed running *is* the accepted interruption (script marked
+  stopped, restore question armed — the same semantics
+  `ConfirmInterruptDevice`'s yes has, so the two never stack). The offer is
+  also user-initiated: `ctrl+r` is a dashboard-wide chord and `Enter` on an
+  empty Device Info pane its in-pane twin (`App::open_identification_question`,
+  which re-arms `Pending` even for a port already granted — a fresh capture —
+  and the accept path resets `firmware_check_port` so the firmware read
+  re-runs too); while the pane is empty it says
+  `device connected --- not identified` / `ctrl+r, or Enter here, stops it and
+  reads its data` instead of the old shrug, and `Enter` reverts to
+  copy-the-MAC once a MAC exists. The background
   `esptool chip-id` identity query (`FlashPanel::query_device_info`, chip not flash — the
   connection banner's identity half; flash geometry stays in the Flash view) runs *first* on a
-  newly selected device: after the probe releases the port, the first device listing is held
-  behind it (`App::hold_root_listing_for_chip_identity`/`held_root_listing`, released by
+  newly selected device, and only after that yes: the first device listing is held
+  behind the question itself while it is open
+  (`App::hold_root_listing_for_chip_identity`/`held_root_listing`), then behind the query
+  (released by
   `FlashUpdate::background_chip_query_finished` or, if the query can never start, by the tick's
   `DeferredQuery::Dropped`), so the port changes hands probe → esptool → mpremote instead of
   being contended. The query is also gated on the script belief
@@ -930,9 +956,12 @@ These are the decisions that shape most code, and getting them wrong causes wide
   *identification* read (`arm_firmware_check`, once per selected port — `App::firmware_check_port`):
   `esptool read-flash 0x0 0x20000` (the bootloader region,
   the partition table and the start of the app area — the Zephyr/MCUboot banner lives in the
-  bootloader, below 0x8000 — into a temp file) is part of the same selection chain, not an extra
-  intrusion to ask about — esptool already reset the board once to read the chip, so the read adds
-  no interruption the chain has not already made, and no overlay asks permission. The first
+  bootloader, below 0x8000 — into a temp file) rides the same authorization the chip query's
+  yes granted: esptool already reset the board once to read the chip, so the read adds
+  no interruption the chain's own question has not covered. (The two flows that re-identify
+  without re-asking are the user's own flashing — erase/write, `west flash`, through
+  `reidentify_firmware_after_flash`, and `confirm_erase_for_micropython`, whose erase confirm
+  grants the identification outright.) The first
   listing is held behind it too (`hold_root_listing_for_firmware`, driven by
   `drive_held_root_listing` whenever a link of the chain reports back), because only MicroPython
   exposes a filesystem mpremote can walk: a verdict of Zephyr or ESP-IDF refuses the listing with
@@ -943,8 +972,8 @@ These are the decisions that shape most code, and getting them wrong causes wide
   `Overlay::ConfirmEraseForMicroPython` exists for). A board the probe believes is *running a
   script* holds the listing behind the same chain instead of queueing it in the browser: a foreign
   firmware printing its boot banner (any auto-reset ESP32) is indistinguishable from a busy
-  script at probe time, so `check_interrupt_gate` also fires for the held listing and the one
-  question covers the whole chain — accepting marks the script stopped and lets chip-id →
+  script at probe time, so the identification question is what opens for the held listing —
+  its one yes covers the whole chain, marking the script stopped and letting chip-id →
   read-flash run to a verdict (which then releases *or refuses* the listing), declining drops
   the listing (`decline_held_listing`) with the same cancelled-script pane state the browser's
   held requests get; a foreign verdict cancels the restore question (`restore_pending`), since

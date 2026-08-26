@@ -447,6 +447,17 @@ pub enum Overlay {
         plan: crate::browser::SyncPlan,
         confirm: bool,
     },
+    /// A device is connected on the selected port, and identifying it ---
+    /// reading its chip and firmware over esptool --- **restarts the
+    /// board**, stopping whatever it runs. That never happens silently: the
+    /// question opens on every device selection (startup scan or picker)
+    /// before any identification query or first listing touches the port.
+    /// Default is No, like every stop/restart confirm here; declining
+    /// leaves the board untouched and the listing proceeds without a
+    /// firmware verdict. Answering yes while a script is believed running
+    /// accepts that interruption the way
+    /// [`Self::ConfirmInterruptDevice`]'s yes does (restore included).
+    ConfirmIdentifyDevice { confirm: bool },
     /// Device requests are being held: the app believes a script is running
     /// on the device, and `mpremote` interrupts it (Ctrl-C, then raw REPL)
     /// for every device command --- including the one the user just asked
@@ -1031,6 +1042,14 @@ pub struct App {
     /// kicks off (`AGENTS.md` §5's "one tool at a time" applies across
     /// tools too, not just within `mpremote`).
     flash_query_pending: bool,
+    /// Where the authorization to identify the selected device stands: the
+    /// background `esptool chip-id` + firmware read the selection would
+    /// like to run **restarts the board**, so they never start without the
+    /// user's explicit yes ([`Overlay::ConfirmIdentifyDevice`], default
+    /// No). While the question is open the first device listing is held
+    /// behind it; a decline releases the listing and skips identification
+    /// for that port. See [`flash_view::IdentifyAuth`].
+    identify: flash_view::IdentifyAuth,
     /// The first device listing is being held behind the identification
     /// chain on a newly selected device --- first the background
     /// `esptool chip-id`, then the firmware read its success arms
@@ -1213,6 +1232,7 @@ impl App {
             run_script: None,
             run_state: RunState::default(),
             flash_query_pending: false,
+            identify: flash_view::IdentifyAuth::Idle,
             held_root_listing: false,
             firmware_check_port: None,
             firmware_check: flash_view::FirmwareCheck::Idle,
@@ -1660,6 +1680,7 @@ impl App {
                 self.refresh_local_listings();
                 self.refresh_requirements();
                 self.tick_probe();
+                self.maybe_ask_identification();
                 self.check_interrupt_gate();
                 self.maybe_offer_restore();
                 self.maybe_run_deferred_firmware_check();
@@ -1880,15 +1901,12 @@ impl App {
                         self.open_device_picker();
                     } else {
                         // Exactly one, or a previous choice still present.
-                        // The chip query is deferred *before* the listing
-                        // is requested: `load_device_root` holds the first
-                        // listing behind the identification chain only when
-                        // it can see the query coming, and deferring after
-                        // would let the listing win the port (a rescan
-                        // whose probe no longer runs --- `probed_port` is
-                        // already set, the script belief is stale --- issues
-                        // it straight away).
-                        self.defer_device_info_query();
+                        // The identification question is armed *before* the
+                        // listing is requested: nothing identification-shaped
+                        // may touch the port without the user's answer, and
+                        // arming after would let the listing win the port
+                        // before the question even opened.
+                        self.request_device_identify();
                         self.load_device_root();
                     }
                 }
@@ -2031,6 +2049,7 @@ impl App {
         self.drive_held_root_listing();
 
         // A completed command may have armed either follow-up question.
+        self.maybe_ask_identification();
         self.check_interrupt_gate();
         self.maybe_offer_restore();
     }
@@ -2530,11 +2549,25 @@ impl App {
     /// arrives (`ui::panels::draw_detection`) --- so `Enter` copies it the
     /// same way the row's click does, and nothing else is bound.
     fn on_device_info_key(&mut self, key: KeyEvent) {
-        if key.code == KeyCode::Enter
-            && let Some(mac) = self
-                .flash
-                .as_ref()
-                .and_then(|flash| flash.details.mac.clone())
+        if key.code != KeyCode::Enter {
+            return;
+        }
+        // The pane's empty state is one gesture from being answered: the
+        // identification question the pane's message names (`ctrl+r`'s
+        // in-pane twin). Only when there is nothing to show --- with a MAC
+        // read, `Enter` keeps its copy meaning.
+        if self
+            .flash
+            .as_ref()
+            .is_none_or(|flash| flash.details.is_empty())
+        {
+            self.open_identification_question();
+            return;
+        }
+        if let Some(mac) = self
+            .flash
+            .as_ref()
+            .and_then(|flash| flash.details.mac.clone())
         {
             self.copy_to_clipboard("MAC", mac);
         }
@@ -3026,6 +3059,18 @@ impl App {
                 self.open_monitor();
                 return;
             }
+            // The explicit "stop the device and capture its data" gesture,
+            // from any pane (`Enter` on a Device info pane with nothing to
+            // show is its in-pane twin): reading the chip and firmware
+            // restarts the board, so the gesture opens the same question a
+            // device selection does ([`Overlay::ConfirmIdentifyDevice`],
+            // default No) rather than firing the chain outright. The
+            // CONTROL guard is what keeps the pane-local plain `r` (reload,
+            // rename, re-detect) falling through to its own grammar.
+            KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.open_identification_question();
+                return;
+            }
             // The SDK's toolchains, without walking the whole installer
             // flow to reach them: adding one to an existing SDK is a
             // routine errand (a new board needs a target the bundle was
@@ -3290,6 +3335,7 @@ impl App {
                 | Overlay::ConfirmUpload { .. }
                 | Overlay::ConfirmRestartDevice { .. }
                 | Overlay::ConfirmEraseForMicroPython { .. }
+                | Overlay::ConfirmIdentifyDevice { .. }
                 | Overlay::ConfirmInterruptDevice { .. }
                 | Overlay::ConfirmSwitchProject { .. }
                 | Overlay::SyncPreview { .. },

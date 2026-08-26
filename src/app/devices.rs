@@ -12,7 +12,7 @@ use crate::browser::Browser;
 use crate::device::{DiscoveryState, ScriptState};
 use crate::firmware_id::{FirmwareVerdict, FlashFirmware};
 
-use super::flash_view::{FirmwareCheck, FirmwareHold};
+use super::flash_view::{FirmwareCheck, FirmwareHold, IdentifyAuth};
 use super::{App, DevicePaneTab, Focus, LogTab, MonitorSource, Overlay};
 
 impl App {
@@ -137,9 +137,9 @@ impl App {
         } else {
             // One port is not a guess: it selects itself, and the selection
             // carries the same follow-through as the picker --- here, the
-            // chip identity query (this scan is the no-mpremote path, so
-            // there is no listing to hold behind it).
-            self.defer_device_info_query();
+            // identification question (this scan is the no-mpremote path,
+            // so there is no listing to hold behind it).
+            self.request_device_identify();
         }
     }
 
@@ -547,12 +547,13 @@ impl App {
         // probe and listing. A backend without a filesystem has neither
         // tool, and must not have its port touched by them --- for a Zephyr
         // board no listing happens (the monitor uses the port on demand).
-        // The board's *identity* is still worth asking, though: Zephyr runs
-        // on ESP32 boards whose esptool runner answers `chip-id`, and on
-        // anything else the query fails harmlessly into the pane's honest
-        // placeholder.
+        // The board's *identity* is still a question worth asking, though:
+        // Zephyr runs on ESP32 boards whose esptool runner answers
+        // `chip-id`, and on anything else the query fails harmlessly into
+        // the pane's honest placeholder --- but the reading restarts the
+        // board, so it is asked for, never assumed.
         if !self.manager.capabilities().contains(Capability::Filesystem) {
-            self.defer_device_info_query();
+            self.request_device_identify();
             return;
         }
 
@@ -569,21 +570,22 @@ impl App {
             if let Some(browser) = &mut self.browser {
                 browser.set_device_loading();
             }
-            self.defer_device_info_query();
+            self.request_device_identify();
             return;
         }
 
         match self.browser.as_mut() {
-            // Same port-contention reasoning as the startup path: the chip
-            // query goes first and the listing queues behind it.
+            // Same port-contention reasoning as the startup path: the
+            // identification question goes first and the listing queues
+            // behind it.
             Some(_) => {
-                self.defer_device_info_query();
+                self.request_device_identify();
                 self.load_device_root();
             }
             // No filesystem capability, so nothing is about to contend for
-            // the port --- safe to query right away.
+            // the port --- the question opens on the next tick.
             None => {
-                self.maybe_query_device_info();
+                self.request_device_identify();
             }
         }
     }
@@ -606,24 +608,31 @@ impl App {
                 })
         });
         if !confirmed {
-            // Re-arm the identification for this port the same way the chip
-            // query's finish does: the pending read and the port it belongs
-            // to are one fact (`arm_firmware_check`), or the gate would see
-            // an unclaimed port and list straight away.
-            self.firmware_check_port = port;
-            self.firmware_check = if self
+            // The identification the reload would re-run restarts the board
+            // too, so a declined question is offered again here --- `r` is
+            // the documented way back after refusing at selection time.
+            // (An already-granted port is not re-asked; the re-arm below
+            // re-reads under the standing yes.) Only a chip esptool has
+            // already read under that yes can skip straight to the read:
+            // a declined board claims no port here, or the arm its chip
+            // query would try would see the port taken and skip the read.
+            self.request_device_identify();
+            let rearm = self
                 .flash
                 .as_ref()
                 .is_some_and(|flash| flash.details.family.is_some())
-            {
-                // Only ask again when esptool has ever read this board's
-                // chip: a board whose chip query cannot succeed (no
-                // esptool-backed bootloader) would just pay for a refused
-                // read on every reload.
-                FirmwareCheck::Pending
+                && matches!(
+                    &self.identify,
+                    IdentifyAuth::Granted { port: asked }
+                        if Some(asked.as_str()) == port.as_deref()
+                );
+            if rearm {
+                self.firmware_check_port = port;
+                self.firmware_check = FirmwareCheck::Pending;
             } else {
-                FirmwareCheck::Idle
-            };
+                self.firmware_check_port = None;
+                self.firmware_check = FirmwareCheck::Idle;
+            }
             self.load_device_root();
             return;
         }

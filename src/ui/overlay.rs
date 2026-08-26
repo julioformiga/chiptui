@@ -303,6 +303,9 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
         Overlay::SyncPreview { plan, confirm } => {
             draw_sync_preview(frame, area, &plan, confirm, palette)
         }
+        Overlay::ConfirmIdentifyDevice { confirm, .. } => {
+            draw_confirm_identify_device(frame, area, app, confirm, palette)
+        }
         Overlay::ConfirmInterruptDevice { confirm, .. } => {
             draw_confirm_interrupt_device(frame, area, confirm, palette)
         }
@@ -439,6 +442,44 @@ fn draw_confirm_erase_for_micropython(
         message,
         confirm,
         (65, 9),
+        palette,
+    );
+}
+
+/// A device was just selected, and the dashboard would like to know what it
+/// is: reading the chip and firmware means esptool resetting the board into
+/// its bootloader, which stops and restarts whatever it runs --- so the
+/// identification is the user's call, never a silent side effect of
+/// plugging in. The default is No: an unidentified board is an honest
+/// state (`undefined` in the pane), an interrupted one is not.
+fn draw_confirm_identify_device(
+    frame: &mut Frame,
+    area: Rect,
+    app: &App,
+    confirm: bool,
+    palette: Palette,
+) {
+    let port = app.devices.selected_port().unwrap_or("the selected port");
+    let message = vec![
+        Line::from(format!("A device is connected on {port}.").fg(palette.warning)),
+        Line::from(
+            "Identifying it reads the chip and firmware over esptool, which".fg(palette.muted),
+        ),
+        Line::from("restarts the board — a running script stops.".fg(palette.muted)),
+        Line::from(""),
+        Line::from("Identify it now?".fg(palette.fg)),
+        Line::from(
+            "Decline and the board stays untouched ('r' on the device pane offers again)"
+                .fg(palette.muted),
+        ),
+    ];
+    draw_confirm_dialog(
+        frame,
+        area,
+        "Device connected",
+        message,
+        confirm,
+        (66, 11),
         palette,
     );
 }

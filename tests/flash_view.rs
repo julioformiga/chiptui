@@ -1205,7 +1205,8 @@ fn the_search_button_opens_the_online_window_as_a_dialog() {
 fn a_device_becoming_known_at_startup_queries_it_with_esptool_in_the_background() {
     // Mirrors how `App::maybe_scan_devices` finds an mpremote scan already
     // resolved to a single board: the device panel should not need the user
-    // to open the Flash view by hand to learn what is connected.
+    // to open the Flash view by hand to learn what is connected --- but the
+    // reading restarts the board, so it asks first (default No).
     let project = Project::new("auto-query-startup");
     let mut app = hermetic_app(&project.root);
     app.bootstrap();
@@ -1228,11 +1229,23 @@ fn a_device_becoming_known_at_startup_queries_it_with_esptool_in_the_background(
     app.overlay = Some(Overlay::DevicePicker { selected: 0 });
     app.handle(key(KeyCode::Enter));
 
+    // The question opens on the next tick and gates the query: nothing
+    // reads the board before the answer.
+    app.handle(AppEvent::Tick);
+    assert!(matches!(
+        app.overlay,
+        Some(Overlay::ConfirmIdentifyDevice { .. })
+    ));
+    assert!(
+        !app.flash.as_ref().is_some_and(|flash| flash.is_busy()),
+        "no query before the answer"
+    );
+    app.handle(key(KeyCode::Char('y')));
     assert!(
         app.flash
             .as_ref()
             .is_some_and(|flash| flash.is_busy() && flash.screen == FlashScreen::Menu),
-        "picking a device must kick off a background flash-id query without \
+        "the accepted answer must kick off a background flash-id query without \
          opening the Flash view"
     );
 }
@@ -1248,6 +1261,19 @@ fn switching_devices_from_the_picker_re_queries_the_newly_selected_one() {
     app.handle(key(KeyCode::Enter));
 
     assert_eq!(app.devices.selected_port(), Some("/dev/ttyACM1"));
+    // The identification question (the pick's follow-through now) opens on
+    // the next tick --- no probe or listing exists to release it here ---
+    // and answering yes is what re-queries the newly selected board.
+    app.handle(AppEvent::Tick);
+    assert!(matches!(
+        app.overlay,
+        Some(Overlay::ConfirmIdentifyDevice { .. })
+    ));
+    assert!(
+        !app.flash.as_ref().is_some_and(|flash| flash.is_busy()),
+        "nothing reads the board before the answer"
+    );
+    app.handle(key(KeyCode::Char('y')));
     assert!(
         app.flash.as_ref().is_some_and(|flash| flash.is_busy()),
         "switching devices must re-query the newly selected one"
@@ -1289,14 +1315,18 @@ fn picking_a_device_defers_the_esptool_query_until_mpremote_releases_the_port() 
         "esptool must not race mpremote for the port"
     );
 
-    // Drive everything to completion: probe, then the chip identity query,
-    // then the firmware read its success arms (the new order --- the
+    // Drive everything to completion: probe, the identification question
+    // its release opens, then (once answered) the chip identity query, then
+    // the firmware read its success arms (the new order --- the
     // identification gates the first listing), then the listing its verdict
     // releases. The loop breaks only when every tool is done.
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         for event in app.processes.drain() {
             app.handle(AppEvent::Process(event));
+        }
+        if matches!(app.overlay, Some(Overlay::ConfirmIdentifyDevice { .. })) {
+            app.handle(key(KeyCode::Char('y')));
         }
         if !app.browser.as_ref().unwrap().is_busy()
             && app.flash.as_ref().is_some_and(|flash| {

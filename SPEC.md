@@ -452,6 +452,31 @@ even against confirmed commands; the resulting "could not enter raw repl"
 failure is reported with the way out (interrupt it from the monitor, or
 restart the board).
 
+### Device identification asks first
+
+Reading a board's chip and firmware (`esptool chip-id`, then the flash
+read that names the firmware) resets it into its bootloader --- a
+stop/restart of whatever the board was doing, on any backend (Zephyr runs
+on ESP32 boards whose runner is esptool too). That never happens silently:
+every device selection --- the startup scan's auto-pick or a picker choice
+--- reports the connection in the log and asks whether to identify, with
+"do not identify" as the default. Declining leaves the board untouched:
+no identification query runs, the Device info pane honestly reports the
+firmware as `undefined`, and the first file listing proceeds on its own
+(mpremote answers for the board). The offer can be made again with `r` on
+the device pane, a rescan, or a replug. Answering yes while a script is
+believed running accepts that interruption exactly like the interrupt
+confirmation above, restore prompt included. Re-identification that the
+user's own flashing set in motion (erase/write, `west flash`) is part of
+that action and does not re-ask.
+
+While the pane has nothing to show it says so with the way forward ---
+`device connected --- not identified` / `ctrl+r, or Enter here, stops it
+and reads its data` --- and both gestures deliver: `ctrl+r` is a
+dashboard-wide chord (any pane), `Enter` its in-pane twin, and each opens
+the same identification question a device selection does. `Enter` keeps
+its copy-the-MAC meaning once a MAC has been read.
+
 ### REPL / Monitor
 
 The REPL view must support interactive input without buffering the

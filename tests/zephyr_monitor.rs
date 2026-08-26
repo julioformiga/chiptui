@@ -146,15 +146,29 @@ fn render(app: &mut App, width: u16, height: u16) -> String {
 #[test]
 fn the_chip_identity_is_queried_even_on_the_zephyr_backend() {
     // Zephyr runs on ESP32 boards, whose flash runner is esptool --- so a
-    // selected port gets the same `esptool chip-id` identity question,
-    // answer or not. Here the fake answers, and the Dashboard's Device
-    // info pane shows it under a Zephyr project.
+    // selected port gets the same identification question, answer or not.
+    // The reading restarts the board, so it is asked for first (default No);
+    // here the answer is yes, and the fake answers, and the Dashboard's
+    // Device info pane shows it under a Zephyr project.
     let (mut app, root) = zephyr_app("chip-id");
     std::fs::write(root.join("dev/ttyACM0"), b"").unwrap();
     app.handle(key(KeyCode::Char('d')));
     assert!(app.devices.selected_port().is_some());
 
-    // The deferred query runs on the next tick and lands in the panel.
+    // The question opens on the next tick; nothing has touched the port
+    // before it.
+    assert!(pump_until(
+        &mut app,
+        |app| matches!(app.overlay, Some(Overlay::ConfirmIdentifyDevice { .. })),
+        20
+    ));
+    assert!(
+        !app.flash.as_ref().is_some_and(|flash| flash.is_busy()),
+        "no query may run before the answer"
+    );
+    app.handle(key(KeyCode::Char('y')));
+
+    // The deferred query runs and lands in the panel.
     assert!(pump_until(
         &mut app,
         |app| app
@@ -360,9 +374,15 @@ fn hotplug_updates_the_device_status() {
     assert_eq!(app.devices.discovery, DiscoveryState::Ready);
     assert!(app.devices.selected_port().is_some());
 
-    // The selection defers the chip query, whose success arms the firmware
-    // read; let that chain settle (no overlay ever opens --- nothing needs
-    // the user's say-so anymore) so the unplug below cannot race it.
+    // The selection opens the identification question; answering yes runs
+    // the chain whose verdict the unplug below must not race. (The question
+    // is the one overlay the chain opens --- nothing else needs the user.)
+    assert!(pump_until(
+        &mut app,
+        |app| matches!(app.overlay, Some(Overlay::ConfirmIdentifyDevice { .. })),
+        20
+    ));
+    app.handle(key(KeyCode::Char('y')));
     assert!(pump_until(
         &mut app,
         |app| app
@@ -394,7 +414,8 @@ fn hotplug_updates_the_device_status() {
     );
 
     // Replug: the same walk sees the port again, the selection returns,
-    // and the identity refills.
+    // and --- a replug being a board ChipTUI has not asked about --- the
+    // identification question opens again before the identity refills.
     std::fs::write(root.join("dev/ttyACM0"), b"").unwrap();
     assert!(pump_until(
         &mut app,
@@ -402,6 +423,12 @@ fn hotplug_updates_the_device_status() {
         20
     ));
     assert!(app.devices.selected_port().is_some());
+    assert!(pump_until(
+        &mut app,
+        |app| matches!(app.overlay, Some(Overlay::ConfirmIdentifyDevice { .. })),
+        20
+    ));
+    app.handle(key(KeyCode::Char('y')));
     assert!(pump_until(
         &mut app,
         |app| app
@@ -457,7 +484,14 @@ fn a_west_flash_reidentifies_the_firmware() {
     std::fs::write(root.join("dev/ttyACM0"), b"").unwrap();
     app.handle(key(KeyCode::Char('d')));
 
-    // The selection's chain identifies the firmware once.
+    // The selection asks first; the accepted answer's chain identifies the
+    // firmware once.
+    assert!(pump_until(
+        &mut app,
+        |app| matches!(app.overlay, Some(Overlay::ConfirmIdentifyDevice { .. })),
+        20
+    ));
+    app.handle(key(KeyCode::Char('y')));
     assert!(pump_until(
         &mut app,
         |app| app

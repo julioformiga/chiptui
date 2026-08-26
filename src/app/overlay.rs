@@ -929,6 +929,21 @@ impl App {
                     |_| {},
                 );
             }
+            // Default *no*, like every other stop/restart: accepting is
+            // what lets esptool reset the board into its bootloader to read
+            // it. The accept path folds in the interruption a running
+            // script would otherwise earn a second question for.
+            Overlay::ConfirmIdentifyDevice { confirm } => {
+                self.dispatch_confirm(
+                    key.code,
+                    confirm,
+                    |app, confirm| {
+                        app.overlay = Some(Overlay::ConfirmIdentifyDevice { confirm });
+                    },
+                    |app| app.confirm_identify_device(true),
+                    |app| app.confirm_identify_device(false),
+                );
+            }
             // Default *no*, like every other interruption: accepting stops
             // whatever the board is running. Accepting also marks the script
             // stopped --- which releases the held queue --- and arms the

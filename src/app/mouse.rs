@@ -500,6 +500,7 @@ impl App {
             | Overlay::ConfirmRestartDevice { .. }
             | Overlay::ConfirmSwitchProject { .. }
             | Overlay::ConfirmEraseForMicroPython { .. }
+            | Overlay::ConfirmIdentifyDevice { .. }
             | Overlay::ConfirmInterruptDevice { .. }
             | Overlay::ConfirmDelete { .. }
             | Overlay::ConfirmDownloadOverwrite { .. }
@@ -1045,6 +1046,7 @@ impl App {
             Overlay::ConfirmRestartDevice { .. } => (54, 8),
             Overlay::ConfirmSwitchProject { .. } => (62, 9),
             Overlay::ConfirmEraseForMicroPython { .. } => (65, 9),
+            Overlay::ConfirmIdentifyDevice { .. } => (66, 11),
             Overlay::ConfirmInterruptDevice { .. } => (64, 10),
             Overlay::ConfirmDelete { .. } => (54, 9),
             Overlay::ConfirmDownloadOverwrite { .. } => (70, 8),

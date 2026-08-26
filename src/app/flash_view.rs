@@ -17,6 +17,28 @@ use crate::flash::{FlashAction, FlashPaneAction, FlashPanel, FlashScreen, Option
 
 use super::{App, DevicePaneTab, Focus, LogTab, MonitorSource, Overlay, View};
 
+/// Where the authorization to identify the selected device stands. Reading
+/// a board's chip and firmware (`esptool chip-id`, then the `read-flash`
+/// behind it) resets it into its bootloader --- a stop/restart of whatever
+/// the board was doing --- so the identification chain never starts without
+/// the user's explicit yes ([`Overlay::ConfirmIdentifyDevice`], default No).
+/// The answer belongs to the port it was given for, the same rule the
+/// firmware verdict follows; a replug or a device switch asks again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum IdentifyAuth {
+    /// No device selected (or the board gone): nothing to ask about.
+    Idle,
+    /// A device was selected and the question is still open. The first
+    /// listing is held behind it, and no identification query may run.
+    Pending { port: String },
+    /// The user authorized identification for this port.
+    Granted { port: String },
+    /// The user declined: no identification query runs on this port until
+    /// it is offered again (`r` on the device pane, a rescan, or a
+    /// replug).
+    Declined { port: String },
+}
+
 /// What trying to start the deferred device query concluded, so callers
 /// that chained something behind it (the first device listing,
 /// [`App::hold_root_listing_for_chip_identity`]) know whether to keep
@@ -624,6 +646,136 @@ impl App {
         true
     }
 
+    /// A device was newly selected and its identification (which stops and
+    /// restarts the board) needs the user's say-so before anything runs:
+    /// records the connection in the log, arms the question, and leaves the
+    /// chain to [`Self::maybe_ask_identification`]. Once per port per
+    /// connection --- an already-granted port is not asked again (the chain
+    /// it authorized has run), and a declined one is, because every caller
+    /// is an explicit gesture toward the device (`r`, a rescan, a pick).
+    pub(super) fn request_device_identify(&mut self) {
+        let Some(port) = self.devices.selected_port().map(str::to_string) else {
+            return;
+        };
+        match &self.identify {
+            IdentifyAuth::Granted { port: asked } | IdentifyAuth::Pending { port: asked }
+                if asked == &port =>
+            {
+                return;
+            }
+            _ => {}
+        }
+        // A backend with no flash panel at all can never identify: asking
+        // would be a question whose every answer does nothing.
+        if !self.ensure_flash_panel() {
+            return;
+        }
+        self.logs.info(format!(
+            "device connected on {port} — identification needs your approval"
+        ));
+        self.identify = IdentifyAuth::Pending { port };
+    }
+
+    /// Whether the identification question is still open for the selected
+    /// port --- the state the first listing and the deferred queries wait
+    /// on until it is answered.
+    fn identify_pending(&self) -> bool {
+        matches!(&self.identify, IdentifyAuth::Pending { port }
+            if self.devices.selected_port() == Some(port.as_str()))
+    }
+
+    /// Opens the identification question once it can own the screen: a
+    /// pending answer, no overlay already up, and no probe in flight (the
+    /// probe is what tells the question whether a script is running, so it
+    /// goes first). Polled on every tick and after each process event, the
+    /// same heartbeat the deferred queries use.
+    pub(super) fn maybe_ask_identification(&mut self) {
+        if !self.identify_pending() || self.overlay.is_some() || self.probe.is_some() {
+            return;
+        }
+        self.overlay = Some(Overlay::ConfirmIdentifyDevice { confirm: false });
+    }
+
+    /// The identification question was answered ([`Overlay::ConfirmIdentifyDevice`]).
+    /// **Yes** authorizes the whole chain --- the background `esptool
+    /// chip-id` and the firmware read its success arms --- which restarts
+    /// the board; a script believed running is therefore an accepted
+    /// interruption, exactly like [`Overlay::ConfirmInterruptDevice`]'s yes
+    /// (the restore question is armed for when the chain drains). **No**
+    /// (the default) leaves the board untouched: the identification is
+    /// skipped for this port and the first listing proceeds on its own ---
+    /// mpremote then succeeds or fails as the board answers.
+    pub(super) fn confirm_identify_device(&mut self, accept: bool) {
+        let port = match self.identify.clone() {
+            IdentifyAuth::Pending { port } => port,
+            _ => return,
+        };
+        // The board the question was about may be gone (the answer arrived
+        // after a rescan moved the selection): there is nothing to grant or
+        // hold on to.
+        if self.devices.selected_port() != Some(port.as_str()) {
+            self.identify = IdentifyAuth::Idle;
+            return;
+        }
+        if !accept {
+            self.identify = IdentifyAuth::Declined { port };
+            self.logs
+                .info("device left unidentified --- ctrl+r offers to read it again");
+            // A listing held behind the question is released: nothing
+            // identification-shaped stands between it and the port anymore.
+            self.drive_held_root_listing();
+            return;
+        }
+        self.identify = IdentifyAuth::Granted { port };
+        if self.devices.script_state() == ScriptState::Running {
+            self.restore_pending = true;
+            self.set_script_state(ScriptState::Stopped);
+        }
+        // An accepted (re-)ask reads everything the chain can: drop the
+        // once-per-port firmware-read state so the read re-arms behind the
+        // chip query instead of the previous run's verdict standing in for
+        // a fresh capture.
+        self.firmware_check_port = None;
+        self.firmware_check = FirmwareCheck::Idle;
+        self.defer_device_info_query();
+        // Start the chain now rather than wait a tick; a guard that still
+        // applies keeps it pending for the tick's next poll, and a listing
+        // held behind the question stays held behind the query it armed.
+        self.maybe_run_deferred_flash_query();
+        self.drive_held_root_listing();
+    }
+
+    /// Whether the selected device's identification awaits the user's
+    /// say-so or was declined --- the connected-but-unidentified state the
+    /// Device info pane's empty message names the shortcut for
+    /// (`ctrl+r`, or `Enter` with the pane focused).
+    pub fn identification_unanswered(&self) -> bool {
+        self.identify_pending()
+            || matches!(&self.identify, IdentifyAuth::Declined { port }
+                if self.devices.selected_port() == Some(port.as_str()))
+    }
+
+    /// The user's explicit "stop the device and capture its data" gesture
+    /// (`ctrl+r` from any pane, `Enter` on a Device info pane with nothing
+    /// to show): re-opens the identification question for the selected
+    /// port --- including one whose identification already ran, since the
+    /// gesture asks for a fresh capture. The chain itself still only runs
+    /// once the question is answered yes, like every selection's ask.
+    pub fn open_identification_question(&mut self) {
+        let Some(port) = self.devices.selected_port().map(str::to_string) else {
+            self.logs
+                .warn("no device selected --- connect a board and press 'd'");
+            return;
+        };
+        if !self.ensure_flash_panel() {
+            self.logs
+                .warn("this backend has no tool to read the device with");
+            return;
+        }
+        self.identify = IdentifyAuth::Pending { port };
+        self.maybe_ask_identification();
+    }
+
     /// Marks a background chip query as due, without starting it yet ---
     /// `esptool` cannot open the serial port while `mpremote` (just kicked
     /// off by `load_device_root`, right before every call site of this
@@ -631,7 +783,9 @@ impl App {
     /// identity read (`esptool chip-id`), and the first listing of a newly
     /// selected device is held behind it ([`Self::hold_root_listing_for_chip_identity`]),
     /// so `mpremote devs` → probe → chip-id → firmware read → listing is
-    /// the one order in which the port changes hands cleanly.
+    /// the one order in which the port changes hands cleanly. Only ever
+    /// armed after the identification was authorized
+    /// ([`Self::confirm_identify_device`]).
     /// `maybe_run_deferred_flash_query` starts the query for real once
     /// every port holder is gone.
     pub(super) fn defer_device_info_query(&mut self) {
@@ -710,6 +864,11 @@ impl App {
     pub(super) fn device_disconnected(&mut self) {
         self.firmware_check_port = None;
         self.firmware_check = FirmwareCheck::Idle;
+        // The identification authorization belonged to the departed board
+        // too: a replug, even on the same port, is a board ChipTUI has not
+        // asked about, so the question is offered again rather than a stale
+        // yes or no deciding for it.
+        self.identify = IdentifyAuth::Idle;
         // The version banner is as much the departed board's answer as the
         // identity above; a replug must re-answer, not inherit.
         self.mpy_version = None;
@@ -731,6 +890,15 @@ impl App {
             return;
         };
         if self.firmware_check_port.as_deref() == Some(port.as_str()) {
+            return;
+        }
+        // The read only ever rides an authorization the user gave: a
+        // granted identification question, or one of the flashing flows
+        // below that grant it outright. A chip query the user started by
+        // hand (the Actions tab's `chip information`) does not arm it ---
+        // "read the chip" is not "restart the board again to read its
+        // firmware".
+        if !matches!(&self.identify, IdentifyAuth::Granted { port: asked } if asked == &port) {
             return;
         }
         // Only a successful identity read says the board answers esptool
@@ -763,9 +931,13 @@ impl App {
     /// answered the chip query, keeps nothing to re-ask:
     /// `arm_firmware_check` refuses both.
     pub(super) fn reidentify_firmware_after_flash(&mut self) {
-        if self.devices.selected_port().is_none() {
+        let Some(port) = self.devices.selected_port().map(str::to_string) else {
             return;
-        }
+        };
+        // The flash the user just confirmed is the authorization the
+        // re-read needs: the board has already been reset by the write
+        // itself, and the verdict confirms the user's own action.
+        self.identify = IdentifyAuth::Granted { port };
         self.firmware_check_port = None;
         self.firmware_check = FirmwareCheck::Idle;
         if let Some(flash) = self.flash.as_mut() {
@@ -797,6 +969,7 @@ impl App {
             || self.run_process.is_some()
             || self.browser.as_ref().is_some_and(Browser::is_busy)
             || self.flash_query_pending
+            || self.identify_pending()
         {
             return DeferredQuery::Waiting;
         }
@@ -875,14 +1048,18 @@ impl App {
         // The chain's previous link still owns the ordering: while the chip
         // query is pending or running, the listing is held behind *it*, and
         // this gate has no say until the query's finish event arms (or
-        // declines) the read. That includes a script believed running ---
+        // declines) the read. That includes the identification question the
+        // selection opened (nothing identification-shaped may start before
+        // it is answered) and a script believed running ---
         // a board printing a boot banner (any foreign firmware on an
         // auto-reset ESP32) looks exactly like a busy script to the probe,
         // so the listing must not slip past while the chip query politely
-        // waits for the belief to clear; the interrupt question asks about
-        // the identification instead (`App::check_interrupt_gate`) and only
-        // an accepted interruption moves the chain forward.
+        // waits for the belief to clear; the identification question asks
+        // about the chain instead (`App::check_interrupt_gate` and
+        // `App::confirm_identify_device`'s yes) and only an accepted
+        // interruption moves the chain forward.
         if self.flash_query_pending
+            || self.identify_pending()
             || self
                 .flash
                 .as_ref()
@@ -969,12 +1146,26 @@ impl App {
     /// queues and the interrupt gate asks), or the query was refused
     /// outright. A held listing is released by [`Self::resume_held_root_listing`].
     pub(super) fn hold_root_listing_for_chip_identity(&mut self) -> bool {
-        if !self.flash_query_pending || self.devices.script_state() == ScriptState::Running {
+        let identify_held = self.identify_pending();
+        if (!self.flash_query_pending && !identify_held)
+            || self.devices.script_state() == ScriptState::Running
+        {
             return false;
         }
         if !self.ensure_flash_panel() {
             self.flash_query_pending = false;
+            // No panel means no query and no question: drop both rather
+            // than hold the listing behind an ask that can never be made.
+            self.identify = IdentifyAuth::Idle;
             return false;
+        }
+        if identify_held {
+            // The identification question owns the ordering until answered:
+            // the query behind it must not start, so this holds without
+            // trying, and whichever event answers the question re-drives
+            // the chain (`confirm_identify_device`).
+            self.held_root_listing = true;
+            return true;
         }
         // Try to start the query now rather than wait a tick; a guard that
         // still applies (an open overlay, a busy browser) keeps the listing
@@ -1004,6 +1195,12 @@ impl App {
     /// instead of racing it whenever the browser has a request in flight.
     pub(super) fn confirm_erase_for_micropython(&mut self) {
         self.ensure_flash_panel();
+        // The erase confirmation the user just gave subsumes the
+        // identification question: a board the user agreed to erase may be
+        // read (and later re-identified) without asking again.
+        if let Some(port) = self.devices.selected_port().map(str::to_string) {
+            self.identify = IdentifyAuth::Granted { port };
+        }
         if let Some(flash) = &mut self.flash {
             flash.screen = crate::flash::FlashScreen::OnlineBoards;
             self.view = View::Flash;

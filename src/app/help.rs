@@ -10,7 +10,7 @@
 //! activates the row by replaying its key (`HelpBinding::event`) once the
 //! help has closed, so the list doubles as a launcher. Help follows the
 //! screen (see [`View`]) and narrows under a `/` filter (the same grammar
-//! the board picker uses): the dashboard alone lists thirty-eight rows, so
+//! the board picker uses): the dashboard alone lists thirty-nine rows, so
 //! search is the way through them.
 //!
 //! The descriptions are part of the data, not the rendering: each is
@@ -312,7 +312,7 @@ const DASHBOARD_NAVIGATION: [HelpBinding; 11] = [
     ),
 ];
 
-const DASHBOARD_COMMANDS: [HelpBinding; 27] = [
+const DASHBOARD_COMMANDS: [HelpBinding; 28] = [
     action(
         "r",
         "re-detect, reload, or rename (file list)",
@@ -323,12 +323,13 @@ const DASHBOARD_COMMANDS: [HelpBinding; 27] = [
             site("r", "re-detect", 10, &[Focus::Logs], &[], When::Always),
         ],
     ),
-    // The Device Info pane's one action: the MAC row is selected the moment
-    // focus arrives, and `Enter` copies it --- the same write the row's
-    // click performs.
+    // The Device Info pane's actions: `Enter` offers the identification
+    // while the pane is empty (the pane's message names the gesture), and
+    // copies the MAC once one was read --- the same write the row's click
+    // performs.
     action(
         "enter",
-        "copy the board's MAC address",
+        "identify the board, or copy its MAC once read",
         KeyCode::Enter,
         &[site(
             "enter",
@@ -336,6 +337,24 @@ const DASHBOARD_COMMANDS: [HelpBinding; 27] = [
             10,
             &[Focus::DeviceInfo],
             &[],
+            When::Always,
+        )],
+    ),
+    // The explicit "stop the device and capture its data" gesture, from
+    // any pane: reading the chip and firmware restarts the board, so it
+    // opens the same question a device selection does (default No). Only
+    // where a tool exists to read the device with (`Flash`/`EraseFlash`
+    // backends have esptool or the build panel's runner behind them).
+    ctrl(
+        "ctrl+r",
+        "identify the device (asks before restarting it)",
+        KeyCode::Char('r'),
+        &[site(
+            "ctrl+r",
+            "identify",
+            54,
+            ANY_FOCUS,
+            &[Capability::Flash, Capability::EraseFlash],
             When::Always,
         )],
     ),
@@ -866,6 +885,7 @@ mod tests {
                 ("h", "hidden"),
                 ("x", "flash"),
                 ("m", "monitor/REPL"),
+                ("ctrl+r", "identify"),
                 ("shift+r", "restart device"),
                 ("ctrl+←/→", "pane"),
                 ("shift+p", "projects"),
@@ -889,6 +909,7 @@ mod tests {
                 "r",
                 "x",
                 "m",
+                "ctrl+r",
                 "shift+r",
                 "ctrl+←/→",
                 "ctrl+c",
@@ -909,7 +930,7 @@ mod tests {
         // is advertised as the horizontal step to the workspace pane.
         assert_eq!(
             footer_keys(View::Dashboard, &ctx(zephyr(), Focus::Build)),
-            vec!["x", "m", "s", "ctrl+←/→", "shift+p", "?"]
+            vec!["x", "m", "ctrl+r", "s", "ctrl+←/→", "shift+p", "?"]
         );
 
         // The project-files pane (all of it, now that the checklist moved
@@ -923,6 +944,7 @@ mod tests {
                 "r",
                 "x",
                 "m",
+                "ctrl+r",
                 "s",
                 "ctrl+←/→",
                 "shift+p",
@@ -933,7 +955,7 @@ mod tests {
         // The Project pane: the questions' own grammar.
         assert_eq!(
             footer_keys(View::Dashboard, &ctx(zephyr(), Focus::Project)),
-            vec!["x", "m", "s", "ctrl+←/→", "shift+p", "?"]
+            vec!["x", "m", "ctrl+r", "s", "ctrl+←/→", "shift+p", "?"]
         );
     }
 

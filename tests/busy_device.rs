@@ -4,7 +4,9 @@
 //! `mpremote` without interrupting it (Ctrl-C, then raw REPL), so ChipTUI
 //! probes first, asks before interrupting, and offers to restart the script
 //! afterwards --- the flows exercised here with an idle, a printing and a
-//! silent fake board.
+//! silent fake board. The identification chain (esptool reading the chip
+//! and firmware, which *restarts* the board) asks too, before anything
+//! touches the port.
 
 #![cfg(unix)]
 
@@ -71,6 +73,26 @@ fn key(code: KeyCode) -> AppEvent {
     AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE))
 }
 
+/// Pumps until the identification question opens, then answers it: `y`
+/// accepts (the chain runs), a reflex `Enter` declines (the default --- the
+/// board is left untouched). Every device-selection chain starts with this
+/// question now; nothing reads the board before it is answered.
+fn answer_identify(app: &mut App, accept: bool) -> bool {
+    if !pump_until(
+        app,
+        |app| matches!(app.overlay, Some(Overlay::ConfirmIdentifyDevice { .. })),
+        20,
+    ) {
+        return false;
+    }
+    app.handle(key(if accept {
+        KeyCode::Char('y')
+    } else {
+        KeyCode::Enter
+    }));
+    true
+}
+
 /// Renders the current screen and returns it as plain text.
 fn render(app: &mut App, width: u16, height: u16) -> String {
     let mut terminal =
@@ -82,14 +104,32 @@ fn render(app: &mut App, width: u16, height: u16) -> String {
 }
 
 #[test]
-fn the_interrupt_and_restore_prompts_render() {
+fn the_identify_interrupt_and_restore_prompts_render() {
     let mut app = app_with("mpremote-busy-board");
+    assert!(pump_until(
+        &mut app,
+        |app| matches!(app.overlay, Some(Overlay::ConfirmIdentifyDevice { .. })),
+        20
+    ));
+
+    let frame = render(&mut app, 110, 32);
+    assert!(
+        frame.contains("A device is connected"),
+        "the question must say a device is connected:\n{frame}"
+    );
+    assert!(
+        frame.contains("restarts the board"),
+        "the cost of identifying must be named:\n{frame}"
+    );
+
+    // Declining leaves the listing to mpremote, which the running script
+    // gates behind its own question.
+    app.handle(key(KeyCode::Enter));
     assert!(pump_until(
         &mut app,
         |app| matches!(app.overlay, Some(Overlay::ConfirmInterruptDevice { .. })),
         20
     ));
-
     let frame = render(&mut app, 110, 32);
     assert!(
         frame.contains("A script is running"),
@@ -119,12 +159,14 @@ fn pane(app: &App) -> &PaneState {
 }
 
 #[test]
-fn an_idle_board_is_listed_without_asking_anything() {
+fn an_idle_board_is_listed_once_the_identification_is_accepted() {
     let mut app = app_with("mpremote");
 
-    // Probe sees the banner and prompt, concludes "idle"; the chip
-    // identity and the firmware read follow on the same port, and the
-    // MicroPython verdict releases the listing.
+    // Probe sees the banner and prompt, concludes "idle"; the question
+    // opens, the accepted answer runs the chip identity and the firmware
+    // read on the same port, and the MicroPython verdict releases the
+    // listing.
+    assert!(answer_identify(&mut app, true));
     assert!(pump_until(
         &mut app,
         |app| matches!(pane(app), PaneState::Ready),
@@ -138,17 +180,19 @@ fn an_idle_board_is_listed_without_asking_anything() {
             Some("v1.28.0".to_string())
         ))
     );
-    // The whole chain is automatic: no interrupt confirm, no firmware
-    // question --- nothing needed the user's say-so.
-    assert_eq!(app.overlay, None, "nothing needed the user's say-so");
+    // The one question the chain needed was the identification itself: no
+    // interrupt confirm follows an idle board.
+    assert_eq!(app.overlay, None, "no interrupt confirm for an idle board");
 }
 
 #[test]
 fn the_firmware_is_identified_before_the_first_listing() {
     let mut app = app_with("mpremote");
 
-    // The identification read runs as part of the chain the selection
-    // started, and the MicroPython verdict is what releases the listing.
+    // The identification read runs as part of the chain the accepted
+    // question started, and the MicroPython verdict is what releases the
+    // listing.
+    assert!(answer_identify(&mut app, true));
     assert!(pump_until(
         &mut app,
         |app| app
@@ -179,6 +223,124 @@ fn the_firmware_is_identified_before_the_first_listing() {
     assert!(pump_until(&mut app, |app| app.overlay.is_none(), 5));
 }
 
+/// Declining the identification is not final for the session: `r` on the
+/// device pane is the documented way back, and it re-opens the question
+/// (never runs the chain on its own).
+#[test]
+fn r_offers_the_declined_identification_again() {
+    let mut app = app_with("mpremote");
+    assert!(answer_identify(&mut app, false));
+    assert!(pump_until(
+        &mut app,
+        |app| matches!(pane(app), PaneState::Ready),
+        20
+    ));
+
+    app.focus = Focus::FilesDevice;
+    app.handle(key(KeyCode::Char('r')));
+    assert!(pump_until(
+        &mut app,
+        |app| matches!(app.overlay, Some(Overlay::ConfirmIdentifyDevice { .. })),
+        20
+    ));
+    // Accepting this time runs the chain the first answer skipped.
+    app.handle(key(KeyCode::Char('y')));
+    assert!(pump_until(
+        &mut app,
+        |app| app
+            .flash
+            .as_ref()
+            .is_some_and(|flash| flash.details.firmware.is_some()),
+        20
+    ));
+}
+
+/// `ctrl+r` is the dashboard-wide form of the offer: from any pane (here
+/// the Log pane, where plain `r` means re-detect) the chord re-opens the
+/// identification question, and accepting runs the chain the earlier
+/// decline skipped.
+#[test]
+fn ctrl_r_offers_the_identification_from_any_pane() {
+    let mut app = app_with("mpremote");
+    assert!(answer_identify(&mut app, false));
+    assert!(pump_until(
+        &mut app,
+        |app| matches!(pane(app), PaneState::Ready),
+        20
+    ));
+
+    app.focus = Focus::Logs;
+    app.handle(AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('r'),
+        KeyModifiers::CONTROL,
+    )));
+    assert!(
+        matches!(app.overlay, Some(Overlay::ConfirmIdentifyDevice { .. })),
+        "the chord must open the identification question from any pane"
+    );
+
+    app.handle(key(KeyCode::Char('y')));
+    assert!(pump_until(
+        &mut app,
+        |app| app
+            .flash
+            .as_ref()
+            .is_some_and(|flash| flash.details.firmware.is_some()),
+        20
+    ));
+}
+
+/// `Enter` on the Device info pane is the in-pane twin of the chord: with
+/// nothing to show it offers the identification (the pane's message names
+/// both gestures), and once the data exists it goes back to copying the MAC.
+#[test]
+fn enter_on_the_device_info_pane_offers_the_identification() {
+    let mut app = app_with("mpremote");
+    assert!(answer_identify(&mut app, false));
+    assert!(pump_until(
+        &mut app,
+        |app| matches!(pane(app), PaneState::Ready),
+        20
+    ));
+
+    // The pane's empty state names the way forward instead of shrugging.
+    let frame = render(&mut app, 110, 32);
+    assert!(
+        frame.contains("device connected --- not identified"),
+        "the empty pane must say what is going on:\n{frame}"
+    );
+    assert!(
+        frame.contains("ctrl+r, or Enter here, stops it and reads its data"),
+        "the shortcut must be in the message:\n{frame}"
+    );
+
+    app.focus = Focus::DeviceInfo;
+    app.handle(key(KeyCode::Enter));
+    assert!(
+        matches!(app.overlay, Some(Overlay::ConfirmIdentifyDevice { .. })),
+        "Enter on the empty pane must offer the identification"
+    );
+
+    // Accepting captures the data; a later Enter, with a MAC to act on,
+    // copies it instead of re-asking.
+    app.handle(key(KeyCode::Char('y')));
+    assert!(pump_until(
+        &mut app,
+        |app| app
+            .flash
+            .as_ref()
+            .is_some_and(|flash| flash.details.mac.is_some()),
+        20
+    ));
+    app.handle(key(KeyCode::Enter));
+    assert_eq!(app.overlay, None, "data read: Enter copies, not asks");
+    assert!(
+        app.take_clipboard_request()
+            .is_some_and(|text| text.contains(':')),
+        "the MAC was copied"
+    );
+}
+
 /// A write-flash rewrites the board, so the verdict the identification read
 /// produced is stale the moment the write finishes: like `west flash` on
 /// the Zephyr side, the identification re-arms and re-runs on its own once
@@ -205,7 +367,9 @@ fn a_write_flash_re_identifies_the_firmware_on_its_own() {
     app.maybe_scan_devices();
     app.handle(key(KeyCode::Char('d')));
 
-    // The selection chain answers first: MicroPython v1.28.0.
+    // The selection chain asks first; the accepted answer answers it:
+    // MicroPython v1.28.0.
+    assert!(answer_identify(&mut app, true));
     assert!(pump_until(
         &mut app,
         |app| app
@@ -275,11 +439,13 @@ fn a_write_flash_re_identifies_the_firmware_on_its_own() {
 
 #[test]
 fn a_board_running_zephyr_is_refused_rather_than_listed() {
-    // The chip is an ordinary ESP32; only the firmware differs. The chain
-    // identifies it, and the listing is refused with the reason instead of
-    // garbage-listing a board mpremote cannot talk to.
+    // The chip is an ordinary ESP32; only the firmware differs. The
+    // accepted identification names it, and the listing is refused with
+    // the reason instead of garbage-listing a board mpremote cannot talk
+    // to.
     let mut app = app_with_tools("mpremote", "esptool-zephyr-board");
 
+    assert!(answer_identify(&mut app, true));
     assert!(pump_until(
         &mut app,
         |app| matches!(pane(app), PaneState::Failed(_)),
@@ -327,13 +493,15 @@ fn a_board_running_zephyr_is_refused_rather_than_listed() {
 fn a_busy_board_holds_the_listing_behind_a_confirmation() {
     let mut app = app_with("mpremote-busy-board");
 
+    // The probe found the running script; the identification question is
+    // what opens (its yes accepts the interruption the reading causes).
     assert!(
         pump_until(
             &mut app,
-            |app| matches!(app.overlay, Some(Overlay::ConfirmInterruptDevice { .. })),
+            |app| matches!(app.overlay, Some(Overlay::ConfirmIdentifyDevice { .. })),
             20
         ),
-        "the probe found the running script and asked"
+        "the probe found the running script and the question opened"
     );
     assert!(
         !app.browser.as_ref().unwrap().is_busy(),
@@ -350,14 +518,15 @@ fn a_busy_board_holds_the_listing_behind_a_confirmation() {
 fn a_banner_printing_foreign_board_identifies_before_any_listing() {
     // A board whose firmware prints its boot banner when the port opens
     // (any foreign firmware on an auto-reset ESP32): the probe cannot tell
-    // it from a busy script, so it asks --- but what the accepted
-    // interruption must move is the identification chain, never a file
-    // listing. Only the verdict may refuse or release the listing.
+    // it from a busy script, so the identification question opens with the
+    // script belief riding it --- and what the accepted answer must move
+    // is the identification chain, never a file listing. Only the verdict
+    // may refuse or release the listing.
     let mut app = app_with_tools("mpremote-zephyr-board", "esptool-zephyr-board");
 
     assert!(pump_until(
         &mut app,
-        |app| matches!(app.overlay, Some(Overlay::ConfirmInterruptDevice { .. })),
+        |app| matches!(app.overlay, Some(Overlay::ConfirmIdentifyDevice { .. })),
         20
     ));
     assert!(
@@ -400,11 +569,22 @@ fn declining_the_interruption_drops_the_listing() {
     let mut app = app_with("mpremote-busy-board");
     assert!(pump_until(
         &mut app,
+        |app| matches!(app.overlay, Some(Overlay::ConfirmIdentifyDevice { .. })),
+        20
+    ));
+
+    // Decline the identification (default No): the board is not restarted,
+    // and the listing it releases is mpremote's to make --- which the
+    // running script gates behind the interrupt question.
+    app.handle(key(KeyCode::Enter));
+    assert!(pump_until(
+        &mut app,
         |app| matches!(app.overlay, Some(Overlay::ConfirmInterruptDevice { .. })),
         20
     ));
 
-    // Default is No; a reflex Enter must not stop the board's script.
+    // Default is No here too; a reflex Enter must not stop the board's
+    // script.
     app.handle(key(KeyCode::Enter));
 
     assert_eq!(app.overlay, None);
@@ -421,14 +601,17 @@ fn declining_the_interruption_drops_the_listing() {
 }
 
 #[test]
-fn accepting_the_interruption_lists_and_then_asks_how_to_restore() {
+fn accepting_the_identification_on_a_busy_board_lists_and_offers_restore() {
     let mut app = app_with("mpremote-busy-board");
     assert!(pump_until(
         &mut app,
-        |app| matches!(app.overlay, Some(Overlay::ConfirmInterruptDevice { .. })),
+        |app| matches!(app.overlay, Some(Overlay::ConfirmIdentifyDevice { .. })),
         20
     ));
 
+    // One yes covers both the restart the reading causes and the script it
+    // stops: the question names both, so no second interrupt confirm
+    // follows it.
     app.handle(key(KeyCode::Char('y')));
 
     assert!(pump_until(
@@ -468,7 +651,7 @@ fn restoring_via_hard_reset_marks_the_script_running_again() {
     let mut app = app_with("mpremote-busy-board");
     assert!(pump_until(
         &mut app,
-        |app| matches!(app.overlay, Some(Overlay::ConfirmInterruptDevice { .. })),
+        |app| matches!(app.overlay, Some(Overlay::ConfirmIdentifyDevice { .. })),
         20
     ));
     app.handle(key(KeyCode::Char('y')));
@@ -503,17 +686,18 @@ fn restoring_via_hard_reset_marks_the_script_running_again() {
 fn a_silent_board_is_listed_without_guessing_a_running_script() {
     let mut app = app_with("mpremote-quiet-board");
 
-    // Nothing to see: the probe's window passes, it gives up, and the chain
-    // continues ungated --- the documented blind spot for scripts that
-    // never print.
+    // Nothing to see: the probe's window passes, it gives up, and the
+    // identification question opens anyway --- Unknown is not Running, so
+    // the accepted answer runs the chain ungated (the documented blind
+    // spot for scripts that never print).
+    assert!(answer_identify(&mut app, true));
     assert!(pump_until(
         &mut app,
         |app| matches!(pane(app), PaneState::Ready),
         20
     ));
     assert_eq!(app.devices.script_state(), ScriptState::Unknown);
-    // Unknown is not Running, so the chip query and the firmware read both
-    // ran; the identification answers MicroPython with no overlay to
+    // The identification answers MicroPython with no further overlay to
     // answer along the way.
     assert_eq!(
         app.flash.as_ref().unwrap().details.firmware,
@@ -621,7 +805,7 @@ fn the_device_info_query_runs_once_the_restore_choice_is_made() {
     let mut app = app_with("mpremote-busy-board");
     assert!(pump_until(
         &mut app,
-        |app| matches!(app.overlay, Some(Overlay::ConfirmInterruptDevice { .. })),
+        |app| matches!(app.overlay, Some(Overlay::ConfirmIdentifyDevice { .. })),
         20
     ));
     app.handle(key(KeyCode::Char('y')));
@@ -658,16 +842,24 @@ fn the_device_info_query_runs_once_the_restore_choice_is_made() {
 }
 
 #[test]
-fn the_device_info_query_waits_while_the_script_runs() {
+fn a_declined_identification_never_touches_the_board() {
     let mut app = app_with("mpremote-busy-board");
+    assert!(pump_until(
+        &mut app,
+        |app| matches!(app.overlay, Some(Overlay::ConfirmIdentifyDevice { .. })),
+        20
+    ));
+
+    // Decline the identification (default No + Enter): the user said "do
+    // not restart the board", and esptool resets it to read anything, so
+    // nothing may run. The listing the decline releases is mpremote's,
+    // gated behind the interrupt question --- declined too.
+    app.handle(key(KeyCode::Enter));
     assert!(pump_until(
         &mut app,
         |app| matches!(app.overlay, Some(Overlay::ConfirmInterruptDevice { .. })),
         20
     ));
-
-    // Decline (default No + Enter): the user just said "do not interrupt",
-    // and esptool resets the board to read the chip, so it must wait.
     app.handle(key(KeyCode::Enter));
 
     let deadline = Instant::now() + Duration::from_secs(1);
@@ -687,17 +879,22 @@ fn the_device_info_query_waits_while_the_script_runs() {
         "no device info should have arrived"
     );
 
-    // Once the script is no longer believed running (the monitor seeing an
-    // idle REPL, say), the query goes ahead on its own.
+    // Even once the script is no longer believed running, the refused
+    // identification stays refused --- declining is an answer about this
+    // port, not a postponement.
     app.devices.set_script_state(ScriptState::Stopped);
-    assert!(pump_until(
-        &mut app,
-        |app| app
-            .flash
-            .as_ref()
-            .is_some_and(|flash| flash.details.family.is_some()),
-        20
-    ));
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while Instant::now() < deadline {
+        for event in app.processes.drain() {
+            app.handle(AppEvent::Process(event));
+        }
+        app.handle(AppEvent::Tick);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        app.flash.as_ref().unwrap().details.family.is_none(),
+        "the declined identification must not run on its own"
+    );
 }
 
 #[test]
@@ -707,9 +904,10 @@ fn the_first_listing_waits_for_the_chip_identity_query() {
     // observable: chip-id first, the firmware read next, files only after
     // its verdict.
     let mut app = app_with_tools("mpremote", "esptool-slow-chip");
+    assert!(answer_identify(&mut app, true));
 
-    // The probe finds the board idle and releases the port; the identity
-    // query is the next tool on it, not the listing.
+    // The probe found the board idle, the answer authorized the chain, and
+    // the identity query is the next tool on the port, not the listing.
     assert!(
         pump_until(
             &mut app,
