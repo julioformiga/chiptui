@@ -14,6 +14,7 @@ use chiptui::backend::BackendKind;
 use chiptui::backend::zephyr::workspace::{Resolution, Workspace, WorkspaceOrigin};
 use chiptui::device::DiscoveryState;
 use chiptui::event::AppEvent;
+use chiptui::firmware_id::{FirmwareVerdict, FlashFirmware};
 use chiptui::flash::FlashPanel;
 use chiptui::workspace::WorkspacePanel;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -190,18 +191,24 @@ fn the_chip_identity_is_queried_even_on_the_zephyr_backend() {
     assert!(frame.contains("ESP32"), "missing chip identity:\n{frame}");
 }
 
-/// Gives the app a resolved Zephyr workspace whose west is the fake ---
-/// the invocation every monitor of the Zephyr environment runs through.
-fn resolve_workspace_with_fake_west(app: &mut App, root: &std::path::Path) {
+/// Gives the app a resolved Zephyr workspace whose west is the named fake
+/// binary --- the invocation every monitor of the Zephyr environment (and
+/// now the live version capture) runs through.
+fn resolve_workspace_with_west(app: &mut App, root: &std::path::Path, west_bin: &str) {
     let workspace = Workspace {
         dir: root.join("ws"),
         origin: WorkspaceOrigin::UserConfig,
         zephyr_base: root.join("ws/zephyr"),
         venv: Some(root.join("ws/.venv")),
-        west: fake("west"),
+        west: fake(west_bin),
         sdk: None,
     };
     app.workspace = Some(WorkspacePanel::new(Resolution::Single(workspace), ""));
+}
+
+/// The plain-`west` flavor every existing test in this file uses.
+fn resolve_workspace_with_fake_west(app: &mut App, root: &std::path::Path) {
+    resolve_workspace_with_west(app, root, "west");
 }
 
 /// Answers the board question the platform monitor needs and creates the
@@ -543,5 +550,148 @@ fn a_west_flash_reidentifies_the_firmware() {
             .as_ref()
             .is_some_and(|flash| flash.details.firmware.is_some()),
         "the re-read must leave a standing verdict"
+    );
+}
+
+/// Selects the device and drives the identification chain up to a
+/// versionless Zephyr verdict --- the point every test below starts from.
+fn select_and_identify(app: &mut App, root: &std::path::Path) {
+    std::fs::write(root.join("dev/ttyACM0"), b"").unwrap();
+    app.handle(key(KeyCode::Char('d')));
+    assert!(pump_until(
+        app,
+        |app| matches!(app.overlay, Some(Overlay::ConfirmIdentifyDevice { .. })),
+        20
+    ));
+    app.handle(key(KeyCode::Char('y')));
+    assert!(
+        pump_until(
+            app,
+            |app| matches!(
+                app.flash.as_ref().unwrap().details.firmware,
+                Some(FirmwareVerdict::Firmware(FlashFirmware::Zephyr, None))
+            ),
+            20
+        ),
+        "the identification read must name Zephyr without a version first"
+    );
+}
+
+#[test]
+fn live_boot_banner_capture_dates_a_versionless_zephyr_verdict() {
+    // esp32c3-round-display's exact shape: a Zephyr simple-boot image whose
+    // banner sits past both flash-byte windows, but whose live boot banner
+    // (after esptool's own post-read reset) still names it.
+    let (mut app, root) = zephyr_app("live-hit");
+    app.flash
+        .as_mut()
+        .unwrap()
+        .set_tool_path(fake("esptool-zephyr-no-version"));
+    // Both prerequisites must be in place *before* the identification read
+    // lands: the version hunt is tried in the same event that arms it, so
+    // answering the board afterward would be too late.
+    resolve_workspace_with_west(&mut app, &root, "west-zephyr-banner");
+    answer_board(&mut app, &root, "adafruit_feather_esp32s3/esp32s3/procpu");
+    select_and_identify(&mut app, &root);
+    let before = (app.focus, app.log_tab, app.monitor_source);
+
+    assert!(
+        pump_until(
+            &mut app,
+            |app| matches!(
+                app.flash.as_ref().unwrap().details.firmware,
+                Some(FirmwareVerdict::Firmware(FlashFirmware::Zephyr, Some(_)))
+            ),
+            20
+        ),
+        "the live boot-banner capture never dated the verdict: {:?}",
+        app.flash.as_ref().unwrap().details.firmware
+    );
+    assert_eq!(
+        app.flash.as_ref().unwrap().details.firmware,
+        Some(FirmwareVerdict::Firmware(
+            FlashFirmware::Zephyr,
+            Some("v4.4.0-11847-gc5dffcb7c9da".to_string())
+        ))
+    );
+    assert!(
+        app.logs
+            .visible(usize::MAX)
+            .any(|entry| entry.message.contains("Zephyr build v4.4.0")),
+        "the live capture must log the same notice the byte hunt would"
+    );
+
+    // Invisible background courtesy work: no UI hijack, same rule the
+    // chip-id/firmware-read queries already follow.
+    assert!(
+        app.device_monitor_process.is_none(),
+        "the capture must never become the interactive Monitor tab's session"
+    );
+    assert_eq!(
+        (app.focus, app.log_tab, app.monitor_source),
+        before,
+        "the capture must not move focus, switch tabs or claim the monitor source"
+    );
+}
+
+#[test]
+fn the_byte_hunt_still_runs_without_a_resolved_workspace() {
+    // No `resolve_workspace_with_west`/`answer_board` at all: the live
+    // capture's own prerequisite check (the same one `open_monitor` uses)
+    // must refuse it, and the flash-byte hunt --- which this fixture's hunt
+    // window also leaves blank on purpose --- is what settles the verdict.
+    let (mut app, root) = zephyr_app("live-no-workspace");
+    app.flash
+        .as_mut()
+        .unwrap()
+        .set_tool_path(fake("esptool-zephyr-no-version"));
+    select_and_identify(&mut app, &root);
+
+    assert!(
+        pump_until(
+            &mut app,
+            |app| !app.flash.as_ref().unwrap().has_pending_version_hunt(),
+            20
+        ),
+        "the byte hunt must still settle the verdict without a workspace"
+    );
+    assert_eq!(
+        app.flash.as_ref().unwrap().details.firmware,
+        Some(FirmwareVerdict::Firmware(FlashFirmware::Zephyr, None)),
+        "this fixture's hunt window is blank on purpose: no version to find, live or byte"
+    );
+}
+
+#[test]
+fn the_byte_hunt_runs_after_a_live_capture_finds_nothing() {
+    // The platform monitor attaches (idf_monitor's own startup banner) but
+    // the board never prints anything recognizable: the live attempt must
+    // still fall through to the byte hunt rather than leaving the pending
+    // flag stuck forever.
+    let (mut app, root) = zephyr_app("live-miss");
+    app.flash
+        .as_mut()
+        .unwrap()
+        .set_tool_path(fake("esptool-zephyr-no-version"));
+    resolve_workspace_with_west(&mut app, &root, "west-zephyr-silent");
+    answer_board(&mut app, &root, "adafruit_feather_esp32s3/esp32s3/procpu");
+    select_and_identify(&mut app, &root);
+
+    assert!(
+        pump_until(
+            &mut app,
+            |app| !app.flash.as_ref().unwrap().has_pending_version_hunt(),
+            20
+        ),
+        "the hunt must settle (live miss, then the byte hunt) instead of hanging pending forever"
+    );
+    assert_eq!(
+        app.flash.as_ref().unwrap().details.firmware,
+        Some(FirmwareVerdict::Firmware(FlashFirmware::Zephyr, None)),
+        "neither the live capture nor the byte hunt found a version here, on purpose"
+    );
+    assert!(
+        app.device_monitor_process.is_none(),
+        "the failed live attempt must not leave a monitor session dangling"
     );
 }

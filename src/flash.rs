@@ -1217,6 +1217,32 @@ impl FlashPanel {
         }
     }
 
+    /// Applies a version the live Zephyr boot-banner capture found
+    /// (`App::version_capture`, `src/app/version_capture.rs`) --- the
+    /// platform-monitor alternative to [`Self::apply_version_from`]'s
+    /// flash-byte hunt, same "only a standing, still-versionless verdict may
+    /// be filled in" rule: the capture runs in the background, and the
+    /// verdict it targets may have moved on (a disconnect, a re-flash, or
+    /// the byte hunt itself already answering) while it was listening.
+    /// Returns the notice to log when applied.
+    pub fn apply_live_zephyr_version(&mut self, version: String) -> Option<Notice> {
+        if !matches!(
+            self.details.firmware,
+            Some(FirmwareVerdict::Firmware(FlashFirmware::Zephyr, None))
+        ) {
+            return None;
+        }
+        self.details.firmware = Some(FirmwareVerdict::Firmware(
+            FlashFirmware::Zephyr,
+            Some(version.clone()),
+        ));
+        self.version_hunt_pending = false;
+        Some((
+            Level::Info,
+            format!("{} build {version}", FlashFirmware::Zephyr.label()),
+        ))
+    }
+
     /// Whether an esptool command or a curl fetch/download is currently
     /// running --- only one of either kind at a time (`SPEC.md` §22's "one
     /// tool at a time" convention, already followed by [`crate::browser::Browser`]).

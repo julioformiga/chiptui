@@ -1,0 +1,14 @@
+#!/bin/sh
+# Fake `west` whose `espressif monitor` attaches (idf_monitor's own startup
+# banner) but the board never prints anything recognizable --- the "the
+# live capture found nothing" case the flash-byte hunt must still cover.
+
+case "$1 $2" in
+    "espressif monitor")
+        printf -- '--- idf_monitor on %s 115200 ---\n' "$4"
+        printf -- '--- Quit: Ctrl+] | Menu: Ctrl+T | Help: Ctrl+T followed by Ctrl+H ---\n'
+        ;;
+    *)
+        printf 'fake west: %s\n' "$*"
+        ;;
+esac

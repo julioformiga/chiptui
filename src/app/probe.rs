@@ -89,6 +89,7 @@ impl App {
             || self.device_monitor_process.is_some()
             || self.run_process.is_some()
             || self.browser.as_ref().is_some_and(Browser::is_busy)
+            || self.version_capture.is_some()
         {
             return false;
         }

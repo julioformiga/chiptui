@@ -77,14 +77,16 @@ pub const READ_SIZE: usize = 0x20000;
 /// Where the follow-up version hunt reads from when the identification
 /// window named a firmware without a version: right past it. A Zephyr
 /// *simple boot* image is one contiguous XIP image whose application
-/// banner (`*** Booting Zephyr OS build … ***`) lands deep in flash ---
-/// on real hardware (ESP32-C3, verified) it sat at 0x6053c, unreachable
-/// from [`READ_SIZE`]. The hunt covers the next 512 KiB, where the
-/// rodata of ordinary applications keeps their banner; a build that
-/// names itself deeper than that stays bare rather than guessed at, and
-/// a failed hunt changes nothing.
+/// banner (`*** Booting Zephyr OS build … ***`) lands deep in flash, and
+/// how deep tracks the app's own size --- a bare sample app (verified on
+/// hardware, ESP32-C3) sat at 0x6053c, but a graphics-heavy one (a round
+/// display driven by LVGL, same chip, `zephyr.bin` past 1 MiB) pushed it
+/// to 0xd06a8, past the original 512 KiB budget. The hunt covers the next
+/// 1 MiB instead, wide enough for both with room to grow; a build that
+/// names itself deeper than that stays bare rather than guessed at, and a
+/// failed hunt changes nothing.
 pub const HUNT_OFFSET: usize = READ_OFFSET + READ_SIZE;
-pub const HUNT_SIZE: usize = 0x80000;
+pub const HUNT_SIZE: usize = 0x100000;
 
 /// One partition-table entry is 32 bytes: magic, type, subtype, offset,
 /// size, a 16-byte NUL-padded label, then flags.
@@ -478,6 +480,23 @@ mod tests {
         assert_eq!(
             version(&data[HUNT_OFFSET..], FlashFirmware::Zephyr),
             Some("v4.4.0-11847-gc5dffcb7c9da".to_string())
+        );
+    }
+
+    #[test]
+    fn a_graphics_heavy_simple_boot_banner_still_falls_inside_the_hunt() {
+        // Captured from a real esp32c3-round-display build (LVGL over a
+        // round SPI panel): `zephyr.bin` past 1 MiB pushed the banner to
+        // byte offset 0xd06a8 --- past the original 512 KiB hunt budget,
+        // which is exactly what widened it to 1 MiB.
+        let banner_offset = 0xd06a8 - HUNT_OFFSET;
+        let banner = b"*** Booting Zephyr OS build v4.4.0 ***\n";
+        let mut data = vec![0xFF; HUNT_SIZE];
+        data[banner_offset..banner_offset + banner.len()].copy_from_slice(banner);
+        assert_eq!(
+            version(&data, FlashFirmware::Zephyr),
+            Some("v4.4.0".to_string()),
+            "the wider hunt window must still reach a banner this deep"
         );
     }
 

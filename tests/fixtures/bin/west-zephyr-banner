@@ -1,0 +1,20 @@
+#!/bin/sh
+# Fake `west` whose `espressif monitor` reproduces idf_monitor's real
+# startup shape closely enough to exercise the live version capture's
+# parsing (`AGENTS.md`'s "reproduce the tool, not the belief about it"):
+# its own startup banner first, then --- across a separate output chunk,
+# the same shape a real reboot-then-print would arrive in --- the Zephyr
+# app's own boot banner, which is the only line the parser actually looks
+# for.
+
+case "$1 $2" in
+    "espressif monitor")
+        printf -- '--- idf_monitor on %s 115200 ---\n' "$4"
+        printf -- '--- Quit: Ctrl+] | Menu: Ctrl+T | Help: Ctrl+T followed by Ctrl+H ---\n'
+        sleep 0.1
+        printf '*** Booting Zephyr OS build v4.4.0-11847-gc5dffcb7c9da ***\n'
+        ;;
+    *)
+        printf 'fake west: %s\n' "$*"
+        ;;
+esac

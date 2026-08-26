@@ -126,7 +126,7 @@ case "$args" in
                 # inside the identification window) and the boot banner at
                 # 0x6053c (what dates it, reachable only by the hunt).
                 img=$(mktemp "${TMPDIR:-/tmp}/chiptui-deep.XXXXXX")
-                head -c 655360 /dev/zero | tr '\000' '\377' > "$img"
+                head -c 1179648 /dev/zero | tr '\000' '\377' > "$img"
                 printf '>>> ZEPHYR FATAL ERROR %%d: %%s on CPU %%d\n' \
                     | dd of="$img" bs=1 seek=2560 conv=notrunc status=none
                 printf '*** Booting Zephyr OS build v4.4.0-11847-gc5dffcb7c9da ***\n' \
@@ -135,8 +135,8 @@ case "$args" in
                     *"0x0 0x20000"*)
                         head -c 131072 "$img" > "$dest"
                         ;;
-                    *"0x20000 0x80000"*)
-                        tail -c +131073 "$img" | head -c 524288 > "$dest"
+                    *"0x20000 0x100000"*)
+                        tail -c +131073 "$img" | head -c 1048576 > "$dest"
                         ;;
                 esac
                 rm -f "$img"

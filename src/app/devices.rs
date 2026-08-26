@@ -15,6 +15,32 @@ use crate::firmware_id::{FirmwareVerdict, FlashFirmware};
 use super::flash_view::{FirmwareCheck, FirmwareHold, IdentifyAuth};
 use super::{App, DevicePaneTab, Focus, LogTab, MonitorSource, Overlay};
 
+/// The facts [`crate::backend::MonitorContext`] needs, owned rather than
+/// borrowed so [`App::monitor_facts`]'s caller can hold on to them across
+/// the `Backend::monitor_command` call --- `MonitorContext` itself only
+/// ever borrows into this.
+pub(super) struct MonitorFacts {
+    port: Option<String>,
+    firmware: Option<FirmwareVerdict>,
+    board: Option<String>,
+    build_configured: bool,
+    west: Option<crate::backend::zephyr::workspace::WestEnv>,
+    project_root: Option<PathBuf>,
+}
+
+impl MonitorFacts {
+    pub(super) fn context(&self) -> crate::backend::MonitorContext<'_> {
+        crate::backend::MonitorContext {
+            port: self.port.as_deref(),
+            firmware: self.firmware.as_ref(),
+            board: self.board.as_deref(),
+            build_configured: self.build_configured,
+            west: self.west.as_ref(),
+            project_root: self.project_root.as_deref(),
+        }
+    }
+}
+
 impl App {
     /// Ensures row 2's panes exist and the right scans start, without
     /// waiting for the user to move focus onto them: the browser for a
@@ -539,6 +565,10 @@ impl App {
         // display --- not the previous board's answer.
         self.firmware_check_port = None;
         self.firmware_check = FirmwareCheck::Idle;
+        if let Some(capture) = self.version_capture.take() {
+            self.processes.cancel(capture.process);
+        }
+        self.version_capture_port = None;
         if let Some(flash) = &mut self.flash {
             flash.clear_firmware_identity();
         }
@@ -683,14 +713,13 @@ impl App {
         self.place_startup_focus();
     }
 
-    /// Starts an interactive device monitor, in the form the board's
-    /// platform calls for: the backend picks from
-    /// [`crate::backend::MonitorContext`] --- the selected port, the
-    /// auto-detected firmware, the build's board answer and configuration,
-    /// the workspace's west invocation and the project root. A missing
-    /// fact is a refusal naming it (a cohesive environment over a monitor
-    /// at any cost).
-    pub fn open_monitor(&mut self) {
+    /// The facts [`crate::backend::MonitorContext`] needs, gathered once and
+    /// shared by every caller that asks the backend for a monitor command
+    /// --- the interactive Monitor tab ([`Self::open_monitor`]) and the
+    /// background Zephyr version capture ([`App::start_version_capture`])
+    /// --- so both ask the backend the exact same question rather than two
+    /// independently assembled ones.
+    pub(super) fn monitor_facts(&self) -> MonitorFacts {
         let port = self.devices.selected_port().map(str::to_string);
         let firmware = self
             .flash
@@ -707,20 +736,42 @@ impl App {
         // `west_env()` answers the bare-`west` fallback while unresolved,
         // which would be a guess about the environment; only a resolved
         // workspace's invocation counts here.
-        let west_env = self
+        let west = self
             .workspace
             .as_ref()
             .filter(|panel| panel.resolved.is_some())
             .map(|panel| panel.west_env());
         let project_root = self.manager.root().map(Path::to_path_buf);
-        let context = crate::backend::MonitorContext {
-            port: port.as_deref(),
-            firmware: firmware.as_ref(),
-            board: board.as_deref(),
+        MonitorFacts {
+            port,
+            firmware,
+            board,
             build_configured,
-            west: west_env.as_ref(),
-            project_root: project_root.as_deref(),
-        };
+            west,
+            project_root,
+        }
+    }
+
+    /// Starts an interactive device monitor, in the form the board's
+    /// platform calls for: the backend picks from
+    /// [`crate::backend::MonitorContext`] --- the selected port, the
+    /// auto-detected firmware, the build's board answer and configuration,
+    /// the workspace's west invocation and the project root. A missing
+    /// fact is a refusal naming it (a cohesive environment over a monitor
+    /// at any cost).
+    pub fn open_monitor(&mut self) {
+        // The background version capture already holds the port for the
+        // same command this would spawn; racing it for the connection would
+        // just make esptool/idf_monitor fight over the port. The capture is
+        // short-lived by design (it gives up on its own), so this is a
+        // "try again in a moment" refusal, not a dead end.
+        if self.version_capture.is_some() {
+            self.logs
+                .warn("monitor unavailable: reading the firmware version in the background");
+            return;
+        }
+        let facts = self.monitor_facts();
+        let context = facts.context();
         match self
             .manager
             .backend()

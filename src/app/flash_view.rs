@@ -815,6 +815,7 @@ impl App {
             || self.run_process.is_some()
             || self.browser.as_ref().is_some_and(Browser::is_busy)
             || self.devices.script_state() == ScriptState::Running
+            || self.version_capture.is_some()
         {
             return DeferredQuery::Waiting;
         }
@@ -872,6 +873,12 @@ impl App {
         // The version banner is as much the departed board's answer as the
         // identity above; a replug must re-answer, not inherit.
         self.mpy_version = None;
+        // A live capture in flight is listening for a board that just left;
+        // holding the port open on a departed board serves nothing.
+        if let Some(capture) = self.version_capture.take() {
+            self.processes.cancel(capture.process);
+        }
+        self.version_capture_port = None;
         if let Some(flash) = &mut self.flash {
             flash.clear_device_details();
         }
@@ -945,6 +952,7 @@ impl App {
         }
         self.mpy_version = None;
         self.probed_port = None;
+        self.version_capture_port = None;
         self.set_script_state(ScriptState::Unknown);
         self.arm_firmware_check();
         self.logs
@@ -1000,14 +1008,23 @@ impl App {
         started
     }
 
-    /// Runs the version hunt (`FlashPanel::query_firmware_version`) once the
-    /// identification read armed it: the follow-up read is pure courtesy ---
-    /// nothing waits on it, so it only ever starts when the port is free,
-    /// nothing interactive holds the session (an overlay must not sit on top
-    /// of an esptool that resets the board underneath it), and the selected
-    /// port still exists. A verdict that no longer standing, or a port that
-    /// vanished, drops the hunt: a bare firmware name is the honest answer
-    /// it already was.
+    /// Runs the version hunt once the identification read armed it: the
+    /// follow-up is pure courtesy --- nothing waits on it, so it only ever
+    /// starts when the port is free, nothing interactive holds the session
+    /// (an overlay must not sit on top of an esptool/monitor that resets or
+    /// occupies the board underneath it), and the selected port still
+    /// exists. A verdict no longer standing, or a port that vanished, drops
+    /// the hunt: a bare firmware name is the honest answer it already was.
+    ///
+    /// For a versionless Zephyr verdict specifically, a live boot-banner
+    /// capture (`App::start_version_capture`, `src/app/version_capture.rs`)
+    /// is tried first, once per port --- reading the board's own boot
+    /// banner beats guessing a flash-byte window, and only needs esptool's
+    /// own post-command reset to have already happened. Only when that is
+    /// unavailable (no resolved workspace/board/build dir, a non-Espressif
+    /// board) or a prior attempt already ran for this port does
+    /// `FlashPanel::query_firmware_version`'s byte hunt still run, exactly
+    /// as before.
     pub(super) fn maybe_run_deferred_version_hunt(&mut self) {
         let Some(flash) = self.flash.as_ref() else {
             return;
@@ -1020,6 +1037,7 @@ impl App {
             || self.device_monitor_process.is_some()
             || self.run_process.is_some()
             || self.browser.as_ref().is_some_and(Browser::is_busy)
+            || self.version_capture.is_some()
         {
             return;
         }
@@ -1027,8 +1045,26 @@ impl App {
             if let Some(flash) = self.flash.as_mut() {
                 flash.drop_version_hunt();
             }
+            self.version_capture_port = None;
             return;
         };
+
+        let is_versionless_zephyr = matches!(
+            flash.details.firmware,
+            Some(FirmwareVerdict::Firmware(FlashFirmware::Zephyr, None))
+        );
+        let already_tried_live = self.version_capture_port.as_deref() == Some(port.as_str());
+        if is_versionless_zephyr && !already_tried_live {
+            self.version_capture_port = Some(port.clone());
+            if self.start_version_capture() {
+                // Deliberately not cleared here: `has_pending_version_hunt`
+                // stays true while the capture runs, so a miss or a timeout
+                // falls through to the byte hunt below on the next tick
+                // instead of silently losing the fallback.
+                return;
+            }
+        }
+
         let Some(mut flash) = self.flash.take() else {
             return;
         };

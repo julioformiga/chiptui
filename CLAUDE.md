@@ -994,17 +994,39 @@ These are the decisions that shape most code, and getting them wrong causes wide
   `Firmware: Zephyr v4.0.0` / `Firmware: ESP-IDF v5.3.1`; a MicroPython verdict whose read
   found no version string falls back to the REPL-banner fact (`App::mpy_version`), and a
   firmware that names no version stays bare (labels identify without one; a guessed version
-  is worse than none). One real layout needs the second read the hunt exists for: a Zephyr
-  *simple boot* image is one contiguous XIP image whose application banner lives far past the
-  identification window (on real hardware, an ESP32-C3: kernel strings at 0xa00, banner at
-  0x6053c, no partition table, no `esp_app_desc`), so a versionless verdict arms
-  `FlashPanel::query_firmware_version` (`version_hunt_pending`), a follow-up
-  `read-flash 0x20000 0x80000` that only dates the standing verdict and never re-judges it
-  (`firmware_id::HUNT_OFFSET`/`HUNT_SIZE`, `apply_version_from`) --- driven through the same
-  tick-polled deferral as the other background queries (`App::maybe_run_deferred_version_hunt`),
-  refused under an open overlay, dropped with the identity it belonged to, and inert by design
-  for ESP-IDF (the descriptor the window already read is its only version source), `undefined`
-  when the read failed or recognized nothing — with one distinction: a window that is entirely
+  is worse than none). One real layout needs a second answer the identification window alone
+  cannot give: a Zephyr *simple boot* image is one contiguous XIP image whose application
+  banner lives far past that window, and how far tracks the app's own size (on real hardware, an
+  ESP32-C3: a bare sample's kernel strings sit at 0xa00, banner at 0x6053c; a graphics-heavy one
+  --- a round display driven by LVGL, same chip --- pushed the banner to 0xd06a8, past even a
+  widened 1 MiB byte-window guess). Guessing a bigger window only ever buys one more size before
+  the next app outgrows it, so a versionless Zephyr verdict tries a live answer first
+  (`App::start_version_capture`, `src/app/version_capture.rs`): `esptool` has already reset the
+  board back into run mode to perform the identification read, so the app reboots and prints its
+  own boot banner on the UART regardless of image size or where in flash it physically sits ---
+  the same trick `App::mpy_version` already uses for MicroPython's live REPL banner, generalized
+  to Zephyr's own platform monitor (`west espressif monitor`, not `mpremote`) instead of a second
+  flash read. The capture is a short-lived, self-closing PTY session modeled on
+  [`DeviceProbe`](`src/app/probe.rs`) --- never the interactive Monitor tab's
+  `device_monitor_process` (a background courtesy must not hijack focus, the log tab or the
+  monitor source) --- that feeds decoded output into a `LineConsole` and re-scans it with
+  `firmware_id::version` after every chunk, cancelling itself (`ProcessManager::cancel`, the same
+  host-side stop `ctrl+]` uses, never a written escape byte, since idf_monitor's own exit key
+  hangs on kernels without `TIOCSTI`) the instant the banner names a version. It only ever runs
+  when `Backend::monitor_command`'s own prerequisites are already met (a resolved workspace, a
+  known Espressif board, a configured build directory --- the same facts `App::open_monitor`
+  needs, extracted once into `App::monitor_facts`/`MonitorFacts` so both callers ask the backend
+  the identical question) and tried once per port (`App::version_capture_port`); a backend with
+  those facts unmet, or a capture that times out with no match, falls through to the flash-byte
+  hunt exactly as before --- a hybrid, not a replacement, since identification must keep working
+  with nothing but a selected port. That fallback arms `FlashPanel::query_firmware_version`
+  (`version_hunt_pending`), a follow-up `read-flash 0x20000 0x100000` that only dates the
+  standing verdict and never re-judges it (`firmware_id::HUNT_OFFSET`/`HUNT_SIZE`,
+  `apply_version_from`) --- driven through the same tick-polled deferral as the other background
+  queries (`App::maybe_run_deferred_version_hunt`), refused under an open overlay, dropped with
+  the identity it belonged to, and inert by design for ESP-IDF (the descriptor the window already
+  read is its only version source), `undefined` when the read failed or recognized nothing — with
+  one distinction: a window that is entirely
   `0xFF` is erased flash, reported as `none (erased flash)` in warning color (`firmware_id::
   classify` → `FirmwareVerdict::Erased`), because "no firmware installed" is an answer, not
   an unknown; an empty/truncated read deliberately does not qualify as erased. The read

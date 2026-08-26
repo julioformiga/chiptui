@@ -588,6 +588,11 @@ impl App {
                 .warn("close the monitor/REPL before running a script");
             return;
         }
+        if self.version_capture.is_some() {
+            self.logs
+                .warn("reading the firmware version — wait for it to finish");
+            return;
+        }
 
         let Some(browser) = &self.browser else { return };
         let local_path = browser.local_path.join(name);

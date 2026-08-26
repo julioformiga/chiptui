@@ -49,6 +49,7 @@ pub mod packages;
 pub mod probe;
 pub mod project_view;
 pub mod terminal;
+pub mod version_capture;
 pub mod workspace_view;
 
 /// Which screen is showing.
@@ -1075,6 +1076,15 @@ pub struct App {
     /// The port the current (or last) probe covered; the probe runs once per
     /// selection, not before every command.
     probed_port: Option<String>,
+    /// A short-lived, self-closing `west espressif monitor` session listening
+    /// for a Zephyr board's boot banner --- the live alternative to guessing
+    /// a flash-byte window for a versionless verdict, see [`version_capture`].
+    /// `None` whenever no capture is in flight.
+    version_capture: Option<version_capture::FirmwareVersionCapture>,
+    /// The port the current (or last) live version capture covered; tried
+    /// once per selection, same idiom as [`Self::probed_port`] --- a miss or
+    /// a timeout falls back to the flash-byte hunt rather than retrying.
+    version_capture_port: Option<String>,
     /// Set when the user accepts interrupting a running script: once the
     /// interrupted operations drain, [`Overlay::RestoreDeviceScript`] asks
     /// how to bring the script back.
@@ -1238,6 +1248,8 @@ impl App {
             firmware_check: flash_view::FirmwareCheck::Idle,
             probe: None,
             probed_port: None,
+            version_capture: None,
+            version_capture_port: None,
             restore_pending: false,
             serial_dir: std::path::PathBuf::from("/dev"),
             config_dir,
@@ -1750,10 +1762,21 @@ impl App {
         if self.run_process.is_some() {
             return;
         }
+        // esptool resets the board to read its chip and firmware, which
+        // drops a native-USB board's tty node for the reset window: acting
+        // on that as a real disconnect wipes the identification the chain
+        // is mid-flight on (`tests/device_hotplug.rs`'s port-blip case).
+        // The baseline still tracks the port count either way --- freezing
+        // it too would blind the very next poll after the query settles,
+        // which is exactly when a *real* disconnect during the query would
+        // otherwise go uncaught (`hotplug_updates_the_device_status`, whose
+        // disconnect lands the instant the identification read finishes).
+        let flash_busy = self.flash.as_ref().is_some_and(FlashPanel::is_busy);
 
         let current_count = crate::device::usb_serial_ports(&self.serial_dir).len();
         if let Some(last) = self.last_port_count
             && current_count != last
+            && !flash_busy
         {
             self.logs
                 .info("device connection change detected, rescanning...");
@@ -1800,6 +1823,31 @@ impl App {
                 .is_some_and(|probe| probe.process == *id) =>
             {
                 self.finish_probe();
+                return;
+            }
+            // The live Zephyr boot-banner capture (PTY): decoded output is
+            // scanned for the banner after every chunk, and its exit (found
+            // or timed out) is what releases the port back to the deferred
+            // version hunt's own fallback.
+            crate::process::ProcessEvent::Output { id, text }
+                if self
+                    .version_capture
+                    .as_ref()
+                    .is_some_and(|capture| capture.process == *id) =>
+            {
+                self.on_version_capture_output(text);
+                return;
+            }
+            crate::process::ProcessEvent::Finished {
+                id,
+                outcome: _,
+                duration: _,
+            } if self
+                .version_capture
+                .as_ref()
+                .is_some_and(|capture| capture.process == *id) =>
+            {
+                self.finish_version_capture();
                 return;
             }
             crate::process::ProcessEvent::Line {

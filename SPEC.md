@@ -978,9 +978,14 @@ one-line contextual shortcut footer:
   falls back to the REPL banner the probe/monitor already sees when the read found no
   version string, and a firmware that names no version stays bare rather than guessed.
   The one layout the window cannot date --- a Zephyr *simple boot* image, whose application
-  banner sits deep in flash past it --- gets a follow-up read (the next 512 KiB) that only
-  dates the verdict already standing; a hunt that finds nothing, or a board that went away,
-  changes nothing. Whenever the flash contents change the verdict is re-read: after the
+  banner sits deep in flash past it, deeper still for a bigger app --- is answered live first when
+  the platform monitor can run for the board (a resolved workspace, a known board, a configured
+  build): esptool has already reset the board to read it, so the app reboots and prints its own
+  boot banner on the UART regardless of image size, the same trick MicroPython's live REPL banner
+  already uses. Only when that is unavailable, or it finds nothing, does a follow-up flash read
+  (the next 1 MiB past the identification window) date the verdict already standing instead; a
+  hunt that finds nothing either way, or a board that went away, changes nothing. Whenever the
+  flash contents change the verdict is re-read: after the
   esptool flow's erase/write the next listing re-identifies, and after a successful
   `west flash` from the build panel --- which no listing drives --- the identification runs
   again on its own once the port frees. Every row is a `□` while open,
