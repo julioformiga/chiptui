@@ -280,13 +280,27 @@ recomputed per gesture, list clicks reproduce the fresh-`ListState` minimal scro
 overlay routes to `on_overlay_mouse` instead: confirm dialogs answer through their drawn
 No/Yes buttons by *synthesizing* `y`/`n` into `on_overlay_key` (every per-variant gate for
 free), pickers select without activating, stacked menus press via `Enter`, the SDK checklist
-toggles via `Space`, and a click outside a dialog is ignored (never dismisses). The home
-screen answers clicks too (`HomeScreen::on_mouse` + `ui::home::hit_areas`): a launcher row
-selects *and accepts* (the `Enter` path), the wheel steps clamped at the ends, and
-`main.rs`'s `home_loop` forwards gestures only under the same opt-in. Click tests are
-render-pinned: they find the label in the drawn frame and click its column (byte offsets are
-not columns --- multi-byte borders). The footer `Stop` box and text-input dialogs are
-deliberately not clickable.
+toggles via `Space`, and a click outside the dialog's drawn rect closes it exactly like `Esc`
+--- synthesized into `on_overlay_key` (`App::overlay_popup_rect`, mirroring each variant's own
+`draw_*` sizing the same way `confirm_size` already does, so every per-variant special case ---
+Help's filtering step-back, the interrupt/remove-package confirms' "return to Packages", the
+installer's busy guard --- applies unchanged) *before* any row/button lookup runs: a
+list-row/stacked-button overlay's own click grammar (`list_row`/`button_at_row`) keys on the
+row alone, blind to the column, so without this ordering a click on the right row but past
+either edge of the popup would quietly answer that row's option instead of closing the dialog
+(caught live in Zephyr Actions, SDK toolchains and the directory picker, pinned by
+`a_click_on_the_right_row_but_outside_the_box_closes_it_instead_of_answering`). `View::Flash`
+(structurally separate from `Overlay`) carries the identical check in `on_flash_mouse`,
+synthesizing into `on_flash_key` --- `leave_flash_screen`'s one-screen-back behavior for
+Options/Online*/CustomUrl applies the same way. The home screen answers clicks too
+(`HomeScreen::on_mouse` +
+`ui::home::hit_areas`): a launcher row selects *and accepts* (the `Enter` path), the wheel
+steps clamped at the ends, and `main.rs`'s `home_loop` forwards gestures only under the same
+opt-in. Click tests are render-pinned: they find the label in the drawn frame and click its
+column (byte offsets are not columns --- multi-byte borders). The footer `Stop` box is
+deliberately not clickable; a text-input dialog (`CreateEntry`/`RenameEntry`), the viewer and
+the help window have no click surface *inside* their popup either (their one meaningful gesture
+is typing) --- but, like every other overlay, a click outside it still closes them.
 
 Dimming has **two** rules, not one. `ui::content_style` is the *selection* rule --- an unfocused
 pane's content goes `Modifier::DIM`, which is what makes the column the cursor sits in obvious ---

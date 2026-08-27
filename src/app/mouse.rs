@@ -120,23 +120,7 @@ impl App {
             return;
         }
         if contains(areas.device, point) {
-            // A click on the Device Info pane is not a focus claim --- its
-            // way in is the digit `2` or the ctrl-arrow chord, and the
-            // click's job is the row it lands on. The one clickable fact
-            // is the MAC: the identity a user copies into a sticker, a
-            // router binding, a bug report (`Enter` on the focused pane
-            // copies the same thing).
-            let mac = self
-                .flash
-                .as_ref()
-                .and_then(|flash| flash.details.mac.clone());
-            if let Some(mac) = mac
-                && let Some(row) =
-                    crate::ui::device_mac_row(self, areas.device.width.saturating_sub(2) as usize)
-                && inner_row(point, areas.device, 0, 0) == Some(row)
-            {
-                self.copy_to_clipboard("MAC", mac);
-            }
+            self.click_device_info(point, areas.device);
             return;
         }
 
@@ -173,6 +157,37 @@ impl App {
             } else if point.1 > areas.row3.y {
                 self.focus = Focus::Logs;
             }
+        }
+    }
+
+    /// The Device Info pane: focuses it, like every other pane. Before
+    /// anything is identified (`on_device_info_key`'s own empty check --- no
+    /// `flash` yet, or a `flash` with nothing read), a double click is
+    /// `Enter`'s twin here too, the same identification question `ctrl+r`
+    /// opens --- the pane has no row to select while it is empty, so the
+    /// double click's target is the pane itself (`index` 0). Once something
+    /// is read, the one clickable fact is the MAC row, copied the same way
+    /// `Enter` on the focused pane does.
+    fn click_device_info(&mut self, point: (u16, u16), rect: Rect) {
+        self.focus = Focus::DeviceInfo;
+        let unidentified = self
+            .flash
+            .as_ref()
+            .is_none_or(|flash| flash.details.is_empty());
+        if unidentified {
+            self.maybe_double_click(Focus::DeviceInfo, 0);
+            return;
+        }
+        let mac = self
+            .flash
+            .as_ref()
+            .and_then(|flash| flash.details.mac.clone());
+        if let Some(mac) = mac
+            && let Some(row) =
+                crate::ui::device_mac_row(self, rect.width.saturating_sub(2) as usize)
+            && inner_row(point, rect, 0, 0) == Some(row)
+        {
+            self.copy_to_clipboard("MAC", mac);
         }
     }
 
@@ -466,9 +481,11 @@ impl App {
 
     /// The open overlay's own click handling, reached instead of the
     /// dashboard's while a modal owns the screen (the same standing
-    /// `on_overlay_key` has). A click outside the dialog is *ignored*
-    /// everywhere: dismissing a destructive confirm by mis-clicking beside
-    /// it would be cheaper than `Esc` for the wrong question.
+    /// `on_overlay_key` has). A click outside the dialog's drawn rect
+    /// closes it exactly like `Esc` (synthesized into `on_overlay_key`, so
+    /// every per-variant special case applies unchanged) --- a mis-click
+    /// beside a destructive confirm is exactly as safe as pressing `Esc`
+    /// for the same question, never a silent no-op.
     ///
     /// The grammar, one rule per shape: a confirm's `No`/`Yes` buttons
     /// answer the question directly (a click on a drawn button is as
@@ -478,7 +495,9 @@ impl App {
     /// (Zephyr Actions, the installer's footer button) selects and presses
     /// through `Enter`; the SDK checklist's rows toggle, the way a checkbox
     /// click means `Space`. Input dialogs, the viewer and the help window
-    /// have no click surface --- their gestures fall through, swallowed.
+    /// have no click surface of their own --- inside their popup a click
+    /// does nothing (their one meaningful gesture is typing), but outside
+    /// it still closes them, the same rule as everything else here.
     /// The wheel is the one non-click gesture an overlay answers, and only
     /// the docs pickers have panes worth scrolling ([`Self::on_overlay_wheel`]).
     fn on_overlay_mouse(&mut self, event: MouseEvent) {
@@ -493,6 +512,17 @@ impl App {
         let Some(overlay) = self.overlay.as_ref() else {
             return;
         };
+        // A click outside the dialog closes it, exactly like `Esc` ---
+        // reusing the keyboard's own handler is what makes every
+        // per-variant special case (Help's filtering step-back, the
+        // interrupt/remove-package confirms' "return to Packages", the
+        // installer's busy guard) apply automatically, with nothing
+        // special-cased here.
+        let rect = self.overlay_popup_rect(overlay, frame);
+        if !contains(rect, point) {
+            self.overlay_key(KeyCode::Esc);
+            return;
+        }
         match overlay {
             // ---- confirms: the drawn No/Yes buttons answer -------------
             Overlay::Confirm { .. }
@@ -887,7 +917,9 @@ impl App {
     /// the screen's own handler, so the firmware picker's overwrite
     /// question and every other gate apply unchanged. The free-text URL
     /// screen is a typed answer with no click surface; the options screen
-    /// only moves its field focus (its `Enter` opens a text edit).
+    /// only moves its field focus (its `Enter` opens a text edit). A click
+    /// outside the dialog's popup closes it exactly like `Esc`, the same
+    /// leading check `on_overlay_mouse` has.
     fn on_flash_mouse(&mut self, event: MouseEvent) {
         if event.kind != MouseEventKind::Down(MouseButton::Left) {
             return;
@@ -905,6 +937,14 @@ impl App {
             ..frame
         };
         let popup = crate::ui::centered(body, width, height);
+        // A click outside the dialog closes it, exactly like `Esc` ---
+        // `leave_flash_screen`'s own back-one-level behavior for the
+        // Options/Online*/CustomUrl screens applies unchanged, since this
+        // synthesizes the same key `on_flash_key` handles.
+        if !contains(popup, point) {
+            self.flash_key(KeyCode::Esc);
+            return;
+        }
         let inner = Rect {
             x: popup.x + 1,
             y: popup.y + 1,
@@ -1062,6 +1102,149 @@ impl App {
             }
             _ => (0, 0),
         }
+    }
+
+    /// The rect the open overlay draws its popup in --- mirrors each
+    /// variant's own `draw_*` sizing in `ui::overlay`, the same duplication
+    /// `confirm_size` above already carries and for the same reason (the
+    /// render-pinned tests keep it honest). Used only to decide whether a
+    /// click landed *outside* the dialog (`on_overlay_mouse`'s leading
+    /// check) --- every click that lands inside still goes through the
+    /// per-variant logic unchanged.
+    fn overlay_popup_rect(&self, overlay: &Overlay, frame: Rect) -> Rect {
+        match overlay {
+            Overlay::Confirm { .. }
+            | Overlay::ConfirmBuild { .. }
+            | Overlay::ConfirmRestartDevice { .. }
+            | Overlay::ConfirmSwitchProject { .. }
+            | Overlay::ConfirmEraseForMicroPython { .. }
+            | Overlay::ConfirmIdentifyDevice { .. }
+            | Overlay::ConfirmInterruptDevice { .. }
+            | Overlay::ConfirmDelete { .. }
+            | Overlay::ConfirmDownloadOverwrite { .. }
+            | Overlay::ConfirmUpload { .. }
+            | Overlay::SyncPreview { .. }
+            | Overlay::ConfirmInstallHere { .. } => {
+                let (width, height) = self.confirm_size(overlay, frame);
+                crate::ui::centered(frame, width, height)
+            }
+            // Missing from the confirm family above (and from
+            // `confirm_size`): its Yes/No buttons do not answer a click at
+            // all today, a pre-existing gap this task leaves alone. It
+            // still needs a rect to know when a click misses it
+            // entirely --- the fixed shape every `draw_destructive` caller
+            // uses.
+            Overlay::ConfirmRemovePackage { .. } => crate::ui::centered(frame, 72, 9),
+
+            // `list_row`/`button_at_row` (this whole group's own click
+            // grammar) key on the row alone --- `inner_row` never reads
+            // `point.0` --- but every arm below is only ever reached once
+            // this leading check has already confirmed the click lands in
+            // the popup's real box (both axes): a click on the right row
+            // but outside the box now closes the dialog instead of quietly
+            // answering the option that row happens to name.
+            Overlay::DevicePicker { .. } => {
+                let len = self.devices.devices().len();
+                crate::ui::centered(frame, 64, len as u16 + 2)
+            }
+            Overlay::ThemePicker { .. } => {
+                let len = ThemeChoice::all().len();
+                crate::ui::centered(frame, 44, len as u16 + 2)
+            }
+            Overlay::FirmwarePicker { .. } => {
+                let len = self
+                    .flash
+                    .as_ref()
+                    .map(|flash| flash.firmware.len())
+                    .unwrap_or(0);
+                if len == 0 {
+                    // No known list to size against --- never treat a
+                    // click as outside a dialog whose shape is not known.
+                    return frame;
+                }
+                crate::ui::centered(frame, 64, len as u16 + 2)
+            }
+            Overlay::Packages => layout::packages(frame).popup,
+            Overlay::ProjectSetup { .. } => {
+                let len = BackendKind::ALL.len();
+                crate::ui::centered(frame, 60, len as u16 + 4)
+            }
+            Overlay::RestoreDeviceScript { .. } => crate::ui::centered(frame, 64, 7),
+            Overlay::FileActions {
+                side,
+                name,
+                is_dir,
+                status,
+                ..
+            } => {
+                let is_text = crate::files::is_text_like(name);
+                let actions = FileAction::for_entry(
+                    *side,
+                    *is_dir,
+                    is_text,
+                    *status,
+                    self.manager.capabilities(),
+                );
+                crate::ui::centered(frame, 44, actions.len() as u16 + 2)
+            }
+            Overlay::DirPicker { .. } | Overlay::ProjectPicker { .. } => {
+                crate::ui::centered(frame, 72, 18)
+            }
+            Overlay::BuildDirPicker { .. } => crate::ui::centered(frame, 60, 16),
+            Overlay::BoardPicker { .. } | Overlay::ShieldPicker { .. } => {
+                layout::docs_picker(frame).popup
+            }
+            Overlay::SdkToolchains { .. } => {
+                crate::ui::centered(frame, 56, frame.height.saturating_sub(4))
+            }
+            Overlay::ZephyrActions { .. } => {
+                let placeholders: Vec<crate::ui::Button> = (0..crate::ui::ZEPHYR_ACTIONS_COUNT)
+                    .map(|_| crate::ui::Button::new("").detail(""))
+                    .collect();
+                let height = crate::ui::stack_height(&placeholders).saturating_add(2);
+                crate::ui::centered(frame, 64, height)
+            }
+            Overlay::ZephyrInstall => crate::ui::install_area(frame),
+            Overlay::Help { filter, .. } => self.help_popup_rect(filter, frame),
+            Overlay::FileViewer => crate::ui::centered(
+                frame,
+                frame.width.saturating_sub(6).max(20),
+                frame.height.saturating_sub(4).max(6),
+            ),
+            Overlay::CreateEntry { .. } | Overlay::RenameEntry { .. } => {
+                crate::ui::centered(frame, 54, 6)
+            }
+        }
+    }
+
+    /// [`Overlay::Help`]'s popup rect --- mirrors `draw_help`'s own
+    /// width/height formula (`ui::overlay`) exactly, since its content
+    /// (and so its size) depends on the filter text and the current view.
+    fn help_popup_rect(&self, filter: &str, frame: Rect) -> Rect {
+        use crate::app::help::{self, HelpSection};
+
+        let navigation = help::visible(help::bindings(self.view, HelpSection::Navigation), filter);
+        let commands = help::visible(help::bindings(self.view, HelpSection::Commands), filter);
+        let key_col = HelpSection::ALL
+            .iter()
+            .flat_map(|&section| help::bindings(self.view, section))
+            .map(|binding| binding.key.chars().count())
+            .max()
+            .unwrap_or(0);
+        let indent = 2 + key_col + 2;
+        let widest = HelpSection::ALL
+            .iter()
+            .flat_map(|&section| help::bindings(self.view, section))
+            .map(|binding| indent + binding.description.chars().count() + 2)
+            .max()
+            .unwrap_or(indent + 2);
+        let width = widest.min(frame.width.into()) as u16;
+        let visible_titles =
+            usize::from(!navigation.is_empty()) + usize::from(!commands.is_empty());
+        let fixed = 1 + visible_titles + 2;
+        let height = (fixed + navigation.len() + commands.len()) as u16;
+        let height = height.min(frame.height);
+        crate::ui::centered(frame, width, height)
     }
 }
 
@@ -1776,6 +1959,329 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// A point clearly outside any centered popup on a 100x40 test frame ---
+    /// the corner, never inside a dialog's drawn rect.
+    const OUTSIDE: (u16, u16) = (0, 0);
+
+    /// The confirm family: a click outside the dialog closes it exactly
+    /// like `Esc` --- as safe as declining the same question, never a
+    /// silent no-op.
+    #[test]
+    fn a_click_outside_a_confirm_dialog_dismisses_it_like_esc() {
+        let root = project_dir("outside-confirm", 1);
+        let mut app = app_with_backend(BackendKind::Zephyr, &root);
+        app.overlay = Some(crate::app::Overlay::ConfirmBuild {
+            action: BuildAction::Flash,
+            confirm: false,
+        });
+        render(&mut app, 100, 40);
+        click(&mut app, OUTSIDE.0, OUTSIDE.1);
+        assert!(
+            app.overlay.is_none(),
+            "a click outside the dialog must close it, like Esc"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `ConfirmRemovePackage` is missing from the confirm family's own
+    /// button hit-testing (a pre-existing, separate gap) --- but it still
+    /// needs a rect to know an outside click, and closing it must go
+    /// through the same decline path Esc does (back to the package
+    /// manager, never a flat dismiss).
+    #[test]
+    fn a_click_outside_confirm_remove_package_returns_to_packages_like_esc() {
+        let root = project_dir("outside-remove-pkg", 1);
+        let mut app = app_with_backend(BackendKind::MicroPython, &root);
+        app.overlay = Some(crate::app::Overlay::ConfirmRemovePackage {
+            name: "umqtt.simple".to_string(),
+            targets: vec![(
+                crate::device::DevicePath::new("/lib/umqtt/simple.mpy"),
+                false,
+            )],
+            declared: true,
+            confirm: false,
+        });
+        render(&mut app, 100, 40);
+        click(&mut app, OUTSIDE.0, OUTSIDE.1);
+        assert!(
+            matches!(app.overlay, Some(crate::app::Overlay::Packages)),
+            "declining this dialog always returns to the manager, Esc included"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A click clear of the popup box closes a plain list picker like Esc.
+    #[test]
+    fn a_click_outside_a_picker_dismisses_it_like_esc() {
+        let root = project_dir("outside-picker", 1);
+        let mut app = app_with_backend(BackendKind::MicroPython, &root);
+        app.overlay = Some(crate::app::Overlay::ThemePicker { selected: 0 });
+        render(&mut app, 100, 40);
+        click(&mut app, OUTSIDE.0, OUTSIDE.1);
+        assert!(
+            app.overlay.is_none(),
+            "a click outside the picker must close it, like Esc"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The package manager's popup rect comes from the shared
+    /// `layout::packages` helper (render and hit-testing already agree on
+    /// it); an outside click closes it the same way Esc does.
+    #[test]
+    fn a_click_outside_the_packages_overlay_dismisses_it_like_esc() {
+        let root = project_dir("outside-packages", 1);
+        let mut app = app_with_backend(BackendKind::MicroPython, &root);
+        app.overlay = Some(crate::app::Overlay::Packages);
+        render(&mut app, 100, 40);
+        click(&mut app, OUTSIDE.0, OUTSIDE.1);
+        assert!(
+            app.overlay.is_none(),
+            "a click outside Packages must close it, like Esc"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A docs picker (board/shield) uses the shared `layout::docs_picker`
+    /// rect, spanning both its list and details panes --- a click past
+    /// either one closes the whole modal.
+    #[test]
+    fn a_click_outside_a_docs_picker_dismisses_it_like_esc() {
+        let root = project_dir("outside-docs", 1);
+        let mut app = app_with_backend(BackendKind::Zephyr, &root);
+        app.overlay = Some(crate::app::Overlay::BoardPicker {
+            input: String::new(),
+            selected: 0,
+            scroll: 0,
+            focus: DocsFocus::List,
+        });
+        render(&mut app, 100, 40);
+        click(&mut app, OUTSIDE.0, OUTSIDE.1);
+        assert!(
+            app.overlay.is_none(),
+            "a click outside the docs picker must close it, like Esc"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `list_row`/`button_at_row` key on the row alone, so it is not enough
+    /// for the outside check to compare against the full frame's row band
+    /// (an earlier version of this change did exactly that, and it broke
+    /// here): a click that lands on the *right* row but past either edge of
+    /// the popup must go through the overlay's own Esc answer instead of
+    /// quietly answering whatever option that row names --- observed live
+    /// in Zephyr Actions, SDK toolchains and the directory picker, so all
+    /// three are pinned (SDK toolchains' own Esc steps back to the
+    /// installer rather than closing outright, same as from the keyboard).
+    #[test]
+    fn a_click_on_the_right_row_but_outside_the_box_closes_it_instead_of_answering() {
+        let root = project_dir("outside-row-za", 1);
+        let mut app = app_with_backend(BackendKind::Zephyr, &root);
+        app.overlay = Some(crate::app::Overlay::ZephyrActions { selected: 0 });
+        let lines = render(&mut app, 100, 40);
+        let row = lines
+            .iter()
+            .position(|l| l.contains("Update Zephyr"))
+            .expect("the stack draws its leading button") as u16;
+        click(&mut app, 0, row);
+        assert!(
+            app.overlay.is_none(),
+            "same row, outside the box: closes rather than pressing Update Zephyr"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+
+        let root = project_dir("outside-row-sdk", 1);
+        let mut app = app_with_backend(BackendKind::Zephyr, &root);
+        // `draw_sdk_toolchains` draws nothing without a real installer.
+        app.installer = Some(crate::install::Installer::new(root.clone()));
+        app.overlay = Some(crate::app::Overlay::SdkToolchains { selected: 0 });
+        let lines = render(&mut app, 100, 40);
+        let row = lines
+            .iter()
+            .position(|l| l.contains("arm-zephyr-eabi"))
+            .expect("the toolchain list is drawn") as u16;
+        click(&mut app, 0, row);
+        assert!(
+            matches!(app.overlay, Some(crate::app::Overlay::ZephyrInstall)),
+            "same row, outside the box: steps back to the installer (Esc's own answer here), \
+             rather than toggling the toolchain"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+
+        let root = project_dir("outside-row-dir", 1);
+        let mut app = app_with_backend(BackendKind::Zephyr, &root);
+        app.overlay = Some(crate::app::Overlay::DirPicker {
+            purpose: crate::workspace::DirPurpose::Installation,
+            path: root.clone(),
+            selected: 0,
+            error: None,
+        });
+        let lines = render(&mut app, 100, 40);
+        let row = lines
+            .iter()
+            .position(|l| l.contains("use this directory"))
+            .expect("the picker's leading row is drawn") as u16;
+        click(&mut app, 0, row);
+        assert!(
+            app.overlay.is_none(),
+            "same row, outside the box: closes rather than picking the directory"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A click clear of the whole popup (the corner) closes Zephyr Actions
+    /// like Esc; `a_click_on_the_right_row_but_outside_the_box_closes_it_instead_of_answering`
+    /// above covers the narrower same-row case.
+    #[test]
+    fn a_click_outside_zephyr_actions_dismisses_it_like_esc() {
+        let root = project_dir("outside-zactions", 1);
+        let mut app = app_with_backend(BackendKind::Zephyr, &root);
+        app.overlay = Some(crate::app::Overlay::ZephyrActions { selected: 0 });
+        render(&mut app, 100, 40);
+        click(&mut app, OUTSIDE.0, OUTSIDE.1);
+        assert!(
+            app.overlay.is_none(),
+            "a click outside Zephyr Actions must close it, like Esc"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The installer, with no installation running: Esc's own guard
+    /// (`!installer.is_busy()`) applies unchanged, so an outside click
+    /// closes it exactly as it would with no installer at all.
+    #[test]
+    fn a_click_outside_the_zephyr_installer_dismisses_it_like_esc() {
+        let root = project_dir("outside-install", 1);
+        let mut app = app_with_backend(BackendKind::Zephyr, &root);
+        app.overlay = Some(crate::app::Overlay::ZephyrInstall);
+        render(&mut app, 100, 40);
+        click(&mut app, OUTSIDE.0, OUTSIDE.1);
+        assert!(
+            app.overlay.is_none(),
+            "a click outside the installer must close it, like Esc"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The help window's popup depends on the filter text and the current
+    /// view --- the one formula worth porting carefully. Outside the
+    /// filter, an outside click closes the window flat; while filtering,
+    /// it must step back to the cursor first (the second press closes it),
+    /// exactly like Esc from the keyboard.
+    #[test]
+    fn a_click_outside_help_dismisses_it_like_esc() {
+        let root = project_dir("outside-help", 1);
+        let mut app = app_with_backend(BackendKind::MicroPython, &root);
+        app.overlay = Some(crate::app::Overlay::Help {
+            filter: String::new(),
+            filtering: false,
+            selected: 0,
+        });
+        render(&mut app, 100, 40);
+        click(&mut app, OUTSIDE.0, OUTSIDE.1);
+        assert!(
+            app.overlay.is_none(),
+            "a click outside Help must close it flat, like Esc when not filtering"
+        );
+
+        app.overlay = Some(crate::app::Overlay::Help {
+            filter: "flash".to_string(),
+            filtering: true,
+            selected: 0,
+        });
+        render(&mut app, 100, 40);
+        click(&mut app, OUTSIDE.0, OUTSIDE.1);
+        assert!(
+            matches!(
+                app.overlay,
+                Some(crate::app::Overlay::Help {
+                    filtering: false,
+                    ..
+                })
+            ),
+            "while filtering, an outside click steps back first, like Esc"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The file viewer has no click surface of its own --- typing is its
+    /// only gesture --- but its popup rect is a plain function of the
+    /// frame size, so an outside click closes it like every other overlay.
+    #[test]
+    fn a_click_outside_the_file_viewer_dismisses_it_like_esc() {
+        let root = project_dir("outside-viewer", 1);
+        let mut app = app_with_backend(BackendKind::MicroPython, &root);
+        app.overlay = Some(crate::app::Overlay::FileViewer);
+        render(&mut app, 100, 40);
+        click(&mut app, OUTSIDE.0, OUTSIDE.1);
+        assert!(
+            app.overlay.is_none(),
+            "a click outside the viewer must close it, like Esc"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A text-input dialog (`CreateEntry`/`RenameEntry`) is deliberately not
+    /// clickable inside --- but an outside click still cancels it, the same
+    /// way Esc does.
+    #[test]
+    fn a_click_outside_create_entry_dismisses_it_like_esc() {
+        let root = project_dir("outside-create", 1);
+        let mut app = app_with_backend(BackendKind::MicroPython, &root);
+        app.overlay = Some(crate::app::Overlay::CreateEntry {
+            side: Side::Local,
+            input: String::new(),
+        });
+        render(&mut app, 100, 40);
+        click(&mut app, OUTSIDE.0, OUTSIDE.1);
+        assert!(
+            app.overlay.is_none(),
+            "a click outside the create-entry dialog must close it, like Esc"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The Flash dialog (`View::Flash`) is a structurally separate modal
+    /// from `Overlay`, with its own outside-click check. On the top-level
+    /// menu, `Esc` leaves the dialog entirely.
+    #[test]
+    fn a_click_outside_the_flash_menu_dismisses_it_like_esc() {
+        let root = project_dir("outside-flash-menu", 1);
+        let mut app = app_with_backend(BackendKind::MicroPython, &root);
+        app.show_device_actions_tab();
+        app.view = View::Flash;
+        assert_eq!(app.flash.as_ref().unwrap().screen, FlashScreen::Menu);
+        render(&mut app, 100, 40);
+        click(&mut app, OUTSIDE.0, OUTSIDE.1);
+        assert_eq!(
+            app.view,
+            View::Dashboard,
+            "a click outside the flash menu must leave the dialog, like Esc"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// On a dialog *screen* below the menu (Options, the online searches,
+    /// the URL entry), `Esc` steps back one level instead of leaving
+    /// outright (`leave_flash_screen`) --- an outside click must reuse
+    /// exactly that, not a flat close.
+    #[test]
+    fn a_click_outside_a_flash_screen_steps_back_like_esc() {
+        let root = project_dir("outside-flash-options", 1);
+        let mut app = app_with_backend(BackendKind::MicroPython, &root);
+        app.show_device_actions_tab();
+        app.flash.as_mut().unwrap().screen = FlashScreen::Options;
+        app.view = View::Flash;
+        render(&mut app, 100, 40);
+        click(&mut app, OUTSIDE.0, OUTSIDE.1);
+        assert_eq!(
+            app.flash.as_ref().unwrap().screen,
+            FlashScreen::Menu,
+            "an outside click steps back one screen, like Esc"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn a_click_on_a_stacked_overlay_button_presses_it() {
         let root = project_dir("zactions", 1);
@@ -1786,7 +2292,8 @@ mod tests {
             .iter()
             .position(|l| l.contains("Update Zephyr"))
             .expect("the stack draws its leading button") as u16;
-        click(&mut app, 5, row);
+        let col = column_of(&lines[row as usize], "Update Zephyr").unwrap();
+        click(&mut app, col, row);
         assert!(
             matches!(app.overlay, Some(crate::app::Overlay::ConfirmBuild { .. })),
             "the click pressed the button, which opened its confirm"
@@ -1876,7 +2383,8 @@ mod tests {
             .iter()
             .position(|l| l.contains("Tokyo Night"))
             .expect("the theme picker lists the themes") as u16;
-        click(&mut app, 5, row);
+        let col = column_of(&lines[row as usize], "Tokyo Night").unwrap();
+        click(&mut app, col, row);
         assert!(
             matches!(
                 &app.overlay,
@@ -2409,14 +2917,80 @@ mod tests {
             Some(mac),
             "the MAC row's click queues exactly the MAC"
         );
+        assert_eq!(
+            app.focus,
+            Focus::DeviceInfo,
+            "the click also focuses the pane"
+        );
 
-        // A neighbouring row (the firmware identity) is not a copy target.
+        // A neighbouring row (the firmware identity) is not a copy target,
+        // but it still focuses the pane like every other row would.
+        app.focus = Focus::Project;
         render(&mut app, 100, 40);
         let other = lines.iter().position(|l| l.contains("Firmware:")).unwrap() as u16;
         click(&mut app, mac_col, other);
         assert!(
             app.take_clipboard_request().is_none(),
             "only the MAC row copies"
+        );
+        assert_eq!(app.focus, Focus::DeviceInfo);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Clicking the Device Info pane focuses it even with no MAC known yet
+    /// --- focus is not conditioned on the pane having anything to copy.
+    #[test]
+    fn a_click_on_the_device_info_pane_focuses_it_without_a_mac() {
+        let root = project_dir("mac-none", 1);
+        let mut app = app_with_backend(BackendKind::MicroPython, &root);
+        app.show_device_actions_tab();
+        assert!(app.flash.as_ref().unwrap().details.mac.is_none());
+
+        let lines = render(&mut app, 100, 40);
+        let row = lines
+            .iter()
+            .position(|l| l.contains("no device data yet"))
+            .expect("the empty-state placeholder is drawn") as u16;
+        let col = column_of(&lines[row as usize], "no device data").unwrap();
+        app.focus = Focus::Project;
+        click(&mut app, col, row);
+        assert_eq!(app.focus, Focus::DeviceInfo);
+        assert!(app.take_clipboard_request().is_none());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Before anything is identified, a double click on the Device Info
+    /// pane is `ctrl+r`'s mouse twin: it offers the same identification
+    /// question, not a copy (there is nothing to copy yet).
+    #[test]
+    fn a_double_click_on_the_device_info_pane_offers_identification() {
+        let root = project_dir("mac-double", 1);
+        let mut app = app_with_backend(BackendKind::MicroPython, &root);
+        app.show_device_actions_tab();
+        app.devices.set_devices(vec![crate::device::DeviceInfo {
+            port: "/dev/ttyACM0".to_string(),
+            serial: None,
+            vid_pid: String::new(),
+            description: String::new(),
+        }]);
+        app.devices.select(0);
+
+        let lines = render(&mut app, 100, 40);
+        let row = lines
+            .iter()
+            .position(|l| l.contains("no device data yet"))
+            .expect("the empty-state placeholder is drawn") as u16;
+        let col = column_of(&lines[row as usize], "no device data").unwrap();
+
+        click(&mut app, col, row);
+        assert!(
+            app.overlay.is_none(),
+            "a single click must not offer it yet"
+        );
+        click(&mut app, col, row);
+        assert!(
+            matches!(app.overlay, Some(Overlay::ConfirmIdentifyDevice { .. })),
+            "the double click must offer the identification, like ctrl+r"
         );
         let _ = std::fs::remove_dir_all(&root);
     }
