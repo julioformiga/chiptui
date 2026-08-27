@@ -273,10 +273,17 @@ wheel steps (`is_gesture`; motion/drag die at the source), `App::handle` drops e
 unless `mouse_enabled` (`set_mouse_enabled` is `main.rs`'s mirror of the guard), and
 `app::mouse`'s `on_mouse` meets the *drawn* geometry: `ui::draw` publishes `App::frame_area`,
 `ui::layout::dashboard` (the extracted pane-rect tree `draw_dashboard` also consumes) is
-recomputed per gesture, list clicks reproduce the fresh-`ListState` minimal scroll
-(`list_row`), stacked buttons land on their label rows through `run_build_action`/
+recomputed per gesture, and the file panes' clicks map through the scroll offset their
+previous frame settled on and published (`WorkspacePanel::files_offset`,
+`Browser::local_offset`/`device_offset` --- `drawn_list_row`; the lists seed their `ListState`
+from it, so a click on a visible row selects without re-anchoring the view), while the overlay
+lists keep the fresh-`ListState` minimal-scroll reproduction (`list_row`), stacked buttons land on their label rows through `run_build_action`/
 `run_flash_pane_action`, tab strips are walked by their `Tabs` ranges
-(`log_strip_tabs`/`device_strip_tabs`), and the wheel scrolls row 3 by `WHEEL_STEP`. An open
+(`log_strip_tabs`/`device_strip_tabs`), and the wheel steps the cursor-walked list under the
+pointer --- row 1's Environment checklist and row 2's file panes move their cursor one row per
+notch, clamped, never taking focus (`wheel_steps_list`, the board picker's wheel grammar); the
+actions tab and a non-Ready device pane have no listing to step --- while over row 3 it scrolls
+the active tab by `WHEEL_STEP`. An open
 overlay routes to `on_overlay_mouse` instead: confirm dialogs answer through their drawn
 No/Yes buttons by *synthesizing* `y`/`n` into `on_overlay_key` (every per-variant gate for
 free), pickers select without activating, stacked menus press via `Enter`, the SDK checklist
@@ -529,7 +536,17 @@ cursor --- any kind, via `Overlay::RenameEntry` pre-filled with the current name
 `fs::rename` on confirm (`App::rename_entry`; a `/` in the typed name is refused, since a
 rename must not silently become a move), and a below-root listing leads with a `[..]` parent row
 (`WorkspacePanel::parent_row`), selected after every descent, `Enter`/`→` on it stepping back
-up. Both `Files:` panes (this one and the browser's local pane) refresh themselves when their
+up. Every file list (this pane, the browser's local and device panes --- one `render_list` in
+`ui::files`) carries the shared one-column scrollbar (`ui::draw_scrollbar`) over a column the
+list *always* reserves (`ui::files::list_view`; rows build against that width), so the
+flush-right size column never shifts when a bar appears, and the thumb reports the offset the
+pane's `ListState` settled on --- seeded from the previous frame's published value (the docs
+picker's `docs_list_offset` rule), so a click on a visible row never re-anchors the view; the
+click hit-testing maps through that same offset (`drawn_list_row`), not a recomputed one.
+The shared bar pins its thumb to both ends of the track (`draw_scrollbar` rescales the offset
+into the widget's `content - 1` position scale, which a viewport's own scroll --- topping out
+at `content - viewport` --- never reaches raw).
+Both `Files:` panes (this one and the browser's local pane) refresh themselves when their
 directory changes *outside the program*: the tick polls once a second
 (`App::refresh_local_listings`, the hotplug cadence), comparing a fresh `readdir` against the
 drawn snapshot (`files::listing_changed` --- names, sizes, kinds; an unreadable directory is

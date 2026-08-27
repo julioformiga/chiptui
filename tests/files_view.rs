@@ -2751,3 +2751,77 @@ fn sync_execute_queues_uploads_and_deletes() {
         "device-only file should have been removed: {messages:?}"
     );
 }
+
+/// The wheel over the browser's panes steps the pane under the pointer,
+/// one row per notch, clamped --- without taking focus from the other
+/// pane. The Actions tab is a button stack, not a listing, so the wheel
+/// over it steps nothing.
+#[test]
+fn the_wheel_steps_the_browser_pane_under_the_pointer() {
+    use ratatui::crossterm::event::KeyCode as Code;
+    use ratatui::crossterm::event::{KeyModifiers, MouseEvent, MouseEventKind};
+
+    let wheel = |kind: MouseEventKind, column: u16, row: u16| {
+        AppEvent::Mouse(MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        })
+    };
+    let find_cell = |frame: &str, needle: &str| {
+        frame.lines().enumerate().find_map(|(row, line)| {
+            line.find(needle)
+                .map(|byte| (row as u16, line[..byte].chars().count() as u16))
+        })
+    };
+
+    let project = Project::new("wheel");
+    let mut app = app_in_browser(&project);
+    app.set_mouse_enabled(true);
+
+    let frame = render(&mut app, 132, 32);
+    let (row, column) = find_cell(&frame, "local_only.py").expect("a local row is drawn");
+    app.handle(wheel(MouseEventKind::ScrollDown, column, row));
+    app.handle(wheel(MouseEventKind::ScrollDown, column, row));
+    assert_eq!(
+        app.browser.as_ref().unwrap().local_cursor,
+        2,
+        "two notches stepped the local cursor two rows"
+    );
+
+    // The device pane steps its own cursor while focus stays on the local
+    // pane: scrolling past a pane is not pointing at it.
+    let (row, column) = find_cell(&frame, "device_only.py").expect("a device row is drawn");
+    app.handle(wheel(MouseEventKind::ScrollDown, column, row));
+    assert_eq!(
+        app.browser.as_ref().unwrap().device_cursor,
+        1,
+        "the wheel over the device pane steps the device cursor"
+    );
+    assert_eq!(
+        app.focus,
+        Focus::FilesLocal,
+        "the wheel must not move focus to the pane it scrolled"
+    );
+    app.handle(wheel(MouseEventKind::ScrollUp, column, row));
+    app.handle(wheel(MouseEventKind::ScrollUp, column, row));
+    assert_eq!(
+        app.browser.as_ref().unwrap().device_cursor,
+        0,
+        "the device listing clamps at its top"
+    );
+
+    // The Actions tab draws buttons, not rows: the wheel over it steps
+    // nothing (the cursor stays where the listing left it).
+    app.focus = Focus::FilesDevice;
+    app.handle(key(Code::Char('x')));
+    assert!(app.device_actions_tab_active(), "`x` opens the actions tab");
+    let before = app.browser.as_ref().unwrap().device_cursor;
+    app.handle(wheel(MouseEventKind::ScrollDown, column, row));
+    assert_eq!(
+        app.browser.as_ref().unwrap().device_cursor,
+        before,
+        "the actions tab has no listing for the wheel to step"
+    );
+}

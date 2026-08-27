@@ -89,6 +89,12 @@ pub struct WorkspacePanel {
     pub files_entries: Vec<LocalEntry>,
     pub files_error: Option<String>,
     pub files_cursor: usize,
+    /// The list's scroll offset, as the previous frame's `ListState` settled
+    /// it (`ui::files::render_list` seeds from it and publishes the new value
+    /// back). Seeding keeps a click on a visible row from re-anchoring the
+    /// view; navigation needs no reset --- ratatui clamps the seed and pulls
+    /// it to the cursor, which every navigation resets to 0.
+    pub files_offset: usize,
 }
 
 impl WorkspacePanel {
@@ -109,6 +115,7 @@ impl WorkspacePanel {
             files_entries: Vec::new(),
             files_error: None,
             files_cursor: 0,
+            files_offset: 0,
         };
         panel.apply_resolution(resolution);
         panel

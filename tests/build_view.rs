@@ -2052,3 +2052,79 @@ fn the_build_dir_picker_switches_the_lifecycle_target() {
             .ends_with("west build -d build-thingy -t clean")
     );
 }
+
+/// The wheel over a cursor-walked list steps that list's cursor one row
+/// per notch, clamped at the ends --- the board picker's grammar --- and
+/// never moves focus: scrolling past a pane is not pointing at it. Covers
+/// the Files pane and the Environment checklist (row 1); row 3's scroll
+/// stays its own answer.
+#[test]
+fn the_wheel_steps_the_listing_under_the_pointer_without_taking_focus() {
+    use chiptui::event::AppEvent;
+    use ratatui::crossterm::event::{KeyModifiers, MouseEvent, MouseEventKind};
+
+    let wheel = |kind: MouseEventKind, column: u16, row: u16| {
+        AppEvent::Mouse(MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        })
+    };
+    // The drawn row and column of `needle`'s first cell; byte offsets are
+    // not columns (multi-byte borders).
+    let find_cell = |frame: &str, needle: &str| {
+        frame.lines().enumerate().find_map(|(row, line)| {
+            line.find(needle)
+                .map(|byte| (row as u16, line[..byte].chars().count() as u16))
+        })
+    };
+
+    let (mut app, root) = zephyr_app("wheel", None);
+    for i in 0..5 {
+        std::fs::write(root.join(format!("f0{i}.c")), "int x;\n").unwrap();
+    }
+    app.workspace.as_mut().unwrap().reload_files();
+    app.set_mouse_enabled(true);
+    // Park focus off both panes: the wheel must leave it there.
+    app.focus = Focus::Logs;
+
+    let frame = render(&mut app, 100, 32);
+    let (row, column) = find_cell(&frame, "f01.c").expect("a Files-pane row is drawn");
+    app.handle(wheel(MouseEventKind::ScrollDown, column, row));
+    app.handle(wheel(MouseEventKind::ScrollDown, column, row));
+    assert_eq!(
+        app.workspace.as_ref().unwrap().files_cursor,
+        2,
+        "two notches stepped the cursor two rows"
+    );
+    app.handle(wheel(MouseEventKind::ScrollUp, column, row));
+    app.handle(wheel(MouseEventKind::ScrollUp, column, row));
+    app.handle(wheel(MouseEventKind::ScrollUp, column, row));
+    assert_eq!(
+        app.workspace.as_ref().unwrap().files_cursor,
+        0,
+        "the top clamps: scrolling past it cannot leave the list"
+    );
+    assert_eq!(
+        app.focus,
+        Focus::Logs,
+        "the wheel steps the cursor without pointing at the pane"
+    );
+
+    // Row 1's checklist answers the same way, one row per notch.
+    let (row, column) = find_cell(&frame, "Zephyr path").expect("the checklist is drawn");
+    app.handle(wheel(MouseEventKind::ScrollDown, column, row));
+    assert_eq!(
+        app.project_cursor, 1,
+        "a notch steps the checklist's cursor one row"
+    );
+    app.handle(wheel(MouseEventKind::ScrollUp, column, row));
+    app.handle(wheel(MouseEventKind::ScrollUp, column, row));
+    assert_eq!(app.project_cursor, 0, "the checklist clamps at its top");
+    assert_eq!(
+        app.focus,
+        Focus::Logs,
+        "the checklist wheel never focuses the pane either"
+    );
+}

@@ -704,7 +704,12 @@ pub(crate) fn highlighted_line(
 /// `inner`'s right edge --- callers reserve that column (the Log pane shrinks
 /// its wrap width; the Monitor pane pads its block) so wrapped text never
 /// reflows when the bar appears. `content` and `viewport` are visual
-/// (post-wrap) rows; `position` is the first visible row.
+/// (post-wrap) rows; `position` is the first visible row. The thumb pins to
+/// both ends of the track: at maximum scroll the first visible row is
+/// `content - viewport`, while the widget's own `position` scale tops out at
+/// `content - 1` (as if the viewport could start on the last item), so the
+/// raw offset left the thumb shy of the bottom by a growing gap --- the
+/// offset is rescaled into the widget's scale before it is handed over.
 pub(crate) fn draw_scrollbar(
     frame: &mut Frame,
     inner: Rect,
@@ -716,10 +721,12 @@ pub(crate) fn draw_scrollbar(
     if content <= viewport || inner.width == 0 || inner.height == 0 {
         return;
     }
-    let top = position.min(content - viewport);
+    let max_offset = content - viewport;
+    let top = position.min(max_offset);
+    let scaled = top * (content - 1) / max_offset;
     let mut state = ScrollbarState::new(content)
         .viewport_content_length(viewport)
-        .position(top);
+        .position(scaled);
     let bar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
         .begin_symbol(None)
         .end_symbol(None)

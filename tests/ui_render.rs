@@ -1710,6 +1710,77 @@ fn the_log_pane_shows_a_scrollbar_once_content_overflows_it() {
     assert_ne!(frame, scrolled, "scrolling must move the thumb");
 }
 
+/// The Files pane's listing carries the same one-column scrollbar the Log
+/// and Monitor panes use, over a column the list always reserves --- so the
+/// rows never shift when a bar appears or leaves, and the thumb follows the
+/// cursor's own scroll through the listing.
+#[test]
+fn the_files_pane_shows_a_scrollbar_once_the_listing_overflows_it() {
+    let mut app = zephyr_app();
+    let dir = std::env::temp_dir().join(format!("chiptui-files-bar-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for i in 0..40 {
+        std::fs::write(dir.join(format!("file{i:02}.c")), "int x;\n").unwrap();
+    }
+    app.workspace.as_mut().unwrap().set_files_root(&dir);
+
+    let frame = render(&mut app, 100, 32);
+    assert!(frame.contains('┃'), "missing the scrollbar thumb:\n{frame}");
+    assert!(
+        frame.contains("file00.c"),
+        "the listing starts at the top:\n{frame}"
+    );
+    assert!(
+        !frame.contains("file39.c"),
+        "the last row is past the fold:\n{frame}"
+    );
+    // The thumb pins to both ends of the track: at the top of the listing
+    // it starts on the first drawn row, and at maximum scroll it bottoms
+    // out on the last item's own row (the raw offset left it shy of the
+    // bottom by a growing gap --- the widget's position scale tops out at
+    // `content - 1`, a viewport's scroll at `content - viewport`).
+    fn row_of<'a>(text: &'a str, needle: &str) -> &'a str {
+        match text.lines().find(|line| line.contains(needle)) {
+            Some(line) => line,
+            None => panic!("{needle} is drawn"),
+        }
+    }
+    assert!(
+        row_of(&frame, "file00.c").contains('┃'),
+        "the thumb must start on the first row:\n{frame}"
+    );
+
+    // Walking the cursor to the end scrolls the list; the thumb follows.
+    app.focus = Focus::Workspace;
+    app.handle(key(KeyCode::End));
+    let bottom = render(&mut app, 100, 32);
+    assert!(
+        bottom.contains("file39.c"),
+        "the last row must be visible:\n{bottom}"
+    );
+    assert!(
+        row_of(&bottom, "file39.c").contains('┃'),
+        "the thumb must bottom out on the last item's row:\n{bottom}"
+    );
+    assert_ne!(frame, bottom, "the thumb must move with the list's scroll");
+
+    // A listing that fits loses the bar again, with nothing reflowing.
+    std::fs::remove_dir_all(&dir).unwrap();
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("one.c"), "int x;\n").unwrap();
+    app.workspace.as_mut().unwrap().reload_files();
+    let short = render(&mut app, 100, 32);
+    assert!(
+        !short.contains('┃'),
+        "the bar must leave with the overflow:\n{short}"
+    );
+    assert!(
+        short.contains("one.c"),
+        "the shortened listing is still drawn:\n{short}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn the_monitor_tab_shows_the_same_scrollbar_once_output_overflows_it() {
     // The Monitor tab always tails its live output, so its scrollbar is an

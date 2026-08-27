@@ -23,8 +23,8 @@ use crate::workspace::WorkspacePanel;
 /// Draws the workspace pane over its pre-computed rect from
 /// `ui::layout` --- the workspace+build pair's geometry lives there, shared
 /// with the mouse hit-testing, so this module renders and never splits.
-pub fn draw(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
-    let Some(panel) = &app.workspace else {
+pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
+    let Some(panel) = app.workspace.as_ref() else {
         return;
     };
     let focused = dashboard_focused(app, Focus::Workspace);
@@ -50,7 +50,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
     let block = pane_block(&title, focused, palette, shortcut_letter(app, 'f'));
     let inner = render_pane(frame, area, block, focused, palette);
 
-    draw_files_section(frame, inner, app, panel, palette);
+    draw_files_section(frame, inner, app, palette);
 }
 
 /// The pane title's walked path: the project's own name concatenated with
@@ -80,50 +80,54 @@ fn files_title(panel: &WorkspacePanel, app: &App) -> String {
 /// listing leads with a `[..]` parent row (see
 /// [`WorkspacePanel::parent_row`]); the walked path lives in the pane's own
 /// title (see [`files_title`]).
-fn draw_files_section(
-    frame: &mut Frame,
-    area: Rect,
-    app: &App,
-    panel: &WorkspacePanel,
-    palette: Palette,
-) {
-    if let Some(error) = &panel.files_error {
-        frame.render_widget(
-            Paragraph::new(error.clone().fg(palette.error)).wrap(Wrap { trim: true }),
-            area,
-        );
-        return;
-    }
-
+fn draw_files_section(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
     let focused = dashboard_focused(app, Focus::Workspace);
-    // The `[..]` row leads whenever the listing is below the project root,
-    // so `files_cursor` (which addresses drawn rows, 0 first) can be passed
-    // straight through as the list's selection.
-    let mut items = Vec::with_capacity(panel.files_row_count());
-    if panel.parent_row() {
-        items.push(super::files::row(
-            "[..]",
-            true,
-            0,
-            None,
-            area.width,
-            app.icon_set(),
-            palette,
-        ));
+    let icons = app.icon_set();
+    // Rows and the offset seed are built under an immutable borrow of the
+    // panel, released so the settled offset can be published back (a click
+    // on a visible row must not re-anchor the view --- `render_list`'s own
+    // doc).
+    let (items, cursor, seed) = {
+        let Some(panel) = app.workspace.as_ref() else {
+            return;
+        };
+        if let Some(error) = &panel.files_error {
+            frame.render_widget(
+                Paragraph::new(error.clone().fg(palette.error)).wrap(Wrap { trim: true }),
+                area,
+            );
+            return;
+        }
+        // The `[..]` row leads whenever the listing is below the project
+        // root, so `files_cursor` (which addresses drawn rows, 0 first) can
+        // be passed straight through as the list's selection. Rows build
+        // against the scrollbar's reserved edge column
+        // (`super::files::list_view`), the rule every file list follows.
+        let row_width = super::files::list_view(area).width;
+        let mut items = Vec::with_capacity(panel.files_row_count());
+        if panel.parent_row() {
+            items.push(super::files::row(
+                "[..]", true, 0, None, row_width, icons, palette,
+            ));
+        }
+        items.extend(panel.visible_files().iter().map(|entry| {
+            super::files::row(
+                &entry.name,
+                entry.is_dir,
+                entry.size,
+                None,
+                row_width,
+                icons,
+                palette,
+            )
+        }));
+        (items, panel.files_cursor, panel.files_offset)
+    };
+    let settled =
+        super::files::render_list(frame, area, items, Some(cursor), seed, focused, palette);
+    if let Some(panel) = app.workspace.as_mut() {
+        panel.files_offset = settled;
     }
-    items.extend(panel.visible_files().iter().map(|entry| {
-        super::files::row(
-            &entry.name,
-            entry.is_dir,
-            entry.size,
-            None,
-            area.width,
-            app.icon_set(),
-            palette,
-        )
-    }));
-    let cursor = Some(panel.files_cursor);
-    super::files::render_list(frame, area, items, cursor, focused, palette);
 }
 
 /// The four states a checklist row's mark can carry. `Open` is the dim

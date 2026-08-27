@@ -20,12 +20,13 @@ use crate::device::{DiscoveryState, ScriptState};
 use crate::files::SyncStatus;
 use crate::ui::panels::{truncate_end, truncate_start};
 use crate::ui::{
-    Palette, SPINNER, border_style, content_style, dashboard_focused, highlighted_line,
-    icon_column, muted_style, numbered_title, paint_focus_wash, pane_block, pane_border,
-    pane_title, render_pane, selection_style, shortcut_highlight_style, shortcut_letter,
+    Palette, SPINNER, border_style, content_style, dashboard_focused, draw_scrollbar,
+    highlighted_line, icon_column, muted_style, numbered_title, paint_focus_wash, pane_block,
+    pane_border, pane_title, render_pane, selection_style, shortcut_highlight_style,
+    shortcut_letter,
 };
 
-pub fn draw(frame: &mut Frame, row: &super::layout::BrowserRow, app: &App, palette: Palette) {
+pub fn draw(frame: &mut Frame, row: &super::layout::BrowserRow, app: &mut App, palette: Palette) {
     let Some(browser) = &app.browser else {
         // `layout::dashboard` only builds a `Browser` row when the browser
         // exists; this is the defensive half of that contract.
@@ -39,10 +40,10 @@ pub fn draw(frame: &mut Frame, row: &super::layout::BrowserRow, app: &App, palet
     };
 
     let statuses = browser.statuses();
-    draw_local(frame, row.local, app, browser, &statuses, palette);
+    draw_local(frame, row.local, app, &statuses, palette);
     match row.right_kind {
         super::layout::RightKind::Device => {
-            draw_device(frame, row.right, app, browser, &statuses, palette);
+            draw_device(frame, row.right, app, &statuses, palette);
         }
         super::layout::RightKind::Build => super::build::draw(frame, row.right, app, palette),
         super::layout::RightKind::NoDevice => draw_no_device(frame, row.right, app, palette),
@@ -73,124 +74,140 @@ fn draw_no_device(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
 fn draw_local(
     frame: &mut Frame,
     area: Rect,
-    app: &App,
-    browser: &Browser,
+    app: &mut App,
     statuses: &BTreeMap<String, SyncStatus>,
     palette: Palette,
 ) {
     let focused = dashboard_focused(app, Focus::FilesLocal);
-    // The pane is the project's own files: the title names the project and
-    // the path walked below it ("blinkety/src/"), the same shape the Zephyr
-    // project-files pane's title follows. A walk that rose *above* the
-    // project root (the pane may ascend anywhere) falls back to the full
-    // path --- honest about where the listing actually is.
-    let project = browser
-        .local_root
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| crate::ui::tilde_path(&browser.local_root, app.home_dir()));
-    let walked = browser
-        .local_path
-        .strip_prefix(&browser.local_root)
-        .ok()
-        .filter(|relative| !relative.as_os_str().is_empty())
-        .map(|relative| format!("{project}/{}/", relative.display()))
-        .unwrap_or(format!("{project}/"));
-    let title = if browser.local_path.starts_with(&browser.local_root) {
-        walked
-    } else {
-        crate::ui::tilde_path(&browser.local_path, app.home_dir())
-    };
-    // The prefix never truncates --- only the path shortens, from the left,
-    // and the stop number's two cells are budgeted off the path, not taken
-    // from the title's tail.
-    let stop = app.pane_number(Focus::FilesLocal);
-    let budget = area.width.saturating_sub(stop.map_or(0, |_| 2));
-    let title = numbered_title(
-        app,
-        Focus::FilesLocal,
-        app.icon_set().folder(),
-        &format!("Files: {}", shorten(&title, budget)),
-    );
-    let block = pane_block(&title, focused, palette, shortcut_letter(app, 'f'));
-
-    if let Some(error) = &browser.local_error {
-        // The wash goes under the paragraph: its text carries fg only, so
-        // the error pane keeps the focused tint too.
-        paint_focus_wash(frame, block.inner(area), focused, palette);
-        frame.render_widget(
-            Paragraph::new(error.clone().fg(palette.error))
-                .block(block)
-                .wrap(Wrap { trim: true }),
-            area,
+    let icons = app.icon_set();
+    // One immutable pass builds the title, block and rows (the offset seed
+    // included), so the mutable write-back below cannot fight a live borrow.
+    let (block, items, cursor, seed) = {
+        let Some(browser) = app.browser.as_ref() else {
+            return;
+        };
+        // The pane is the project's own files: the title names the project
+        // and the path walked below it ("blinkety/src/"), the same shape the
+        // Zephyr project-files pane's title follows. A walk that rose *above*
+        // the project root (the pane may ascend anywhere) falls back to the
+        // full path --- honest about where the listing actually is.
+        let project = browser
+            .local_root
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| crate::ui::tilde_path(&browser.local_root, app.home_dir()));
+        let walked = browser
+            .local_path
+            .strip_prefix(&browser.local_root)
+            .ok()
+            .filter(|relative| !relative.as_os_str().is_empty())
+            .map(|relative| format!("{project}/{}/", relative.display()))
+            .unwrap_or(format!("{project}/"));
+        let title = if browser.local_path.starts_with(&browser.local_root) {
+            walked
+        } else {
+            crate::ui::tilde_path(&browser.local_path, app.home_dir())
+        };
+        // The prefix never truncates --- only the path shortens, from the
+        // left, and the stop number's two cells are budgeted off the path,
+        // not taken from the title's tail.
+        let stop = app.pane_number(Focus::FilesLocal);
+        let budget = area.width.saturating_sub(stop.map_or(0, |_| 2));
+        let title = numbered_title(
+            app,
+            Focus::FilesLocal,
+            icons.folder(),
+            &format!("Files: {}", shorten(&title, budget)),
         );
-        return;
-    }
+        let block = pane_block(&title, focused, palette, shortcut_letter(app, 'f'));
+
+        if let Some(error) = &browser.local_error {
+            // The wash goes under the paragraph: its text carries fg only, so
+            // the error pane keeps the focused tint too.
+            paint_focus_wash(frame, block.inner(area), focused, palette);
+            frame.render_widget(
+                Paragraph::new(error.clone().fg(palette.error))
+                    .block(block)
+                    .wrap(Wrap { trim: true }),
+                area,
+            );
+            return;
+        }
+        // Rows build against the scrollbar's reserved column (see
+        // `render_list`), so the size column keeps its place beside the
+        // border whether or not a bar is showing.
+        let row_width = list_view(block.inner(area)).width;
+        let items: Vec<ListItem> = browser
+            .visible_local()
+            .into_iter()
+            .map(|entry| {
+                row(
+                    &entry.name,
+                    entry.is_dir,
+                    entry.size,
+                    statuses.get(&entry.name).copied(),
+                    row_width,
+                    icons,
+                    palette,
+                )
+            })
+            .collect();
+        (block, items, browser.local_cursor, browser.local_offset)
+    };
 
     let inner = render_pane(frame, area, block, focused, palette);
-
-    let items: Vec<ListItem> = browser
-        .visible_local()
-        .into_iter()
-        .map(|entry| {
-            row(
-                &entry.name,
-                entry.is_dir,
-                entry.size,
-                statuses.get(&entry.name).copied(),
-                inner.width,
-                app.icon_set(),
-                palette,
-            )
-        })
-        .collect();
-
-    render_list(
-        frame,
-        inner,
-        items,
-        Some(browser.local_cursor),
-        focused,
-        palette,
-    );
+    let settled = render_list(frame, inner, items, Some(cursor), seed, focused, palette);
+    if let Some(browser) = app.browser.as_mut() {
+        browser.local_offset = settled;
+    }
 }
 
 fn draw_device(
     frame: &mut Frame,
     area: Rect,
-    app: &App,
-    browser: &Browser,
+    app: &mut App,
     statuses: &BTreeMap<String, SyncStatus>,
     palette: Palette,
 ) {
     let focused = dashboard_focused(app, Focus::FilesDevice);
-    // The running-script flag rides along in the title rather than the body:
-    // it explains why an overlay may appear, without claiming list space.
-    let mut title = format!("Device Files: {}", browser.device_path);
-    if app.devices.script_state() == ScriptState::Running {
-        title.push_str(" · script running");
-    }
-    let title = numbered_title(app, Focus::FilesDevice, app.icon_set().folder(), &title);
-    // A backend that can flash or erase gets the pane the flash menu moved
-    // into: the border row carries the `Actions • Device Files`
-    // tab strip (row 3's grammar) and the walked path rides the strip's
-    // right edge as the active tab's status; anything else keeps the
-    // plain titled pane the pane has always been.
-    let tabbed = app.device_actions_tab_available();
-    let block = if tabbed {
-        pane_border(focused, palette)
-    } else {
-        pane_block(&title, focused, palette, shortcut_letter(app, 'd'))
+    let icons = app.icon_set();
+    // The block is built under an immutable borrow (the title reads the
+    // walked device path), released before the content path borrows `app`
+    // mutably to publish the list's settled offset.
+    let (block, tabbed) = {
+        let Some(browser) = app.browser.as_ref() else {
+            return;
+        };
+        // The running-script flag rides along in the title rather than the
+        // body: it explains why an overlay may appear, without claiming
+        // list space.
+        let mut title = format!("Device Files: {}", browser.device_path);
+        if app.devices.script_state() == ScriptState::Running {
+            title.push_str(" · script running");
+        }
+        let title = numbered_title(app, Focus::FilesDevice, icons.folder(), &title);
+        // A backend that can flash or erase gets the pane the flash menu
+        // moved into: the border row carries the `Actions • Device Files`
+        // tab strip (row 3's grammar) and the walked path rides the strip's
+        // right edge as the active tab's status; anything else keeps the
+        // plain titled pane the pane has always been.
+        let tabbed = app.device_actions_tab_available();
+        let block = if tabbed {
+            pane_border(focused, palette)
+        } else {
+            pane_block(&title, focused, palette, shortcut_letter(app, 'd'))
+        };
+        (block, tabbed)
     };
     let inner = render_pane(frame, area, block, focused, palette);
 
     if tabbed && app.device_actions_tab_active() {
         super::flash::draw_actions_pane(frame, inner, app, palette);
     } else {
-        draw_device_content(frame, inner, app, browser, statuses, palette);
+        draw_device_content(frame, inner, app, statuses, palette);
     }
     if tabbed {
-        draw_device_tabs(frame, area, app, browser, palette);
+        draw_device_tabs(frame, area, app, palette);
     }
 }
 
@@ -203,7 +220,7 @@ fn draw_device(
 /// displaced by the strip but still one glance away --- and for the
 /// actions tab the flag alone, since there is no listing to locate there,
 /// but a running script still gates every esptool action.
-fn draw_device_tabs(frame: &mut Frame, pane: Rect, app: &App, browser: &Browser, palette: Palette) {
+fn draw_device_tabs(frame: &mut Frame, pane: Rect, app: &App, palette: Palette) {
     let strip = Rect {
         x: pane.x.saturating_add(1),
         y: pane.y,
@@ -213,6 +230,9 @@ fn draw_device_tabs(frame: &mut Frame, pane: Rect, app: &App, browser: &Browser,
     if strip.width == 0 {
         return;
     }
+    let Some(browser) = app.browser.as_ref() else {
+        return;
+    };
 
     let focused = dashboard_focused(app, Focus::FilesDevice);
     // As in row 3's strip: while the shortcuts overlay is up, which tab is
@@ -311,77 +331,98 @@ fn draw_device_tabs(frame: &mut Frame, pane: Rect, app: &App, browser: &Browser,
 fn draw_device_content(
     frame: &mut Frame,
     inner: Rect,
-    app: &App,
-    browser: &Browser,
+    app: &mut App,
     statuses: &BTreeMap<String, SyncStatus>,
     palette: Palette,
 ) {
     let focused = dashboard_focused(app, Focus::FilesDevice);
     let spinner = SPINNER[(app.ticks as usize) % SPINNER.len()];
+    let icons = app.icon_set();
 
-    match &browser.device_state {
-        PaneState::Idle => {
-            frame.render_widget(
-                Paragraph::new("press 'd' to look for a device".fg(palette.muted)),
-                inner,
-            );
+    // The non-Ready states draw no rows; the offset is left as it was, the
+    // same way the cursor is. Rows and seed are built under the immutable
+    // borrow, released before the settled offset is written back.
+    let (list_area, footer_area, items, cursor, seed) = {
+        let Some(browser) = app.browser.as_ref() else {
             return;
+        };
+        match &browser.device_state {
+            PaneState::Idle => {
+                frame.render_widget(
+                    Paragraph::new("press 'd' to look for a device".fg(palette.muted)),
+                    inner,
+                );
+                return;
+            }
+            PaneState::Loading => {
+                // Finding the board, waiting on the user and listing it are
+                // all waits, but they fail or stall for different reasons,
+                // so they are named differently.
+                let what = if browser.held_for_interrupt() {
+                    "waiting to interrupt a running script".to_string()
+                } else if app.devices.discovery == DiscoveryState::Scanning {
+                    "searching for a device".to_string()
+                } else {
+                    format!("listing {}", browser.device_path)
+                };
+                frame.render_widget(
+                    Paragraph::new(format!("{spinner} {what}…").fg(palette.muted)),
+                    inner,
+                );
+                return;
+            }
+            PaneState::Failed(error) => {
+                frame.render_widget(
+                    Paragraph::new(error.clone().fg(palette.error)).wrap(Wrap { trim: true }),
+                    inner,
+                );
+                return;
+            }
+            PaneState::Ready => {}
         }
-        PaneState::Loading => {
-            // Finding the board, waiting on the user and listing it are all
-            // waits, but they fail or stall for different reasons, so they
-            // are named differently.
-            let what = if browser.held_for_interrupt() {
-                "waiting to interrupt a running script".to_string()
-            } else if app.devices.discovery == DiscoveryState::Scanning {
-                "searching for a device".to_string()
-            } else {
-                format!("listing {}", browser.device_path)
-            };
-            frame.render_widget(
-                Paragraph::new(format!("{spinner} {what}…").fg(palette.muted)),
-                inner,
-            );
-            return;
-        }
-        PaneState::Failed(error) => {
-            frame.render_widget(
-                Paragraph::new(error.clone().fg(palette.error)).wrap(Wrap { trim: true }),
-                inner,
-            );
-            return;
-        }
-        PaneState::Ready => {}
-    }
 
-    let [list_area, footer_area] =
-        Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(inner);
+        let [list_area, footer_area] =
+            Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(inner);
+        let row_width = list_view(list_area).width;
+        let items: Vec<ListItem> = browser
+            .visible_device()
+            .into_iter()
+            .map(|entry| {
+                row(
+                    &entry.name,
+                    entry.is_dir,
+                    entry.size,
+                    statuses.get(&entry.name).copied(),
+                    row_width,
+                    icons,
+                    palette,
+                )
+            })
+            .collect();
+        (
+            list_area,
+            footer_area,
+            items,
+            browser.device_cursor,
+            browser.device_offset,
+        )
+    };
 
-    let items: Vec<ListItem> = browser
-        .visible_device()
-        .into_iter()
-        .map(|entry| {
-            row(
-                &entry.name,
-                entry.is_dir,
-                entry.size,
-                statuses.get(&entry.name).copied(),
-                list_area.width,
-                app.icon_set(),
-                palette,
-            )
-        })
-        .collect();
-
-    render_list(
+    let settled = render_list(
         frame,
         list_area,
         items,
-        Some(browser.device_cursor),
+        Some(cursor),
+        seed,
         focused,
         palette,
     );
-    draw_device_footer(frame, footer_area, browser, palette);
+    if let Some(browser) = app.browser.as_ref() {
+        draw_device_footer(frame, footer_area, browser, palette);
+    }
+    if let Some(browser) = app.browser.as_mut() {
+        browser.device_offset = settled;
+    }
 }
 
 /// Free space on the connected board, as a progress bar --- filled by the
@@ -435,31 +476,61 @@ fn draw_device_footer(frame: &mut Frame, area: Rect, browser: &Browser, palette:
     }
 }
 
-/// Renders `items` as a navigable list. `cursor` is the selected row's
-/// index, or `None` when this pane's cursor is currently elsewhere (the
-/// Zephyr workspace pane's embedded file list draws with `None` while the
-/// checklist above it has the cursor, so no row highlights).
+/// The list viewport inside a file pane's area: one column narrower, that
+/// column kept reserved for the scrollbar [`render_list`] draws --- the same
+/// rule the Log pane's wrap width and the docs picker's list follow, so a
+/// row's flush-right size column never shifts when a bar appears. Callers
+/// build their [`row`]s against this width and pass `area` itself to
+/// [`render_list`].
+pub(super) fn list_view(area: Rect) -> Rect {
+    Rect {
+        width: area.width.saturating_sub(1),
+        ..area
+    }
+}
+
+/// Renders `items` as a navigable list with the shared one-column scrollbar
+/// riding its reserved edge column (see [`list_view`]). `cursor` is the
+/// selected row's index, or `None` when this pane's cursor is currently
+/// elsewhere (the Zephyr workspace pane's embedded file list draws with `None`
+/// while the checklist above it has the cursor, so no row highlights).
+///
+/// `offset` seeds the scroll with the value the previous frame settled on,
+/// and the newly settled offset is returned for the caller to publish back
+/// --- the docs picker's own rule (`App::docs_list_offset`): with a fresh
+/// state every frame the offset is recomputed from zero, anchoring any
+/// selection past half the pane at the bottom edge, so a click on a visible
+/// row jumped the list downward to re-anchor it. Seeded, the offset only
+/// moves when the selection leaves the window, and the returned value is
+/// what the scrollbar reports and what a click maps its row through.
 pub(super) fn render_list(
     frame: &mut Frame,
     area: Rect,
     items: Vec<ListItem<'static>>,
     cursor: Option<usize>,
+    offset: usize,
     focused: bool,
     palette: Palette,
-) {
+) -> usize {
     if items.is_empty() {
         frame.render_widget(Paragraph::new("empty".fg(palette.muted)), area);
-        return;
+        return 0;
     }
 
-    let mut state = ListState::default().with_selected(cursor);
+    let mut state = ListState::default()
+        .with_offset(offset)
+        .with_selected(cursor);
+    let total = items.len();
     frame.render_stateful_widget(
         List::new(items)
             .style(content_style(focused))
             .highlight_style(selection_style(palette)),
-        area,
+        list_view(area),
         &mut state,
     );
+    let settled = state.offset();
+    draw_scrollbar(frame, area, total, area.height as usize, settled, palette);
+    settled
 }
 
 /// One entry: `<status> <icon> <name> <size>`, with the size flush right.

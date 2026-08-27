@@ -8,7 +8,9 @@
 //! meets the layout: a click focuses the pane it lands on and moves that
 //! pane's cursor onto the row it landed on (`ui::layout`'s tree, published
 //! frame area and all, is the same geometry the renderer drew), a wheel
-//! step scrolls the row-3 pane under it.
+//! step over a cursor-walked list steps that list's cursor one row
+//! (clamped, never moving focus --- the board picker's wheel grammar),
+//! and over row 3 scrolls the pane under it.
 //!
 //! A click never does more than the keyboard can: rows, buttons and tabs
 //! all land through the same handlers `Enter` and `←/→` reach, so a click
@@ -234,10 +236,10 @@ impl App {
             return;
         };
         browser.focus = Side::Local;
-        if let Some(index) = list_row(
+        if let Some(index) = drawn_list_row(
             point,
             rect,
-            browser.local_cursor,
+            browser.local_offset,
             browser.visible_local().len(),
             0,
             0,
@@ -261,10 +263,10 @@ impl App {
         }
         // The pane's last inner row is the usage footer (`draw_device_
         // footer`), not a list row.
-        if let Some(index) = list_row(
+        if let Some(index) = drawn_list_row(
             point,
             rect,
-            browser.device_cursor,
+            browser.device_offset,
             browser.visible_device().len(),
             0,
             1,
@@ -283,10 +285,10 @@ impl App {
             // An error paragraph owns the pane; there are no rows to pick.
             return;
         }
-        let hit = list_row(
+        let hit = drawn_list_row(
             point,
             rect,
-            panel.files_cursor,
+            panel.files_offset,
             panel.files_row_count(),
             0,
             0,
@@ -342,10 +344,16 @@ impl App {
         }
     }
 
-    /// A wheel step over row 3 scrolls its active tab --- the same
-    /// handlers `↑`/`↓` reach. It never moves focus: scrolling past a pane
-    /// is not pointing at it.
+    /// A wheel step over a cursor-walked list steps that list's cursor one
+    /// row, clamped at the ends --- the board picker's own wheel grammar
+    /// (`on_overlay_wheel`), and like that one it never moves focus:
+    /// scrolling past a pane is not pointing at it. Row 3 keeps its own
+    /// answer: the wheel scrolls the active tab's content, the way
+    /// shift+pgup would.
     fn wheel(&mut self, direction: isize, point: (u16, u16), areas: &layout::DashboardAreas) {
+        if self.wheel_steps_list(direction, point, areas) {
+            return;
+        }
         if !contains(areas.row3, point) {
             return;
         }
@@ -365,6 +373,61 @@ impl App {
                     self.monitor_scroll_down(steps);
                 }
             }
+        }
+    }
+
+    /// The wheel over row 1's checklist and row 2's file lists: the pane
+    /// under the pointer has its cursor stepped (`stepped`), nothing else.
+    /// Answers whether the point landed on one of those panes, so an
+    /// untouched wheel still reaches row 3's scroll.
+    fn wheel_steps_list(
+        &mut self,
+        direction: isize,
+        point: (u16, u16),
+        areas: &layout::DashboardAreas,
+    ) -> bool {
+        // Row 1's Environment checklist: a fixed row set, so a notch is a
+        // row step (`project_rows` answers the row count).
+        if contains(areas.project, point) {
+            let len = self.project_rows().len();
+            self.project_cursor = stepped(self.project_cursor, len, direction);
+            return true;
+        }
+        match &areas.row2 {
+            Row2::WorkspaceBuild { workspace, .. } if contains(*workspace, point) => {
+                // An error paragraph owns the pane; there are no rows to
+                // walk (the click's own rule).
+                if let Some(panel) = self.workspace.as_mut()
+                    && panel.files_error.is_none()
+                {
+                    let len = panel.files_row_count();
+                    panel.files_cursor = stepped(panel.files_cursor, len, direction);
+                }
+                true
+            }
+            Row2::Browser(row) if contains(row.local, point) => {
+                if let Some(browser) = self.browser.as_mut() {
+                    let len = browser.visible_local().len();
+                    browser.local_cursor = stepped(browser.local_cursor, len, direction);
+                }
+                true
+            }
+            Row2::Browser(row)
+                if contains(row.right, point) && matches!(row.right_kind, RightKind::Device) =>
+            {
+                // The actions tab is a button stack, not a listing, and a
+                // non-Ready pane draws no rows --- nothing to step either
+                // way (the click's own gates).
+                if !self.device_actions_tab_active()
+                    && let Some(browser) = self.browser.as_mut()
+                    && matches!(browser.device_state, PaneState::Ready)
+                {
+                    let len = browser.visible_device().len();
+                    browser.device_cursor = stepped(browser.device_cursor, len, direction);
+                }
+                true
+            }
+            _ => false,
         }
     }
 
@@ -1114,6 +1177,17 @@ fn contains(rect: Rect, point: (u16, u16)) -> bool {
         && point.1 < rect.y + rect.height
 }
 
+/// The cursor after one wheel notch over a list: a single row step,
+/// clamped at both ends, unchanged when the list has nothing to walk ---
+/// the board picker's wheel arithmetic, shared by every list the dashboard
+/// wheel steps.
+fn stepped(cursor: usize, len: usize, direction: isize) -> usize {
+    if len == 0 {
+        return cursor;
+    }
+    (cursor as isize + direction).clamp(0, len as isize - 1) as usize
+}
+
 /// The row index inside a bordered pane's inner area, `None` on the
 /// borders or past the bottom. `skip` counts leading inner rows the
 /// clickable list does not own (a message above a picker's list);
@@ -1126,13 +1200,13 @@ fn inner_row(point: (u16, u16), rect: Rect, skip: u16, reserved: u16) -> Option<
 
 /// Maps a click inside a bordered pane to an index in the list that pane
 /// draws --- or `None` when the click is on the borders, below the list,
-/// or on a row no entry occupies. The second half is the load-bearing
-/// trick: the panes draw with a *fresh* `ListState` every frame
-/// (`render_list`), so the scroll offset ratatui settles on is the
-/// minimal one that keeps `selected` visible --- a pure function of the
-/// selection and the height. Reproducing it here (rather than caching
-/// offsets through the renderer) keeps the mapping in one testable place;
-/// the render test below pins it against what the terminal actually drew.
+/// or on a row no entry occupies. For the *overlay* lists, which draw with
+/// a fresh `ListState` every frame: the scroll offset ratatui settles on
+/// is the minimal one that keeps `selected` visible --- a pure function of
+/// the selection and the height, reproduced here. The dashboard's three
+/// file panes no longer qualify (they seed the state from the previous
+/// frame's offset, so a click on a visible row does not re-anchor the
+/// view) and map through [`drawn_list_row`] instead.
 fn list_row(
     point: (u16, u16),
     rect: Rect,
@@ -1191,6 +1265,30 @@ fn strip_tab<T: Copy>(point: (u16, u16), pane: Rect, tabs: &[(T, String)]) -> Op
         }
     }
     None
+}
+
+/// Maps a click onto one of the three dashboard file lists through the
+/// offset the pane actually drew --- the settled offset `render_list`
+/// published on its previous frame (`WorkspacePanel::files_offset`,
+/// `Browser::local_offset`/`device_offset`), the same contract
+/// [`docs_list_row`] follows for the pickers. The lists seed their
+/// `ListState` from that offset, so a click on a visible row must not
+/// re-anchor the view --- which is what [`list_row`]'s recomputed
+/// minimal-scroll offset would do.
+fn drawn_list_row(
+    point: (u16, u16),
+    rect: Rect,
+    offset: usize,
+    len: usize,
+    skip: u16,
+    reserved: u16,
+) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    let row = inner_row(point, rect, skip, reserved)?;
+    let index = offset + row;
+    (index < len).then_some(index)
 }
 
 /// The `No`/`Yes` button rects of a `draw_confirm_dialog`-shaped modal ---
@@ -1432,6 +1530,98 @@ mod tests {
         assert_eq!(bare_list_row((3, list.y), list, 0, 3, 1), None);
         // The row right below the header still resolves normally.
         assert_eq!(bare_list_row((3, list.y + 1), list, 0, 3, 1), Some(0));
+    }
+
+    /// A click on a *visible* row of a scrolled list must not move the
+    /// view: the pane seeds its `ListState` from the previous frame's
+    /// settled offset, so selecting a row inside the window leaves the
+    /// window alone --- where a fresh-state render re-anchored any
+    /// selection past half the pane to the bottom edge, and the clicked
+    /// row visibly jumped.
+    #[test]
+    fn a_click_on_a_visible_row_keeps_the_list_where_it_was() {
+        let root = project_dir("nojump", 30);
+        let mut app = app_with_backend(BackendKind::MicroPython, &root);
+        app.browser = Some(Browser::new(&root));
+        // The cursor lands deep enough that the window is scrolled, and the
+        // row to click sits mid-window --- exactly where a re-anchor to the
+        // bottom edge would move it.
+        app.browser.as_mut().unwrap().local_cursor = 20;
+        let before = render(&mut app, 100, 40);
+        let row = before
+            .iter()
+            .position(|line| line.contains("file17.py"))
+            .expect("a mid-window row is drawn");
+        let offset = app.browser.as_ref().unwrap().local_offset;
+        assert!(offset > 0, "the list must be scrolled for the test to bite");
+
+        click(&mut app, 2, row as u16);
+
+        let after = render(&mut app, 100, 40);
+        assert_eq!(
+            after.iter().position(|line| line.contains("file17.py")),
+            Some(row),
+            "the clicked row must stay on its drawn line:\n{}",
+            after.join("\n")
+        );
+        assert_eq!(
+            app.browser.as_ref().unwrap().local_offset,
+            offset,
+            "the window did not move"
+        );
+        assert_eq!(
+            app.browser
+                .as_ref()
+                .unwrap()
+                .local_entries
+                .get(app.browser.as_ref().unwrap().local_cursor)
+                .map(|entry| entry.name.as_str()),
+            Some("file17.py"),
+            "the click still selects the row it landed on"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The workspace Files pane answers the same rule (its own seed and
+    /// publish, its own hit-test path).
+    #[test]
+    fn a_click_on_a_visible_workspace_row_keeps_the_view() {
+        let root = project_dir("wsnojump", 40);
+        let mut app = app_with_backend(BackendKind::Zephyr, &root);
+        assert!(app.workspace.is_some(), "a build backend gets the pane");
+        app.workspace.as_mut().unwrap().files_cursor = 30;
+        let before = render(&mut app, 100, 40);
+        let row = before
+            .iter()
+            .position(|line| line.contains("file25.py"))
+            .expect("a mid-window row is drawn");
+        let offset = app.workspace.as_ref().unwrap().files_offset;
+        assert!(offset > 0, "the list must be scrolled for the test to bite");
+
+        click(&mut app, 2, row as u16);
+
+        let after = render(&mut app, 100, 40);
+        assert_eq!(
+            after.iter().position(|line| line.contains("file25.py")),
+            Some(row),
+            "the clicked row must stay on its drawn line:\n{}",
+            after.join("\n")
+        );
+        assert_eq!(
+            app.workspace.as_ref().unwrap().files_offset,
+            offset,
+            "the window did not move"
+        );
+        let panel = app.workspace.as_ref().unwrap();
+        assert_eq!(
+            panel
+                .visible_files()
+                .get(panel.files_cursor)
+                .map(|e| e.name.as_str()),
+            Some("file25.py"),
+            "the click still selects the row it landed on"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -2010,6 +2200,97 @@ mod tests {
         assert!(
             app.overlay.is_none(),
             "same row, outside the box: closes rather than picking the directory"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The SDK toolchains modal draws in its declared `overlay_popup` rect
+    /// --- a centered 56-wide box, not the whole frame --- and a click
+    /// toggles the row under the pointer. The drawer once received `area`
+    /// (the full frame) instead of `popup`: the modal went fullscreen while
+    /// the hit-testing kept judging against the centered rect, so clicks
+    /// selected rows above the pointer and a click on the modal's outer
+    /// margin closed it.
+    #[test]
+    fn sdk_toolchains_draws_in_its_popup_and_clicks_land_on_the_pointer() {
+        let root = project_dir("sdk-click", 1);
+        let mut app = app_with_backend(BackendKind::Zephyr, &root);
+        app.installer = Some(crate::install::Installer::new(root.clone()));
+        app.overlay = Some(crate::app::Overlay::SdkToolchains { selected: 0 });
+
+        let lines = render(&mut app, 120, 40);
+        let title = lines
+            .iter()
+            .find(|l| l.contains("SDK toolchains"))
+            .expect("the modal is drawn");
+        // The modal's own span on its title row --- in drawn cells, not
+        // bytes (the borders are multi-width); the dashboard stays visible
+        // around the centered popup.
+        let cells: Vec<char> = title.chars().collect();
+        let start = cells.iter().position(|c| *c == '╭').unwrap();
+        let end = cells.iter().position(|c| *c == '╮').unwrap();
+        assert_eq!(
+            end - start + 1,
+            56,
+            "the modal is the declared 56-wide box, not the frame:\n{}",
+            lines.join("\n")
+        );
+        // Two rows of frame sit above the centered popup (frame minus 4,
+        // centered): the title bar and one more line of the dashboard.
+        assert_eq!(
+            lines
+                .iter()
+                .position(|l| l.contains("SDK toolchains"))
+                .unwrap(),
+            2,
+            "the popup centers vertically"
+        );
+
+        // A click on a toolchain's row toggles that toolchain. The column
+        // is the name's own drawn cell (the popup starts at column 32 in a
+        // 120-wide frame; column 3 would be an outside click).
+        let aim = |lines: &[String], needle: &str| -> u16 {
+            let line = lines.iter().find(|l| l.contains(needle)).unwrap();
+            // Byte offsets are not columns --- the borders are multi-byte.
+            line.find(needle)
+                .map(|byte| line[..byte].chars().count() as u16)
+                .unwrap_or(0)
+        };
+        let row = lines
+            .iter()
+            .position(|l| l.contains("riscv64-zephyr-elf"))
+            .expect("the toolchain is drawn") as u16;
+        click(&mut app, aim(&lines, "riscv64-zephyr-elf"), row);
+        assert!(
+            app.installer
+                .as_ref()
+                .unwrap()
+                .picked_toolchains
+                .iter()
+                .any(|name| name == "riscv64-zephyr-elf"),
+            "the clicked row is the row that toggled:\n{}",
+            lines.join("\n")
+        );
+
+        // A shorter frame scrolls the 37-row list; the pointer still lands
+        // on the drawn row, through the same fresh-state offset the overlay
+        // draws with.
+        app.installer.as_mut().unwrap().picked_toolchains.clear();
+        let lines = render(&mut app, 100, 32);
+        let row = lines
+            .iter()
+            .position(|l| l.contains("riscv64-zephyr-elf"))
+            .expect("the toolchain is drawn") as u16;
+        click(&mut app, aim(&lines, "riscv64-zephyr-elf"), row);
+        assert!(
+            app.installer
+                .as_ref()
+                .unwrap()
+                .picked_toolchains
+                .iter()
+                .any(|name| name == "riscv64-zephyr-elf"),
+            "the scrolled list answers the pointer the same way:\n{}",
+            lines.join("\n")
         );
         let _ = std::fs::remove_dir_all(&root);
     }

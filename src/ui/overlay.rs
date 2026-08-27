@@ -58,7 +58,17 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
                 );
             }
         }
-        Overlay::SdkToolchains { selected } => draw_sdk_toolchains(frame, area, app, selected, palette),
+        // The declared `overlay_popup` rect, like every other centered
+        // modal: this arm once passed `area` (the whole frame) instead ---
+        // the exact drift `overlay_popup` exists to end, camouflaged by the
+        // installer arm above it, which genuinely is a full-frame screen.
+        // The fullscreen drawing put the box where the hit-testing (reading
+        // the same `overlay_popup`) never looked, so a click selected rows
+        // above the pointer and a click on the modal's outer margin closed
+        // it.
+        Overlay::SdkToolchains { selected } => {
+            draw_sdk_toolchains(frame, popup, app, selected, palette)
+        }
         Overlay::Confirm { message, confirm } if app.install_confirm_pending => draw_confirm_dialog(
             frame,
             popup,

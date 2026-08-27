@@ -260,10 +260,20 @@ pub struct Browser {
     pub local_entries: Vec<LocalEntry>,
     pub local_error: Option<String>,
     pub local_cursor: usize,
+    /// The local list's scroll offset, as the previous frame's `ListState`
+    /// settled it (`ui::files::render_list` seeds from it and publishes the
+    /// new value back). Seeding keeps a click on a visible row from
+    /// re-anchoring the view: the offset only moves when the cursor leaves
+    /// the window. Navigation needs no reset --- ratatui clamps the seed and
+    /// pulls it to the cursor, which every navigation resets to 0.
+    pub local_offset: usize,
 
     pub device_path: DevicePath,
     pub device_state: PaneState,
     pub device_cursor: usize,
+    /// The device list's scroll offset, the same seed-and-settle contract as
+    /// [`Self::local_offset`].
+    pub device_offset: usize,
     /// Filesystem usage of the connected board, device-wide --- `None` until the first
     /// [`Request::Df`] resolves for the current connection.
     pub device_space: Option<Result<parse::DiskUsage, String>>,
@@ -316,9 +326,11 @@ impl Browser {
             local_entries: Vec::new(),
             local_error: None,
             local_cursor: 0,
+            local_offset: 0,
             device_path: DevicePath::root(),
             device_state: PaneState::Idle,
             device_cursor: 0,
+            device_offset: 0,
             device_space: None,
             focus: Side::Local,
             show_hidden: false,
