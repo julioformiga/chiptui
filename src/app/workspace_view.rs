@@ -9,8 +9,9 @@ use std::path::{Path, PathBuf};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
+use crate::backend::BackendKind;
 use crate::backend::zephyr::projects::{self, ProjectsResolution};
-use crate::backend::zephyr::workspace::{Resolution, WorkspaceOrigin};
+use crate::backend::zephyr::workspace::{Resolution, Workspace, WorkspaceOrigin};
 use crate::browser::Side;
 use crate::build::BuildAction;
 use crate::files;
@@ -486,5 +487,80 @@ impl App {
             BuildAction::UpdateZephyr,
             |panel, backend| panel.update_command(backend),
         );
+    }
+}
+
+/// A tool report with the two inputs it was computed from --- see
+/// [`App::tool_status`].
+pub(super) struct ToolStatusMemo {
+    kind: BackendKind,
+    located: Vec<(&'static str, std::path::PathBuf)>,
+    status: Vec<(&'static str, bool)>,
+}
+
+impl App {
+    /// Warns about required tools that cannot be run.
+    ///
+    /// Judging a Zephyr `west` against the inherited `PATH` before the
+    /// workspace venv holding it is known would be a false alarm, so every
+    /// call site resolves the workspace first --- see
+    /// [`Self::ensure_workspace_panel`].
+    pub(super) fn report_tools(&mut self) {
+        let Some(kind) = self.manager.selected_kind() else {
+            return;
+        };
+        let missing: Vec<&str> = self
+            .tool_status()
+            .into_iter()
+            .filter(|(_, available)| !*available)
+            .map(|(tool, _)| tool)
+            .collect();
+
+        if !missing.is_empty() {
+            self.logs.warn(format!(
+                "{kind}: {} not found --- install it to enable the related operations",
+                missing.join(", ")
+            ));
+        }
+    }
+
+    /// The selected backend's required tools with whether each is actually
+    /// runnable --- the one definition, shared by [`Self::report_tools`]'s
+    /// warning and the Project pane's tools row.
+    ///
+    /// The only thing added here is the *answer* to "did anything resolve a
+    /// location for one of these tools": a resolved workspace names the
+    /// tools it owns ([`crate::backend::zephyr::workspace::Workspace::tool_locations`])
+    /// and the registry judges those files instead of `PATH`. Which tool
+    /// that happens to be is the workspace's business, never a branch here.
+    ///
+    /// Memoized on those two inputs: the render path asks twice a frame and
+    /// a miss costs a `PATH` walk per unlocated tool.
+    pub fn tool_status(&self) -> Vec<(&'static str, bool)> {
+        let Some(kind) = self.manager.selected_kind() else {
+            return Vec::new();
+        };
+        let located = self
+            .workspace
+            .as_ref()
+            .and_then(|panel| panel.resolved.as_ref())
+            .map(Workspace::tool_locations)
+            .unwrap_or_default();
+
+        let mut cache = self.tool_status_cache.borrow_mut();
+        if let Some(memo) = cache.as_ref()
+            && memo.kind == kind
+            && memo.located == located
+        {
+            return memo.status.clone();
+        }
+
+        let status = self.manager.registry().tool_status(kind, &located);
+        *cache = Some(ToolStatusMemo {
+            kind,
+            located,
+            status: status.clone(),
+        });
+        status
     }
 }

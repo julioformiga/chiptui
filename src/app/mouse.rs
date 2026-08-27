@@ -26,7 +26,7 @@ use crate::app::{
     View,
 };
 use crate::backend::BackendKind;
-use crate::browser::{PaneState, Side, SyncPlan};
+use crate::browser::{PaneState, Side};
 use crate::build::BuildAction;
 use crate::flash::{FlashAction, FlashPaneAction, FlashPanel, FlashScreen};
 use crate::ui::layout::{self, RightKind, Row2};
@@ -518,7 +518,7 @@ impl App {
         // interrupt/remove-package confirms' "return to Packages", the
         // installer's busy guard) apply automatically, with nothing
         // special-cased here.
-        let rect = self.overlay_popup_rect(overlay, frame);
+        let rect = layout::overlay_popup(self, overlay, frame);
         if !contains(rect, point) {
             self.overlay_key(KeyCode::Esc);
             return;
@@ -536,9 +536,14 @@ impl App {
             | Overlay::ConfirmDownloadOverwrite { .. }
             | Overlay::ConfirmUpload { .. }
             | Overlay::SyncPreview { .. }
-            | Overlay::ConfirmInstallHere { .. } => {
-                let Some((no, yes)) = confirm_buttons(frame, self.confirm_size(overlay, frame))
-                else {
+            | Overlay::ConfirmInstallHere { .. }
+            // Drawn by the same `draw_destructive` as `ConfirmBuild`, so
+            // `confirm_buttons` locates its No/Yes the same way. It used to
+            // sit outside this arm, which left the package manager's removal
+            // dialog answering a click beside the box (cancel) but not one
+            // on `Yes`.
+            | Overlay::ConfirmRemovePackage { .. } => {
+                let Some((no, yes)) = confirm_buttons(rect) else {
                     return;
                 };
                 if contains(no, point) {
@@ -553,7 +558,7 @@ impl App {
                 let len = self.devices.devices().len();
                 if let Some(index) = list_row(
                     point,
-                    crate::ui::centered(frame, 64, len as u16 + 2),
+                    rect,
                     *selected,
                     len,
                     0,
@@ -566,7 +571,7 @@ impl App {
                 let len = ThemeChoice::all().len();
                 if let Some(index) = list_row(
                     point,
-                    crate::ui::centered(frame, 44, len as u16 + 2),
+                    rect,
                     *selected,
                     len,
                     0,
@@ -584,7 +589,7 @@ impl App {
                 }
                 if let Some(index) = list_row(
                     point,
-                    crate::ui::centered(frame, 64, len as u16 + 2),
+                    rect,
                     *selected,
                     len,
                     0,
@@ -620,7 +625,7 @@ impl App {
                 let len = BackendKind::ALL.len();
                 if let Some(index) = list_row(
                     point,
-                    crate::ui::centered(frame, 60, len as u16 + 4),
+                    rect,
                     *selected,
                     len,
                     2,
@@ -632,7 +637,7 @@ impl App {
             Overlay::RestoreDeviceScript { selected, .. } => {
                 // Three constant choices under a two-row message.
                 if let Some(index) =
-                    list_row(point, crate::ui::centered(frame, 64, 7), *selected, 3, 2, 0)
+                    list_row(point, rect, *selected, 3, 2, 0)
                 {
                     self.set_overlay_selected(index);
                 }
@@ -655,7 +660,7 @@ impl App {
                 let len = actions.len();
                 if let Some(index) = list_row(
                     point,
-                    crate::ui::centered(frame, 44, len as u16 + 2),
+                    rect,
                     *selected,
                     len,
                     0,
@@ -668,7 +673,7 @@ impl App {
                 let len = crate::workspace::dir_rows(path).0.len();
                 if let Some(index) = list_row(
                     point,
-                    crate::ui::centered(frame, 72, 18),
+                    rect,
                     *selected,
                     len,
                     1,
@@ -691,7 +696,7 @@ impl App {
                     .unwrap_or_default();
                 if let Some(index) = list_row(
                     point,
-                    crate::ui::centered(frame, 72, 18),
+                    rect,
                     *selected,
                     len,
                     1,
@@ -710,7 +715,7 @@ impl App {
                 };
                 if let Some(index) = list_row(
                     point,
-                    crate::ui::centered(frame, 60, 16),
+                    rect,
                     *selected,
                     len,
                     3,
@@ -781,8 +786,7 @@ impl App {
             // ---- checklist: a row click toggles, the checkbox meaning --
             Overlay::SdkToolchains { selected } => {
                 let len = crate::install::steps::TOOLCHAINS.len();
-                let popup = crate::ui::centered(frame, 56, frame.height.saturating_sub(4));
-                if let Some(index) = list_row(point, popup, *selected, len, 0, 1) {
+                if let Some(index) = list_row(point, rect, *selected, len, 0, 1) {
                     self.set_overlay_selected(index);
                     self.overlay_key(KeyCode::Char(' '));
                 }
@@ -799,9 +803,7 @@ impl App {
                 let placeholders: Vec<crate::ui::Button> = (0..crate::ui::ZEPHYR_ACTIONS_COUNT)
                     .map(|_| crate::ui::Button::new("").detail(""))
                     .collect();
-                let height = crate::ui::stack_height(&placeholders).saturating_add(2);
-                let popup = crate::ui::centered(frame, 64, height);
-                let Some(row) = point.1.checked_sub(popup.y + 1) else {
+                let Some(row) = point.1.checked_sub(rect.y + 1) else {
                     return;
                 };
                 if let Some(index) = crate::ui::button_at_row(&placeholders, row) {
@@ -812,12 +814,11 @@ impl App {
             Overlay::ZephyrInstall => {
                 // The installer's footer button, pinned to the modal's
                 // bottom rows on the right --- the same box `Enter` presses.
-                let popup = crate::ui::install_area(frame);
                 let inner = Rect {
-                    x: popup.x + 1,
-                    y: popup.y + 1,
-                    width: popup.width.saturating_sub(2),
-                    height: popup.height.saturating_sub(2),
+                    x: rect.x + 1,
+                    y: rect.y + 1,
+                    width: rect.width.saturating_sub(2),
+                    height: rect.height.saturating_sub(2),
                 };
                 let footer_top = inner.y + inner.height.saturating_sub(3);
                 let stop = crate::ui::STOP_BOX_WIDTH.min(inner.width);
@@ -1065,187 +1066,6 @@ impl App {
         let key = ratatui::crossterm::event::KeyEvent::new(code, KeyModifiers::NONE);
         self.on_overlay_key(key);
     }
-
-    /// The confirm-family dialog's `(width, height)`, each the size its
-    /// own draw call uses (`draw_confirm_dialog`'s callers in
-    /// `ui::overlay`) --- the shared button block geometry needs only the
-    /// popup's rect, and the render-pinned tests keep this table honest.
-    fn confirm_size(&self, overlay: &Overlay, frame: Rect) -> (u16, u16) {
-        match overlay {
-            Overlay::Confirm { .. } if self.install_confirm_pending => (72, 10),
-            Overlay::Confirm { .. }
-                if self
-                    .flash
-                    .as_ref()
-                    .is_some_and(|flash| flash.pending().is_some()) =>
-            {
-                (72, 9)
-            }
-            Overlay::Confirm { .. } => (70, 7),
-            Overlay::ConfirmBuild { .. } => (72, 9),
-            Overlay::ConfirmRestartDevice { .. } => (54, 8),
-            Overlay::ConfirmSwitchProject { .. } => (62, 9),
-            Overlay::ConfirmEraseForMicroPython { .. } => (65, 9),
-            Overlay::ConfirmIdentifyDevice { .. } => (66, 11),
-            Overlay::ConfirmInterruptDevice { .. } => (64, 10),
-            Overlay::ConfirmDelete { .. } => (54, 9),
-            Overlay::ConfirmDownloadOverwrite { .. } => (70, 8),
-            Overlay::ConfirmUpload { .. } => (65, 8),
-            Overlay::ConfirmInstallHere { .. } => (72, 9),
-            Overlay::SyncPreview { plan, .. } if plan.is_empty() => (58, 7),
-            Overlay::SyncPreview { plan, .. } => {
-                let lines = sync_preview_lines(plan);
-                (
-                    60,
-                    (lines + 5).min(frame.height.saturating_sub(2) as usize) as u16,
-                )
-            }
-            _ => (0, 0),
-        }
-    }
-
-    /// The rect the open overlay draws its popup in --- mirrors each
-    /// variant's own `draw_*` sizing in `ui::overlay`, the same duplication
-    /// `confirm_size` above already carries and for the same reason (the
-    /// render-pinned tests keep it honest). Used only to decide whether a
-    /// click landed *outside* the dialog (`on_overlay_mouse`'s leading
-    /// check) --- every click that lands inside still goes through the
-    /// per-variant logic unchanged.
-    fn overlay_popup_rect(&self, overlay: &Overlay, frame: Rect) -> Rect {
-        match overlay {
-            Overlay::Confirm { .. }
-            | Overlay::ConfirmBuild { .. }
-            | Overlay::ConfirmRestartDevice { .. }
-            | Overlay::ConfirmSwitchProject { .. }
-            | Overlay::ConfirmEraseForMicroPython { .. }
-            | Overlay::ConfirmIdentifyDevice { .. }
-            | Overlay::ConfirmInterruptDevice { .. }
-            | Overlay::ConfirmDelete { .. }
-            | Overlay::ConfirmDownloadOverwrite { .. }
-            | Overlay::ConfirmUpload { .. }
-            | Overlay::SyncPreview { .. }
-            | Overlay::ConfirmInstallHere { .. } => {
-                let (width, height) = self.confirm_size(overlay, frame);
-                crate::ui::centered(frame, width, height)
-            }
-            // Missing from the confirm family above (and from
-            // `confirm_size`): its Yes/No buttons do not answer a click at
-            // all today, a pre-existing gap this task leaves alone. It
-            // still needs a rect to know when a click misses it
-            // entirely --- the fixed shape every `draw_destructive` caller
-            // uses.
-            Overlay::ConfirmRemovePackage { .. } => crate::ui::centered(frame, 72, 9),
-
-            // `list_row`/`button_at_row` (this whole group's own click
-            // grammar) key on the row alone --- `inner_row` never reads
-            // `point.0` --- but every arm below is only ever reached once
-            // this leading check has already confirmed the click lands in
-            // the popup's real box (both axes): a click on the right row
-            // but outside the box now closes the dialog instead of quietly
-            // answering the option that row happens to name.
-            Overlay::DevicePicker { .. } => {
-                let len = self.devices.devices().len();
-                crate::ui::centered(frame, 64, len as u16 + 2)
-            }
-            Overlay::ThemePicker { .. } => {
-                let len = ThemeChoice::all().len();
-                crate::ui::centered(frame, 44, len as u16 + 2)
-            }
-            Overlay::FirmwarePicker { .. } => {
-                let len = self
-                    .flash
-                    .as_ref()
-                    .map(|flash| flash.firmware.len())
-                    .unwrap_or(0);
-                if len == 0 {
-                    // No known list to size against --- never treat a
-                    // click as outside a dialog whose shape is not known.
-                    return frame;
-                }
-                crate::ui::centered(frame, 64, len as u16 + 2)
-            }
-            Overlay::Packages => layout::packages(frame).popup,
-            Overlay::ProjectSetup { .. } => {
-                let len = BackendKind::ALL.len();
-                crate::ui::centered(frame, 60, len as u16 + 4)
-            }
-            Overlay::RestoreDeviceScript { .. } => crate::ui::centered(frame, 64, 7),
-            Overlay::FileActions {
-                side,
-                name,
-                is_dir,
-                status,
-                ..
-            } => {
-                let is_text = crate::files::is_text_like(name);
-                let actions = FileAction::for_entry(
-                    *side,
-                    *is_dir,
-                    is_text,
-                    *status,
-                    self.manager.capabilities(),
-                );
-                crate::ui::centered(frame, 44, actions.len() as u16 + 2)
-            }
-            Overlay::DirPicker { .. } | Overlay::ProjectPicker { .. } => {
-                crate::ui::centered(frame, 72, 18)
-            }
-            Overlay::BuildDirPicker { .. } => crate::ui::centered(frame, 60, 16),
-            Overlay::BoardPicker { .. } | Overlay::ShieldPicker { .. } => {
-                layout::docs_picker(frame).popup
-            }
-            Overlay::SdkToolchains { .. } => {
-                crate::ui::centered(frame, 56, frame.height.saturating_sub(4))
-            }
-            Overlay::ZephyrActions { .. } => {
-                let placeholders: Vec<crate::ui::Button> = (0..crate::ui::ZEPHYR_ACTIONS_COUNT)
-                    .map(|_| crate::ui::Button::new("").detail(""))
-                    .collect();
-                let height = crate::ui::stack_height(&placeholders).saturating_add(2);
-                crate::ui::centered(frame, 64, height)
-            }
-            Overlay::ZephyrInstall => crate::ui::install_area(frame),
-            Overlay::Help { filter, .. } => self.help_popup_rect(filter, frame),
-            Overlay::FileViewer => crate::ui::centered(
-                frame,
-                frame.width.saturating_sub(6).max(20),
-                frame.height.saturating_sub(4).max(6),
-            ),
-            Overlay::CreateEntry { .. } | Overlay::RenameEntry { .. } => {
-                crate::ui::centered(frame, 54, 6)
-            }
-        }
-    }
-
-    /// [`Overlay::Help`]'s popup rect --- mirrors `draw_help`'s own
-    /// width/height formula (`ui::overlay`) exactly, since its content
-    /// (and so its size) depends on the filter text and the current view.
-    fn help_popup_rect(&self, filter: &str, frame: Rect) -> Rect {
-        use crate::app::help::{self, HelpSection};
-
-        let navigation = help::visible(help::bindings(self.view, HelpSection::Navigation), filter);
-        let commands = help::visible(help::bindings(self.view, HelpSection::Commands), filter);
-        let key_col = HelpSection::ALL
-            .iter()
-            .flat_map(|&section| help::bindings(self.view, section))
-            .map(|binding| binding.key.chars().count())
-            .max()
-            .unwrap_or(0);
-        let indent = 2 + key_col + 2;
-        let widest = HelpSection::ALL
-            .iter()
-            .flat_map(|&section| help::bindings(self.view, section))
-            .map(|binding| indent + binding.description.chars().count() + 2)
-            .max()
-            .unwrap_or(indent + 2);
-        let width = widest.min(frame.width.into()) as u16;
-        let visible_titles =
-            usize::from(!navigation.is_empty()) + usize::from(!commands.is_empty());
-        let fixed = 1 + visible_titles + 2;
-        let height = (fixed + navigation.len() + commands.len()) as u16;
-        let height = height.min(frame.height);
-        crate::ui::centered(frame, width, height)
-    }
 }
 
 /// Maps a click onto a row of a *borderless* list rect (a list drawn
@@ -1378,12 +1198,11 @@ fn strip_tab<T: Copy>(point: (u16, u16), pane: Rect, tabs: &[(T, String)]) -> Op
 /// `centered`, the same vertical message/buttons split, the same centered
 /// `10/4/10` horizontal split), so a click lands on the box that was drawn
 /// without a second opinion about rounding.
-fn confirm_buttons(area: Rect, size: (u16, u16)) -> Option<(Rect, Rect)> {
-    let (width, height) = size;
-    if width == 0 || height == 0 {
+fn confirm_buttons(popup: Rect) -> Option<(Rect, Rect)> {
+    if popup.width == 0 || popup.height == 0 {
         return None;
     }
-    let popup = crate::ui::centered(area, width.min(area.width), height);
+    let height = popup.height;
     let inner = Rect {
         x: popup.x + 1,
         y: popup.y + 1,
@@ -1428,31 +1247,6 @@ fn docs_list_row(area: Rect, point: (u16, u16), offset: usize, len: usize) -> Op
     }
     let index = offset + (point.1 - inner.y) as usize;
     (index < len).then_some(index)
-}
-
-/// The line count `draw_sync_preview` builds for `plan` --- the number its
-/// own height formula uses, replicated here so the click knows where the
-/// dialog's buttons sit. Kept beside the render-pinned tests.
-fn sync_preview_lines(plan: &SyncPlan) -> usize {
-    fn section(len: usize, trailing_blank: bool) -> usize {
-        // Header + up to eight rows + an "... and N more" when clipped.
-        let mut rows = 1 + len.min(8) + usize::from(len > 8);
-        if trailing_blank {
-            rows += 1;
-        }
-        rows
-    }
-    let mut lines = 0;
-    if !plan.uploads.is_empty() {
-        lines += section(plan.uploads.len(), true);
-    }
-    if !plan.mkdirs.is_empty() {
-        lines += section(plan.mkdirs.len(), true);
-    }
-    if !plan.deletes.is_empty() {
-        lines += section(plan.deletes.len(), false);
-    }
-    lines
 }
 
 /// The project picker's row count: the configured folder's immediate
@@ -1697,8 +1491,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// What a modal guarantees is that the gesture never reaches the *panes*
+    /// underneath --- not that it does nothing at all: a click outside the
+    /// popup is `Esc`, so the first one below also dismisses Help. That is
+    /// the policy, and irrelevant here (the overlay is replaced right
+    /// after); the assertion is about the focus below.
     #[test]
-    fn gestures_under_a_modal_or_before_a_frame_do_nothing() {
+    fn a_gesture_under_a_modal_or_before_a_frame_never_reaches_the_panes() {
         let root = project_dir("modal", 1);
         let mut app = app_with_backend(BackendKind::MicroPython, &root);
         app.browser = Some(Browser::new(&root));
@@ -1844,6 +1643,88 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// The bug the shared [`layout::overlay_popup`] closed: the device
+    /// picker draws a fixed 52x4 box carrying "No MicroPython device found."
+    /// when nothing is plugged in, while the hit-testing sized it `64 x
+    /// len + 2` unconditionally --- a 64x2 band that does not overlap the
+    /// drawn box at all. A click on the message read as "outside" and
+    /// dismissed the dialog the user had just clicked on.
+    #[test]
+    fn a_click_inside_the_empty_device_picker_does_not_dismiss_it() {
+        let root = project_dir("emptypicker", 1);
+        let mut app = app_with_backend(BackendKind::MicroPython, &root);
+        app.overlay = Some(crate::app::Overlay::DevicePicker { selected: 0 });
+        let lines = render(&mut app, 100, 40);
+        assert!(
+            app.devices.devices().is_empty(),
+            "the fixture /dev is empty, which is what makes this the empty branch"
+        );
+        let message = lines
+            .iter()
+            .position(|line| line.contains("No MicroPython device found."))
+            .expect("the empty picker draws its message") as u16;
+        // The drawn box's left rule, read off the frame rather than
+        // recomputed --- the two rects differ by exactly this margin. The
+        // message is a paragraph inside the block, so it starts one column
+        // right of the rule. (Scanning the row for its first non-blank
+        // would find the *dashboard's* border instead: the popup clears
+        // only its own rect.)
+        let box_left =
+            column_of(&lines[message as usize], "No MicroPython device found.").unwrap() - 1;
+
+        // The title rule, one row above the message: inside the drawn 52x4
+        // box, outside the 64x2 band the old hit-testing computed.
+        click(&mut app, box_left + 4, message - 1);
+        assert!(
+            matches!(app.overlay, Some(crate::app::Overlay::DevicePicker { .. })),
+            "a click on the dialog's own title row keeps it open"
+        );
+
+        // And the mirror: two columns left of the box is plainly beside the
+        // dialog, yet fell *inside* the wider band and was silently ignored.
+        click(&mut app, box_left - 2, message);
+        assert!(
+            app.overlay.is_none(),
+            "a click beside the drawn box dismisses it"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// [`Overlay::ConfirmRemovePackage`] is drawn by the same
+    /// `draw_destructive` as `ConfirmBuild`, but sat outside the arm that
+    /// maps a click onto the drawn No/Yes --- so clicking `Yes` did nothing
+    /// while clicking one column beside the box cancelled.
+    #[test]
+    fn a_click_answers_the_package_removal_confirm() {
+        let root = project_dir("removepkg", 1);
+        for confirm in [false, true] {
+            let mut app = app_with_backend(BackendKind::MicroPython, &root);
+            app.overlay = Some(crate::app::Overlay::ConfirmRemovePackage {
+                name: "umqtt.simple".into(),
+                targets: Vec::new(),
+                declared: true,
+                confirm: false,
+            });
+            let lines = render(&mut app, 100, 40);
+            let label = if confirm { "Yes" } else { "No" };
+            let row = lines
+                .iter()
+                .position(|line| line.contains(" No ") && line.contains(" Yes "))
+                .expect("the confirm draws both buttons") as u16;
+            let col = column_of(&lines[row as usize], label).unwrap();
+
+            click(&mut app, col, row);
+            assert!(
+                !matches!(
+                    app.overlay,
+                    Some(crate::app::Overlay::ConfirmRemovePackage { .. })
+                ),
+                "clicking {label} answered the dialog instead of doing nothing"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn a_click_between_buttons_moves_nothing() {
         let root = project_dir("divider", 1);
@@ -1928,8 +1809,14 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// Inside the box but not on a button, a click answers nothing --- the
+    /// dialog waits. (The name used to say "beside", which is now the
+    /// opposite policy: a click *outside* the box dismisses it, which the
+    /// `…_outside_the_box_closes_it…` test pins. Column 50 was always inside
+    /// the 72-wide destructive box, so what this has tested all along is the
+    /// message area.)
     #[test]
-    fn a_click_beside_a_destructive_confirm_ignores_the_dialog() {
+    fn a_click_on_a_confirms_message_area_answers_nothing() {
         let root = project_dir("destructive", 1);
         let mut app = app_with_backend(BackendKind::Zephyr, &root);
         app.overlay = Some(crate::app::Overlay::ConfirmBuild {
@@ -1941,9 +1828,7 @@ mod tests {
             .iter()
             .position(|l| l.contains("west flash"))
             .expect("the destructive dialog quotes the command") as u16;
-        // A click on the message area (not a button) is not an answer ---
-        // dismissing by mis-click would be cheaper than Esc for the wrong
-        // question.
+        // Column 50 sits inside the 72-wide box, on the quoted command.
         click(&mut app, 50, row);
         assert!(
             app.overlay.is_some(),

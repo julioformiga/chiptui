@@ -15,18 +15,17 @@
 
 #![cfg(unix)]
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use chiptui::app::{App, Overlay};
 use chiptui::backend::BackendKind;
 use chiptui::event::AppEvent;
 use chiptui::firmware_id::{FirmwareVerdict, FlashFirmware};
 use chiptui::flash::FlashPanel;
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::KeyCode;
 
-fn key(code: KeyCode) -> AppEvent {
-    AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE))
-}
+mod common;
+use common::{key, pump_until};
 
 /// A fake `esptool` that answers `chip-id` and the two identification reads
 /// (bootloader window, then the version-hunt window) with a real Zephyr
@@ -71,21 +70,6 @@ fn write_fake_esptool(path: &std::path::Path) {
     .unwrap();
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
-}
-
-fn pump_until(app: &mut App, mut done: impl FnMut(&App) -> bool, secs: u64) -> bool {
-    let deadline = Instant::now() + Duration::from_secs(secs);
-    while Instant::now() < deadline {
-        for event in app.processes.drain() {
-            app.handle(AppEvent::Process(event));
-        }
-        if done(app) {
-            return true;
-        }
-        app.handle(AppEvent::Tick);
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    done(app)
 }
 
 fn zephyr_hunted(app: &App) -> bool {

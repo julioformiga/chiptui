@@ -18,7 +18,7 @@ use crate::app::{App, Focus};
 use crate::browser::{Browser, PaneState};
 use crate::device::{DiscoveryState, ScriptState};
 use crate::files::SyncStatus;
-use crate::ui::panels::truncate_start;
+use crate::ui::panels::{truncate_end, truncate_start};
 use crate::ui::{
     Palette, SPINNER, border_style, content_style, dashboard_focused, highlighted_line,
     icon_column, muted_style, numbered_title, paint_focus_wash, pane_block, pane_border,
@@ -511,7 +511,7 @@ fn row_spans(
     let marker_width = usize::from(status.is_some()) * 2;
     let name_width =
         (width as usize).saturating_sub(icon_width + marker_width + size_text.len() + 1);
-    let display = truncate(name, name_width.max(1));
+    let display = truncate_end(name, name_width.max(1));
     let padding = name_width.saturating_sub(display.chars().count());
 
     let name_style = if is_dir {
@@ -637,19 +637,6 @@ fn human_size(bytes: u64) -> String {
     }
 }
 
-/// Truncates a name, keeping the extension visible.
-fn truncate(name: &str, max: usize) -> String {
-    let length = name.chars().count();
-    if length <= max {
-        return name.to_string();
-    }
-    if max <= 1 {
-        return "…".to_string();
-    }
-    let kept: String = name.chars().take(max - 1).collect();
-    format!("{kept}…")
-}
-
 /// Shortens the pane title from the left: 7 is "Files: ".len(), plus 2
 /// for the leading glyph and its gap --- budgeted for the worst icon set,
 /// so a long path never rides over the pane's corner in any of them.
@@ -668,20 +655,6 @@ mod tests {
         assert_eq!(human_size(139), "139");
         assert_eq!(human_size(2048), "2.0k");
         assert_eq!(human_size(5 * 1024 * 1024), "5.0M");
-    }
-
-    #[test]
-    fn names_are_truncated_from_the_right() {
-        assert_eq!(truncate("main.py", 10), "main.py");
-        assert_eq!(truncate("a_very_long_module.py", 10), "a_very_lo…");
-        assert_eq!(truncate("main.py", 1), "…");
-    }
-
-    #[test]
-    fn truncation_counts_characters_not_bytes() {
-        let name = "configuração_do_dispositivo.py";
-        let truncated = truncate(name, 12);
-        assert_eq!(truncated.chars().count(), 12);
     }
 
     #[test]

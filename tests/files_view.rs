@@ -16,6 +16,9 @@ use chiptui::event::AppEvent;
 use chiptui::files::SyncStatus;
 use chiptui::process::ProcessManager;
 
+mod common;
+use common::{fake_mpremote, fake_mpremote_second_board, key, render};
+
 /// A pending edit that came from a local file (no device to re-upload to).
 fn local_edit(path: PathBuf) -> PendingEdit {
     PendingEdit {
@@ -29,35 +32,13 @@ fn local_edit(path: PathBuf) -> PendingEdit {
 /// `[ui] icons` (pane/tab glyphs) out of `$HOME`, so without this the
 /// frames assert against whatever the developer happens to have configured.
 fn hermetic_app(root: impl Into<PathBuf>) -> App {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNT: AtomicU64 = AtomicU64::new(0);
-    let mut app = App::new(root);
-    let home = std::env::temp_dir().join(format!(
-        "chiptui-files-home-{}-{}",
-        std::process::id(),
-        COUNT.fetch_add(1, Ordering::Relaxed)
-    ));
-    app.set_home_dir(home);
-    app
-}
-
-fn fake_mpremote() -> String {
-    format!("{}/tests/fixtures/bin/mpremote", env!("CARGO_MANIFEST_DIR"))
+    common::hermetic_app(root, "chiptui-files-home")
 }
 
 /// A machine with no board attached: `devs` reports only legacy UARTs.
 fn fake_mpremote_no_devices() -> String {
     format!(
         "{}/tests/fixtures/bin/mpremote-no-devices",
-        env!("CARGO_MANIFEST_DIR")
-    )
-}
-
-/// A different board from `fake_mpremote`'s: no `lib/`, only `boot.py`. Used
-/// to simulate a hotplug swap.
-fn fake_mpremote_second_board() -> String {
-    format!(
-        "{}/tests/fixtures/bin/mpremote-second-board",
         env!("CARGO_MANIFEST_DIR")
     )
 }
@@ -985,16 +966,6 @@ fn the_browser_state_survives_a_focus_change_but_q_quits_outright() {
     assert!(app.should_quit());
 }
 
-/// Renders the current screen and returns it as plain text.
-fn render(app: &mut App, width: u16, height: u16) -> String {
-    let mut terminal =
-        ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
-    terminal
-        .draw(|frame| chiptui::ui::draw(frame, app))
-        .unwrap();
-    terminal.backend().to_string()
-}
-
 /// An app sitting in the file browser, with the device pane already loaded.
 fn app_in_browser(project: &Project) -> App {
     let mut app = hermetic_app(&project.root);
@@ -1437,22 +1408,11 @@ fn dashboard_help_describes_file_browser_keys_when_a_files_pane_is_focused() {
 /// mirrors `flash_view.rs`'s `settle`, applied to the browser instead of the
 /// flash panel.
 fn settle_app(app: &mut App) {
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while app.browser.as_ref().is_some_and(Browser::is_busy) && Instant::now() < deadline {
-        for event in app.processes.drain() {
-            app.handle(AppEvent::Process(event));
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    assert!(
-        !app.browser.as_ref().unwrap().is_busy(),
-        "device command never completed"
+    common::settle_while(
+        app,
+        |app| app.browser.as_ref().is_some_and(Browser::is_busy),
+        "device command",
     );
-}
-
-fn key(code: ratatui::crossterm::event::KeyCode) -> AppEvent {
-    use ratatui::crossterm::event::{KeyEvent, KeyModifiers};
-    AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE))
 }
 
 #[test]

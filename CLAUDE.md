@@ -281,15 +281,23 @@ overlay routes to `on_overlay_mouse` instead: confirm dialogs answer through the
 No/Yes buttons by *synthesizing* `y`/`n` into `on_overlay_key` (every per-variant gate for
 free), pickers select without activating, stacked menus press via `Enter`, the SDK checklist
 toggles via `Space`, and a click outside the dialog's drawn rect closes it exactly like `Esc`
---- synthesized into `on_overlay_key` (`App::overlay_popup_rect`, mirroring each variant's own
-`draw_*` sizing the same way `confirm_size` already does, so every per-variant special case ---
-Help's filtering step-back, the interrupt/remove-package confirms' "return to Packages", the
-installer's busy guard --- applies unchanged) *before* any row/button lookup runs: a
+--- synthesized into `on_overlay_key` (so every per-variant special case --- Help's filtering
+step-back, the interrupt/remove-package confirms' "return to Packages", the installer's busy
+guard --- applies unchanged) *before* any row/button lookup runs: a
 list-row/stacked-button overlay's own click grammar (`list_row`/`button_at_row`) keys on the
 row alone, blind to the column, so without this ordering a click on the right row but past
 either edge of the popup would quietly answer that row's option instead of closing the dialog
 (caught live in Zephyr Actions, SDK toolchains and the directory picker, pinned by
-`a_click_on_the_right_row_but_outside_the_box_closes_it_instead_of_answering`). `View::Flash`
+`a_click_on_the_right_row_but_outside_the_box_closes_it_instead_of_answering`). **Where each
+variant's box sits is one definition**, `ui::layout::overlay_popup` --- consumed by
+`ui::overlay::draw` (which hands each `draw_*` the finished rect instead of letting it centre
+itself) and by the hit-testing alike, the contract `layout::packages`/`layout::docs_picker`
+always had. Writing the sizes on both sides is what let them drift: an empty device picker
+draws a fixed 52x4 "no board" box that the hit-testing sized `64 x len + 2`, so a click *inside*
+it dismissed it (`a_click_inside_the_empty_device_picker_does_not_dismiss_it`), and
+`ConfirmRemovePackage` had a rect but no entry in the confirm-button family, answering a click
+beside its box while ignoring one on `Yes` (`a_click_answers_the_package_removal_confirm`).
+`View::Flash`
 (structurally separate from `Overlay`) carries the identical check in `on_flash_mouse`,
 synthesizing into `on_flash_key` --- `leave_flash_screen`'s one-screen-back behavior for
 Options/Online*/CustomUrl applies the same way. The home screen answers clicks too
@@ -685,6 +693,23 @@ the constant with it.
 
 `lib.rs` + `main.rs`: everything except `terminal` and `ui` is testable without a tty, and `ui` is
 testable through ratatui's `TestBackend` (see `tests/ui_render.rs`, `tests/files_view.rs`).
+
+`src/app.rs` holds `struct App`, its `new`, the top-level enums (`View`, `Focus`, `LogTab`,
+`DevicePaneTab`, `DocsFocus`, `ProjectRow`, `RunState`, `PendingEdit`) and the trivial
+accessors; **every other `impl App` block lives in a `src/app/*.rs` submodule** and is
+re-exported from here, so `crate::app::Overlay` and friends still resolve. The split is by
+subject: `keys` (the keyboard's front door and the dashboard dispatch), `focus` (the `Tab`
+tour, the `ctrl+arrow` chords, the pane digits), `events` (`handle`/`on_process`/the hotplug
+poll), `theme`, `monitor_view`, plus the older per-subsystem files. A private method that moves
+out of `app.rs` needs `pub(super)` to keep the reach it had over its sibling modules.
+
+`tests/common/mod.rs` is the integration suite's shared scaffolding (`fake`, `key`, `render`,
+`pump_until`, `settle_while`, `hermetic_app`, …) --- each `tests/*.rs` is its own crate, so a
+`mod common;` declaration is what pulls it in, and `#![allow(dead_code)]` inside it is required
+because no single test binary uses all of it. Only helpers that were genuinely identical live
+there: a variant that differs in *behaviour* (`board_docs_view`'s docs-draining `pump_until`,
+`flash_view`'s deliberately tick-free one, the five shapes of `zephyr_app`) stays local, since
+collapsing those would change what the tests do rather than how they read.
 
 ## Source of truth
 

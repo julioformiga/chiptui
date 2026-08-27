@@ -14,30 +14,10 @@ use chiptui::backend::BackendKind;
 use chiptui::backend::zephyr::workspace::{Workspace, WorkspaceOrigin};
 use chiptui::board_docs::{DocsEvent, IndexState};
 use chiptui::event::AppEvent;
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::KeyCode;
 
-fn fake(tool: &str) -> String {
-    format!("{}/tests/fixtures/bin/{tool}", env!("CARGO_MANIFEST_DIR"))
-}
-
-fn key(code: KeyCode) -> AppEvent {
-    AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE))
-}
-
-fn ctrl(c: char) -> KeyCode {
-    KeyCode::Char(c)
-}
-
-fn key_event(code: KeyCode, modifiers: KeyModifiers) -> AppEvent {
-    AppEvent::Key(KeyEvent::new(code, modifiers))
-}
-
-/// The Project pane's way in: the shortcuts overlay (`ctrl+k`), then the
-/// pane's `e` letter.
-fn enter_project_pane(app: &mut App) {
-    app.handle(key_event(ctrl('k'), KeyModifiers::CONTROL));
-    app.handle(key(KeyCode::Char('e')));
-}
+mod common;
+use common::{enter_project_pane, fake, key, render};
 
 /// A Zephyr app in a temp directory whose build panel runs the fake west
 /// (see `tests/build_view.rs`; same shape, minus what those tests already
@@ -90,15 +70,6 @@ fn focus_nrf(app: &mut App) {
     for c in ['n', 'r', 'f'] {
         app.handle(key(KeyCode::Char(c)));
     }
-}
-
-fn render(app: &mut App, width: u16, height: u16) -> String {
-    let mut terminal =
-        ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
-    terminal
-        .draw(|frame| chiptui::ui::draw(frame, app))
-        .unwrap();
-    terminal.backend().to_string()
 }
 
 /// Drains process and docs events plus ticks until `done` holds --- the

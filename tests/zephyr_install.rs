@@ -16,7 +16,6 @@
 #![cfg(unix)]
 
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
 
 use chiptui::app::{App, Overlay};
 use chiptui::backend::BackendKind;
@@ -24,13 +23,8 @@ use chiptui::event::AppEvent;
 use chiptui::install::{Action, Phase, Step, StepState};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-fn fake(tool: &str) -> String {
-    format!("{}/tests/fixtures/bin/{tool}", env!("CARGO_MANIFEST_DIR"))
-}
-
-fn key(code: KeyCode) -> AppEvent {
-    AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE))
-}
+mod common;
+use common::{fake, key, log_mentions, render};
 
 fn root_for(tag: &str) -> PathBuf {
     std::env::temp_dir().join(format!("chiptui-install-{tag}-{}", std::process::id()))
@@ -73,19 +67,11 @@ fn install_app_configured(tag: &str, seed: impl FnOnce(&Path) -> String) -> (App
 
 /// Drains process events until `ready` says the app reached the state the
 /// test is waiting for. Returns whether it did before the deadline.
+/// [`common::pump_until`] with this file's own argument order: the deadline
+/// reads better *before* the long multi-line predicates the installer tests
+/// pass, and thirteen call sites already spell it that way.
 fn pump_until(app: &mut App, secs: u64, ready: impl Fn(&App) -> bool) -> bool {
-    let deadline = Instant::now() + Duration::from_secs(secs);
-    while Instant::now() < deadline {
-        for event in app.processes.drain() {
-            app.handle(AppEvent::Process(event));
-        }
-        if ready(app) {
-            return true;
-        }
-        app.handle(AppEvent::Tick);
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    ready(app)
+    common::pump_until(app, ready, secs)
 }
 
 fn probes_done(app: &App) -> bool {
@@ -140,21 +126,6 @@ fn installed_sdk(dir: &Path) {
 
 fn user_config(root: &Path) -> String {
     std::fs::read_to_string(root.join("home/.config/chiptui/config.toml")).unwrap()
-}
-
-fn log_mentions(app: &App, needle: &str) -> bool {
-    app.logs
-        .visible(usize::MAX)
-        .any(|entry| entry.message.contains(needle))
-}
-
-fn render(app: &mut App, width: u16, height: u16) -> String {
-    let mut terminal =
-        ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
-    terminal
-        .draw(|frame| chiptui::ui::draw(frame, app))
-        .unwrap();
-    terminal.backend().to_string()
 }
 
 /// Opens the installer over `parent` and waits for the checklist to fill.

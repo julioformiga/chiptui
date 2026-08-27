@@ -212,7 +212,7 @@ fn project_spans<'a>(
         }
         _ => (entry.backend.icon().to_string(), false),
     };
-    let name = fit(&entry.name, NAME_WIDTH);
+    let name = super::panels::truncate_end(&entry.name, NAME_WIDTH);
     let icon_cols = usize::from(icons.shows_decorations()) * 3;
     let used = 1 + icon_cols + BACKEND_WIDTH + 2 + NAME_WIDTH + 2;
     let path_width = width.saturating_sub(used + 1);
@@ -241,20 +241,6 @@ fn project_spans<'a>(
     // a row that stops at its text would look like a ragged block.
     spans.push(Span::styled(format!("{path:<path_width$}"), base.fg(muted)));
     spans
-}
-
-/// Shortens `text` from the right, keeping the head --- a project's name
-/// identifies it from the front, unlike its path.
-fn fit(text: &str, max: usize) -> String {
-    let length = text.chars().count();
-    if length <= max {
-        return text.to_string();
-    }
-    if max <= 1 {
-        return "…".to_string();
-    }
-    let kept: String = text.chars().take(max - 1).collect();
-    format!("{kept}…")
 }
 
 fn draw_flow(

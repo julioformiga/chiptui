@@ -10,7 +10,7 @@
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
-use crate::install::{Action, Installer, Step};
+use crate::install::{Action, Installer};
 use crate::process::ProcessEvent;
 use crate::workspace::DirPurpose;
 
@@ -473,10 +473,5 @@ impl App {
         self.installer
             .as_ref()
             .map(|installer| installer.steps.as_slice())
-    }
-
-    /// Which step the installer is on, for tests.
-    pub fn install_running_step(&self) -> Option<Step> {
-        self.installer.as_ref().and_then(Installer::running_step)
     }
 }

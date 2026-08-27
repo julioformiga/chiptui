@@ -19,6 +19,9 @@ use chiptui::event::AppEvent;
 use chiptui::flash::{FlashAction, FlashPanel, FlashScreen, RunState};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+mod common;
+use common::{fake_curl, fake_mpremote, key, render};
+
 fn fake_esptool() -> String {
     format!("{}/tests/fixtures/bin/esptool", env!("CARGO_MANIFEST_DIR"))
 }
@@ -28,14 +31,6 @@ fn fake_esptool_progress_slow() -> String {
         "{}/tests/fixtures/bin/esptool-progress-slow",
         env!("CARGO_MANIFEST_DIR")
     )
-}
-
-fn fake_curl() -> String {
-    format!("{}/tests/fixtures/bin/curl", env!("CARGO_MANIFEST_DIR"))
-}
-
-fn fake_mpremote() -> String {
-    format!("{}/tests/fixtures/bin/mpremote", env!("CARGO_MANIFEST_DIR"))
 }
 
 struct Project {
@@ -62,10 +57,6 @@ impl Drop for Project {
     }
 }
 
-fn key(code: KeyCode) -> AppEvent {
-    AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE))
-}
-
 /// A home directory that does not exist, unique per call --- the same
 /// hermeticity `tests/ui_render.rs`'s `scratch_home` buys: `App::new` reads
 /// `[ui] theme`/`[ui] icons` out of `$HOME`'s config, so without this the
@@ -73,16 +64,7 @@ fn key(code: KeyCode) -> AppEvent {
 /// (an `icons = "nerd"` in the real config turned every glyph assertion
 /// here into a coin flip).
 fn hermetic_app(root: impl Into<PathBuf>) -> App {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNT: AtomicU64 = AtomicU64::new(0);
-    let mut app = App::new(root);
-    let home = std::env::temp_dir().join(format!(
-        "chiptui-flash-home-{}-{}",
-        std::process::id(),
-        COUNT.fetch_add(1, Ordering::Relaxed)
-    ));
-    app.set_home_dir(home);
-    app
+    common::hermetic_app(root, "chiptui-flash-home")
 }
 
 /// An app sitting in the flash view, pointed at the fake `esptool`.
@@ -97,16 +79,10 @@ fn app_with_flash(project: &Project) -> App {
 
 /// Drives the app until the flash panel is no longer busy.
 fn settle(app: &mut App) {
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while app.flash.as_ref().is_some_and(|flash| flash.is_busy()) && Instant::now() < deadline {
-        for event in app.processes.drain() {
-            app.handle(AppEvent::Process(event));
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    assert!(
-        !app.flash.as_ref().unwrap().is_busy(),
-        "esptool command never completed"
+    common::settle_while(
+        app,
+        |app| app.flash.as_ref().is_some_and(|flash| flash.is_busy()),
+        "esptool command",
     );
 }
 
@@ -517,16 +493,6 @@ fn write_flash_without_a_chip_or_offset_stays_on_options_instead_of_confirming()
         ),
         other => panic!("expected a confirmation overlay once unblocked, got {other:?}"),
     }
-}
-
-/// Renders the current screen and returns it as plain text.
-fn render(app: &mut App, width: u16, height: u16) -> String {
-    let mut terminal =
-        ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
-    terminal
-        .draw(|frame| chiptui::ui::draw(frame, app))
-        .unwrap();
-    terminal.backend().to_string()
 }
 
 #[test]

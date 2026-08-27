@@ -20,23 +20,27 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
     let Some(overlay) = app.overlay.clone() else {
         return;
     };
+    // The one definition of where each variant's box sits, shared with the
+    // mouse hit-testing (`app::mouse`) --- the numbers used to be written
+    // out on both sides and drifted apart.
+    let popup = super::layout::overlay_popup(app, &overlay, area);
     match overlay {
         Overlay::Help {
             filter,
             filtering,
             selected,
-        } => draw_help(frame, area, app, &filter, filtering, selected, palette),
+        } => draw_help(frame, popup, app, &filter, filtering, selected, palette),
         Overlay::DevicePicker { selected } => {
-            draw_device_picker(frame, area, app, selected, palette)
+            draw_device_picker(frame, popup, app, selected, palette)
         }
-        Overlay::ThemePicker { selected } => draw_theme_picker(frame, area, app, selected, palette),
+        Overlay::ThemePicker { selected } => draw_theme_picker(frame, popup, app, selected, palette),
         // `message` is the literal command preview the caller built; which
         // action it belongs to lives on the panel, un-consumed, so the
         // dialog can name it (`FlashPanel::pending`).
         // `reason` is state the decline path needs, not something to draw
         // --- see `draw_install_offer`.
         Overlay::ConfirmInstallHere { dir, confirm, .. } => {
-            draw_install_offer(frame, area, app, &dir, confirm, palette);
+            draw_install_offer(frame, popup, app, &dir, confirm, palette);
         }
         Overlay::ZephyrInstall => {
             // Published like the log pane's height, so `PageUp`/`PageDown`
@@ -57,7 +61,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
         Overlay::SdkToolchains { selected } => draw_sdk_toolchains(frame, area, app, selected, palette),
         Overlay::Confirm { message, confirm } if app.install_confirm_pending => draw_confirm_dialog(
             frame,
-            area,
+            popup,
             "Install Zephyr here?",
             vec![
                 Line::from(
@@ -76,14 +80,13 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
                 Line::from(shorten_tail(&message, DESTRUCTIVE_BUDGET).fg(palette.muted)),
             ],
             confirm,
-            (DESTRUCTIVE_WIDTH, 10),
             palette,
         ),
         Overlay::Confirm { message, confirm } => {
             match app.flash.as_ref().and_then(|flash| flash.pending()) {
                 Some(crate::flash::FlashAction::EraseFlash) => draw_destructive(
                     frame,
-                    area,
+                    popup,
                     Destructive {
                         title: "Erase the flash?",
                         target: chip_target(app),
@@ -95,7 +98,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
                 ),
                 Some(crate::flash::FlashAction::WriteFlash) => draw_destructive(
                     frame,
-                    area,
+                    popup,
                     Destructive {
                         title: "Write the firmware?",
                         target: chip_target(app),
@@ -107,7 +110,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
                 ),
                 // Any other confirmation still routed through this overlay
                 // keeps the plain single-line form.
-                _ => draw_confirm(frame, area, &message, confirm, palette),
+                _ => draw_confirm(frame, popup, &message, confirm, palette),
             }
         }
         Overlay::ConfirmBuild {
@@ -140,7 +143,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
                 .unwrap_or_else(|| "the shared workspace".to_string());
             draw_destructive(
                 frame,
-                area,
+                popup,
                 Destructive {
                     title: "Update the workspace?",
                     target,
@@ -200,7 +203,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
             };
             draw_destructive(
                 frame,
-                area,
+                popup,
                 Destructive {
                     title,
                     target,
@@ -238,25 +241,25 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
             palette,
         ),
         Overlay::BuildDirPicker { input, selected } => {
-            draw_build_dir_picker(frame, area, app, &input, selected, palette)
+            draw_build_dir_picker(frame, popup, app, &input, selected, palette)
         }
         Overlay::ProjectPicker {
             mpy,
             selected,
             error,
-        } => draw_project_picker(frame, area, app, mpy, selected, error.as_deref(), palette),
+        } => draw_project_picker(frame, popup, app, mpy, selected, error.as_deref(), palette),
         Overlay::FirmwarePicker { selected } => {
-            draw_firmware_picker(frame, area, app, selected, palette)
+            draw_firmware_picker(frame, popup, app, selected, palette)
         }
-        Overlay::ProjectSetup { selected } => draw_project_setup(frame, area, selected, palette),
+        Overlay::ProjectSetup { selected } => draw_project_setup(frame, popup, selected, palette),
         Overlay::ConfirmDownloadOverwrite { url, dest, confirm } => {
-            draw_confirm_download_overwrite(frame, area, &url, &dest, confirm, palette)
+            draw_confirm_download_overwrite(frame, popup, &url, &dest, confirm, palette)
         }
         Overlay::ConfirmUpload {
             name,
             is_dir,
             confirm,
-        } => draw_confirm_upload(frame, area, &name, is_dir, confirm, palette),
+        } => draw_confirm_upload(frame, popup, &name, is_dir, confirm, palette),
         Overlay::FileActions {
             side,
             name,
@@ -267,29 +270,29 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
             let is_text = crate::files::is_text_like(&name);
             let actions =
                 FileAction::for_entry(side, is_dir, is_text, status, app.manager.capabilities());
-            draw_file_actions(frame, area, &name, is_dir, &actions, selected, palette);
+            draw_file_actions(frame, popup, &name, is_dir, &actions, selected, palette);
         }
-        Overlay::FileViewer => draw_file_viewer(frame, area, app, palette),
+        Overlay::FileViewer => draw_file_viewer(frame, popup, app, palette),
         Overlay::ConfirmRestartDevice { confirm } => {
-            draw_confirm_restart_device(frame, area, app, confirm, palette)
+            draw_confirm_restart_device(frame, popup, app, confirm, palette)
         }
         Overlay::ConfirmEraseForMicroPython { confirm } => {
-            draw_confirm_erase_for_micropython(frame, area, confirm, palette)
+            draw_confirm_erase_for_micropython(frame, popup, confirm, palette)
         }
         Overlay::ConfirmSwitchProject { confirm } => {
-            draw_confirm_switch_project(frame, area, app, confirm, palette)
+            draw_confirm_switch_project(frame, popup, app, confirm, palette)
         }
         Overlay::ConfirmDelete {
             side,
             name,
             is_dir,
             confirm,
-        } => draw_confirm_delete(frame, area, side, &name, is_dir, confirm, palette),
+        } => draw_confirm_delete(frame, popup, side, &name, is_dir, confirm, palette),
         Overlay::CreateEntry { side, input } => {
-            draw_create_entry(frame, area, side, &input, palette)
+            draw_create_entry(frame, popup, side, &input, palette)
         }
         Overlay::RenameEntry { name, input } => {
-            draw_rename_entry(frame, area, &name, &input, palette)
+            draw_rename_entry(frame, popup, &name, &input, palette)
         }
         Overlay::Packages => draw_packages(frame, area, app, palette),
         Overlay::ConfirmRemovePackage {
@@ -304,31 +307,29 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
             draw_sync_preview(frame, area, &plan, confirm, palette)
         }
         Overlay::ConfirmIdentifyDevice { confirm, .. } => {
-            draw_confirm_identify_device(frame, area, app, confirm, palette)
+            draw_confirm_identify_device(frame, popup, app, confirm, palette)
         }
         Overlay::ConfirmInterruptDevice { confirm, .. } => {
-            draw_confirm_interrupt_device(frame, area, confirm, palette)
+            draw_confirm_interrupt_device(frame, popup, confirm, palette)
         }
         Overlay::RestoreDeviceScript { selected, .. } => {
-            draw_restore_device_script(frame, area, selected, palette)
+            draw_restore_device_script(frame, popup, selected, palette)
         }
         Overlay::ZephyrActions { selected } => {
-            draw_zephyr_actions(frame, area, selected, app.icon_set(), palette)
+            draw_zephyr_actions(frame, popup, selected, app.icon_set(), palette)
         }
     }
 }
 
 fn draw_confirm_dialog(
     frame: &mut Frame,
-    area: Rect,
+    popup: Rect,
     title: &str,
     message: Vec<Line>,
     confirm: bool,
-    size: (u16, u16),
     palette: Palette,
 ) {
-    let (width, height) = size;
-    let popup = centered(area, width.min(area.width), height);
+    let height = popup.height;
     let block = modal(title, palette);
     let inner = block.inner(popup);
 
@@ -365,7 +366,7 @@ fn draw_confirm_dialog(
 // caller needs a variant of its own just to describe why it fired.
 fn draw_confirm_restart_device(
     frame: &mut Frame,
-    area: Rect,
+    popup: Rect,
     app: &App,
     confirm: bool,
     palette: Palette,
@@ -376,15 +377,7 @@ fn draw_confirm_restart_device(
         Line::from(""),
         Line::from(command.to_string().fg(palette.muted)),
     ];
-    draw_confirm_dialog(
-        frame,
-        area,
-        "Restart device?",
-        message,
-        confirm,
-        (54, 8),
-        palette,
-    );
+    draw_confirm_dialog(frame, popup, "Restart device?", message, confirm, palette);
 }
 
 /// Leaving the project while work is in flight. The count is the whole
@@ -392,7 +385,7 @@ fn draw_confirm_restart_device(
 /// is the thing about to die.
 fn draw_confirm_switch_project(
     frame: &mut Frame,
-    area: Rect,
+    popup: Rect,
     app: &App,
     confirm: bool,
     palette: Palette,
@@ -410,20 +403,12 @@ fn draw_confirm_switch_project(
         Line::from(""),
         Line::from("Leave this project?".fg(palette.fg)),
     ];
-    draw_confirm_dialog(
-        frame,
-        area,
-        "Switch project?",
-        message,
-        confirm,
-        (62, 9),
-        palette,
-    );
+    draw_confirm_dialog(frame, popup, "Switch project?", message, confirm, palette);
 }
 
 fn draw_confirm_erase_for_micropython(
     frame: &mut Frame,
-    area: Rect,
+    popup: Rect,
     confirm: bool,
     palette: Palette,
 ) {
@@ -437,11 +422,10 @@ fn draw_confirm_erase_for_micropython(
     ];
     draw_confirm_dialog(
         frame,
-        area,
+        popup,
         "Install MicroPython?",
         message,
         confirm,
-        (65, 9),
         palette,
     );
 }
@@ -454,7 +438,7 @@ fn draw_confirm_erase_for_micropython(
 /// state (`undefined` in the pane), an interrupted one is not.
 fn draw_confirm_identify_device(
     frame: &mut Frame,
-    area: Rect,
+    popup: Rect,
     app: &App,
     confirm: bool,
     palette: Palette,
@@ -473,15 +457,7 @@ fn draw_confirm_identify_device(
                 .fg(palette.muted),
         ),
     ];
-    draw_confirm_dialog(
-        frame,
-        area,
-        "Device connected",
-        message,
-        confirm,
-        (66, 11),
-        palette,
-    );
+    draw_confirm_dialog(frame, popup, "Device connected", message, confirm, palette);
 }
 
 /// A device command is waiting on the user because the board is believed to
@@ -489,7 +465,7 @@ fn draw_confirm_identify_device(
 /// every filesystem operation, so the interruption is the user's call, not a
 /// silent side effect. Naming what happens afterwards matters as much as the
 /// warning --- the script can be brought back.
-fn draw_confirm_interrupt_device(frame: &mut Frame, area: Rect, confirm: bool, palette: Palette) {
+fn draw_confirm_interrupt_device(frame: &mut Frame, popup: Rect, confirm: bool, palette: Palette) {
     let message = vec![
         Line::from("A script is running on the device.".fg(palette.warning)),
         Line::from(
@@ -501,15 +477,7 @@ fn draw_confirm_interrupt_device(frame: &mut Frame, area: Rect, confirm: bool, p
             "Afterwards you can restart the script from the prompt that follows.".fg(palette.muted),
         ),
     ];
-    draw_confirm_dialog(
-        frame,
-        area,
-        "Device is busy",
-        message,
-        confirm,
-        (64, 10),
-        palette,
-    );
+    draw_confirm_dialog(frame, popup, "Device is busy", message, confirm, palette);
 }
 
 /// How to bring back a script that was interrupted for a device operation:
@@ -517,7 +485,7 @@ fn draw_confirm_interrupt_device(frame: &mut Frame, area: Rect, confirm: bool, p
 /// and a fast relaunch with different tradeoffs. "Leave it stopped" is the
 /// default highlight --- restarting re-runs code the user may still be
 /// changing.
-fn draw_restore_device_script(frame: &mut Frame, area: Rect, selected: usize, palette: Palette) {
+fn draw_restore_device_script(frame: &mut Frame, popup: Rect, selected: usize, palette: Palette) {
     const CHOICES: [(&str, &str); 3] = [
         ("Reset the board", "reboot; runs boot.py + main.py again"),
         (
@@ -539,8 +507,6 @@ fn draw_restore_device_script(frame: &mut Frame, area: Rect, selected: usize, pa
             ]))
         })
         .collect();
-
-    let popup = centered(area, 64, CHOICES.len() as u16 + 4);
     let block = modal("Restart device script?", palette);
     let inner = block.inner(popup);
     let [message, list] =
@@ -588,7 +554,7 @@ pub(crate) const ZEPHYR_ACTIONS_COUNT: usize = 3;
 
 fn draw_zephyr_actions(
     frame: &mut Frame,
-    area: Rect,
+    popup: Rect,
     selected: usize,
     icons: crate::icons::IconSet,
     palette: Palette,
@@ -623,10 +589,6 @@ fn draw_zephyr_actions(
                 .selected(index == selected)
         })
         .collect();
-    let height = super::button::stack_height(&buttons).saturating_add(2);
-    // Wide enough for the longest detail line plus the frame and the
-    // indent; the sibling choice overlays use the same 64.
-    let popup = centered(area, 64, height);
     frame.render_widget(Clear, popup);
     let block = modal("Zephyr Actions", palette);
     let inner = block.inner(popup);
@@ -636,7 +598,7 @@ fn draw_zephyr_actions(
 
 fn draw_confirm_delete(
     frame: &mut Frame,
-    area: Rect,
+    popup: Rect,
     side: crate::browser::Side,
     name: &str,
     is_dir: bool,
@@ -656,15 +618,7 @@ fn draw_confirm_delete(
         Line::from(label.fg(palette.warning)),
         Line::from(format!("This will remove it {}.", side_str).fg(palette.muted)),
     ];
-    draw_confirm_dialog(
-        frame,
-        area,
-        "Confirm Delete",
-        message,
-        confirm,
-        (54, 9),
-        palette,
-    );
+    draw_confirm_dialog(frame, popup, "Confirm Delete", message, confirm, palette);
 }
 
 /// One btop-style dialog button: a bordered box, filled solid when selected
@@ -707,7 +661,7 @@ fn draw_dialog_button(
 /// other small pickers in this module.
 fn draw_file_actions(
     frame: &mut Frame,
-    area: Rect,
+    popup: Rect,
     name: &str,
     is_dir: bool,
     actions: &[FileAction],
@@ -723,8 +677,6 @@ fn draw_file_actions(
             )))
         })
         .collect();
-
-    let popup = centered(area, 44, actions.len() as u16 + 2);
     let mut state = ListState::default().with_selected(Some(selected));
     let title = if is_dir {
         format!("{name}/")
@@ -749,12 +701,8 @@ fn draw_file_actions(
 /// Publishes [`App::viewer_viewport`] the same way `panels::draw_logs`
 /// publishes `log_viewport`, so `PageUp`/`PageDown` scroll by exactly what is
 /// on screen.
-fn draw_file_viewer(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
+fn draw_file_viewer(frame: &mut Frame, popup: Rect, app: &mut App, palette: Palette) {
     let Some(viewer) = &app.viewer else { return };
-
-    let width = area.width.saturating_sub(6).max(20);
-    let height = area.height.saturating_sub(4).max(6);
-    let popup = centered(area, width, height);
 
     let name = viewer.display_name();
     let title = match &viewer.state {
@@ -860,7 +808,7 @@ fn diff_line_spans(line: &str, palette: Palette) -> Vec<Span<'_>> {
 /// applied to a filesystem write rather than a device operation.
 fn draw_confirm_download_overwrite(
     frame: &mut Frame,
-    area: Rect,
+    popup: Rect,
     url: &str,
     dest: &std::path::Path,
     confirm: bool,
@@ -872,18 +820,17 @@ fn draw_confirm_download_overwrite(
     ];
     draw_confirm_dialog(
         frame,
-        area,
+        popup,
         "Overwrite firmware?",
         message,
         confirm,
-        (70, 8),
         palette,
     );
 }
 
 fn draw_confirm_upload(
     frame: &mut Frame,
-    area: Rect,
+    popup: Rect,
     name: &str,
     is_dir: bool,
     confirm: bool,
@@ -909,15 +856,7 @@ fn draw_confirm_upload(
             ),
         ]
     };
-    draw_confirm_dialog(
-        frame,
-        area,
-        "Confirm Upload",
-        message,
-        confirm,
-        (65, 8),
-        palette,
-    );
+    draw_confirm_dialog(frame, popup, "Confirm Upload", message, confirm, palette);
 }
 
 /// Inline text entry for creating a file or directory (`a`), in whichever
@@ -926,12 +865,11 @@ fn draw_confirm_upload(
 /// separate help lookup.
 fn draw_create_entry(
     frame: &mut Frame,
-    area: Rect,
+    popup: Rect,
     side: crate::browser::Side,
     input: &str,
     palette: Palette,
 ) {
-    let popup = centered(area, 54, 6);
     let title = match side {
         crate::browser::Side::Local => "New (local)",
         crate::browser::Side::Device => "New (device)",
@@ -968,8 +906,7 @@ fn draw_create_entry(
 /// --- same shape as [`draw_create_entry`], with the current name shown above
 /// a field pre-filled with it, so editing starts from the end of what is
 /// already there and an unedited confirm visibly changes nothing.
-fn draw_rename_entry(frame: &mut Frame, area: Rect, name: &str, input: &str, palette: Palette) {
-    let popup = centered(area, 54, 6);
+fn draw_rename_entry(frame: &mut Frame, popup: Rect, name: &str, input: &str, palette: Palette) {
     let block = modal("Rename", palette);
     let inner = block.inner(popup);
 
@@ -1008,7 +945,7 @@ fn draw_rename_entry(frame: &mut Frame, area: Rect, name: &str, input: &str, pal
 #[allow(clippy::too_many_arguments)]
 fn draw_confirm_remove_package(
     frame: &mut Frame,
-    area: Rect,
+    popup: Rect,
     app: &App,
     name: &str,
     targets: &[(crate::device::DevicePath, bool)],
@@ -1044,7 +981,7 @@ fn draw_confirm_remove_package(
         .join(" ; ");
     draw_destructive(
         frame,
-        area,
+        popup,
         Destructive {
             title: "Remove this package?",
             target,
@@ -1319,7 +1256,7 @@ fn package_details(
 /// Empty or unrecognized project (`SPEC.md` §7): asks which backend this
 /// directory is, offering no "Automatic" row since detection already failed
 /// to conclude one.
-fn draw_project_setup(frame: &mut Frame, area: Rect, selected: usize, palette: Palette) {
+fn draw_project_setup(frame: &mut Frame, popup: Rect, selected: usize, palette: Palette) {
     let items: Vec<ListItem> = BackendKind::ALL
         .iter()
         .map(|kind| {
@@ -1329,8 +1266,6 @@ fn draw_project_setup(frame: &mut Frame, area: Rect, selected: usize, palette: P
             )))
         })
         .collect();
-
-    let popup = centered(area, 60, BackendKind::ALL.len() as u16 + 4);
     let block = modal("New project", palette);
     let inner = block.inner(popup);
     let [message, list] = Layout::vertical([
@@ -1362,9 +1297,9 @@ fn draw_project_setup(frame: &mut Frame, area: Rect, selected: usize, palette: P
 /// A destructive esptool action awaiting explicit confirmation (`SPEC.md`
 /// §15). `message` is always the literal command about to run, never a
 /// paraphrase, so shown as-is.
-fn draw_confirm(frame: &mut Frame, area: Rect, message: &str, confirm: bool, palette: Palette) {
+fn draw_confirm(frame: &mut Frame, popup: Rect, message: &str, confirm: bool, palette: Palette) {
     let lines = vec![Line::from(message.to_string().fg(palette.warning))];
-    draw_confirm_dialog(frame, area, "Confirm", lines, confirm, (70, 7), palette);
+    draw_confirm_dialog(frame, popup, "Confirm", lines, confirm, palette);
 }
 
 /// One destructive confirmation, in the grammar all of them share.
@@ -1401,7 +1336,7 @@ const DESTRUCTIVE_BUDGET: usize = DESTRUCTIVE_WIDTH as usize - 4;
 
 fn draw_destructive(
     frame: &mut Frame,
-    area: Rect,
+    popup: Rect,
     dialog: Destructive,
     confirm: bool,
     palette: Palette,
@@ -1417,15 +1352,7 @@ fn draw_destructive(
         Line::from(shorten_tail(&dialog.command, DESTRUCTIVE_BUDGET).fg(palette.muted)),
     ];
     // Four content rows over the three-row button block, plus the borders.
-    draw_confirm_dialog(
-        frame,
-        area,
-        dialog.title,
-        lines,
-        confirm,
-        (DESTRUCTIVE_WIDTH, 9),
-        palette,
-    );
+    draw_confirm_dialog(frame, popup, dialog.title, lines, confirm, palette);
 }
 
 /// The board a project command acts on, named the way the user recognizes
@@ -1504,7 +1431,7 @@ fn install_offer(dir: &Path) -> (&'static str, &'static str, PathBuf) {
 
 fn draw_install_offer(
     frame: &mut Frame,
-    area: Rect,
+    popup: Rect,
     app: &App,
     dir: &Path,
     confirm: bool,
@@ -1528,15 +1455,7 @@ fn draw_install_offer(
         ),
         Line::from(consequence.fg(palette.fg)),
     ];
-    draw_confirm_dialog(
-        frame,
-        area,
-        title,
-        lines,
-        confirm,
-        (DESTRUCTIVE_WIDTH, 9),
-        palette,
-    );
+    draw_confirm_dialog(frame, popup, title, lines, confirm, palette);
 }
 
 /// The SDK toolchain pick.
@@ -1548,7 +1467,7 @@ fn draw_install_offer(
 /// be asked for.
 fn draw_sdk_toolchains(
     frame: &mut Frame,
-    area: Rect,
+    popup: Rect,
     app: &App,
     selected: usize,
     palette: Palette,
@@ -1561,7 +1480,6 @@ fn draw_sdk_toolchains(
         Some(version) => format!("SDK toolchains — SDK_VERSION {version}"),
         None => "SDK toolchains".to_string(),
     };
-    let popup = centered(area, 56, area.height.saturating_sub(4));
     frame.render_widget(Clear, popup);
     let block = modal(&title, palette);
     let inner = block.inner(popup);
@@ -1622,7 +1540,7 @@ fn draw_sdk_toolchains(
 
 fn draw_dir_picker(
     frame: &mut Frame,
-    area: Rect,
+    popup: Rect,
     purpose: crate::workspace::DirPurpose,
     path: &std::path::Path,
     selected: usize,
@@ -1635,9 +1553,6 @@ fn draw_dir_picker(
         crate::workspace::DirPurpose::MpyProjects => "Where are your MicroPython projects?",
         crate::workspace::DirPurpose::Install => "Where should Zephyr be installed?",
     };
-    let height = 18u16;
-    let width = 72u16;
-    let popup = centered(area, width, height);
     frame.render_widget(Clear, popup);
     let block = modal(title, palette);
     frame.render_widget(block.clone(), popup);
@@ -1709,16 +1624,13 @@ fn draw_dir_picker(
 /// nothing is marked and nothing is refused.
 fn draw_project_picker(
     frame: &mut Frame,
-    area: Rect,
+    popup: Rect,
     app: &App,
     mpy: bool,
     selected: usize,
     error: Option<&str>,
     palette: Palette,
 ) {
-    let height = 18u16;
-    let width = 72u16;
-    let popup = centered(area, width, height);
     frame.render_widget(Clear, popup);
     let block = modal("Which project?", palette);
     frame.render_widget(block.clone(), popup);
@@ -1820,15 +1732,12 @@ fn draw_project_picker(
 /// typed new name (`west build -d`).
 fn draw_build_dir_picker(
     frame: &mut Frame,
-    area: Rect,
+    popup: Rect,
     app: &App,
     input: &str,
     selected: usize,
     palette: Palette,
 ) {
-    let height = 16u16;
-    let width = 60u16;
-    let popup = centered(area, width, height);
     frame.render_widget(Clear, popup);
 
     let Some(panel) = app.build.as_ref() else {
@@ -1893,7 +1802,7 @@ fn draw_build_dir_picker(
 /// Chooses among several `.bin`/`.elf` candidates found in the project root.
 fn draw_firmware_picker(
     frame: &mut Frame,
-    area: Rect,
+    popup: Rect,
     app: &App,
     selected: usize,
     palette: Palette,
@@ -1905,7 +1814,6 @@ fn draw_firmware_picker(
         .unwrap_or_default();
 
     if firmware.is_empty() {
-        let popup = centered(area, 52, 4);
         frame.render_widget(Clear, popup);
         frame.render_widget(
             Paragraph::new(vec![Line::from(
@@ -1926,8 +1834,6 @@ fn draw_firmware_picker(
             ]))
         })
         .collect();
-
-    let popup = centered(area, 64, firmware.len() as u16 + 2);
     let mut state = ListState::default().with_selected(Some(selected));
 
     frame.render_widget(Clear, popup);
@@ -2426,11 +2332,16 @@ fn wrap_words(text: &str, width: usize) -> Vec<String> {
 
 /// Serial device selection. Reached automatically when a scan finds more than
 /// one board, because guessing would be the wrong kind of convenience.
-fn draw_device_picker(frame: &mut Frame, area: Rect, app: &App, selected: usize, palette: Palette) {
+fn draw_device_picker(
+    frame: &mut Frame,
+    popup: Rect,
+    app: &App,
+    selected: usize,
+    palette: Palette,
+) {
     let devices = app.devices.devices();
 
     if devices.is_empty() {
-        let popup = centered(area, 52, 4);
         frame.render_widget(Clear, popup);
         frame.render_widget(
             Paragraph::new(vec![
@@ -2462,8 +2373,6 @@ fn draw_device_picker(frame: &mut Frame, area: Rect, app: &App, selected: usize,
             ListItem::new(Line::from(spans))
         })
         .collect();
-
-    let popup = centered(area, 64, devices.len() as u16 + 2);
     let mut state = ListState::default().with_selected(Some(selected));
 
     frame.render_widget(Clear, popup);
@@ -2487,7 +2396,7 @@ fn draw_device_picker(frame: &mut Frame, area: Rect, app: &App, selected: usize,
 /// narrows both divisions (an empty section loses its title too).
 fn draw_help(
     frame: &mut Frame,
-    area: Rect,
+    popup: Rect,
     app: &App,
     filter: &str,
     filtering: bool,
@@ -2506,16 +2415,10 @@ fn draw_help(
         .max()
         .unwrap_or(0);
     let indent = 2 + key_col + 2;
-    let widest = HelpSection::ALL
-        .iter()
-        .flat_map(|&section| help::bindings(app.view, section))
-        .map(
-            |binding| indent + binding.description.chars().count() + 2, /* borders */
-        )
-        .max()
-        .unwrap_or(indent + 2);
-    let width = widest.min(area.width.into()) as u16;
-    let budget = (width as usize).saturating_sub(2 /* borders */ + indent);
+    // The box was sized off the widest binding in `layout::overlay_popup`;
+    // what is left to decide here is how much of a description survives
+    // inside it.
+    let budget = (popup.width as usize).saturating_sub(2 /* borders */ + indent);
 
     let row = |binding: &crate::app::help::HelpBinding| {
         Line::from(vec![
@@ -2524,20 +2427,15 @@ fn draw_help(
                 Style::new().fg(palette.accent),
             ),
             Span::styled(
-                fit(binding.description, budget),
+                super::panels::truncate_end(binding.description, budget),
                 Style::new().fg(palette.fg),
             ),
         ])
     };
 
     // A section that matched nothing is hidden entirely, title included ---
-    // the layout below allocates for it only when it renders.
-    let visible_titles = usize::from(!navigation.is_empty()) + usize::from(!commands.is_empty());
-
-    let fixed = 1 /* filter line */ + visible_titles /* section titles */ + 2 /* borders */;
-    let height = (fixed + navigation.len() + commands.len()) as u16;
-    let height = height.min(area.height);
-    let popup = centered(area, width, height);
+    // the layout below allocates for it only when it renders, and
+    // `layout::overlay_popup` counted the same way when it sized the box.
     frame.render_widget(Clear, popup);
     let block = modal("Help", palette);
     frame.render_widget(block.clone(), popup);
@@ -2625,18 +2523,6 @@ fn draw_help(
     );
 }
 
-/// `text` shortened to `budget` columns with a trailing ellipsis, so a
-/// terminal narrower than the help table degrades to a shorter line rather
-/// than a wrapped or clipped one.
-fn fit(text: &str, budget: usize) -> String {
-    if budget == 0 || text.chars().count() <= budget {
-        return text.to_string();
-    }
-    let mut shortened: String = text.chars().take(budget - 1).collect();
-    shortened.push('…');
-    shortened
-}
-
 /// The theme picker: `Auto` first, then every `ratatui_themes::ThemeName`,
 /// each row swatched in its own accent color so the pick can be judged
 /// before it is applied, rather than by name alone. The `Auto` row swatches
@@ -2644,7 +2530,7 @@ fn fit(text: &str, budget: usize) -> String {
 /// MicroPython's Everforest) --- the mapping reads at a glance without a
 /// label long enough to widen the popup, and the live preview plus the
 /// post-pick log line spell it out in full.
-fn draw_theme_picker(frame: &mut Frame, area: Rect, app: &App, selected: usize, palette: Palette) {
+fn draw_theme_picker(frame: &mut Frame, popup: Rect, app: &App, selected: usize, palette: Palette) {
     let choices = ThemeChoice::all();
     let active = app.theme_choice();
 
@@ -2676,8 +2562,6 @@ fn draw_theme_picker(frame: &mut Frame, area: Rect, app: &App, selected: usize, 
             ListItem::new(Line::from(spans))
         })
         .collect();
-
-    let popup = centered(area, 44, choices.len() as u16 + 2);
     let mut state = ListState::default().with_selected(Some(selected));
 
     frame.render_widget(Clear, popup);
@@ -2692,7 +2576,7 @@ fn draw_theme_picker(frame: &mut Frame, area: Rect, app: &App, selected: usize, 
 
 fn draw_sync_preview(
     frame: &mut Frame,
-    area: Rect,
+    popup: Rect,
     plan: &SyncPlan,
     confirm: bool,
     palette: Palette,
@@ -2703,16 +2587,7 @@ fn draw_sync_preview(
         lines.push(Line::from(
             "Nothing to do \u{2014} local and device are in sync.".fg(palette.muted),
         ));
-        let height = 7u16;
-        draw_confirm_dialog(
-            frame,
-            area,
-            "Sync preview",
-            lines,
-            confirm,
-            (58, height),
-            palette,
-        );
+        draw_confirm_dialog(frame, popup, "Sync preview", lines, confirm, palette);
         return;
     }
 
@@ -2768,16 +2643,7 @@ fn draw_sync_preview(
         }
     }
 
-    let height = (lines.len() as u16 + 5).min(area.height.saturating_sub(2));
-    draw_confirm_dialog(
-        frame,
-        area,
-        "Sync preview",
-        lines,
-        confirm,
-        (60, height),
-        palette,
-    );
+    draw_confirm_dialog(frame, popup, "Sync preview", lines, confirm, palette);
 }
 
 pub(super) fn modal(title: &str, palette: Palette) -> Block<'static> {
@@ -2788,11 +2654,4 @@ pub(super) fn modal(title: &str, palette: Palette) -> Block<'static> {
             format!(" {title} "),
             Style::new().fg(palette.accent).add_modifier(Modifier::BOLD),
         ))
-}
-
-/// Centers a `width`x`height` box inside `area`, shrinking to fit --- shared
-/// with the flash dialog (`super::centered`), which sizes itself off its own
-/// content the same way every modal here does.
-fn centered(area: Rect, width: u16, height: u16) -> Rect {
-    super::centered(area, width, height)
 }

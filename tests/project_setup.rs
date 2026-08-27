@@ -13,10 +13,12 @@ use std::path::{Path, PathBuf};
 
 use chiptui::app::{App, Overlay};
 use chiptui::backend::BackendKind;
-use chiptui::event::AppEvent;
 use chiptui::project::{DetectionSource, ProjectManager, config};
 use chiptui::settings::{self, ProjectRegistry};
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::KeyCode;
+
+mod common;
+use common::key;
 
 /// A temp directory holding both the project and the fake home the config
 /// is written into, so nothing escapes into the real one.
@@ -62,10 +64,6 @@ impl Drop for TempDir {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(self.root());
     }
-}
-
-fn key(code: KeyCode) -> AppEvent {
-    AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE))
 }
 
 #[test]

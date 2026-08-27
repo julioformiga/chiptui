@@ -15,38 +15,18 @@ use std::path::{Path, PathBuf};
 use chiptui::app::{App, Focus, Overlay};
 use chiptui::backend::BackendKind;
 use chiptui::event::AppEvent;
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::KeyCode;
 
-fn key(code: KeyCode) -> AppEvent {
-    AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE))
-}
-
-fn ctrl(c: char) -> AppEvent {
-    AppEvent::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL))
-}
-
-fn fake_mpremote() -> String {
-    format!("{}/tests/fixtures/bin/mpremote", env!("CARGO_MANIFEST_DIR"))
-}
-
-fn fake_curl() -> String {
-    format!("{}/tests/fixtures/bin/curl", env!("CARGO_MANIFEST_DIR"))
-}
+mod common;
+use common::{
+    click, enter_project_pane, fake_curl, fake_mpremote, fake_mpremote_second_board, key, render,
+};
 
 /// A board holding the same two boot files the project does: `main.py`
 /// byte-identical, `boot.py` the same length with different contents.
 fn fake_mpremote_boot_board() -> String {
     format!(
         "{}/tests/fixtures/bin/mpremote-boot-board",
-        env!("CARGO_MANIFEST_DIR")
-    )
-}
-
-/// A different board: no `/lib`, only `boot.py` --- the fresh-flash case
-/// where dependency coverage is zero and `/lib` does not exist at all.
-fn fake_mpremote_second_board() -> String {
-    format!(
-        "{}/tests/fixtures/bin/mpremote-second-board",
         env!("CARGO_MANIFEST_DIR")
     )
 }
@@ -82,15 +62,7 @@ fn log_text(app: &App) -> String {
 /// Drives the app until the browser has no device command in flight
 /// (`files_view.rs`'s `settle_app`, local copy).
 fn settle(app: &mut App) {
-    use std::time::{Duration, Instant};
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while busy(app) && Instant::now() < deadline {
-        for event in app.processes.drain() {
-            app.handle(AppEvent::Process(event));
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    assert!(!busy(app), "a background process never completed");
+    common::settle_while(app, busy, "a background process");
 }
 
 /// Whether anything test-relevant is still running: a device command or
@@ -103,22 +75,6 @@ fn busy(app: &App) -> bool {
             app.package_index,
             chiptui::app::packages::PackageIndex::Fetching { .. }
         )
-}
-
-/// The Project pane's way in: the shortcuts overlay (`ctrl+k`), then the
-/// pane's `e` letter.
-fn enter_project_pane(app: &mut App) {
-    app.handle(ctrl('k'));
-    app.handle(key(KeyCode::Char('e')));
-}
-
-fn render(app: &mut App, width: u16, height: u16) -> String {
-    let mut terminal =
-        ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
-    terminal
-        .draw(|frame| chiptui::ui::draw(frame, app))
-        .unwrap();
-    terminal.backend().to_string()
 }
 
 /// A scratch tree with an isolated home (`home/`) and serial seam (`dev/`)
@@ -1045,14 +1001,4 @@ fn find_cell(frame: &str, needle: &str) -> Option<(u16, u16)> {
         }
     }
     None
-}
-
-fn click(column: u16, row: u16) -> ratatui::crossterm::event::MouseEvent {
-    use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
-    MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
-        column,
-        row,
-        modifiers: KeyModifiers::NONE,
-    }
 }

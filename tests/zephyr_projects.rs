@@ -11,15 +11,10 @@ use std::time::{Duration, Instant};
 use chiptui::app::{App, Focus, Overlay};
 use chiptui::backend::BackendKind;
 use chiptui::event::AppEvent;
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::KeyCode;
 
-fn fake(tool: &str) -> String {
-    format!("{}/tests/fixtures/bin/{tool}", env!("CARGO_MANIFEST_DIR"))
-}
-
-fn key(code: KeyCode) -> AppEvent {
-    AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE))
-}
+mod common;
+use common::{enter_project_pane, fake, key, log_mentions, render};
 
 /// The temp root `bare_app` will use for `tag` (the same formula, so a
 /// test can pre-compute paths inside it).
@@ -87,16 +82,6 @@ fn press_project_row(app: &mut App) {
     app.handle(key(KeyCode::Enter));
 }
 
-/// The Project pane's way in: the shortcuts overlay (`ctrl+k`), then the
-/// pane's `e` letter.
-fn enter_project_pane(app: &mut App) {
-    app.handle(AppEvent::Key(ratatui::crossterm::event::KeyEvent::new(
-        KeyCode::Char('k'),
-        ratatui::crossterm::event::KeyModifiers::CONTROL,
-    )));
-    app.handle(key(KeyCode::Char('e')));
-}
-
 /// The `Build` button --- fifth row of the panel's list (Update Zephyr,
 /// SDK List, Menuconfig, Clean, Build, ...) now that the workspace pair
 /// leads and the questions live in the workspace pane.
@@ -104,21 +89,6 @@ fn press_build(app: &mut App) {
     app.focus = Focus::Build;
     app.build.as_mut().unwrap().cursor = 4;
     app.handle(key(KeyCode::Enter));
-}
-
-fn log_mentions(app: &App, needle: &str) -> bool {
-    app.logs
-        .visible(usize::MAX)
-        .any(|entry| entry.message.contains(needle))
-}
-
-fn render(app: &mut App, width: u16, height: u16) -> String {
-    let mut terminal =
-        ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
-    terminal
-        .draw(|frame| chiptui::ui::draw(frame, app))
-        .unwrap();
-    terminal.backend().to_string()
 }
 
 /// Drains process events into the app until the build panel reports a

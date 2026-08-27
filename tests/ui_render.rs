@@ -20,28 +20,8 @@ use chiptui::backend::micropython::esptool::{ChipFamily, DeviceDetails};
 use chiptui::firmware_id::FirmwareVerdict;
 use chiptui::flash::FlashPanel;
 
-/// Renders the dashboard at `width`x`height` and returns it as plain text.
-fn render(app: &mut App, width: u16, height: u16) -> String {
-    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test terminal");
-    terminal
-        .draw(|frame| chiptui::ui::draw(frame, app))
-        .expect("draw succeeds");
-    terminal.backend().to_string()
-}
-
-fn key(code: KeyCode) -> chiptui::event::AppEvent {
-    chiptui::event::AppEvent::Key(ratatui::crossterm::event::KeyEvent::new(
-        code,
-        ratatui::crossterm::event::KeyModifiers::NONE,
-    ))
-}
-
-fn ctrl(c: char) -> chiptui::event::AppEvent {
-    chiptui::event::AppEvent::Key(ratatui::crossterm::event::KeyEvent::new(
-        KeyCode::Char(c),
-        ratatui::crossterm::event::KeyModifiers::CONTROL,
-    ))
-}
+mod common;
+use common::{ctrl, key, render};
 
 /// A home directory that does not exist, unique per call. `bootstrap`
 /// reads the user config out of `$HOME`, so without this the frames

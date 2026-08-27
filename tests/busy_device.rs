@@ -22,9 +22,8 @@ use chiptui::flash::{FlashAction, FlashPanel};
 use chiptui::process::ProcessManager;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-fn fake(tool: &str) -> String {
-    format!("{}/tests/fixtures/bin/{tool}", env!("CARGO_MANIFEST_DIR"))
-}
+mod common;
+use common::{fake, key, pump_until, render};
 
 /// An app with a MicroPython override, a browser pointed at a fake mpremote,
 /// and a fake esptool so the background device query stays deterministic.
@@ -52,27 +51,6 @@ fn app_with_tools(mpremote_tool: &str, esptool_tool: &str) -> App {
     app
 }
 
-/// Drains process events into the app, advancing one tick per round so the
-/// probe's deadline moves too, until `done` holds or time runs out.
-fn pump_until(app: &mut App, mut done: impl FnMut(&App) -> bool, secs: u64) -> bool {
-    let deadline = Instant::now() + Duration::from_secs(secs);
-    while Instant::now() < deadline {
-        for event in app.processes.drain() {
-            app.handle(AppEvent::Process(event));
-        }
-        if done(app) {
-            return true;
-        }
-        app.handle(AppEvent::Tick);
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    done(app)
-}
-
-fn key(code: KeyCode) -> AppEvent {
-    AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE))
-}
-
 /// Pumps until the identification question opens, then answers it: `y`
 /// accepts (the chain runs), a reflex `Enter` declines (the default --- the
 /// board is left untouched). Every device-selection chain starts with this
@@ -91,16 +69,6 @@ fn answer_identify(app: &mut App, accept: bool) -> bool {
         KeyCode::Enter
     }));
     true
-}
-
-/// Renders the current screen and returns it as plain text.
-fn render(app: &mut App, width: u16, height: u16) -> String {
-    let mut terminal =
-        ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
-    terminal
-        .draw(|frame| chiptui::ui::draw(frame, app))
-        .unwrap();
-    terminal.backend().to_string()
 }
 
 #[test]

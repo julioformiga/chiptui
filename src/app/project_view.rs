@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
 use crate::backend::Capability;
+use crate::project::{DetectionOutcome, DetectionSource};
 use crate::workspace::{DirPurpose, WorkspaceAction};
 
 use super::{App, Overlay, ProjectRow};
@@ -363,5 +364,232 @@ impl App {
         self.dispatch_browser(|browser, processes, port| {
             browser.request_mip_install(&specs, processes, port)
         });
+    }
+}
+
+impl App {
+    /// Runs the first detection and reports it to the log pane.
+    ///
+    /// A detection failure is surfaced, not fatal: the UI still starts so the
+    /// user can read the error and override the backend.
+    pub fn bootstrap(&mut self) {
+        self.logs.info(format!(
+            "working directory {}",
+            self.manager.start_dir().display()
+        ));
+        self.detect();
+        // Seeded here so the very first frame's Dependencies row is right:
+        // the tick that keeps it fresh has not fired yet.
+        self.reload_requirements();
+    }
+
+    /// Re-runs detection from the starting directory.
+    pub fn detect(&mut self) {
+        match self.manager.detect() {
+            Ok(detection) => {
+                let root = detection.root.display().to_string();
+                let searched = detection.searched.len();
+                let outcome = detection.outcome.clone();
+                let source = detection.source;
+                let confidence = detection.confidence();
+
+                match &outcome {
+                    DetectionOutcome::Detected(kind) => {
+                        let confidence = confidence.unwrap_or(0.0);
+                        if source == DetectionSource::Manual {
+                            self.logs
+                                .success(format!("{kind} selected manually at {root}"));
+                        } else {
+                            self.logs.success(format!(
+                                "{kind} detected at {root} (confidence {confidence:.2})"
+                            ));
+                        }
+                    }
+                    DetectionOutcome::Ambiguous(kinds) => {
+                        let names = kinds
+                            .iter()
+                            .map(|kind| kind.display_name())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        self.logs
+                            .warn(format!("ambiguous project at {root}: {names}"));
+                    }
+                    DetectionOutcome::Unknown => {
+                        self.logs.warn(format!(
+                            "no known project found in {searched} director{} from {root}",
+                            if searched == 1 { "y" } else { "ies" }
+                        ));
+                    }
+                }
+
+                self.ensure_workspace_panel();
+                self.report_tools();
+            }
+            Err(err) => self.logs.error(err.to_string()),
+        }
+        self.clamp_focus();
+    }
+
+    /// Opens [`Overlay::ProjectSetup`] when detection has nothing to go on:
+    /// `Unknown` or `Ambiguous`, with no session override and no scaffold
+    /// file already deciding it (`SPEC.md` §7's empty-project prompt).
+    ///
+    /// Deliberately **not** called from inside [`App::detect`] itself.
+    /// `detect()`/`bootstrap()` are called directly by many existing tests
+    /// that assert on `overlay`/send key events right afterwards (every
+    /// `tests/flash_view.rs` case via its `app_with_flash` helper, which
+    /// starts from a bare temp directory). Auto-opening a modal from inside
+    /// `detect()` would silently redirect their next key press into
+    /// `on_overlay_key`. Instead only the two real "detection just ran and
+    /// the user might act on it" call sites opt in explicitly: the binary's
+    /// startup sequence, and the `r` re-detect key.
+    pub fn maybe_open_project_setup(&mut self) {
+        if self.overlay.is_some() {
+            return;
+        }
+        let Some(detection) = self.manager.detection() else {
+            return;
+        };
+        if self.manager.override_kind().is_some()
+            || matches!(
+                detection.source,
+                DetectionSource::Config | DetectionSource::Registered
+            )
+        {
+            return;
+        }
+        if matches!(
+            detection.outcome,
+            DetectionOutcome::Unknown | DetectionOutcome::Ambiguous(_)
+        ) {
+            self.overlay = Some(Overlay::ProjectSetup { selected: 0 });
+        }
+    }
+
+    /// Records the open project in the user config's registry (`SPEC.md`
+    /// §7), stamping it as the most recently opened.
+    ///
+    /// This is the single place a project becomes "known": every way of
+    /// arriving at a dashboard --- a `chiptui.toml` in the tree, evidence
+    /// alone, the empty-project prompt, a project just created on the home
+    /// screen --- passes through here, which is what keeps the home screen's
+    /// list complete without any of them writing into the project directory.
+    /// A directory whose backend is still unknown is not recorded; there
+    /// would be nothing to record about it.
+    pub fn record_open_project(&mut self) {
+        let (Some(kind), Some(root)) = (self.manager.selected_kind(), self.manager.root()) else {
+            return;
+        };
+        let root = root.to_path_buf();
+        let mut entry = crate::settings::ProjectEntry::new(&root, kind).opened_now();
+        // A name the user edited into the config is theirs, not ours to
+        // reset on every open --- and so are the saved board/shield answers:
+        // recording the open must not be what forgets them.
+        if let Some(known) = self.manager.known_projects().entry_for(&root) {
+            entry.name = known.name.clone();
+            entry.board = known.board.clone();
+            entry.shield = known.shield.clone();
+        }
+
+        let config = self.user_config_path();
+        if let Err(err) = crate::settings::record_project(&config, entry) {
+            self.logs.warn(format!(
+                "could not record this project in {}: {err}",
+                config.display()
+            ));
+            return;
+        }
+        self.manager
+            .set_known_projects(crate::settings::ProjectRegistry::load(
+                &self.config_dir,
+                &self.home_dir,
+            ));
+    }
+
+    /// `P`: back to the home screen to open another project. Leaving means
+    /// dropping this project's session, so anything still running is named
+    /// in a confirmation first (`SPEC.md` §15's rule applied to losing work
+    /// rather than to the device) --- with nothing running there is nothing
+    /// to warn about, and the screen simply changes.
+    pub fn request_home_screen(&mut self) {
+        if self.running_commands() == 0 {
+            self.request_project_switch();
+            return;
+        }
+        self.overlay = Some(Overlay::ConfirmSwitchProject { confirm: false });
+    }
+
+    /// External commands this session would lose by leaving it --- builds,
+    /// device operations and the PTY sessions alike, since they all run
+    /// through the one [`crate::process::ProcessManager`].
+    pub fn running_commands(&self) -> usize {
+        self.processes.running_count()
+    }
+
+    /// Asks the binary to close this project and go back to the home screen.
+    /// The App is dropped by the caller, which is what cancels every running
+    /// command and releases the serial port --- see
+    /// [`crate::process::ProcessManager`]'s `Drop`.
+    pub fn request_project_switch(&mut self) {
+        self.switch_requested = true;
+    }
+
+    /// Whether the event loop should give the terminal back so the home
+    /// screen can take over --- the same standing as [`Self::should_quit`].
+    pub fn switch_requested(&self) -> bool {
+        self.switch_requested
+    }
+
+    /// Consumed by the binary's loop, like [`Self::take_pending_command`].
+    pub fn take_switch_request(&mut self) -> bool {
+        std::mem::take(&mut self.switch_requested)
+    }
+
+    /// The header's `project` field. A backend that makes the project a
+    /// question ([`Capability::ProjectSelect`]) answers it with the picked
+    /// root --- the build panel's for Zephyr (and only once that root is a
+    /// buildable application: picked in the panel, or a launch directory
+    /// that already is one), the session's MicroPython pick otherwise.
+    /// Until then the field stays empty, because the cwd is not a project
+    /// just because ChipTUI was started in it. Other backends keep the
+    /// detection root's directory name as before.
+    pub fn header_project(&self) -> String {
+        if self
+            .manager
+            .capabilities()
+            .contains(Capability::ProjectSelect)
+        {
+            if let Some(panel) = &self.build {
+                return if self.project_gate_ok() {
+                    panel
+                        .root
+                        .file_name()
+                        .map_or_else(String::new, |name| name.to_string_lossy().into_owned())
+                } else {
+                    String::new()
+                };
+            }
+            if let Some(picked) = &self.mpy_root {
+                return picked
+                    .file_name()
+                    .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
+            }
+        }
+        self.manager.name().unwrap_or("--").to_string()
+    }
+
+    /// The project half of the panel's checklist: whether the current root
+    /// is a buildable application. Backends without
+    /// [`Capability::ProjectSelect`] have no such question --- the root is
+    /// theirs by definition.
+    pub fn project_gate_ok(&self) -> bool {
+        let Some(panel) = &self.build else {
+            return true;
+        };
+        !self
+            .manager
+            .capabilities()
+            .contains(Capability::ProjectSelect)
+            || crate::backend::zephyr::projects::is_buildable(&panel.root)
     }
 }

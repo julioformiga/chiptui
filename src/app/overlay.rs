@@ -3,15 +3,19 @@
 //! and its confirm machinery are one cohesive, self-contained concern that
 //! reaches into every other subsystem only through `self`.
 
+use std::path::PathBuf;
+
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
 use crate::backend::BackendKind;
+use crate::browser::Side;
 use crate::build::BuildAction;
 use crate::device::ScriptState;
+use crate::files::SyncStatus;
 
 use super::help::{self, HelpSection};
 use super::{
-    App, DocsFocus, FileAction, OVERLAY_HELP, Overlay, PendingEdit, ThemeChoice, View, ViewerSource,
+    App, DocsFocus, FileAction, OVERLAY_HELP, PendingEdit, ThemeChoice, View, ViewerSource,
 };
 
 impl App {
@@ -1104,4 +1108,287 @@ fn is_text_entry_overlay(overlay: &Overlay) -> bool {
         overlay,
         Overlay::RenameEntry { .. } | Overlay::BuildDirPicker { .. } | Overlay::Packages
     )
+}
+
+/// A modal layer drawn above the panes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Overlay {
+    /// The help overlay (`?` / F1): one window with both divisions of
+    /// [`crate::app::help`] --- Navigation as plain rows, Commands as the
+    /// select. `selected` is the cursor among the (filtered) command rows;
+    /// `Enter` activates the row by replaying its key after the help
+    /// closes. `filter`/`filtering` are the search state --- `/` starts
+    /// typing (every printable char is filter text, `j`/`k` included, so
+    /// `Esc` returns to the cursor first and closes on the second press),
+    /// and the filter narrows both divisions: the dashboard alone lists
+    /// twenty-eight rows, so search is the way through them.
+    Help {
+        filter: String,
+        filtering: bool,
+        selected: usize,
+    },
+    /// Serial device selection (`SPEC.md` §8: never guess which board).
+    DevicePicker { selected: usize },
+    /// The color theme picker (`t`): `Auto` first, then every
+    /// `ratatui_themes::ThemeName`, cursor starting on the active choice.
+    /// Picking one applies immediately and persists to the user config's
+    /// `[ui] theme` (`App::apply_theme_picker`); `Auto` follows the active
+    /// backend (Zephyr: Catppuccin Mocha, MicroPython: Everforest) instead
+    /// of naming a theme outright.
+    ThemePicker { selected: usize },
+    /// A destructive esptool action awaiting explicit confirmation
+    /// (`SPEC.md` §15). `message` is the literal command about to run, never
+    /// a paraphrase.
+    Confirm { message: String, confirm: bool },
+    /// Firmware file selection when more than one `.bin`/`.elf` was found in
+    /// `firmware/`.
+    FirmwarePicker { selected: usize },
+    /// Empty or unrecognized project: asks which backend this directory is
+    /// (`SPEC.md` §7). It fires automatically (detection could not conclude
+    /// a backend) and persists the choice to `chiptui.toml`.
+    ProjectSetup { selected: usize },
+    /// A firmware download would overwrite a file already in `firmware/`;
+    /// needs explicit confirmation before running (`SPEC.md` §15 applied to
+    /// a filesystem write rather than a device operation).
+    ConfirmDownloadOverwrite {
+        url: String,
+        dest: PathBuf,
+        confirm: bool,
+    },
+    /// Ask for confirmation before uploading a file or directory.
+    ConfirmUpload {
+        name: String,
+        is_dir: bool,
+        confirm: bool,
+    },
+    /// A destructive build-panel action (`Clean`, `Flash`) awaiting explicit
+    /// confirmation, showing the literal command (the same rule as the
+    /// esptool confirms, `SPEC.md` §15). The message is rebuilt from the
+    /// panel state at draw time rather than stored: board and build
+    /// directory cannot change while the overlay is open, and this way the
+    /// shown command is always the one that would run.
+    ConfirmBuild {
+        action: crate::build::BuildAction,
+        confirm: bool,
+    },
+    /// The board picker: a filterable `west boards` list, fetched in the
+    /// background the first time it opens, enriched from the Zephyr docs
+    /// index (picture + detail text for the row under the cursor ---
+    /// [`App::docs`]). The boards themselves live in
+    /// [`App::build`] ([`crate::build::BuildPanel::boards`]) like the
+    /// viewer's content lives in `App::viewer` --- an overlay holds only
+    /// what a keypress changes, so rebuilding it per key never re-clones
+    /// the list. `input` is the filter text; `scroll` the details pane's
+    /// line offset (the arrows with the details focused, pgup/pgdn always);
+    /// `focus` which half `Tab` last handed the keyboard ([`DocsFocus`]).
+    BoardPicker {
+        input: String,
+        selected: usize,
+        scroll: u16,
+        focus: DocsFocus,
+    },
+    /// The shield picker: the same filterable list grammar over `west
+    /// shields`, with a leading `(none)` row --- the shield is optional, and
+    /// that row is how an existing pick gets cleared. The list itself lives
+    /// in [`App::build`] ([`crate::build::BuildPanel::shields`]) like the
+    /// boards do. `input` is the filter text; `scroll` the details pane's
+    /// line offset (the arrows with the details focused, pgup/pgdn always);
+    /// `focus` which half `Tab` last handed the keyboard ([`DocsFocus`]).
+    ShieldPicker {
+        input: String,
+        selected: usize,
+        scroll: u16,
+        focus: DocsFocus,
+    },
+    /// The installation-directory picker: a real filesystem browser (no
+    /// discovery guesses --- the user knows where their Zephyr lives).
+    /// `error` holds the validation message when an accepted directory
+    /// turned out not to be an installation, including the install guide
+    /// link; any navigation clears it. `purpose` is which question the
+    /// picker answers (installation or projects folder) --- one navigation
+    /// component, two validations.
+    DirPicker {
+        purpose: crate::workspace::DirPurpose,
+        path: std::path::PathBuf,
+        selected: usize,
+        error: Option<String>,
+    },
+    /// The project picker: the configured projects folder's subdirectories.
+    /// For Zephyr (`mpy: false`) each row carries whether it holds build
+    /// elements, and accepting a non-buildable directory keeps the picker
+    /// open with the reason (`error`) --- a project without a
+    /// `CMakeLists.txt` is never built silently. For MicroPython (`mpy:`
+    /// `true`) every subdirectory is a project (no build step), so nothing
+    /// is marked and nothing is refused. The choice itself is session-only
+    /// (`SPEC.md` §10) either way.
+    ProjectPicker {
+        mpy: bool,
+        selected: usize,
+        error: Option<String>,
+    },
+    /// The build-directory picker: the project's configured `build*`
+    /// directories plus a typed new name (`west build -d`).
+    BuildDirPicker { input: String, selected: usize },
+    /// The entry under the cursor in the file browser (`enter`): a small
+    /// menu of what to do with it. Which actions show up depends on the pane,
+    /// on whether it is a directory, and --- for a file --- whether
+    /// [`crate::files::is_text_like`] considers it text --- see
+    /// [`FileAction::for_entry`]. The Zephyr workspace pane's embedded file
+    /// list never opens this: its keys act directly (see
+    /// [`App::run_file_action`]).
+    FileActions {
+        side: Side,
+        name: String,
+        is_dir: bool,
+        /// The comparison verdict for `name` (`Browser::statuses`), snapshot
+        /// when the menu opened so [`FileAction::for_entry`] can offer a
+        /// [`FileAction::Diff`] only when the two sides are known to (or might)
+        /// differ. `None` when the entry has no comparable status.
+        status: Option<SyncStatus>,
+        selected: usize,
+    },
+    /// A file's contents, opened by choosing `View` from [`Overlay::FileActions`]
+    /// (`SPEC.md` §2's secondary goal to support external editors, not build
+    /// one). Holds no data itself --- [`App::viewer`] does, so scrolling never
+    /// re-clones the file the way rebuilding an `Overlay` variant on every
+    /// key press would.
+    FileViewer,
+    /// A device file was edited and just finished re-uploading: offer a
+    /// restart so the change actually takes effect, with a btop-style
+    /// Yes/No button pair. `confirm` is which one is highlighted --- starts
+    /// on `false` (No), unlike every other confirm overlay here, since
+    /// restarting interrupts whatever the board is currently doing and
+    /// should never happen from a reflex `Enter`.
+    ConfirmRestartDevice { confirm: bool },
+    /// Ask to flash MicroPython if device is unresponsive.
+    ConfirmEraseForMicroPython { confirm: bool },
+    /// Ask for confirmation before deleting a file or directory.
+    ConfirmDelete {
+        side: Side,
+        name: String,
+        is_dir: bool,
+        confirm: bool,
+    },
+    /// Inline text entry for creating a new entry in `side`'s current
+    /// directory (`a`). A trailing `/` on the typed name means "create a
+    /// directory" (`SPEC.md` §9's "create directory" action); otherwise an
+    /// empty file.
+    CreateEntry { side: Side, input: String },
+    /// Inline text entry for renaming the entry under the cursor (`r` in the
+    /// workspace file list). `name` is the entry's current name, `input` the
+    /// edit buffer, pre-filled with it --- editing starts from the end, and
+    /// an unedited `Enter` is a no-op, not an error.
+    RenameEntry { name: String, input: String },
+    /// The package manager (`Enter` or `s` on the Dependencies row, the
+    /// device pane's `i`, or the Actions tab's own button): one filterable
+    /// list over `requirements.txt`, the board's `/lib` and the
+    /// micropython-lib index, fetched through `curl` when it first opens.
+    ///
+    /// Carries nothing: every field lives on [`App::packages`], so the
+    /// remove confirmation --- which *replaces* this overlay, the slot
+    /// being one deep --- can hand the window back exactly as it was.
+    Packages,
+    /// "Remove this package?" --- the manager's `Del`. Its own variant
+    /// rather than the shared [`Overlay::Confirm`] (already multiplexed
+    /// between the flash panel's `pending` and the installer's start
+    /// question), because accepting acts on *two* things and the wording
+    /// has to name both.
+    ConfirmRemovePackage {
+        /// The package name, or the whole specification for a git/URL line.
+        name: String,
+        /// Paths under `/lib` the removal would delete, with whether each
+        /// needs a recursive `rm`. Empty when only the file declares it.
+        targets: Vec<(crate::device::DevicePath, bool)>,
+        /// Whether `requirements.txt` carries a line for it.
+        declared: bool,
+        confirm: bool,
+    },
+    /// A sync plan produced by [`Browser::request_sync`], awaiting the
+    /// user's review before execution (`S` in the file browser). Default
+    /// is No when the plan includes device-only file deletions, since
+    /// deleting is destructive (`SPEC.md` §15).
+    SyncPreview {
+        plan: crate::browser::SyncPlan,
+        confirm: bool,
+    },
+    /// A device is connected on the selected port, and identifying it ---
+    /// reading its chip and firmware over esptool --- **restarts the
+    /// board**, stopping whatever it runs. That never happens silently: the
+    /// question opens on every device selection (startup scan or picker)
+    /// before any identification query or first listing touches the port.
+    /// Default is No, like every stop/restart confirm here; declining
+    /// leaves the board untouched and the listing proceeds without a
+    /// firmware verdict. Answering yes while a script is believed running
+    /// accepts that interruption the way
+    /// [`Self::ConfirmInterruptDevice`]'s yes does (restore included).
+    ConfirmIdentifyDevice { confirm: bool },
+    /// Device requests are being held: the app believes a script is running
+    /// on the device, and `mpremote` interrupts it (Ctrl-C, then raw REPL)
+    /// for every device command --- including the one the user just asked
+    /// for. Default is No, like every interruption-confirm here. Accepting
+    /// resumes the held queue and arms the restore question for when it
+    /// drains; declining drops the queue.
+    ///
+    /// `return_to_packages` is true when this replaced
+    /// [`Self::Packages`] rather than opening over nothing --- the manager
+    /// stays the one-deep slot's real content, so answering either way hands
+    /// it back instead of leaving the user at a bare dashboard.
+    ConfirmInterruptDevice {
+        confirm: bool,
+        return_to_packages: bool,
+    },
+    /// Leaving this project for the home screen while commands are still
+    /// running: they are cancelled with the session, so the count is named
+    /// and the default is No, like every other confirm that loses work.
+    ConfirmSwitchProject { confirm: bool },
+    /// An interruption the user accepted has finished: how (or whether) to
+    /// bring the stopped script back. A three-row picker rather than a
+    /// Yes/No, because "restart" has two honest flavors with different
+    /// tradeoffs (see [`Self::apply_restore_device_script`]).
+    ///
+    /// `return_to_packages` mirrors [`Self::ConfirmInterruptDevice`]'s field:
+    /// this question can itself replace [`Self::Packages`] when the
+    /// interrupt it follows did.
+    RestoreDeviceScript {
+        selected: usize,
+        return_to_packages: bool,
+    },
+    /// The choice menu behind the `Zephyr Actions` button: update the shared
+    /// workspace (`west update`), add SDK toolchains, or generate the build
+    /// dashboard (`west build -t dashboard`). Same shape as
+    /// [`Self::RestoreDeviceScript`] --- a small list, `j`/`k`/arrows to
+    /// move, `Enter` to pick --- except `Esc` here is a plain cancel, not
+    /// itself a choice: giving up on "what to run" has no implicit action
+    /// the way giving up on "how to restore" does.
+    ZephyrActions { selected: usize },
+    /// The Zephyr installer: prerequisites, the sequence, and the running
+    /// step's output. Carries nothing at all --- every piece of its state
+    /// lives on [`App::installer`], which is what lets the panel keep a
+    /// process and an output buffer while the overlay value is rebuilt on
+    /// each keystroke.
+    ZephyrInstall,
+    /// The SDK toolchain pick, opened from the installer and returning to
+    /// it: the names `west sdk list` reported, multi-selected with space.
+    /// An empty pick installs the whole bundle.
+    SdkToolchains { selected: usize },
+    /// The installation picker refused a directory --- and this is the way
+    /// forward from that refusal: install one there, finish a half-built
+    /// one, or adopt a complete one sitting in its `zephyr/` subdirectory.
+    /// Carries the *picked* folder; the target under it and the wording
+    /// are derived at draw time from what is actually there
+    /// (`ui::overlay::install_offer`).
+    ///
+    /// `reason` is the refusal this offer answers. It is shown under the
+    /// question *and* is what restores the picker on decline: the overlay
+    /// slot is one deep, so an offer that covers the picker has to carry
+    /// enough to put it back.
+    ///
+    /// Its own variant rather than the shared [`Self::Confirm`], whose one
+    /// slot is already multiplexed between the flash panel's pending
+    /// action and the installer's start question.
+    ConfirmInstallHere {
+        dir: std::path::PathBuf,
+        reason: String,
+        confirm: bool,
+    },
 }

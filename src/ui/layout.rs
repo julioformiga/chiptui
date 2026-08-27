@@ -9,8 +9,9 @@
 
 use ratatui::layout::{Constraint, Layout, Rect};
 
-use crate::app::App;
-use crate::backend::Capability;
+use crate::app::{App, FileAction, Overlay, ThemeChoice};
+use crate::backend::{BackendKind, Capability};
+use crate::browser::SyncPlan;
 use crate::flash::FlashAction;
 
 /// The minimum rows the workspace pane's embedded file list gets, past the
@@ -323,6 +324,178 @@ pub(crate) fn packages(area: Rect) -> PackagesAreas {
         list,
         details,
     }
+}
+
+/// The width every destructive/confirm dialog is drawn at.
+pub(crate) const DESTRUCTIVE_WIDTH: u16 = 72;
+
+/// The rect an open overlay draws its popup in.
+///
+/// The single definition, consumed by `ui::overlay`'s drawing *and* by
+/// `app::mouse`'s hit-testing --- the same contract [`packages`] and
+/// [`docs_picker`] already had, extended to every other variant. Both sides
+/// used to carry the numbers separately, and the pairs drifted: the device
+/// and firmware pickers draw a fixed 52x4 when their list is empty, which
+/// the hit-testing never mirrored, so a click *inside* the empty device
+/// picker was judged outside and dismissed it.
+///
+/// A variant whose shape depends on state (the confirm family's three
+/// `Confirm` sizes, the sync preview's line count, the help table's widest
+/// binding) reads it off `app` here rather than in two places.
+pub(crate) fn overlay_popup(app: &App, overlay: &Overlay, frame: Rect) -> Rect {
+    let (width, height) = match overlay {
+        // ---- the confirm family: fixed boxes, one per wording ----------
+        Overlay::Confirm { .. } if app.install_confirm_pending => (DESTRUCTIVE_WIDTH, 10),
+        Overlay::Confirm { .. }
+            if app
+                .flash
+                .as_ref()
+                .is_some_and(|flash| flash.pending().is_some()) =>
+        {
+            (DESTRUCTIVE_WIDTH, 9)
+        }
+        Overlay::Confirm { .. } => (70, 7),
+        Overlay::ConfirmBuild { .. }
+        | Overlay::ConfirmInstallHere { .. }
+        | Overlay::ConfirmRemovePackage { .. } => (DESTRUCTIVE_WIDTH, 9),
+        Overlay::ConfirmRestartDevice { .. } => (54, 8),
+        Overlay::ConfirmSwitchProject { .. } => (62, 9),
+        Overlay::ConfirmEraseForMicroPython { .. } => (65, 9),
+        Overlay::ConfirmIdentifyDevice { .. } => (66, 11),
+        Overlay::ConfirmInterruptDevice { .. } => (64, 10),
+        Overlay::ConfirmDelete { .. } => (54, 9),
+        Overlay::ConfirmDownloadOverwrite { .. } => (70, 8),
+        Overlay::ConfirmUpload { .. } => (65, 8),
+        Overlay::SyncPreview { plan, .. } if plan.is_empty() => (58, 7),
+        Overlay::SyncPreview { plan, .. } => (
+            60,
+            (sync_preview_lines(plan) as u16 + 5).min(frame.height.saturating_sub(2)),
+        ),
+
+        // ---- lists: one row per entry, inside the modal's two rules ----
+        //
+        // An empty list is not `len + 2`: both pickers draw a fixed box
+        // carrying the "nothing found" message instead, and the rect has
+        // to follow or a click on that message reads as a miss.
+        Overlay::DevicePicker { .. } => match app.devices.devices().len() {
+            0 => (52, 4),
+            len => (64, len as u16 + 2),
+        },
+        Overlay::FirmwarePicker { .. } => {
+            let len = app
+                .flash
+                .as_ref()
+                .map(|flash| flash.firmware.len())
+                .unwrap_or(0);
+            match len {
+                0 => (52, 4),
+                len => (64, len as u16 + 2),
+            }
+        }
+        Overlay::ThemePicker { .. } => (44, ThemeChoice::all().len() as u16 + 2),
+        Overlay::ProjectSetup { .. } => (60, BackendKind::ALL.len() as u16 + 4),
+        Overlay::RestoreDeviceScript { .. } => (64, RESTORE_CHOICES as u16 + 4),
+        Overlay::FileActions {
+            side,
+            name,
+            is_dir,
+            status,
+            ..
+        } => {
+            let actions = FileAction::for_entry(
+                *side,
+                *is_dir,
+                crate::files::is_text_like(name),
+                *status,
+                app.manager.capabilities(),
+            );
+            (44, actions.len() as u16 + 2)
+        }
+        Overlay::ZephyrActions { .. } => {
+            let placeholders: Vec<super::Button> = (0..super::ZEPHYR_ACTIONS_COUNT)
+                .map(|_| super::Button::new("").detail(""))
+                .collect();
+            (64, super::stack_height(&placeholders).saturating_add(2))
+        }
+
+        // ---- fixed-shape modals ----------------------------------------
+        Overlay::DirPicker { .. } | Overlay::ProjectPicker { .. } => (72, 18),
+        Overlay::BuildDirPicker { .. } => (60, 16),
+        Overlay::SdkToolchains { .. } => (56, frame.height.saturating_sub(4)),
+        Overlay::CreateEntry { .. } | Overlay::RenameEntry { .. } => (54, 6),
+        Overlay::FileViewer => (
+            frame.width.saturating_sub(6).max(20),
+            frame.height.saturating_sub(4).max(6),
+        ),
+        Overlay::Help { filter, .. } => help_size(app, filter, frame),
+
+        // ---- variants that already own a shared geometry helper --------
+        Overlay::Packages => return packages(frame).popup,
+        Overlay::BoardPicker { .. } | Overlay::ShieldPicker { .. } => {
+            return docs_picker(frame).popup;
+        }
+        Overlay::ZephyrInstall => return super::install_area(frame),
+    };
+    super::centered(frame, width, height)
+}
+
+/// [`Overlay::RestoreDeviceScript`]'s three choices --- reset, restart
+/// `main.py`, leave stopped (`ui::overlay`'s own `CHOICES`).
+const RESTORE_CHOICES: usize = 3;
+
+/// [`Overlay::Help`]'s `(width, height)`: the table is as wide as its widest
+/// binding and as tall as the bindings the filter left standing, both
+/// clamped to the frame.
+fn help_size(app: &App, filter: &str, frame: Rect) -> (u16, u16) {
+    use crate::app::help::{self, HelpSection};
+
+    let navigation = help::visible(help::bindings(app.view, HelpSection::Navigation), filter);
+    let commands = help::visible(help::bindings(app.view, HelpSection::Commands), filter);
+    let key_col = HelpSection::ALL
+        .iter()
+        .flat_map(|&section| help::bindings(app.view, section))
+        .map(|binding| binding.key.chars().count())
+        .max()
+        .unwrap_or(0);
+    let indent = 2 + key_col + 2;
+    let widest = HelpSection::ALL
+        .iter()
+        .flat_map(|&section| help::bindings(app.view, section))
+        .map(|binding| indent + binding.description.chars().count() + 2)
+        .max()
+        .unwrap_or(indent + 2);
+    let visible_titles = usize::from(!navigation.is_empty()) + usize::from(!commands.is_empty());
+    let fixed = 1 + visible_titles + 2;
+    let height = (fixed + navigation.len() + commands.len()) as u16;
+    (
+        widest.min(frame.width.into()) as u16,
+        height.min(frame.height),
+    )
+}
+
+/// How many lines [`Overlay::SyncPreview`] renders for `plan` --- the
+/// counting half of `ui::overlay`'s `draw_sync_preview`, which builds the
+/// same sections: a header, up to eight rows, an "... and N more" when
+/// clipped, and a blank line after every section but the last.
+pub(crate) fn sync_preview_lines(plan: &SyncPlan) -> usize {
+    fn section(len: usize, trailing_blank: bool) -> usize {
+        let mut rows = 1 + len.min(8) + usize::from(len > 8);
+        if trailing_blank {
+            rows += 1;
+        }
+        rows
+    }
+    let mut lines = 0;
+    if !plan.uploads.is_empty() {
+        lines += section(plan.uploads.len(), true);
+    }
+    if !plan.mkdirs.is_empty() {
+        lines += section(plan.mkdirs.len(), true);
+    }
+    if !plan.deletes.is_empty() {
+        lines += section(plan.deletes.len(), false);
+    }
+    lines
 }
 
 #[cfg(test)]

@@ -2010,11 +2010,6 @@ impl Browser {
         self.verdicts.get(dir).unwrap_or(&EMPTY)
     }
 
-    /// Whether a sync walk is in progress.
-    pub fn is_syncing(&self) -> bool {
-        self.sync.is_some()
-    }
-
     fn clamp_cursors(&mut self) {
         self.local_cursor = self
             .local_cursor

@@ -7,18 +7,15 @@ use std::path::{Path, PathBuf};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
-use crate::backend::Capability;
 use crate::backend::micropython::commands;
+use crate::backend::{Capabilities, Capability};
 use crate::browser::{Browser, DeviceView, Notice, Side, Transfer, TransferKind};
 use crate::device::DevicePath;
-use crate::files;
+use crate::files::{self, SyncStatus};
 use crate::flash::FlashPanel;
 use crate::process::ProcessManager;
 
-use super::{
-    App, FileAction, FileViewer, Overlay, PendingEdit, PendingMonitor, RunState, ViewerSource,
-    ViewerState,
-};
+use super::{App, Overlay, PendingEdit, RunState};
 
 impl App {
     /// Handles a key while [`super::Focus::FilesLocal`]/[`super::Focus::FilesDevice`] holds
@@ -836,13 +833,284 @@ impl App {
         self.pending_command.take()
     }
 
-    pub fn take_pending_monitor(&mut self) -> Option<PendingMonitor> {
-        self.pending_monitor.take()
-    }
-
     /// Re-reads the local pane after `$EDITOR` closes: size and contents may
     /// have changed under it while the terminal was suspended.
     pub fn reload_local_files(&mut self) {
         self.reload_local_pane();
+    }
+}
+
+/// One action offered by [`Overlay::FileActions`] for the entry under the
+/// cursor. The files pane is a sync tool, not a filesystem manager, so the
+/// choices mirror that: move a copy across, or work with the copy already
+/// there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileAction {
+    /// Descends into a directory --- the menu's default entry for one, so a
+    /// reflex `Enter` twice still just browses in, one extra keypress from
+    /// what a bare `Enter` used to do before directories gained the rest of
+    /// this menu too.
+    Open,
+    SendToDevice,
+    Download,
+    /// Runs a local file on the device without copying it in
+    /// (`mpremote run`) --- only ever offered on [`Side::Local`], since the
+    /// underlying command takes a host path. See [`Capability::Run`].
+    Run,
+    View,
+    Edit,
+    /// Shows a unified diff of the local copy against the device copy in the
+    /// file viewer --- only offered when both sides exist as text and the
+    /// comparison verdict says they differ (or might, same size unchecked).
+    Diff,
+    Delete,
+}
+
+impl FileAction {
+    /// Every label buffer-widths to the same 3 cells before its word: a
+    /// genuinely wide emoji gets one space, a narrow glyph like `▶` gets two.
+    /// Every emoji here is picked to be `Emoji_Presentation=Yes` on its own
+    /// --- `🗑`/`👁` used to be forced wide with a trailing `\u{FE0F}`
+    /// (VS16), the same trick `ui::files`'s file-listing icons used for
+    /// `⚙️`, and for the same reason it was dropped there: `unicode-width`
+    /// scores the VS16 sequence 2, but not every terminal's own font
+    /// support agrees, so the two disagreeing about a glyph's width is a
+    /// terminal-dependent bug no width math on this side can fix. A
+    /// dedicated pictograph codepoint has no such disagreement to have.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Open => "📂 Open",
+            Self::SendToDevice => "📤 Send to device",
+            Self::Download => "📥 Download",
+            Self::Run => "▶  Run",
+            Self::View => "🔍 View",
+            Self::Edit => "📝 Edit",
+            Self::Diff => "🔀 Diff",
+            Self::Delete => "🚮 Delete",
+        }
+    }
+
+    /// The actions offered for the entry under the cursor, in menu order.
+    ///
+    /// A directory gets `Open` first (descend), plus `Delete` and, when the
+    /// backend can upload, `SendToDevice` --- never `View`/`Edit`/`Diff`,
+    /// which need file contents. A file never offers `Open`; `View`/`Edit`
+    /// appear only when `is_text` ([`crate::files::is_text_like`]) --- a binary
+    /// file (e.g. a `.mpy`) can still be sent, downloaded and deleted, just
+    /// not previewed or opened in `$EDITOR`.
+    ///
+    /// The transfer actions are capability-gated like `Run`, not just hidden
+    /// by this menu's judgement: a backend without [`Capability::Upload`]
+    /// offers no `SendToDevice`, and `Diff` needs
+    /// [`Capability::Filesystem`] --- there is no second copy to compare
+    /// against without one --- offered when `status` marks the entry as
+    /// differing or as same-size but unchecked, since that is exactly when a
+    /// content diff adds information the size markers cannot.
+    pub fn for_entry(
+        side: Side,
+        is_dir: bool,
+        is_text: bool,
+        status: Option<SyncStatus>,
+        capabilities: Capabilities,
+    ) -> Vec<FileAction> {
+        if is_dir {
+            let mut actions = vec![Self::Open];
+            match side {
+                Side::Local if capabilities.contains(Capability::Upload) => {
+                    actions.push(Self::SendToDevice);
+                }
+                Side::Device => actions.push(Self::Download),
+                Side::Local => {}
+            }
+            actions.push(Self::Delete);
+            actions
+        } else {
+            let mut actions = match side {
+                Side::Local if capabilities.contains(Capability::Upload) => {
+                    vec![Self::SendToDevice]
+                }
+                Side::Device => vec![Self::Download],
+                Side::Local => Vec::new(),
+            };
+            if is_text {
+                if side == Side::Local && capabilities.contains(Capability::Run) {
+                    actions.push(Self::Run);
+                }
+                actions.push(Self::View);
+                actions.push(Self::Edit);
+                if capabilities.contains(Capability::Filesystem)
+                    && matches!(
+                        status,
+                        Some(SyncStatus::Differs) | Some(SyncStatus::SameSize)
+                    )
+                {
+                    actions.push(Self::Diff);
+                }
+            }
+            actions.push(Self::Delete);
+            actions
+        }
+    }
+}
+
+/// Contents behind [`Overlay::FileViewer`].
+pub struct FileViewer {
+    pub source: ViewerSource,
+    pub state: ViewerState,
+    /// Index of the first visible line, clamped in [`App::scroll_viewer`]
+    /// against the viewport height the renderer publishes each frame
+    /// (mirrors [`App::log_viewport`]).
+    pub scroll: usize,
+}
+
+impl FileViewer {
+    /// Name to detect a syntax-highlighting language from --- the file name
+    /// alone either way, since a device file has no local path to draw one
+    /// from.
+    pub fn display_name(&self) -> String {
+        match &self.source {
+            ViewerSource::Local(path) => path.display().to_string(),
+            ViewerSource::Device(path) => path.to_string(),
+            // Deliberately not `{path}.output` or anything else ending the
+            // string in the script's own extension: `highlight::Language::
+            // from_filename` keys off the text after the last '.', and this
+            // is plain captured output, not Python source, so it must not
+            // look like a `.py` file to it.
+            ViewerSource::RunOutput(path) => format!("{} — output", path.display()),
+            ViewerSource::Diff { local, .. } => {
+                let name = local
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                format!("Diff: {name}  (local ↔ device)")
+            }
+        }
+    }
+}
+
+/// Where a viewer's content came from. A local read is synchronous
+/// ([`App::open_local_file_viewer`] fills in [`ViewerState`] immediately); a
+/// device `cat` is not, so a device-sourced viewer starts in
+/// [`ViewerState::Loading`] and is updated once [`crate::browser::DeviceView`]
+/// arrives (`App::apply_device_view`, matched by path so a stale reply for a
+/// viewer the user already closed and reopened elsewhere is dropped).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ViewerSource {
+    Local(PathBuf),
+    Device(DevicePath),
+    /// Captured stdout of a local script run on the device
+    /// (`FileAction::Run`), keyed by the local script's path.
+    RunOutput(PathBuf),
+    /// A unified diff of the local copy (`local`) against the device copy
+    /// (`device`). Like [`Self::Device`], the device half arrives
+    /// asynchronously via a `cat`: the viewer opens in
+    /// [`ViewerState::Loading`] and [`App::apply_device_view`] computes the
+    /// diff once the device content lands.
+    Diff {
+        local: PathBuf,
+        device: DevicePath,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ViewerState {
+    Loading,
+    Ready {
+        lines: Vec<String>,
+    },
+    /// The file could not be shown (binary, too large, unreadable, or the
+    /// device `cat` failed) --- the reason is already in the log too.
+    Error(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::browser::Side;
+
+    /// Every `FileAction` label must buffer-width to 3 cells before its
+    /// word --- the padding a wide (2-cell) icon needs is one space less than
+    /// a narrow (1-cell) one. This is what a `🗑`/`👁` missing `\u{FE0F}`
+    /// breaks: `unicode_width` scores them narrow while most emoji fonts
+    /// draw them wide, so the single-space padding used for genuinely wide
+    /// icons quietly desyncs the menu from the terminal.
+    #[test]
+    fn every_file_action_label_budgets_the_same_column() {
+        use ratatui::text::Span;
+
+        for action in [
+            FileAction::Open,
+            FileAction::SendToDevice,
+            FileAction::Download,
+            FileAction::Run,
+            FileAction::View,
+            FileAction::Edit,
+            FileAction::Diff,
+            FileAction::Delete,
+        ] {
+            let label = action.label();
+            let word_start = label
+                .char_indices()
+                .find(|(_, c)| c.is_alphabetic())
+                .map(|(i, _)| i)
+                .expect("label has a word");
+            let prefix_width = Span::raw(&label[..word_start]).width();
+            assert_eq!(
+                prefix_width, 3,
+                "{label:?} budgets {prefix_width} cells before its word, want 3"
+            );
+        }
+    }
+
+    #[test]
+    fn file_actions_without_upload_or_filesystem_are_purely_local() {
+        use crate::backend::Backend as _;
+        // Zephyr's real capability set: the local pane offers exactly
+        // open/view/edit/delete, nothing device-bound.
+        let caps = crate::backend::zephyr::ZephyrBackend.capabilities();
+        assert_eq!(
+            FileAction::for_entry(Side::Local, false, true, None, caps),
+            vec![FileAction::View, FileAction::Edit, FileAction::Delete]
+        );
+        assert_eq!(
+            FileAction::for_entry(Side::Local, false, false, None, caps),
+            vec![FileAction::Delete]
+        );
+        assert_eq!(
+            FileAction::for_entry(Side::Local, true, false, None, caps),
+            vec![FileAction::Open, FileAction::Delete]
+        );
+        // Even a differing verdict cannot offer a diff without a filesystem:
+        // there is no second copy to compare against.
+        assert!(
+            !FileAction::for_entry(Side::Local, false, true, Some(SyncStatus::Differs), caps)
+                .contains(&FileAction::Diff)
+        );
+    }
+
+    #[test]
+    fn file_actions_keep_transfers_under_upload_and_filesystem() {
+        use crate::backend::Backend as _;
+        // MicroPython's real capability set: unchanged behavior.
+        let caps = crate::backend::micropython::MicroPythonBackend.capabilities();
+        assert_eq!(
+            FileAction::for_entry(Side::Local, true, false, None, caps),
+            vec![
+                FileAction::Open,
+                FileAction::SendToDevice,
+                FileAction::Delete
+            ]
+        );
+        assert_eq!(
+            FileAction::for_entry(Side::Local, false, true, Some(SyncStatus::Differs), caps),
+            vec![
+                FileAction::SendToDevice,
+                FileAction::Run,
+                FileAction::View,
+                FileAction::Edit,
+                FileAction::Diff,
+                FileAction::Delete
+            ]
+        );
     }
 }

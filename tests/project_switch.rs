@@ -7,13 +7,11 @@
 use std::time::Duration;
 
 use chiptui::app::{App, Overlay};
-use chiptui::event::AppEvent;
 use chiptui::process::Command;
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::KeyCode;
 
-fn key(code: KeyCode) -> AppEvent {
-    AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE))
-}
+mod common;
+use common::key;
 
 fn app() -> App {
     let dir = std::env::temp_dir().join(format!("chiptui-switch-{}", std::process::id()));

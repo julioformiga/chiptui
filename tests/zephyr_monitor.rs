@@ -7,25 +7,17 @@
 
 #![cfg(unix)]
 
-use std::time::{Duration, Instant};
-
 use chiptui::app::{App, Focus, LogTab, MonitorSource, Overlay};
 use chiptui::backend::BackendKind;
 use chiptui::backend::zephyr::workspace::{Resolution, Workspace, WorkspaceOrigin};
 use chiptui::device::DiscoveryState;
-use chiptui::event::AppEvent;
 use chiptui::firmware_id::{FirmwareVerdict, FlashFirmware};
 use chiptui::flash::FlashPanel;
 use chiptui::workspace::WorkspacePanel;
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::KeyCode;
 
-fn fake(tool: &str) -> String {
-    format!("{}/tests/fixtures/bin/{tool}", env!("CARGO_MANIFEST_DIR"))
-}
-
-fn key(code: KeyCode) -> AppEvent {
-    AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE))
-}
+mod common;
+use common::{fake, key, pump_until, render};
 
 /// A Zephyr app whose `/dev` is a fixture directory the test fills.
 fn zephyr_app(tag: &str) -> (App, std::path::PathBuf) {
@@ -60,22 +52,6 @@ fn zephyr_app(tag: &str) -> (App, std::path::PathBuf) {
         panel.set_tool_path(fake("west"));
     }
     (app, root)
-}
-
-/// Drains process events into the app until `done` holds or time runs out.
-fn pump_until(app: &mut App, mut done: impl FnMut(&App) -> bool, secs: u64) -> bool {
-    let deadline = Instant::now() + Duration::from_secs(secs);
-    while Instant::now() < deadline {
-        for event in app.processes.drain() {
-            app.handle(AppEvent::Process(event));
-        }
-        if done(app) {
-            return true;
-        }
-        app.handle(AppEvent::Tick);
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    done(app)
 }
 
 #[test]
@@ -132,16 +108,6 @@ fn several_ports_ask_before_any_is_used() {
         app.browser.is_none(),
         "a Zephyr board must not get a file browser"
     );
-}
-
-/// Renders the current screen and returns it as plain text.
-fn render(app: &mut App, width: u16, height: u16) -> String {
-    let mut terminal =
-        ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
-    terminal
-        .draw(|frame| chiptui::ui::draw(frame, app))
-        .unwrap();
-    terminal.backend().to_string()
 }
 
 #[test]

@@ -1241,7 +1241,11 @@ pub(super) fn truncate_start(text: &str, max: usize) -> String {
 
 /// Shortens `text` from the right, keeping the head --- the sibling of
 /// [`truncate_start`] for lists whose first items are the identity.
-fn truncate_end(text: &str, max: usize) -> String {
+///
+/// The one definition in `ui`: the file panes' name column, the home
+/// rows' project name and the help table's descriptions all shorten the
+/// same way, and each used to carry its own copy of this body.
+pub(super) fn truncate_end(text: &str, max: usize) -> String {
     let length = text.chars().count();
     if length <= max {
         return text.to_string();
@@ -1322,7 +1326,7 @@ fn field_styled(label: &str, value: String, style: Style, palette: Palette) -> L
 
 #[cfg(test)]
 mod tests {
-    use super::{short_version, truncate_start};
+    use super::{short_version, truncate_end, truncate_start};
 
     #[test]
     fn short_text_is_left_alone() {
@@ -1350,6 +1354,29 @@ mod tests {
         let truncated = truncate_start(path, 12);
         assert!(truncated.chars().count() <= 12);
         assert!(truncated.ends_with("blinky"));
+    }
+
+    #[test]
+    fn names_are_truncated_from_the_right() {
+        assert_eq!(truncate_end("main.py", 10), "main.py");
+        assert_eq!(truncate_end("a_very_long_module.py", 10), "a_very_lo…");
+        assert_eq!(truncate_end("main.py", 1), "…");
+    }
+
+    #[test]
+    fn a_zero_budget_leaves_only_the_ellipsis() {
+        // The help table hands `truncate_end` `width - borders - key column`,
+        // which a terminal narrow enough drives to 0. Returning the untouched
+        // text there --- what `overlay::fit` used to do before the three
+        // copies were merged --- overflows the popup it was measured against.
+        assert_eq!(truncate_end("anything", 0), "…");
+        assert_eq!(truncate_end("", 0), "");
+    }
+
+    #[test]
+    fn truncating_from_the_right_counts_characters_not_bytes() {
+        let name = "configuração_do_dispositivo.py";
+        assert_eq!(truncate_end(name, 12).chars().count(), 12);
     }
 
     #[test]

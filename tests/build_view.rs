@@ -5,37 +5,14 @@
 
 #![cfg(unix)]
 
-use std::time::{Duration, Instant};
-
 use chiptui::app::{App, Focus, LogTab, MonitorSource, Overlay, View};
 use chiptui::backend::BackendKind;
 use chiptui::backend::BuildKind;
 use chiptui::build::BuildAction;
-use chiptui::event::AppEvent;
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::KeyCode;
 
-fn fake(tool: &str) -> String {
-    format!("{}/tests/fixtures/bin/{tool}", env!("CARGO_MANIFEST_DIR"))
-}
-
-fn key(code: KeyCode) -> AppEvent {
-    AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE))
-}
-
-fn ctrl(c: char) -> KeyCode {
-    KeyCode::Char(c)
-}
-
-fn key_event(code: KeyCode, modifiers: KeyModifiers) -> AppEvent {
-    AppEvent::Key(KeyEvent::new(code, modifiers))
-}
-
-/// The Project pane's way in: the shortcuts overlay (`ctrl+k`), then the
-/// pane's `e` letter.
-fn enter_project_pane(app: &mut App) {
-    app.handle(key_event(ctrl('k'), KeyModifiers::CONTROL));
-    app.handle(key(KeyCode::Char('e')));
-}
+mod common;
+use common::{enter_project_pane, fake, key, pump_until, render};
 
 /// A Zephyr app in a temp directory: a real project layout so the panel has
 /// a root, with a CMakeCache claiming a board when the test wants one.
@@ -95,31 +72,6 @@ fn cursor_on(app: &mut App, action: BuildAction) {
         .position(|candidate| *candidate == action)
         .unwrap_or_else(|| panic!("{action:?} is not in the action list"));
     panel.cursor = target;
-}
-
-/// Drains process events into the app until `done` holds or time runs out.
-fn pump_until(app: &mut App, mut done: impl FnMut(&App) -> bool, secs: u64) -> bool {
-    let deadline = Instant::now() + Duration::from_secs(secs);
-    while Instant::now() < deadline {
-        for event in app.processes.drain() {
-            app.handle(AppEvent::Process(event));
-        }
-        if done(app) {
-            return true;
-        }
-        app.handle(AppEvent::Tick);
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    done(app)
-}
-
-fn render(app: &mut App, width: u16, height: u16) -> String {
-    let mut terminal =
-        ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
-    terminal
-        .draw(|frame| chiptui::ui::draw(frame, app))
-        .unwrap();
-    terminal.backend().to_string()
 }
 
 #[test]
