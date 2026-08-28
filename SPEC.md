@@ -803,8 +803,12 @@ The initial backend should support:
 -   build (targeting the conventional `build` directory in the project);
 -   clean;
 -   `menuconfig` (interactive: the TUI suspends, like `$EDITOR`);
--   the build dashboard (`west build -t dashboard`, Zephyr 4.4+: one HTML
-    report over the configured build directory, opened in the browser);
+-   the build dashboard, in two forms over the same build directory (Zephyr
+    4.4+): a **native window** reading the build's own artifacts --- build
+    summary, memory report, Kconfig, devicetree and ELF sections --- and
+    `west build -t dashboard`, the HTML report opened in the browser. Only
+    the memory page needs a tool run (`scripts/footprint/size_report`,
+    which reads the ELF's debug info); both forms share its output;
 -   flash;
 -   serial monitor;
 -   build output/logs;

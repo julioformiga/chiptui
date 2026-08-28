@@ -357,12 +357,18 @@ impl App {
             // The flash contents may have just changed under a build-panel
             // command; read the flag before the panel goes back.
             let flashed = build.take_flash_finished();
+            // The build dashboard closed itself to run this; it comes back
+            // on the tab that asked, with the fresh report loaded.
+            let reported = build.take_size_report_finished();
             self.build = Some(build);
             for (level, message) in notices {
                 self.logs.push(level, message);
             }
             if flashed {
                 self.reidentify_firmware_after_flash();
+            }
+            if reported {
+                self.reopen_dashboard_on_memory();
             }
         }
 

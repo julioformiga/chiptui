@@ -1,0 +1,100 @@
+#!/bin/sh
+# Fake `scripts/footprint/size_report` for ChipTUI tests.
+#
+# It stands in for the *interpreter*, because that is what the command names:
+# `<venv>/bin/python <zephyr_base>/scripts/footprint/size_report …`, and the
+# build panel's `tool_path` seam overrides the program. So `$1` is the script
+# path and everything after it is the script's own argument line.
+#
+# Per AGENTS.md, a fake reproduces the tool rather than the belief about it,
+# and **rejects the wrong forms** so reintroducing one breaks a test. The
+# real script builds its parser with `allow_abbrev=False` and marks `-k`,
+# `-z` and `-o/--output` `required=True`; the target words are an argparse
+# `choices` set; and `--json` takes ONE path containing the literal
+# `{target}`, which the script substitutes itself. Passing three paths, one
+# per target, is the mistake this fake exists to catch --- the same shape as
+# the `west sdk install -d` mistake that once passed the suite for a round.
+script=$1
+shift
+case "$script" in
+    */scripts/footprint/size_report) ;;
+    *)
+        printf 'fake size_report: expected the footprint script, got %s\n' "$script" >&2
+        exit 2
+        ;;
+esac
+
+kernel=
+zephyrbase=
+workspace=
+json=
+output=
+targets=
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -k|--kernel) kernel=$2; shift 2 ;;
+        -z|--zephyrbase) zephyrbase=$2; shift 2 ;;
+        -o|--output) output=$2; shift 2 ;;
+        --workspace) workspace=$2; shift 2 ;;
+        --workspace=*) workspace=${1#--workspace=}; shift ;;
+        --json) json=$2; shift 2 ;;
+        -q|--quiet) shift ;;
+        rom|ram|all) targets="$targets $1"; shift ;;
+        -*)
+            # `allow_abbrev=False`: an abbreviation is an unknown flag, and
+            # argparse exits 2 for one.
+            printf 'fake size_report: unrecognized argument %s\n' "$1" >&2
+            exit 2
+            ;;
+        *)
+            printf "fake size_report: '%s' is not one of 'rom', 'ram', 'all'\n" "$1" >&2
+            exit 2
+            ;;
+    esac
+done
+
+[ -n "$kernel" ] || { printf 'fake size_report: -k is required\n' >&2; exit 2; }
+[ -n "$zephyrbase" ] || { printf 'fake size_report: -z is required\n' >&2; exit 2; }
+[ -n "$output" ] || { printf 'fake size_report: -o/--output is required\n' >&2; exit 2; }
+[ -n "$targets" ] || { printf 'fake size_report: at least one target is required\n' >&2; exit 2; }
+
+# `assert os.path.exists(args.kernel)` --- the real script dies here too.
+[ -f "$kernel" ] || { printf 'fake size_report: %s does not exist\n' "$kernel" >&2; exit 1; }
+
+if [ -z "$json" ]; then
+    printf 'fake size_report: this fake only covers the --json path\n' >&2
+    exit 2
+fi
+case "$json" in
+    *'{target}'*) ;;
+    *)
+        printf 'fake size_report: --json must carry the literal {target}, got %s\n' "$json" >&2
+        exit 2
+        ;;
+esac
+
+printf 'size_report: workspace=%s\n' "$workspace"
+for target in $targets; do
+    out=$(printf '%s' "$json" | sed "s/{target}/$target/")
+    mkdir -p "$(dirname "$out")"
+    cat > "$out" <<JSON
+{
+  "symbols": {
+    "name": "Root", "size": 300, "identifier": "root", "loc": [],
+    "children": [
+      { "name": "kernel", "size": 300, "identifier": "kernel", "loc": [],
+        "children": [
+          { "name": "heap_$target", "size": 200, "identifier": "kernel/heap_$target",
+            "loc": ["$target"], "address": 16, "section": ".bss" },
+          { "name": "stack_$target", "size": 100, "identifier": "kernel/stack_$target",
+            "loc": ["$target"], "address": 32, "section": ".bss" }
+        ] }
+    ]
+  },
+  "total_size": 600
+}
+JSON
+    printf 'wrote %s\n' "$out"
+done
+exit 0

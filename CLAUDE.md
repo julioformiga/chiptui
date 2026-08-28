@@ -407,13 +407,18 @@ than `execvp`, never the reverse.
 `west update` lives behind the Actions pane's `⚙ Zephyr Actions` button, enabled once the
 installation resolves, under `Capability::WorkspaceSync`. Pressing it no
 longer runs `west update` outright: it opens `Overlay::ZephyrActions`, a
-three-button menu drawn with the Actions pane's own stacked-button widget
-(`ui::button`, same icons/labels/selection grammar) --- `↻ Update Zephyr`
+four-button menu drawn with the Actions pane's own stacked-button widget
+(`ui::button`, same icons/labels/selection grammar; `ZEPHYR_ACTIONS_COUNT` is
+the drawn count *and* the count the key handler walks --- the two used to be
+written separately) --- `↻ Update Zephyr`
 leads into the existing confirm (`Overlay::ConfirmBuild`,
 which rewrites the shared checkouts and runs through the build panel's one
 process slot into the Monitor tab), `⇩ Add SDK toolchains`
 calls the same `App::open_sdk_toolchains_shortcut` the dashboard `s` key
-uses, landing on `Overlay::SdkToolchains` instead, and `▦ Dashboard` runs
+uses, landing on `Overlay::SdkToolchains` instead, and the last two are the
+**build dashboard's two doors**. `▦ Dashboard` opens
+`Overlay::BuildDashboard`, the report read *inside the terminal* (below);
+`▦ Dashboard (HTML)` runs
 `west build -t dashboard` (Zephyr 4.4's build dashboard: one HTML report
 over the configured build directory, opened in the browser by the target
 itself) through that same process slot --- focus stays on the panel with
@@ -425,7 +430,8 @@ also never adopts progress for it --- the target's own `[0/1]` ninja
 counters track its internal helpers, not the report, so the state line
 says `Dashboard running · 12s` rather than a meaningless count, and every
 other busy command's state names its label the same way when no progress
-shape arrives). That
+shape arrives; `BuildAction::SizeReport` is its structural twin in all three
+respects). That
 button's slot is *shared*: with nothing resolved it reads `⇩ Install Zephyr`
 instead (`BuildAction::list_for`, keyed off `BuildPanel::workspace_installed`,
 pushed in by `apply_west_env` --- the one place a panel is seeded from the
@@ -698,6 +704,63 @@ instead of sitting at a stale answer. With that,
 Zephyr's Phase 3 surface (detect, board, build, clean, flash, monitor) plus its environment
 layer (workspace/venv/SDK resolution, menuconfig, build dirs, `west update`)
 is complete; debug/signing remain Roadmap items.
+
+The **build dashboard** (`Overlay::BuildDashboard`, `src/build_dashboard.rs`,
+`src/ui/build_dashboard.rs`, `src/app/build_dashboard_view.rs`) is `west build -t
+dashboard`'s HTML report read in the terminal --- and it reads it from the build
+directory's *own artifacts*, never from the generated HTML. That is possible because
+almost everything that page shows is already text or JSON that the build wrote
+(`src/backend/zephyr/report/`, one module per artifact, every parser a pure `&str →
+value` verified against a real ESP32-C3/LVGL build): `build_info.yml` (a hand-rolled
+indentation reader --- CMake writes list items at parent+1, not +2), `zephyr/zephyr.stat`
+(`readelf -e`, which **spares the crate an ELF parser**: its section table carries the
+`sh_type` and `sh_flags` columns `dashboard.py::elf_memory_summary` sums with pyelftools,
+and `elf_stat::summary` reproduces the same five buckets from text, matching pyelftools
+byte for byte on a real image. Both readelf layouts are read --- 32-bit prints one line
+per section, 64-bit two, and Zephyr passes no `-W` --- and the parse is structural rather
+than by column offset, because the `Flg` column is *empty* for `.symtab` and the debug
+sections. `.text` on a real ESP32 build is `WAX`, so executable must be tested before
+writable or the whole text segment files as rwdata), `zephyr/.config-trace.json`
+(the same content as the `.config-trace.pickle` `dashboard.py` reads, written beside it by
+`scripts/kconfig/kconfig.py` on every build: 6-tuples `(name, visibility, type, value,
+kind, location)` where visibility is a *tristate*, `value` is `null` only for `unset`, and
+`location` has four shapes --- `[file, line]`, `null`, or a list of Kconfig *expression*
+strings for `select`/`imply`. 64 of the real project's 1438 `assign` entries carry no
+location and none of its 494 `default` entries lack one, which is why both are
+`Option<Location>`; `.config` is the fallback for an older build, and says so through
+`Source::NotRecorded` rather than inventing an origin) and `zephyr/zephyr.dts` (parsed off
+`dtlib`'s own `/* node '<path>' defined in … */` annotations --- the full path comes free,
+a property accumulates until a line whose payload ends in `;`, and structure is read from
+lines that *end* in `{` so a brace inside a string value opens nothing). Only the Memory
+tab has to be *produced*: `scripts/footprint/size_report --json` needs the ELF's DWARF, so
+it is the one place this feature spends a subprocess --- Zephyr's own script, its own JSON
+output, `BuildAction::SizeReport` through the build panel's one process slot. The window
+closes to run it (a command of minutes belongs in the Monitor with `Stop` reachable, the
+`ZephyrActions` rule) and comes back on the Memory tab **only on success**, since a failure
+leaves the Monitor holding the explanation a modal would hide
+(`BuildPanel::take_size_report_finished`). Its output lands in `<build>/dashboard/`, where
+`west build -t dashboard` writes the same three files, with `dashboard.py`'s exact
+staleness test (`report_mtime < elf_mtime`) --- so either dashboard's run spares the other
+the minute. Writing there is not a breach of "nothing is written into a project directory
+except its own sources": a build directory is regenerable output that `west build -t clean`
+erases, and a cache under `$XDG_CACHE_HOME` would make each dashboard pay separately.
+The window is the docs pickers' two-pane body plus a tab strip
+(`ui::layout::build_dashboard`, one definition shared with the click hit-testing), and the
+strip rides the *modal's top border* the way row 3's does --- so it costs no content row at
+80x32, the modal carries no title of its own, and `mouse::strip_tab` walks it from the same
+`App::dashboard_strip_tabs` builder the renderer draws from. The key grammar is
+`on_packages_key`'s, whose one governing rule it inherits: **every printable character is
+filter text**, so no action lives on a plain letter, `q` does not close the window (only
+`Esc` does), there is no reload key (re-entering a tab re-stats its artifact and re-parses
+only on a change), and the strip answers **`ctrl+←/→` alone** --- the plain arrows are
+needed by the list, the details and the two trees. Filtering a tree *flattens* it to
+matches shown by full path, rather than leaving the reader to expand a path down to a hit.
+Artifacts are parsed on tab entry, never in the draw path, and none of it is deferred to a
+thread: measured on a real project, the largest is `all_report.json` at 4.5 MB / 6309 nodes
+in 185 ms *debug*. The Summary's memory shares are of the resident image
+(text+rodata+rwdata+bss) with `other` carrying a size and no share --- the debug sections
+are 80% of a real ELF and never reach the board, so including them reported a 900 KB text
+segment as "7%".
 
 The dashboard has a **declared minimum of 80x32** (`ui::MIN_WIDTH`/`MIN_HEIGHT`), and it is
 measured rather than aspirational: the Zephyr action stack is six buttons (one rule per edge,

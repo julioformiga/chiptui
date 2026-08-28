@@ -1336,6 +1336,15 @@ impl App {
                 ("tab", "list/details"),
                 ("F1", "help"),
             ],
+            // Free text here too, so the footer names the two gestures the
+            // filter line cannot teach: the strip answers the chord, and
+            // `Enter` opens the row on the two tabs that are trees.
+            Some(Overlay::BuildDashboard) => vec![
+                ("ctrl+\u{2190}/\u{2192}", "tabs"),
+                ("tab", "list/details"),
+                ("enter", "expand"),
+                ("F1", "help"),
+            ],
             Some(
                 Overlay::DevicePicker { .. }
                 | Overlay::ThemePicker { .. }

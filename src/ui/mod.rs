@@ -11,6 +11,7 @@
 //! build a button stack.
 
 mod build;
+mod build_dashboard;
 mod button;
 pub(crate) use button::{Button, STOP_BOX_WIDTH, button_at_row, stack_height};
 mod files;

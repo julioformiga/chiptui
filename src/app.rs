@@ -32,6 +32,7 @@ use crate::logs::LogStore;
 use crate::process::{ProcessId, ProcessManager};
 use crate::project::ProjectManager;
 
+pub mod build_dashboard_view;
 pub mod build_view;
 pub mod devices;
 pub mod events;
@@ -294,6 +295,18 @@ pub struct App {
     /// the offset that was actually drawn. Reset when a picker opens and
     /// when the filter changes (a different list starts from its top).
     pub docs_list_offset: usize,
+    /// The build dashboard window's whole state --- see
+    /// [`crate::build_dashboard::DashboardState`] for why the overlay
+    /// variant carries none of it.
+    pub build_dashboard: crate::build_dashboard::DashboardState,
+    /// The dashboard list's settled scroll offset, published by the
+    /// renderer and seeded back into the next frame's `ListState` --- the
+    /// `docs_list_offset` contract, which is what lets a click on a visible
+    /// row select it without re-anchoring the view.
+    pub dashboard_list_offset: usize,
+    /// The dashboard details pane's drawn height, published so paging and
+    /// clamping match what was actually rendered.
+    pub dashboard_viewport: usize,
     /// Ticks observed, used for the "detecting" spinner and as a liveness hint.
     pub ticks: u64,
     /// External commands. Owned here so every view shares one drain point.
@@ -588,6 +601,9 @@ impl App {
             frame_area: None,
             docs_viewport: 1,
             docs_list_offset: 0,
+            build_dashboard: crate::build_dashboard::DashboardState::default(),
+            dashboard_list_offset: 0,
+            dashboard_viewport: 1,
             ticks: 0,
             processes: ProcessManager::new(),
             docs: crate::board_docs::BoardDocs::new(),
@@ -740,7 +756,7 @@ impl App {
             // deliberately ungated: a build directory that is not
             // configured yet is `west`'s own error to explain in the
             // Monitor (the report's whole point is an existing build).
-            crate::build::BuildAction::Dashboard => true,
+            crate::build::BuildAction::Dashboard | crate::build::BuildAction::SizeReport => true,
         }
     }
 }

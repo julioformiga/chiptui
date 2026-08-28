@@ -211,6 +211,9 @@ fn draw_rows(
             crate::build::BuildAction::Dashboard => {
                 unreachable!("Dashboard is drawn in the Zephyr Actions menu")
             }
+            crate::build::BuildAction::SizeReport => {
+                unreachable!("the memory report is started from the dashboard window")
+            }
         }
     }
     // The footer sits directly under the stack's bottom rule --- no blank

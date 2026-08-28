@@ -10,6 +10,7 @@ pub mod backend;
 pub mod board_docs;
 pub mod browser;
 pub mod build;
+pub mod build_dashboard;
 pub mod console;
 pub mod device;
 pub mod diff;

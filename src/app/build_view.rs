@@ -263,6 +263,7 @@ impl App {
                 | BuildAction::Flash
                 | BuildAction::Menuconfig
                 | BuildAction::Dashboard
+                | BuildAction::SizeReport
         ) && !self.require_buildable_project(&action)
         {
             return;
@@ -293,6 +294,7 @@ impl App {
             // the installer's own confirm asks whether to.
             BuildAction::InstallZephyr => self.open_install_picker(),
             BuildAction::Dashboard => self.start_dashboard(),
+            BuildAction::SizeReport => self.start_size_report(),
         }
     }
 
@@ -320,6 +322,7 @@ impl App {
             BuildAction::Flash => "flash",
             BuildAction::Menuconfig => "menuconfig",
             BuildAction::Dashboard => "dashboard",
+            BuildAction::SizeReport => "memory report",
             _ => "this command",
         };
         self.logs.warn(format!(
@@ -500,6 +503,48 @@ impl App {
     /// deliberately not required: the report reads an already-configured
     /// build directory, and one that is missing is `west`'s error to
     /// explain.
+    /// Starts the memory report (`size_report`), the one page of the build
+    /// dashboard that has to be produced rather than read.
+    ///
+    /// The window is already closed by the time this runs (the caller closes
+    /// it): a run of minutes belongs in the Monitor with `Stop` reachable,
+    /// not behind a modal. `App::on_process` re-opens the window on the
+    /// Memory tab when the run *succeeds* --- a failure leaves the Monitor
+    /// showing why, which a modal over it would hide.
+    pub(super) fn start_size_report(&mut self) {
+        let Some(workspace) = self
+            .workspace
+            .as_ref()
+            .and_then(|panel| panel.resolved.clone())
+        else {
+            self.logs
+                .warn("no Zephyr installation resolved --- the memory report needs one");
+            return;
+        };
+        let Some(backend) = self.manager.backend() else {
+            return;
+        };
+        let command = match self
+            .build
+            .as_ref()
+            .map(|panel| panel.size_report_command(backend, &workspace))
+        {
+            Some(Ok(command)) => command,
+            Some(Err(why)) => {
+                self.logs.warn(format!("memory report: {why}"));
+                return;
+            }
+            None => return,
+        };
+        self.start_build_command(
+            "Memory report",
+            false,
+            BuildAction::SizeReport,
+            Focus::Build,
+            move |_, _| Some(command),
+        );
+    }
+
     pub(super) fn start_dashboard(&mut self) {
         self.start_build_command(
             "Dashboard",

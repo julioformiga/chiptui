@@ -305,6 +305,10 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
             draw_rename_entry(frame, popup, &name, &input, palette)
         }
         Overlay::Packages => draw_packages(frame, area, app, palette),
+        // Full-frame, so it takes the frame rather than the popup --- it
+        // recomputes its own geometry from `layout::build_dashboard`, the
+        // same definition `overlay_popup` above delegates to.
+        Overlay::BuildDashboard => super::build_dashboard::draw(frame, area, app, palette),
         Overlay::ConfirmRemovePackage {
             name,
             targets,
@@ -560,7 +564,7 @@ fn draw_restore_device_script(frame: &mut Frame, popup: Rect, selected: usize, p
 /// own array length so the two can never silently disagree, and the one
 /// number the click handler needs to reconstruct the same row shape
 /// (`app::mouse`'s `on_overlay_mouse`, `Overlay::ZephyrActions` arm).
-pub(crate) const ZEPHYR_ACTIONS_COUNT: usize = 3;
+pub(crate) const ZEPHYR_ACTIONS_COUNT: usize = 4;
 
 fn draw_zephyr_actions(
     frame: &mut Frame,
@@ -584,10 +588,15 @@ fn draw_zephyr_actions(
         (
             crate::icons::IconSet::dashboard,
             "Dashboard",
-            "west build -t dashboard — HTML report, opens in browser",
+            "the build report, read here: memory, Kconfig, devicetree",
+        ),
+        (
+            crate::icons::IconSet::dashboard,
+            "Dashboard (HTML)",
+            "west build -t dashboard — the same report, in the browser",
         ),
     ];
-    let colors = [palette.warning, palette.success, palette.info];
+    let colors = [palette.warning, palette.success, palette.info, palette.info];
     let buttons: Vec<super::button::Button> = CHOICES
         .iter()
         .zip(colors)
@@ -2267,7 +2276,7 @@ fn draw_docs_picker(
 /// dashboard's panes, muted so the modal's own frame stays the loudest
 /// border --- except the pane holding the keyboard, whose border takes
 /// the focus accent ([`crate::ui::border_style`]).
-fn pane(title: &str, focused: bool, palette: Palette) -> Block<'_> {
+pub(super) fn pane(title: &str, focused: bool, palette: Palette) -> Block<'_> {
     Block::default()
         .borders(Borders::ALL)
         .border_style(border_style(focused, palette))
@@ -2279,7 +2288,12 @@ fn pane(title: &str, focused: bool, palette: Palette) -> Block<'_> {
 /// greedy word-wrap [`wrap_words`] does, the first row's budget shortened
 /// by the label), so a long vendor or west description is never silently
 /// truncated by the pane's width.
-fn labelled(label: &str, value: &str, width: usize, palette: Palette) -> Vec<Line<'static>> {
+pub(super) fn labelled(
+    label: &str,
+    value: &str,
+    width: usize,
+    palette: Palette,
+) -> Vec<Line<'static>> {
     let mut rows = Vec::new();
     let mut budget = width.saturating_sub(label.chars().count() + 1).max(4);
     let mut current = String::new();
@@ -2313,7 +2327,7 @@ fn labelled(label: &str, value: &str, width: usize, palette: Palette) -> Vec<Lin
 /// Greedy word-wrap, the shape every scrolling pane here expects: rows in,
 /// rows out. Blank lines survive as empty rows (the docs pages separate
 /// sections with them); a word longer than the width is hard-split.
-fn wrap_words(text: &str, width: usize) -> Vec<String> {
+pub(super) fn wrap_words(text: &str, width: usize) -> Vec<String> {
     let width = width.max(4);
     let mut lines = Vec::new();
     for paragraph in text.split('\n') {

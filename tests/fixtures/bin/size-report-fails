@@ -1,0 +1,12 @@
+#!/bin/sh
+# Fake interpreter for a `size_report` run that fails.
+#
+# The real script can die on a large image --- it holds the whole DWARF in
+# memory and parses it in Python --- and a failed run must leave the Monitor
+# holding the explanation rather than a modal hiding it. This writes to
+# stderr the way a Python traceback would and exits non-zero, which is all
+# the panel's outcome handling needs to tell apart from success.
+printf 'Traceback (most recent call last):\n' >&2
+printf '  File "size_report", line 1024, in main\n' >&2
+printf 'MemoryError\n' >&2
+exit 1

@@ -186,6 +186,26 @@ impl Workspace {
             .filter(|text| !text.is_empty())
     }
 
+    /// The venv's interpreter, when the workspace has a venv.
+    ///
+    /// The build commands never need this --- a venv console script embeds
+    /// its interpreter's absolute path, which is why `west` is executed
+    /// directly with no activation. A *script* out of the Zephyr checkout
+    /// has no such shim, so running one (`scripts/footprint/size_report`,
+    /// for the memory report) means naming the interpreter that has
+    /// `pyelftools` and `anytree` installed. That is this one, and it is
+    /// the same interpreter `dashboard.py` reaches through `sys.executable`
+    /// when it runs the very same script.
+    ///
+    /// `None` without a venv, which is a refusal the caller must name
+    /// rather than paper over with a bare `python3`: the system interpreter
+    /// almost certainly lacks the two modules.
+    pub fn python(&self) -> Option<PathBuf> {
+        let venv = self.venv.as_ref()?;
+        let python = venv.join("bin").join("python");
+        python.is_file().then_some(python)
+    }
+
     /// The venv's Python version, read from `<venv>/pyvenv.cfg`'s
     /// `version =` line --- the file the venv itself owns, so no
     /// subprocess is needed for a fact it already records. `None`
@@ -429,6 +449,34 @@ mod tests {
             user_settings: None,
             home,
         }
+    }
+
+    /// The memory report runs a script out of the checkout, which has no
+    /// console-script shim to embed an interpreter --- so the venv's own
+    /// `python` has to be named. A venv with no interpreter in it answers
+    /// `None` rather than a path that would fail on exec.
+    #[test]
+    fn the_venv_interpreter_is_found_only_when_it_exists() {
+        let tmp = scratch("python");
+        let ws = install_dir(&tmp, "myzephyr", true);
+        let workspace = Workspace {
+            dir: ws.clone(),
+            origin: WorkspaceOrigin::UserConfig,
+            zephyr_base: ws.join("zephyr"),
+            venv: Some(ws.join(".venv")),
+            west: ws.join(".venv/bin/west").display().to_string(),
+            sdk: None,
+        };
+        assert_eq!(workspace.python(), None, "the venv has west but no python");
+
+        std::fs::write(ws.join(".venv/bin/python"), "#!/bin/sh\n").unwrap();
+        assert_eq!(workspace.python(), Some(ws.join(".venv/bin/python")));
+
+        let without_venv = Workspace {
+            venv: None,
+            ..workspace
+        };
+        assert_eq!(without_venv.python(), None);
     }
 
     #[test]

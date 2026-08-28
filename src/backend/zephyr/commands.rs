@@ -106,6 +106,62 @@ pub fn menuconfig(dir: &str) -> Command {
 /// opens in the browser. Like every other `-t` target it needs a
 /// configured build directory; `west` explains what is missing when there
 /// is none, which is why nothing upstream gates on the board answer.
+/// `scripts/footprint/size_report` --- the per-symbol memory tree the
+/// dashboard's Memory tab reads.
+///
+/// The one command in this backend that is not `west`. It runs a script out
+/// of the Zephyr checkout, which has no console-script shim to embed an
+/// interpreter, so the venv's own `python` is named explicitly --- the same
+/// interpreter `dashboard.py` reaches through `sys.executable` when it runs
+/// this very script (`_create_memory_reports`).
+///
+/// Three flag forms are load-bearing and are copied from that call site
+/// rather than inferred:
+///
+/// * **`--workspace=<topdir>`**, the equals form. `size_report` builds its
+///   parser with `allow_abbrev=False`, so no shortened spelling is accepted.
+/// * **`--json <out>/{target}_report.json`**, with `{target}` written
+///   *literally*. The script substitutes `rom`/`ram`/`all` into it itself;
+///   passing three separate paths, one per target, is the wrong invocation
+///   and would leave two of the three files unwritten.
+/// * **`--output .`**, which the parser marks `required=True` even though
+///   the JSON path never uses it. Omitting it is an argparse error, not a
+///   default.
+///
+/// The output directory is `<build>/dashboard/` --- where Zephyr's own
+/// `dashboard` target writes the same three files, so a run here spares the
+/// HTML report one and the other way round.
+pub fn size_report(
+    python: &std::path::Path,
+    zephyr_base: &std::path::Path,
+    topdir: &std::path::Path,
+    elf: &std::path::Path,
+    out_dir: &std::path::Path,
+) -> Command {
+    Command::new(python.display().to_string())
+        .arg(
+            zephyr_base
+                .join("scripts")
+                .join("footprint")
+                .join("size_report")
+                .display()
+                .to_string(),
+        )
+        .arg("-k")
+        .arg(elf.display().to_string())
+        .arg("-z")
+        .arg(zephyr_base.display().to_string())
+        .arg(format!("--workspace={}", topdir.display()))
+        .arg("--json")
+        .arg(out_dir.join("{target}_report.json").display().to_string())
+        .arg("--quiet")
+        .arg("--output")
+        .arg(".")
+        .arg("rom")
+        .arg("ram")
+        .arg("all")
+}
+
 pub fn dashboard(dir: &str) -> Command {
     build_dir(Command::new(PROGRAM).arg("build"), dir)
         .arg("-t")
@@ -170,6 +226,76 @@ pub fn monitor(port: &str) -> Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The three flag forms that are load-bearing, pinned against the call
+    /// `dashboard.py::_create_memory_reports` makes.
+    #[test]
+    fn the_memory_report_command_matches_the_python_call_site() {
+        let command = size_report(
+            std::path::Path::new("/ws/.venv/bin/python"),
+            std::path::Path::new("/ws/zephyr"),
+            std::path::Path::new("/ws"),
+            std::path::Path::new("/p/build/zephyr/zephyr.elf"),
+            std::path::Path::new("/p/build/dashboard"),
+        );
+        // `Display` shortens the program to its file name (the venv path is
+        // execution detail, the same way the venv `west` reads as `west`) ---
+        // the arguments are what a reader checks.
+        assert_eq!(
+            command.to_string(),
+            "python /ws/zephyr/scripts/footprint/size_report \
+             -k /p/build/zephyr/zephyr.elf -z /ws/zephyr --workspace=/ws \
+             --json /p/build/dashboard/{target}_report.json --quiet --output . rom ram all"
+        );
+    }
+
+    /// `{target}` is written *literally*: `size_report` substitutes
+    /// `rom`/`ram`/`all` itself, and three separate paths would leave two of
+    /// the three files unwritten.
+    #[test]
+    fn the_json_path_carries_the_placeholder_not_a_target() {
+        let command = size_report(
+            std::path::Path::new("/py"),
+            std::path::Path::new("/z"),
+            std::path::Path::new("/w"),
+            std::path::Path::new("/e.elf"),
+            std::path::Path::new("/out"),
+        );
+        let line = command.to_string();
+        assert!(line.contains("--json /out/{target}_report.json"), "{line}");
+        assert!(!line.contains("all_report.json"), "{line}");
+    }
+
+    /// The equals form, because the parser is built with
+    /// `allow_abbrev=False` and the Python writes it that way.
+    #[test]
+    fn the_workspace_flag_uses_the_equals_form() {
+        let line = size_report(
+            std::path::Path::new("/py"),
+            std::path::Path::new("/z"),
+            std::path::Path::new("/top"),
+            std::path::Path::new("/e.elf"),
+            std::path::Path::new("/out"),
+        )
+        .to_string();
+        assert!(line.contains("--workspace=/top"), "{line}");
+        assert!(!line.contains("--workspace /top"), "{line}");
+    }
+
+    /// `--output` is `required=True` even though the JSON path never reads
+    /// it: omitting it is an argparse error, not a default.
+    #[test]
+    fn the_required_output_flag_is_always_present() {
+        let line = size_report(
+            std::path::Path::new("/py"),
+            std::path::Path::new("/z"),
+            std::path::Path::new("/w"),
+            std::path::Path::new("/e.elf"),
+            std::path::Path::new("/out"),
+        )
+        .to_string();
+        assert!(line.contains("--output ."), "{line}");
+    }
 
     #[test]
     fn first_build_carries_the_board_and_shield() {

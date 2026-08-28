@@ -684,6 +684,34 @@ impl App {
                     self.packages.scroll = 0;
                 }
             }
+            Overlay::BuildDashboard => {
+                // The strip first: it sits on the modal's top border, which
+                // is inside the popup rect, so a click there would
+                // otherwise fall through to the list test below.
+                let areas = layout::build_dashboard(frame);
+                let tabs = self.dashboard_strip_tabs();
+                if let Some(tab) = strip_tab(point, areas.popup, &tabs) {
+                    self.set_dashboard_tab(tab);
+                    return;
+                }
+                // Picker grammar: a click selects, never activates ---
+                // expanding stays behind `Enter`/`→`. A click on either
+                // pane also hands it the keyboard, the docs pickers' rule.
+                if contains(areas.details, point) {
+                    self.set_dashboard_focus(DocsFocus::Details);
+                    return;
+                }
+                if !contains(areas.list, point) {
+                    return;
+                }
+                self.set_dashboard_focus(DocsFocus::List);
+                let len = self.build_dashboard.rows().len();
+                if let Some(index) =
+                    dashboard_list_row(areas.list, point, self.dashboard_list_offset, len)
+                {
+                    self.set_dashboard_selection(index);
+                }
+            }
             Overlay::ProjectSetup { selected } => {
                 let len = BackendKind::ALL.len();
                 if let Some(index) = list_row(
@@ -947,6 +975,23 @@ impl App {
                     .map(|panel| panel.filtered_shields_count(input) + 1)
                     .unwrap_or(1);
                 (*selected, *scroll, len)
+            }
+            // The build dashboard steps its own list and scrolls its own
+            // details; its state lives on `App`, not in the variant, so it
+            // is answered here rather than through the tuple below.
+            Some(Overlay::BuildDashboard) => {
+                let areas = layout::build_dashboard(frame);
+                if contains(areas.list, point) {
+                    self.build_dashboard.move_cursor(direction as i32);
+                } else if contains(areas.details, point) {
+                    let pane = self.build_dashboard.pane_mut();
+                    pane.scroll = if direction < 0 {
+                        pane.scroll.saturating_sub(1)
+                    } else {
+                        pane.scroll.saturating_add(1)
+                    };
+                }
+                return;
             }
             _ => return,
         };
@@ -1334,6 +1379,25 @@ fn docs_list_row(area: Rect, point: (u16, u16), offset: usize, len: usize) -> Op
         return None;
     }
     let pane = layout::docs_picker(area).list;
+    let inner = Rect {
+        x: pane.x + 1,
+        y: pane.y + 1,
+        width: pane.width.saturating_sub(2),
+        height: pane.height.saturating_sub(2),
+    };
+    if !contains(inner, point) || inner.height == 0 {
+        return None;
+    }
+    let index = offset + (point.1 - inner.y) as usize;
+    (index < len).then_some(index)
+}
+
+/// A row of the build dashboard's list, mapped through the offset the frame
+/// settled on --- [`docs_list_row`]'s rule, over that window's own geometry.
+fn dashboard_list_row(pane: Rect, point: (u16, u16), offset: usize, len: usize) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
     let inner = Rect {
         x: pane.x + 1,
         y: pane.y + 1,
@@ -2479,7 +2543,9 @@ mod tests {
             ("Add SDK toolchains", 1),
             ("extends the installed bundle", 1),
             ("Dashboard", 2),
-            ("west build -t dashboard", 2),
+            ("the build report, read here", 2),
+            ("Dashboard (HTML)", 3),
+            ("west build -t dashboard", 3),
         ] {
             let root = project_dir("za", 1);
             let mut app = app_with_backend(BackendKind::Zephyr, &root);
@@ -2514,10 +2580,16 @@ mod tests {
                         && app.logs.len() > before,
                     "{label}: Add SDK answers through its own gate"
                 ),
+                // The TUI dashboard replaces the menu with its own window
+                // rather than starting anything.
+                2 => assert!(
+                    matches!(overlay, Some(crate::app::Overlay::BuildDashboard)),
+                    "{label}: the dashboard opens its window"
+                ),
                 _ => assert!(
                     app.build.as_ref().is_some_and(|panel| panel.is_busy())
                         || app.log_tab == LogTab::Monitor,
-                    "{label}: Dashboard starts through the panel"
+                    "{label}: the HTML report starts through the panel"
                 ),
             }
             let _ = std::fs::remove_dir_all(&root);

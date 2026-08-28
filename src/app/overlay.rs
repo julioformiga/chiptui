@@ -788,6 +788,7 @@ impl App {
                 _ => {}
             },
             Overlay::Packages => self.on_packages_key(key),
+            Overlay::BuildDashboard => self.on_build_dashboard_key(key),
             Overlay::ConfirmRemovePackage {
                 name,
                 targets,
@@ -991,7 +992,10 @@ impl App {
                 );
             }
             Overlay::ZephyrActions { selected } => {
-                const COUNT: usize = 3;
+                // The drawn button count, not a second copy of it: the two
+                // used to be written separately and a fourth row would have
+                // left the keyboard walking three.
+                const COUNT: usize = crate::ui::ZEPHYR_ACTIONS_COUNT;
                 match key.code {
                     KeyCode::Esc | KeyCode::Char('q') => self.overlay = None,
                     KeyCode::Up | KeyCode::Char('k') => {
@@ -1011,11 +1015,16 @@ impl App {
                         });
                     }
                     KeyCode::Enter if selected == 1 => self.open_sdk_toolchains_shortcut(),
-                    // The menu closes before the command starts: the
-                    // Monitor tab showing the run must not sit behind a
-                    // modal. Routed through `run_build_action` so the
-                    // buildable-project gate (the one gate this command
-                    // keeps) applies like every other project command.
+                    // The dashboard, read here: replaces the overlay rather
+                    // than closing it, so the window is what the menu row
+                    // leads to.
+                    KeyCode::Enter if selected == 2 => self.open_build_dashboard(),
+                    // The same report as HTML. The menu closes before the
+                    // command starts: the Monitor tab showing the run must
+                    // not sit behind a modal. Routed through
+                    // `run_build_action` so the buildable-project gate (the
+                    // one gate this command keeps) applies like every other
+                    // project command.
                     KeyCode::Enter => {
                         self.overlay = None;
                         self.run_build_action(BuildAction::Dashboard);
@@ -1098,6 +1107,8 @@ fn is_help_reachable_overlay(overlay: &Overlay) -> bool {
             | Overlay::FileActions { .. }
             | Overlay::RestoreDeviceScript { .. }
             | Overlay::ZephyrActions { .. }
+            | Overlay::Packages
+            | Overlay::BuildDashboard
     )
 }
 
@@ -1106,7 +1117,10 @@ fn is_help_reachable_overlay(overlay: &Overlay) -> bool {
 fn is_text_entry_overlay(overlay: &Overlay) -> bool {
     matches!(
         overlay,
-        Overlay::RenameEntry { .. } | Overlay::BuildDirPicker { .. } | Overlay::Packages
+        Overlay::RenameEntry { .. }
+            | Overlay::BuildDirPicker { .. }
+            | Overlay::Packages
+            | Overlay::BuildDashboard
     )
 }
 
@@ -1288,6 +1302,14 @@ pub enum Overlay {
     /// remove confirmation --- which *replaces* this overlay, the slot
     /// being one deep --- can hand the window back exactly as it was.
     Packages,
+    /// The Zephyr build dashboard, read from the build directory's own
+    /// artifacts (`west build -t dashboard`'s HTML report, in the terminal).
+    ///
+    /// Carries nothing, for both of [`Overlay::Packages`]' reasons and one
+    /// of its own: generating the memory report *closes* this window, runs a
+    /// command for a minute and re-opens it, which only works if the tab,
+    /// cursor, filter and scroll outlived it on [`App::build_dashboard`].
+    BuildDashboard,
     /// "Remove this package?" --- the manager's `Del`. Its own variant
     /// rather than the shared [`Overlay::Confirm`] (already multiplexed
     /// between the flash panel's `pending` and the installer's start

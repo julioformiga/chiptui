@@ -520,7 +520,9 @@ fn a_report_drops_its_clock_rather_than_truncating_it() {
     app.build.as_mut().unwrap().set_tool_path(fake("slow"));
 
     app.focus = Focus::Build;
-    app.overlay = Some(Overlay::ZephyrActions { selected: 2 });
+    // The menu's fourth row: the HTML report, which is the one that starts a
+    // command (row 2 opens the window that reads the same data here).
+    app.overlay = Some(Overlay::ZephyrActions { selected: 3 });
     app.handle(key(KeyCode::Enter));
     assert!(app.build.as_ref().unwrap().is_busy(), "the dashboard ran");
     cursor_on(&mut app, BuildAction::Stop);
@@ -1671,12 +1673,17 @@ fn the_zephyr_actions_menu_runs_the_build_dashboard() {
     // no confirm quoting the command and no picker to pass through.
     assert!(
         frame.contains("west build -t dashboard"),
-        "the menu must name the command Dashboard runs:\n{frame}"
+        "the menu must name the command the HTML report runs:\n{frame}"
+    );
+    assert!(
+        frame.contains("Dashboard (HTML)"),
+        "the two dashboards are told apart by name:\n{frame}"
     );
     assert!(
         frame.contains("west update"),
         "every entry carries its explanation:\n{frame}"
     );
+    app.handle(key(KeyCode::Down));
     app.handle(key(KeyCode::Down));
     app.handle(key(KeyCode::Down));
     app.handle(key(KeyCode::Enter));

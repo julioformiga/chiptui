@@ -340,6 +340,29 @@ pub struct MonitorContext<'a> {
     pub project_root: Option<&'a std::path::Path>,
 }
 
+/// The facts a memory-report command needs, none of which the build
+/// lifecycle's own arguments carry.
+///
+/// [`MonitorContext`]'s twin, and for the same reason: the command runs a
+/// *script out of the toolchain's own tree* rather than the project's build
+/// tool, so it needs the checkout, the workspace top and an interpreter, and
+/// a missing one of those must lead to a named refusal rather than a guess.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BuildReportContext<'a> {
+    /// The interpreter that has the script's dependencies --- the
+    /// workspace venv's own `python`.
+    pub python: &'a std::path::Path,
+    /// The manifest checkout, which is where the script lives.
+    pub zephyr_base: &'a std::path::Path,
+    /// The workspace root, passed as `--workspace` so symbols under it are
+    /// grouped rather than filed as "other".
+    pub topdir: &'a std::path::Path,
+    /// The image whose debug info is read.
+    pub elf: &'a std::path::Path,
+    /// Where the report files are written.
+    pub out_dir: &'a std::path::Path,
+}
+
 /// A framework-specific backend.
 pub trait Backend {
     fn kind(&self) -> BackendKind;
@@ -380,6 +403,19 @@ pub trait Backend {
     fn monitor_command(&self, ctx: &MonitorContext<'_>) -> Result<crate::process::Command, String> {
         let _ = ctx;
         Err("this backend has no monitor".to_string())
+    }
+
+    /// Returns the command that generates the build's memory report, the
+    /// one page of the build dashboard that has to be *produced* rather than
+    /// read (mapping symbols back to source files needs the ELF's debug
+    /// info). `Err` carries the reason it cannot run, named, the way
+    /// [`Self::monitor_command`] refuses.
+    fn size_report_command(
+        &self,
+        ctx: &BuildReportContext<'_>,
+    ) -> Result<crate::process::Command, String> {
+        let _ = ctx;
+        Err("this backend has no memory report".to_string())
     }
 
     /// Returns the command for one flavor of the build lifecycle

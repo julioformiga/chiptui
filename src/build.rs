@@ -276,6 +276,15 @@ pub enum BuildAction {
     /// knows where the cursor came from), and never gated: an unconfigured
     /// build directory is `west`'s own error to explain in the Monitor.
     Dashboard,
+    /// `size_report` --- the memory report the build dashboard's Memory tab
+    /// reads, generated on request from that window. [`Self::Dashboard`]'s
+    /// twin in every structural way: never a row of the stack, never a
+    /// progress shape, and reached from a window rather than from the pane.
+    ///
+    /// It writes into `<build>/dashboard/`, which is where Zephyr's own
+    /// `dashboard` target writes the same three files --- so one run serves
+    /// both dashboards and neither pays the minute twice.
+    SizeReport,
 }
 
 impl BuildAction {
@@ -353,6 +362,12 @@ pub struct BuildPanel {
     /// contents just changed under a command the esptool flow knows
     /// nothing about, so the caller must re-ask the firmware question.
     flash_finished: bool,
+    /// Set when a `SizeReport` command finished successfully and not yet
+    /// consumed ([`Self::take_size_report_finished`]): the build dashboard
+    /// was closed to run it and wants to come back on the tab that asked.
+    /// Only success sets it --- a failure leaves the Monitor holding the
+    /// explanation, which a modal over it would hide.
+    size_report_finished: bool,
     /// Overrides the executable the backend's commands name (`west`), the
     /// seam tests (and later `[tools]` config) plug a substitute into.
     tool_path: Option<String>,
@@ -384,6 +399,7 @@ impl BuildPanel {
             offset,
             running: None,
             flash_finished: false,
+            size_report_finished: false,
             tool_path: None,
             tool_env: Vec::new(),
         }
@@ -407,11 +423,29 @@ impl BuildPanel {
 
     /// Applies the resolved executable and environment to a backend-built
     /// command, next to the cwd the panel also owns.
+    ///
+    /// The program rewrite is right for every command the backend builds as
+    /// `west …`, which is all of them but one --- see [`Self::in_west_env`]
+    /// for the exception and why it exists.
     fn decorated(&self, command: crate::process::Command) -> crate::process::Command {
         let command = match &self.tool_path {
             Some(program) => command.with_program(program),
             None => command,
         };
+        self.in_west_env(command)
+    }
+
+    /// Applies the workspace environment *without* touching the program.
+    ///
+    /// [`Self::tool_path`] is the resolved `west`, and rewriting a command's
+    /// program with it is what makes every lifecycle command run the venv's
+    /// west rather than whatever is on `PATH`. Exactly one command this
+    /// panel runs is not west: the memory report, whose program is the
+    /// venv's *Python* (it runs a script out of the Zephyr checkout, which
+    /// has no console-script shim to embed an interpreter). Passing that one
+    /// through `decorated` handed the script path to `west`, which read it
+    /// as a subcommand and answered `unknown command`.
+    fn in_west_env(&self, command: crate::process::Command) -> crate::process::Command {
         command.envs(self.tool_env.clone())
     }
 
@@ -738,6 +772,34 @@ impl BuildPanel {
     /// The build-dashboard command (`west build -t dashboard`), rooted and
     /// decorated like the others --- a piped command, streamed into the
     /// Monitor tab like the lifecycle.
+    /// The memory-report command, decorated with this panel's cwd and
+    /// environment like every other one it runs.
+    ///
+    /// `Err` is a refusal already phrased as a sentence --- the workspace's
+    /// missing interpreter here, the backend's own reasons through it.
+    pub fn size_report_command(
+        &self,
+        backend: &dyn crate::backend::Backend,
+        workspace: &crate::backend::zephyr::workspace::Workspace,
+    ) -> Result<crate::process::Command, String> {
+        let python = workspace.python().ok_or_else(|| {
+            "the workspace has no Python --- the memory report runs a script from the \
+             Zephyr checkout, which needs the venv's interpreter"
+                .to_string()
+        })?;
+        let paths = crate::backend::zephyr::report::ReportPaths::new(&self.root, &self.build_dir);
+        let command = backend.size_report_command(&crate::backend::BuildReportContext {
+            python: &python,
+            zephyr_base: &workspace.zephyr_base,
+            topdir: &workspace.dir,
+            elf: &paths.elf(),
+            out_dir: &paths.output,
+        })?;
+        // Environment only: the program is the interpreter this command
+        // already names, not the workspace's `west`.
+        Ok(self.in_west_env(command.current_dir(&self.root)))
+    }
+
     pub fn dashboard_command(
         &self,
         backend: &dyn crate::backend::Backend,
@@ -818,6 +880,10 @@ impl BuildPanel {
     /// Whether a `Flash` command finished successfully since the last
     /// call: the built image was just written to the device, so whatever
     /// the firmware identification read before it is stale.
+    pub fn take_size_report_finished(&mut self) -> bool {
+        std::mem::take(&mut self.size_report_finished)
+    }
+
     pub fn take_flash_finished(&mut self) -> bool {
         std::mem::take(&mut self.flash_finished)
     }
@@ -848,10 +914,12 @@ impl BuildPanel {
                     // "Dashboard 0/1" would be noise, so the dashboard
                     // never adopts progress and its state line stays on
                     // the label (`ui::build::draw_state`).
-                    let wants_progress = self
-                        .running
-                        .as_ref()
-                        .is_none_or(|running| running.action != BuildAction::Dashboard);
+                    let wants_progress = self.running.as_ref().is_none_or(|running| {
+                        !matches!(
+                            running.action,
+                            BuildAction::Dashboard | BuildAction::SizeReport
+                        )
+                    });
                     if wants_progress
                         && let Some(progress) = crate::progress::detect(text)
                         && let Some(running) = &mut self.running
@@ -968,7 +1036,9 @@ impl BuildPanel {
             // `position` finds nothing for an unlisted action and
             // `unwrap_or(0)` happens to be this same row today, which is a
             // coincidence, not a decision.
-            BuildAction::Dashboard => BuildAction::UpdateZephyr,
+            // Neither has a row of its own, so the cursor lands on the row
+            // that opens the menu they were reached from.
+            BuildAction::Dashboard | BuildAction::SizeReport => BuildAction::UpdateZephyr,
             other => other,
         };
         self.cursor = settled
@@ -978,6 +1048,9 @@ impl BuildPanel {
 
         if ok && running.action == BuildAction::Flash {
             self.flash_finished = true;
+        }
+        if ok && running.action == BuildAction::SizeReport {
+            self.size_report_finished = true;
         }
         if ok && running.updates_board {
             let cached = cached_board(&self.root, &self.build_dir).map(|name| BoardChoice {

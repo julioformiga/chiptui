@@ -6,9 +6,12 @@
 
 pub mod commands;
 pub mod projects;
+pub mod report;
 pub mod workspace;
 
-use crate::backend::{Backend, BackendKind, BuildKind, Capabilities, Capability};
+use crate::backend::{
+    Backend, BackendKind, BuildKind, BuildReportContext, Capabilities, Capability,
+};
 use crate::project::{DirScan, Signal};
 
 /// Test/sample metadata files used across the Zephyr tree.
@@ -179,6 +182,30 @@ impl Backend for ZephyrBackend {
 
     fn workspace_update_command(&self) -> Option<crate::process::Command> {
         Some(commands::update())
+    }
+
+    fn size_report_command(
+        &self,
+        ctx: &BuildReportContext<'_>,
+    ) -> Result<crate::process::Command, String> {
+        if !ctx.elf.is_file() {
+            // `size_report` asserts on this itself, but its own message is a
+            // Python traceback; the pane can say it in a sentence instead.
+            return Err(format!(
+                "no {} --- build the project first",
+                ctx.elf
+                    .file_name()
+                    .map(|name| name.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "zephyr.elf".to_string())
+            ));
+        }
+        Ok(commands::size_report(
+            ctx.python,
+            ctx.zephyr_base,
+            ctx.topdir,
+            ctx.elf,
+            ctx.out_dir,
+        ))
     }
 
     fn monitor_command(

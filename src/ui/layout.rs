@@ -326,6 +326,75 @@ pub(crate) fn packages(area: Rect) -> PackagesAreas {
     }
 }
 
+/// Where the build dashboard's panes sit inside `area`.
+///
+/// [`packages`]' geometry with a tab strip added --- and the strip costs no
+/// content row, because it rides the modal's *top border* the way row 3's
+/// Log/Monitor/Terminal strip rides its pane's. At the declared 80x32
+/// minimum the body is 23 rows, and spending one of them on a strip that
+/// has a border to sit on would be paying twice.
+pub(crate) struct BuildDashboardAreas {
+    /// The modal itself (border included) --- the `Clear` rect.
+    pub(crate) popup: Rect,
+    /// The tab strip, on the modal's top border row.
+    pub(crate) strip: Rect,
+    /// The filter line.
+    pub(crate) filter: Rect,
+    /// The wrapped hint line(s) between the filter and the body.
+    pub(crate) hint: Rect,
+    /// The row list (border included).
+    pub(crate) list: Rect,
+    /// The details column (border included).
+    pub(crate) details: Rect,
+}
+
+/// Columns the row list keeps whatever the terminal's width.
+///
+/// Wider than the docs pickers' 32 and narrower than
+/// [`PACKAGES_LIST_WIDTH`]: `CONFIG_DT_HAS_CHIPSEMI_CHSC6X_ENABLED` is 37
+/// characters, and a Kconfig row that cannot show its own symbol name is
+/// not a row. Every column a wider terminal adds still goes to the details.
+pub(crate) const BUILD_DASHBOARD_LIST_WIDTH: u16 = 42;
+
+pub(crate) fn build_dashboard(area: Rect) -> BuildDashboardAreas {
+    let popup = super::centered(
+        area,
+        area.width.saturating_sub(2),
+        area.height.saturating_sub(4),
+    );
+    let inner = Rect {
+        x: popup.x + 1,
+        y: popup.y + 1,
+        width: popup.width.saturating_sub(2),
+        height: popup.height.saturating_sub(2),
+    };
+    let strip = Rect {
+        x: popup.x.saturating_add(1),
+        y: popup.y,
+        width: popup.width.saturating_sub(2),
+        height: 1,
+    };
+    let [filter, hint, body] = Layout::vertical([
+        Constraint::Length(1), // the filter line
+        Constraint::Length(2), // the wrapped hint
+        Constraint::Min(1),
+    ])
+    .areas(inner);
+    let [list, details] = Layout::horizontal([
+        Constraint::Length(BUILD_DASHBOARD_LIST_WIDTH.min(body.width)),
+        Constraint::Min(1),
+    ])
+    .areas(body);
+    BuildDashboardAreas {
+        popup,
+        strip,
+        filter,
+        hint,
+        list,
+        details,
+    }
+}
+
 /// The width every destructive/confirm dialog is drawn at.
 pub(crate) const DESTRUCTIVE_WIDTH: u16 = 72;
 
@@ -431,6 +500,7 @@ pub(crate) fn overlay_popup(app: &App, overlay: &Overlay, frame: Rect) -> Rect {
 
         // ---- variants that already own a shared geometry helper --------
         Overlay::Packages => return packages(frame).popup,
+        Overlay::BuildDashboard => return build_dashboard(frame).popup,
         Overlay::BoardPicker { .. } | Overlay::ShieldPicker { .. } => {
             return docs_picker(frame).popup;
         }
