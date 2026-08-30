@@ -795,6 +795,17 @@ impl BuildPanel {
             elf: &paths.elf(),
             out_dir: &paths.output,
         })?;
+        // `size_report` opens its `--json` path with a plain `open(..., "w")`
+        // and creates no parent, so a build directory that never ran Zephyr's
+        // own `dashboard` target dies on a `FileNotFoundError` traceback after
+        // the whole DWARF walk. Creating it here is the same write the target
+        // itself would have made --- a build directory is regenerable output.
+        if let Err(why) = std::fs::create_dir_all(&paths.output) {
+            return Err(format!(
+                "cannot create {} for the memory report: {why}",
+                paths.output.display()
+            ));
+        }
         // Environment only: the program is the interpreter this command
         // already names, not the workspace's `west`.
         Ok(self.in_west_env(command.current_dir(&self.root)))

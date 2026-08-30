@@ -130,7 +130,11 @@ pub fn menuconfig(dir: &str) -> Command {
 ///
 /// The output directory is `<build>/dashboard/` --- where Zephyr's own
 /// `dashboard` target writes the same three files, so a run here spares the
-/// HTML report one and the other way round.
+/// HTML report one and the other way round. It has to *exist*: the script
+/// opens each `--json` path with a plain `open(..., "w")` and creates no
+/// parent, so a build directory that never ran that target ends the run in a
+/// `FileNotFoundError` --- after the whole DWARF walk. The caller
+/// ([`crate::build::BuildPanel::size_report_command`]) makes it.
 pub fn size_report(
     python: &std::path::Path,
     zephyr_base: &std::path::Path,

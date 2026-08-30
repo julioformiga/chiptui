@@ -614,6 +614,41 @@ fn generating_the_report_closes_the_window_and_brings_it_back() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// A build directory that never ran Zephyr's own `dashboard` target has no
+/// `<build>/dashboard/` at all --- and `size_report` opens its `--json` path
+/// without creating one, so the run dies on a `FileNotFoundError` after the
+/// whole DWARF walk. The command's own preparation makes the directory.
+#[test]
+fn generating_creates_the_output_directory_when_the_build_never_had_one() {
+    let (mut app, root) = app_with_report_tool("no-outdir");
+    std::fs::remove_dir_all(root.join("build/dashboard")).unwrap();
+    app.build_dashboard.invalidate_memory();
+    app.handle(chord(KeyCode::Right));
+    assert!(app.build_dashboard.selected_is_prompt());
+
+    app.handle(key(KeyCode::Enter));
+    assert!(
+        root.join("build/dashboard").is_dir(),
+        "the directory the script writes into is made before it runs"
+    );
+    settle_while(
+        &mut app,
+        |app| app.build.as_ref().is_some_and(|panel| panel.is_busy()),
+        "the memory report",
+    );
+    for event in app.processes.drain() {
+        app.handle(AppEvent::Process(event));
+    }
+    let report = app
+        .build
+        .as_ref()
+        .and_then(|panel| panel.last.clone())
+        .expect("the panel records the run");
+    assert!(report.ok, "and the run succeeds: {report:?}");
+    assert!(root.join("build/dashboard/all_report.json").is_file());
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// A report older than the ELF is not thrown away: the offer to regenerate
 /// leads, and the stale numbers stay readable below it.
 #[test]

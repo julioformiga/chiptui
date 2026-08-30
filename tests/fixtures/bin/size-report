@@ -77,7 +77,15 @@ esac
 printf 'size_report: workspace=%s\n' "$workspace"
 for target in $targets; do
     out=$(printf '%s' "$json" | sed "s/{target}/$target/")
-    mkdir -p "$(dirname "$out")"
+    # The real script opens this path with a plain `open(out, "w")` and
+    # creates no parent, so a missing directory is a FileNotFoundError
+    # traceback --- after the whole DWARF walk. Creating it here would hide
+    # exactly that from the suite, so the fake refuses the same way.
+    dir=$(dirname "$out")
+    [ -d "$dir" ] || {
+        printf 'fake size_report: [Errno 2] No such file or directory: %s\n' "$out" >&2
+        exit 1
+    }
     cat > "$out" <<JSON
 {
   "symbols": {
