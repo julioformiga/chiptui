@@ -959,6 +959,13 @@ fn the_browser_state_survives_a_focus_change_but_q_quits_outright() {
     // q quits outright: there is no separate file-browser screen to step
     // back from (see `View`'s doc comment in app.rs). Esc is a no-op ---
     // quitting is q's job.
+    //
+    // The startup scan leaves an `mpremote devs` in flight, and quitting
+    // with work running is a question now (`App::request_quit`); this test
+    // is about `q` not meaning "back", so it settles the port first and
+    // asserts the plain path.
+    app.processes.cancel_all();
+    common::settle_while(&mut app, |app| app.running_commands() > 0, "the scan");
     app.handle(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('q'),
         KeyModifiers::NONE,
@@ -1395,13 +1402,12 @@ fn dashboard_help_describes_file_browser_keys_when_a_files_pane_is_focused() {
 
     app.overlay = Some(Overlay::Help {
         filter: String::new(),
-        filtering: false,
         selected: 0,
     });
-    assert_eq!(
-        app.shortcuts(),
-        vec![("/", "filter"), ("enter", "activate")]
-    );
+    // One hint: the search is live from the first keystroke now, so there
+    // is no `/` left to teach --- only `Enter`'s replay, which is the one
+    // gesture the window cannot show by being looked at.
+    assert_eq!(app.shortcuts(), vec![("enter", "activate")]);
 }
 
 /// Drives the app until the browser has no device command in flight ---
@@ -2823,5 +2829,58 @@ fn the_wheel_steps_the_browser_pane_under_the_pointer() {
         app.browser.as_ref().unwrap().device_cursor,
         before,
         "the actions tab has no listing for the wheel to step"
+    );
+}
+
+/// A page is the pane's *drawn* height, not a constant. The file columns
+/// used to step a hard-coded 10 rows (every other pane stepped 5), so on a
+/// tall terminal `PageDown` moved a third of the visible list and on a
+/// short one it jumped clean past the view. Row 3 always did this right,
+/// off the viewport its renderer publishes (`App::log_viewport`); the file
+/// lists publish theirs the same way now, beside their settled offsets.
+#[test]
+fn a_page_is_the_drawn_viewport_in_the_file_panes() {
+    use ratatui::crossterm::event::KeyCode;
+
+    let project = Project::new("page-viewport");
+    // Enough entries that a page never runs out of list at either height.
+    for n in 0..80 {
+        std::fs::write(project.root.join(format!("row{n:03}.py")), "x = 1\n").unwrap();
+    }
+    let mut app = app_in_browser(&project);
+    app.focus = Focus::FilesLocal;
+
+    let page_at = |app: &mut App, height: u16| -> usize {
+        render(app, 120, height);
+        let drawn = app.browser.as_ref().unwrap().local_viewport;
+        app.browser.as_mut().unwrap().local_cursor = 0;
+        app.handle(key(KeyCode::PageDown));
+        let moved = app.browser.as_ref().unwrap().local_cursor;
+        assert_eq!(
+            moved, drawn,
+            "a page must be the {height}-row frame's drawn pane height ({drawn}), not a constant"
+        );
+        assert_ne!(
+            moved, 10,
+            "the old hard-coded step happens to be 10; this frame must not agree with it by luck"
+        );
+        drawn
+    };
+
+    // Row 2's height is fixed by the action stack (the log pane below takes
+    // the remainder), so a taller terminal does not make these panes taller
+    // --- which is exactly why the step has to be read from the frame
+    // rather than guessed from the terminal. Both sizes must agree with
+    // what was drawn.
+    page_at(&mut app, 32);
+    page_at(&mut app, 60);
+
+    // And back up by the same screen.
+    render(&mut app, 120, 60);
+    app.handle(key(KeyCode::PageUp));
+    assert_eq!(
+        app.browser.as_ref().unwrap().local_cursor,
+        0,
+        "PageUp must undo the page PageDown made"
     );
 }

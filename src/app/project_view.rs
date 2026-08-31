@@ -519,6 +519,22 @@ impl App {
         self.overlay = Some(Overlay::ConfirmSwitchProject { confirm: false });
     }
 
+    /// `q` / `ctrl+c`: end the session. Quitting drops the whole
+    /// `ProcessManager`, so it loses strictly more than
+    /// [`Self::request_home_screen`] does --- and that one always asked.
+    /// The same rule applies here: with nothing running the session simply
+    /// ends, otherwise [`Overlay::ConfirmQuit`] names what dies first
+    /// (`SPEC.md` §15 applied to losing work). `ctrl+c` pressed again over
+    /// the dialog quits outright (`App::on_key`), so raw mode's escape
+    /// hatch survives the question.
+    pub fn request_quit(&mut self) {
+        if self.running_commands() == 0 {
+            self.quit();
+            return;
+        }
+        self.overlay = Some(Overlay::ConfirmQuit { confirm: false });
+    }
+
     /// External commands this session would lose by leaving it --- builds,
     /// device operations and the PTY sessions alike, since they all run
     /// through the one [`crate::process::ProcessManager`].

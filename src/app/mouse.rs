@@ -577,10 +577,9 @@ impl App {
         };
         // A click outside the dialog closes it, exactly like `Esc` ---
         // reusing the keyboard's own handler is what makes every
-        // per-variant special case (Help's filtering step-back, the
-        // interrupt/remove-package confirms' "return to Packages", the
-        // installer's busy guard) apply automatically, with nothing
-        // special-cased here.
+        // per-variant special case (the interrupt/remove-package confirms'
+        // "return to Packages", the installer's busy guard) apply
+        // automatically, with nothing special-cased here.
         let rect = layout::overlay_popup(self, overlay, frame);
         if !contains(rect, point) {
             self.overlay_key(KeyCode::Esc);
@@ -592,6 +591,7 @@ impl App {
             | Overlay::ConfirmBuild { .. }
             | Overlay::ConfirmRestartDevice { .. }
             | Overlay::ConfirmSwitchProject { .. }
+            | Overlay::ConfirmQuit { .. }
             | Overlay::ConfirmEraseForMicroPython { .. }
             | Overlay::ConfirmIdentifyDevice { .. }
             | Overlay::ConfirmInterruptDevice { .. }
@@ -1760,7 +1760,6 @@ mod tests {
         let before = app.focus;
         app.overlay = Some(crate::app::Overlay::Help {
             filter: String::new(),
-            filtering: false,
             selected: 0,
         });
         click(&mut app, 2, 8);
@@ -2394,42 +2393,34 @@ mod tests {
     }
 
     /// The help window's popup depends on the filter text and the current
-    /// view --- the one formula worth porting carefully. Outside the
-    /// filter, an outside click closes the window flat; while filtering,
-    /// it must step back to the cursor first (the second press closes it),
-    /// exactly like Esc from the keyboard.
+    /// view --- the one formula worth porting carefully. A click outside it
+    /// closes it, exactly like `Esc` from the keyboard --- and now that the
+    /// search is always live, that is true whether or not a filter is
+    /// standing: there is no editing mode left to step back out of first.
     #[test]
     fn a_click_outside_help_dismisses_it_like_esc() {
         let root = project_dir("outside-help", 1);
         let mut app = app_with_backend(BackendKind::MicroPython, &root);
         app.overlay = Some(crate::app::Overlay::Help {
             filter: String::new(),
-            filtering: false,
             selected: 0,
         });
         render(&mut app, 100, 40);
         click(&mut app, OUTSIDE.0, OUTSIDE.1);
         assert!(
             app.overlay.is_none(),
-            "a click outside Help must close it flat, like Esc when not filtering"
+            "a click outside Help must close it, like Esc"
         );
 
         app.overlay = Some(crate::app::Overlay::Help {
             filter: "flash".to_string(),
-            filtering: true,
             selected: 0,
         });
         render(&mut app, 100, 40);
         click(&mut app, OUTSIDE.0, OUTSIDE.1);
         assert!(
-            matches!(
-                app.overlay,
-                Some(crate::app::Overlay::Help {
-                    filtering: false,
-                    ..
-                })
-            ),
-            "while filtering, an outside click steps back first, like Esc"
+            app.overlay.is_none(),
+            "a standing filter no longer costs a second dismissal"
         );
         let _ = std::fs::remove_dir_all(&root);
     }

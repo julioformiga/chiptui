@@ -534,3 +534,50 @@ fn a_long_path_loses_its_head_not_its_tail() {
     assert!(frame.contains("blinky"), "{frame}");
     assert!(frame.contains('…'), "the head is elided:\n{frame}");
 }
+
+/// The home screen is the first thing a user sees when ChipTUI starts
+/// outside a project, and its footer used to read `del forget · esc clear /
+/// quit` at every width --- three keys, none of them the screen's actual
+/// interaction. The field is live, so **typing searches**, and `enter`
+/// opens the row it lands on; a footer that names neither teaches nothing.
+///
+/// It also stayed on screen, unchanged, under the create-project modals,
+/// contradicting the footer those draw for themselves.
+#[test]
+fn the_home_footer_names_the_search_and_gives_way_to_a_flow() {
+    let fixture = Fixture::new("footer");
+    fixture.record("blinky", BackendKind::MicroPython);
+    let mut screen = fixture.screen();
+
+    let frame = render(&screen, 100, 24);
+    let footer = frame.lines().last().unwrap();
+    for hint in ["type to search", "enter open", "del forget", "esc"] {
+        assert!(footer.contains(hint), "footer lost {hint:?}:\n{frame}");
+    }
+
+    // Narrow: whole hints drop, from the back, and the way out survives ---
+    // the dashboard footer's rule (`ui::draw_footer`).
+    let narrow = render(&screen, 40, 24);
+    let narrow_footer = narrow.lines().last().unwrap();
+    assert!(
+        narrow_footer.contains("esc"),
+        "the way out must survive any width:\n{narrow}"
+    );
+    assert!(
+        narrow_footer.trim_matches('"').trim().chars().count() <= 40,
+        "the footer must fit the frame:\n{narrow}"
+    );
+
+    // The create flow owns the screen: its modal carries its own keys, so
+    // the list's line must not contradict it from the bottom of the frame.
+    press(&mut screen, KeyCode::Enter); // the `+ New project` row
+    let flow = render(&screen, 100, 24);
+    assert!(
+        flow.contains("Where should the project folder go?"),
+        "the folder picker did not open:\n{flow}"
+    );
+    assert!(
+        !flow.lines().last().unwrap().contains("del forget"),
+        "the list's footer must step aside for the flow:\n{flow}"
+    );
+}

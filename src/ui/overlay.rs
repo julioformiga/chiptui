@@ -25,11 +25,9 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
     // out on both sides and drifted apart.
     let popup = super::layout::overlay_popup(app, &overlay, area);
     match overlay {
-        Overlay::Help {
-            filter,
-            filtering,
-            selected,
-        } => draw_help(frame, popup, app, &filter, filtering, selected, palette),
+        Overlay::Help { filter, selected } => {
+            draw_help(frame, popup, app, &filter, selected, palette)
+        }
         Overlay::DevicePicker { selected } => {
             draw_device_picker(frame, popup, app, selected, palette)
         }
@@ -292,6 +290,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
         Overlay::ConfirmSwitchProject { confirm } => {
             draw_confirm_switch_project(frame, popup, app, confirm, palette)
         }
+        Overlay::ConfirmQuit { confirm } => draw_confirm_quit(frame, popup, app, confirm, palette),
         Overlay::ConfirmDelete {
             side,
             name,
@@ -418,6 +417,26 @@ fn draw_confirm_switch_project(
         Line::from("Leave this project?".fg(palette.fg)),
     ];
     draw_confirm_dialog(frame, popup, "Switch project?", message, confirm, palette);
+}
+
+/// Quitting with work in flight. The twin of
+/// [`draw_confirm_switch_project`] --- same shape, larger loss: leaving for
+/// the project list keeps the program up, quitting does not.
+fn draw_confirm_quit(frame: &mut Frame, popup: Rect, app: &App, confirm: bool, palette: Palette) {
+    let running = app.running_commands();
+    let message = vec![
+        Line::from(
+            format!(
+                "{running} command{} still running.",
+                if running == 1 { " is" } else { "s are" }
+            )
+            .fg(palette.warning),
+        ),
+        Line::from("Quitting cancels them and closes the session.".fg(palette.muted)),
+        Line::from(""),
+        Line::from("Quit ChipTUI?".fg(palette.fg)),
+    ];
+    draw_confirm_dialog(frame, popup, "Quit?", message, confirm, palette);
 }
 
 fn draw_confirm_erase_for_micropython(
@@ -2423,7 +2442,6 @@ fn draw_help(
     popup: Rect,
     app: &App,
     filter: &str,
-    filtering: bool,
     selected: usize,
     palette: Palette,
 ) {
@@ -2476,23 +2494,17 @@ fn draw_help(
         ))
     };
 
+    // The same search line every other filterable window draws: the icon
+    // set's magnifier, the text, and a cursor that is always there --- the
+    // field is always live, so there is no mode for it to report and no `/`
+    // left to advertise.
     let filter_line = Line::from(vec![
-        Span::styled("filter ", muted_style(palette)),
-        Span::styled(filter.to_string(), Style::new().fg(palette.fg)),
         Span::styled(
-            if filtering { "▏" } else { " " },
-            Style::new().fg(palette.accent),
-        ),
-        // The way into the search is a key the browsing mode owns, so it
-        // rides on the line itself rather than in the footer alone.
-        Span::styled(
-            if filter.is_empty() && !filtering {
-                "  / to search"
-            } else {
-                ""
-            },
+            format!("{} ", app.icon_set().search()),
             muted_style(palette),
         ),
+        Span::styled(filter.to_string(), Style::new().fg(palette.fg)),
+        Span::styled("▏", Style::new().fg(palette.accent)),
     ]);
 
     let mut constraints: Vec<Constraint> = vec![Constraint::Length(1) /* filter line */];

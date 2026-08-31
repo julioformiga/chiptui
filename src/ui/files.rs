@@ -159,6 +159,10 @@ fn draw_local(
     let settled = render_list(frame, inner, items, Some(cursor), seed, focused, palette);
     if let Some(browser) = app.browser.as_mut() {
         browser.local_offset = settled;
+        // Published beside the offset, and for the same reason: the pane's
+        // real height is known only here, and `App::page()` needs it to make
+        // `PageUp`/`PageDown` move one screen of this list.
+        browser.local_viewport = inner.height as usize;
     }
 }
 
@@ -422,6 +426,7 @@ fn draw_device_content(
     }
     if let Some(browser) = app.browser.as_mut() {
         browser.device_offset = settled;
+        browser.device_viewport = list_area.height as usize;
     }
 }
 

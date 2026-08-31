@@ -267,6 +267,13 @@ pub struct Browser {
     /// the window. Navigation needs no reset --- ratatui clamps the seed and
     /// pulls it to the cursor, which every navigation resets to 0.
     pub local_offset: usize,
+    /// The local list's drawn height, published by `ui::files::render_list`
+    /// each frame the way [`Self::local_offset`] is. `App::page()` reads it
+    /// so `PageUp`/`PageDown` move exactly one screen of *this* pane ---
+    /// the rule row 3 already followed through `App::log_viewport`, and the
+    /// reason a page is no longer a hard-coded row count that matched no
+    /// pane at any terminal size.
+    pub local_viewport: usize,
 
     pub device_path: DevicePath,
     pub device_state: PaneState,
@@ -274,6 +281,9 @@ pub struct Browser {
     /// The device list's scroll offset, the same seed-and-settle contract as
     /// [`Self::local_offset`].
     pub device_offset: usize,
+    /// The device list's drawn height, the same publish contract as
+    /// [`Self::local_viewport`].
+    pub device_viewport: usize,
     /// Filesystem usage of the connected board, device-wide --- `None` until the first
     /// [`Request::Df`] resolves for the current connection.
     pub device_space: Option<Result<parse::DiskUsage, String>>,
@@ -327,10 +337,12 @@ impl Browser {
             local_error: None,
             local_cursor: 0,
             local_offset: 0,
+            local_viewport: 0,
             device_path: DevicePath::root(),
             device_state: PaneState::Idle,
             device_cursor: 0,
             device_offset: 0,
+            device_viewport: 0,
             device_space: None,
             focus: Side::Local,
             show_hidden: false,

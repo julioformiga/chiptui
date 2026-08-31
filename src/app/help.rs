@@ -9,9 +9,10 @@
 //! [`HelpSection::Commands`] is the select --- arrows move, `Enter`
 //! activates the row by replaying its key (`HelpBinding::event`) once the
 //! help has closed, so the list doubles as a launcher. Help follows the
-//! screen (see [`View`]) and narrows under a `/` filter (the same grammar
-//! the board picker uses): the dashboard alone lists thirty-nine rows, so
-//! search is the way through them.
+//! screen (see [`View`]) and narrows under a filter that is live from the
+//! first keystroke --- genuinely the board picker's grammar now, which the
+//! window used to claim while hiding its search behind `/`: the dashboard
+//! alone lists thirty-nine rows, so search is the way through them.
 //!
 //! The descriptions are part of the data, not the rendering: each is
 //! summarized to fit its row on one line at the width the table needs (the
@@ -744,6 +745,23 @@ pub fn footer(view: View, ctx: &Context) -> Vec<(&'static str, &'static str)> {
 mod tests {
     use super::*;
 
+    /// The dashboard's row count is quoted in two doc comments (this
+    /// module's header and `Overlay::Help`'s) as the reason the window
+    /// needs a search at all. They disagreed --- "thirty-nine" here,
+    /// "twenty-eight" there --- because nothing checked either. This does.
+    #[test]
+    fn the_declared_dashboard_row_count_is_the_real_one() {
+        let rows = HelpSection::ALL
+            .iter()
+            .map(|&section| bindings(View::Dashboard, section).len())
+            .sum::<usize>();
+        assert_eq!(
+            rows, 39,
+            "the docs say thirty-nine dashboard rows; update both of them \
+             (src/app/help.rs's header and Overlay::Help's) with this number"
+        );
+    }
+
     #[test]
     fn every_view_and_section_has_bindings() {
         for view in [View::Dashboard, View::Flash] {
@@ -1283,16 +1301,14 @@ impl App {
             return vec![("letter", "jump to pane")];
         }
         match self.overlay {
-            Some(Overlay::Help { filtering, .. }) => {
-                // The footer carries only the two keys a reader cannot
-                // guess: `/` starts a filter, and `Enter` *activates* the
-                // row --- it replays the key after the window closes,
-                // which makes the help a launcher, not just a list.
-                if filtering {
-                    vec![("enter", "activate")]
-                } else {
-                    vec![("/", "filter"), ("enter", "activate")]
-                }
+            Some(Overlay::Help { .. }) => {
+                // One key a reader cannot guess: `Enter` *activates* the
+                // row --- it replays the key after the window closes, which
+                // makes the help a launcher and not just a list. The filter
+                // teaches itself now that it is live from the first
+                // keystroke, so the slot that used to advertise `/` is gone
+                // with the mode it belonged to.
+                vec![("enter", "activate")]
             }
             Some(Overlay::ZephyrInstall) => {
                 if self.installer.as_ref().is_some_and(Installer::is_busy) {
@@ -1320,9 +1336,13 @@ impl App {
             // The docs pane on the right answers the scrolling keys ---
             // but only after `Tab` hands it the keyboard, which is the
             // one key a user cannot guess.
+            // Free text like the package manager, so `?` filters and `F1`
+            // is the way to the help --- named here for the same reason it
+            // is named there: the field cannot teach it.
             Some(Overlay::BoardPicker { .. }) | Some(Overlay::ShieldPicker { .. }) => vec![
                 ("tab", "swap the list/docs focus"),
                 ("pgup/pgdn", "scroll the docs pane"),
+                ("F1", "help"),
             ],
             Some(Overlay::DirPicker { .. }) => vec![("?", "help")],
             Some(Overlay::BuildDirPicker { .. }) => vec![("F1", "help")],
@@ -1365,6 +1385,7 @@ impl App {
                 | Overlay::ConfirmIdentifyDevice { .. }
                 | Overlay::ConfirmInterruptDevice { .. }
                 | Overlay::ConfirmSwitchProject { .. }
+                | Overlay::ConfirmQuit { .. }
                 | Overlay::SyncPreview { .. },
             ) => {
                 // `y`/`n` answer straight from muscle memory --- the only

@@ -1318,7 +1318,6 @@ fn overlays_draw_above_the_dashboard() {
 
     app.overlay = Some(Overlay::Help {
         filter: String::new(),
-        filtering: false,
         selected: 0,
     });
     let help = render(&mut app, 100, 32);
@@ -1576,7 +1575,6 @@ fn help_fits_one_line_per_binding_and_scrolls_under_the_cursor() {
     let last = help::bindings(app.view, HelpSection::Commands).len() - 1;
     app.overlay = Some(Overlay::Help {
         filter: String::new(),
-        filtering: false,
         selected: last,
     });
 
@@ -1611,14 +1609,20 @@ fn the_help_window_narrows_under_the_filter() {
     let mut app = app_with_backend(BackendKind::Zephyr);
     app.overlay = Some(Overlay::Help {
         filter: "sync".to_string(),
-        filtering: true,
         selected: 0,
     });
 
     let frame = render(&mut app, 100, 32);
+    // The search line is the one every other filterable window draws now:
+    // the icon set's magnifier and the text, no `filter` label and no `/`
+    // to advertise --- the field is live from the first keystroke.
     assert!(
-        frame.contains("filter sync"),
+        frame.contains("⌕ sync"),
         "the filter line is missing:\n{frame}"
+    );
+    assert!(
+        !frame.contains("/ to search"),
+        "the `/` hint outlived the mode it belonged to:\n{frame}"
     );
     assert!(
         frame.contains("shift+s"),
@@ -2050,4 +2054,60 @@ fn the_monitor_tab_marks_the_last_finished_command() {
         !bare.contains("✓ Build") && !bare.contains("✗ Build"),
         "no verdict without a command:\n{bare}"
     );
+}
+
+/// Quitting drops the whole `ProcessManager`, so it cancels every build,
+/// flash, monitor and shell the session holds --- strictly more than going
+/// back to the project list loses, and *that* always asked
+/// (`Overlay::ConfirmSwitchProject`). `q` and `ctrl+c` used to end the
+/// session in silence anyway; the larger loss is now the one that warns.
+///
+/// The escape hatch survives the question: raw mode swallows SIGINT, so a
+/// second `ctrl+c` over the open dialog quits outright rather than leaving
+/// the user inside a modal they cannot break out of.
+#[test]
+fn quitting_with_commands_running_asks_first() {
+    use chiptui::process::Command;
+
+    let mut app = app_with_backend(BackendKind::Zephyr);
+    // Nothing running: `q` is the plain path it always was.
+    assert_eq!(app.running_commands(), 0);
+    app.handle(key(KeyCode::Char('q')));
+    assert!(app.should_quit(), "with nothing to lose, q just quits");
+
+    // A long-lived child, reached through the Terminal tab and then
+    // detached so the dashboard owns the keyboard again.
+    let mut app = app_with_backend(BackendKind::Zephyr);
+    app.set_terminal_tool(Command::new("/bin/sh").arg("-c").arg("sleep 30"));
+    app.show_terminal_tab();
+    app.handle(ctrl(']'));
+    assert!(!app.is_terminal_active(), "the keyboard came back");
+    assert!(app.running_commands() > 0, "the shell is still running");
+
+    app.handle(key(KeyCode::Char('q')));
+    assert!(!app.should_quit(), "q must ask before cancelling live work");
+    assert!(matches!(app.overlay, Some(Overlay::ConfirmQuit { .. })));
+
+    // The dialog names what dies, in the shared destructive shape.
+    let frame = render(&mut app, 100, 32);
+    assert!(frame.contains("Quit?"), "no title:\n{frame}");
+    assert!(
+        frame.contains("still running"),
+        "the dialog must name the loss:\n{frame}"
+    );
+
+    // No is the default, like every confirm that loses work.
+    app.handle(key(KeyCode::Enter));
+    assert!(!app.should_quit(), "Enter takes the default, which is No");
+    assert_eq!(app.overlay, None);
+
+    // ...and ctrl+c twice is the way out regardless: the first press asks,
+    // the second one does not.
+    app.handle(ctrl('c'));
+    assert!(matches!(app.overlay, Some(Overlay::ConfirmQuit { .. })));
+    assert!(!app.should_quit());
+    app.handle(ctrl('c'));
+    assert!(app.should_quit(), "a second ctrl+c must always end it");
+
+    app.processes.cancel_all();
 }

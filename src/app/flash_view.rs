@@ -480,6 +480,23 @@ impl App {
             return;
         };
 
+        // The busy gate, at the door rather than at the spawn. `FlashPanel::run`
+        // refuses a second command on its own, but it is the *last* step of a
+        // path that opens a firmware picker and --- for erase/write --- the
+        // §15 confirmation naming the literal command: without this, a dimmed
+        // button still asked the user whether to erase a board and then threw
+        // the answer away. The build pane's `run_build_action` states the same
+        // rule at its own door, in the same words: every button on the tab
+        // dims while the one process slot is occupied
+        // (`ui::flash::draw_actions_pane`), so a press here can only ever be
+        // a press on a dimmed row.
+        if flash.is_busy() {
+            self.flash = Some(flash);
+            self.logs
+                .warn("a command is already running --- stop it first");
+            return;
+        }
+
         if action.needs_firmware() && flash.selected_firmware.is_none() {
             let notices = flash.discover_firmware();
             for (level, message) in notices {

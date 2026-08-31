@@ -95,6 +95,10 @@ pub struct WorkspacePanel {
     /// view; navigation needs no reset --- ratatui clamps the seed and pulls
     /// it to the cursor, which every navigation resets to 0.
     pub files_offset: usize,
+    /// The list's drawn height, published by `ui::files::render_list` the
+    /// way [`Self::files_offset`] is, so `App::page()` can make a page
+    /// exactly one screen of this pane.
+    pub files_viewport: usize,
 }
 
 impl WorkspacePanel {
@@ -116,6 +120,7 @@ impl WorkspacePanel {
             files_error: None,
             files_cursor: 0,
             files_offset: 0,
+            files_viewport: 0,
         };
         panel.apply_resolution(resolution);
         panel

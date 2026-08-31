@@ -637,7 +637,6 @@ fn help_in_the_flash_view_describes_flash_keys() {
 
     app.overlay = Some(Overlay::Help {
         filter: String::new(),
-        filtering: false,
         selected: 0,
     });
     let frame = render(&mut app, 110, 32);
@@ -1560,4 +1559,68 @@ fn v_verifies_the_flash_from_the_actions_tab() {
             .any(|entry| entry.message.to_lowercase().contains("firmware")),
         "verify was dispatched and answered for itself"
     );
+}
+
+/// Every button on the actions tab dims while the panel's one process slot
+/// is occupied (`ui::flash::draw_actions_pane`), but `Enter` on a dimmed
+/// row used to walk the whole path anyway: past the firmware pick, into the
+/// §15 confirmation naming the literal `erase-flash` command --- and only
+/// *after* the user answered Yes did `FlashPanel::run` refuse it. The app
+/// asked whether to erase a board and threw the answer away.
+///
+/// The build pane's twin of this is `tests/build_view.rs`'s dimmed-row
+/// assertion; the guard now lives at the same place, the door.
+#[test]
+fn a_dimmed_flash_button_refuses_instead_of_asking() {
+    let project = Project::new("dimmed-refuses");
+    project.write_firmware("app.bin");
+    let mut app = hermetic_app(&project.root);
+    app.bootstrap();
+    app.manager.set_override(Some(BackendKind::MicroPython));
+    app.maybe_scan_devices();
+    app.handle(key(KeyCode::Char('x')));
+    let flash = app.flash.as_mut().unwrap();
+    flash.set_tool_path(fake_esptool_progress_slow());
+    flash.discover_firmware();
+    assert!(flash.select_firmware(0));
+    flash.set_offset("0x1000".to_string());
+
+    // Start the slow write, and answer its confirmation: the panel is busy
+    // from here on.
+    for _ in 0..5 {
+        app.handle(key(KeyCode::Down));
+    }
+    app.handle(key(KeyCode::Enter));
+    app.handle(key(KeyCode::Char('y')));
+    assert!(app.flash.as_ref().unwrap().is_busy(), "the write started");
+
+    // Walk the cursor onto `Erase flash` (row 4 of the stack: search,
+    // packages, flash info, reset, erase) and press it.
+    app.handle(key(KeyCode::Home));
+    for _ in 0..4 {
+        app.handle(key(KeyCode::Down));
+    }
+    let before = app.logs.visible(200).count();
+    app.handle(key(KeyCode::Enter));
+
+    assert!(
+        app.overlay.is_none(),
+        "a dimmed row must not open a destructive confirm: {:?}",
+        app.overlay
+    );
+    assert_eq!(app.view, View::Dashboard, "nor a dialog screen");
+    assert!(
+        app.logs
+            .visible(200)
+            .skip(before)
+            .any(|entry| entry.message.contains("already running")),
+        "a refused press must say why it was refused"
+    );
+
+    // `v` (Verify flash) reaches the same funnel and is refused the same
+    // way --- it is the key that bypasses the stack, not a second gate.
+    app.handle(key(KeyCode::Char('v')));
+    assert!(app.overlay.is_none(), "verify must be refused too");
+
+    app.processes.cancel_all();
 }

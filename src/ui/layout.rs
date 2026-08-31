@@ -428,7 +428,7 @@ pub(crate) fn overlay_popup(app: &App, overlay: &Overlay, frame: Rect) -> Rect {
         | Overlay::ConfirmInstallHere { .. }
         | Overlay::ConfirmRemovePackage { .. } => (DESTRUCTIVE_WIDTH, 9),
         Overlay::ConfirmRestartDevice { .. } => (54, 8),
-        Overlay::ConfirmSwitchProject { .. } => (62, 9),
+        Overlay::ConfirmSwitchProject { .. } | Overlay::ConfirmQuit { .. } => (62, 9),
         Overlay::ConfirmEraseForMicroPython { .. } => (65, 9),
         Overlay::ConfirmIdentifyDevice { .. } => (66, 11),
         Overlay::ConfirmInterruptDevice { .. } => (64, 10),

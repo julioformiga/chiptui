@@ -127,6 +127,7 @@ fn draw_files_section(frame: &mut Frame, area: Rect, app: &mut App, palette: Pal
         super::files::render_list(frame, area, items, Some(cursor), seed, focused, palette);
     if let Some(panel) = app.workspace.as_mut() {
         panel.files_offset = settled;
+        panel.files_viewport = area.height as usize;
     }
 }
 

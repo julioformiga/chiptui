@@ -167,16 +167,48 @@ pub fn draw(frame: &mut Frame, screen: &HomeScreen, theme: super::Palette) {
     };
     frame.render_widget(Paragraph::new(status), status_area);
 
-    frame.render_widget(
-        Paragraph::new(Line::from(
-            " del forget · esc clear / quit ".fg(theme.muted),
-        )),
-        footer,
-    );
+    // The footer belongs to the list. While a flow owns the screen its own
+    // modal already carries the keys that apply there (`enter: create the
+    // folder · esc: back`), and the list's line --- which advertises `del`,
+    // a live search and a quit that the modal does not offer --- would
+    // simply contradict it from the bottom of the same frame.
+    if screen.flow().is_none() {
+        frame.render_widget(
+            Paragraph::new(Line::from(footer_line(footer.width).fg(theme.muted))),
+            footer,
+        );
+    }
 
     if let Some(flow) = screen.flow() {
         draw_flow(frame, area, screen, flow, theme);
     }
+}
+
+/// The list's footer, narrowed to `width`.
+///
+/// It used to read `del forget · esc clear / quit` at every size --- three
+/// keys, none of them the screen's actual interaction: the field is live,
+/// so **typing searches**, and `enter` opens the row it lands on. Naming
+/// the two of them is the whole point of a footer on the first screen a new
+/// user meets.
+///
+/// Narrowing follows the dashboard's rule (`ui::draw_footer`): drop whole
+/// hints, from the back, and always keep the last one --- the way out is
+/// the hint that must survive any width.
+fn footer_line(width: u16) -> String {
+    const HINTS: [&str; 5] = [
+        "type to search",
+        "↑↓ move",
+        "enter open",
+        "del forget",
+        "esc clear / quit",
+    ];
+    let mut hints: Vec<&str> = HINTS.to_vec();
+    let render = |hints: &[&str]| format!(" {} ", hints.join(" · "));
+    while hints.len() > 1 && render(&hints).chars().count() > width as usize {
+        hints.remove(hints.len() - 2);
+    }
+    render(&hints)
 }
 
 /// `<icon> <backend>  <name>  <path>` --- fixed columns for the first two so

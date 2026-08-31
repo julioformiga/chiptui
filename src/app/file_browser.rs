@@ -28,6 +28,9 @@ impl App {
     /// racing each other (a run session, the probe), and opens the interrupt
     /// confirmation should the gate hold the resulting request.
     pub(super) fn on_files_key(&mut self, key: KeyEvent) {
+        // Read before the take: `page()` resolves the focused pane's drawn
+        // height off `self.browser`, which is about to move out.
+        let page = self.page() as isize;
         let Some(mut browser) = self.browser.take() else {
             return;
         };
@@ -83,11 +86,11 @@ impl App {
                 Vec::new()
             }
             KeyCode::PageUp => {
-                browser.move_cursor(-10);
+                browser.move_cursor(-page);
                 Vec::new()
             }
             KeyCode::PageDown => {
-                browser.move_cursor(10);
+                browser.move_cursor(page);
                 Vec::new()
             }
             KeyCode::Home => {

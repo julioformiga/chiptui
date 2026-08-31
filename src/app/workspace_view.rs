@@ -36,6 +36,9 @@ impl App {
         let mut file_action: Option<(String, bool, FileAction)> = None;
         let mut open_create = false;
         let mut open_rename: Option<String> = None;
+        // Read before the borrow below: a page is this pane's drawn height
+        // (`App::page()`), the rule every scrolling pane follows.
+        let page = self.page();
 
         if let Some(panel) = self.workspace.as_mut() {
             let files_len = panel.files_row_count();
@@ -48,10 +51,10 @@ impl App {
                         panel.files_cursor = (panel.files_cursor + 1).min(files_len - 1);
                     }
                 }
-                KeyCode::PageUp => panel.files_cursor = panel.files_cursor.saturating_sub(5),
+                KeyCode::PageUp => panel.files_cursor = panel.files_cursor.saturating_sub(page),
                 KeyCode::PageDown => {
                     if files_len > 0 {
-                        panel.files_cursor = (panel.files_cursor + 5).min(files_len - 1);
+                        panel.files_cursor = (panel.files_cursor + page).min(files_len - 1);
                     }
                 }
                 KeyCode::Home => panel.files_cursor = 0,

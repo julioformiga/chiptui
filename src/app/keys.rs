@@ -117,7 +117,16 @@ impl App {
         // Raw mode swallows SIGINT, so Ctrl+C has to be handled explicitly and
         // must work regardless of focus or overlay.
         if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c')) {
-            self.quit();
+            // A second press over the open question quits outright. The
+            // first one asks (`request_quit`), because quitting cancels
+            // every running command --- but the interrupt gesture must
+            // never become a gesture that *cannot* end the session, so the
+            // way out stays one keystroke past the dialog.
+            if matches!(self.overlay, Some(Overlay::ConfirmQuit { .. })) {
+                self.quit();
+                return;
+            }
+            self.request_quit();
             return;
         }
 
@@ -172,7 +181,7 @@ impl App {
             // overlay handles its own `Esc` before this point, and the Flash
             // view keeps `Esc` as "back one screen".
             KeyCode::Char('q') => {
-                self.quit();
+                self.request_quit();
                 return;
             }
             // A no-op while row 3 is fullscreen: every other pane is
@@ -218,8 +227,11 @@ impl App {
             // position rather than per tour stop, so they are the same in
             // every backend and worth memorizing. A digit with no focusable
             // pane behind it falls through to the focused pane, keeping the
-            // digits available to future pane grammars.
-            KeyCode::Char(digit @ '1'..='9') if !self.row3_fullscreen => {
+            // digits available to future pane grammars. The range is the
+            // range the help window documents: `pane_for_number` answers
+            // `None` past 5 either way, so widening it here only made the
+            // code disagree with the table.
+            KeyCode::Char(digit @ '1'..='5') if !self.row3_fullscreen => {
                 if let Some(stop) = self.pane_for_number(digit as u8 - b'0') {
                     self.focus = stop;
                     return;
@@ -379,11 +391,32 @@ impl App {
         }
     }
 
-    /// Page size for the focused pane.
+    /// Page size for the focused pane: the height the renderer last drew it
+    /// at, so `PageUp`/`PageDown` move exactly one screen of whatever the
+    /// cursor sits in. Every scrolling pane publishes that height the frame
+    /// it draws (`App::log_viewport`, `MonitorView::viewport`, and the file
+    /// lists' own `*_viewport` beside their settled offsets).
+    ///
+    /// The fallback `5` belongs to the panes that do *not* scroll --- the
+    /// stacked button groups (build, flash actions, project checklist),
+    /// whose whole content fits one screen by construction, so a page and a
+    /// clamp to the ends are the same movement.
     pub(super) fn page(&self) -> usize {
         match self.focus {
             Focus::Logs if self.log_tab != LogTab::Log => self.monitor_view.viewport.max(1),
             Focus::Logs => self.log_viewport.max(1),
+            Focus::FilesLocal => self
+                .browser
+                .as_ref()
+                .map_or(5, |browser| browser.local_viewport.max(1)),
+            Focus::FilesDevice => self
+                .browser
+                .as_ref()
+                .map_or(5, |browser| browser.device_viewport.max(1)),
+            Focus::Workspace => self
+                .workspace
+                .as_ref()
+                .map_or(5, |panel| panel.files_viewport.max(1)),
             _ => 5,
         }
     }

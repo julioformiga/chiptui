@@ -72,8 +72,9 @@ impl App {
         // --- `on_key` never lets the dashboard's own `?`/F1 handler see a
         // keystroke while an overlay owns the screen. `F1` always reaches
         // it, since it is never a character a text field could want; `?`
-        // joins it everywhere except the three overlays that take free
-        // text (`?` typed there must land in the field, not open help).
+        // joins it everywhere except the overlays that take free text
+        // (`?` typed there must land in the field, not open help ---
+        // `is_text_entry_overlay` names them, exhaustively).
         if is_help_reachable_overlay(&overlay) {
             let text_entry = is_text_entry_overlay(&overlay);
             if key.code == KeyCode::F(1) || (!text_entry && key.code == KeyCode::Char('?')) {
@@ -82,11 +83,7 @@ impl App {
             }
         }
         match overlay {
-            Overlay::Help {
-                filter,
-                filtering,
-                selected,
-            } => {
+            Overlay::Help { filter, selected } => {
                 // The cursor walks the *filtered* command rows, so every
                 // filter change re-clamps `selected` against the length the
                 // changed filter produces (typing can only shrink it, but
@@ -113,99 +110,62 @@ impl App {
                         }
                     }
                 };
-                if filtering {
-                    match key.code {
-                        // Editing: every printable char is filter text,
-                        // `j`/`k` included (typing "dk" must not move the
-                        // cursor) --- the rule the board picker set.
-                        KeyCode::Char(c) => {
-                            let mut text = filter.clone();
-                            text.push(c);
-                            self.overlay = Some(Overlay::Help {
-                                filter: text,
-                                filtering: true,
-                                selected: selected.min(count.saturating_sub(1)),
-                            });
-                        }
-                        KeyCode::Backspace => {
-                            let mut text = filter.clone();
-                            text.pop();
-                            self.overlay = Some(Overlay::Help {
-                                filter: text,
-                                filtering: true,
-                                selected: selected.min(count.saturating_sub(1)),
-                            });
-                        }
-                        // Esc is the only way out of editing; the second
-                        // press closes the window. The filter persists, so
-                        // `/` Esc `/` resumes where the search left off.
-                        KeyCode::Esc => {
-                            self.overlay = Some(Overlay::Help {
-                                filter,
-                                filtering: false,
-                                selected: selected.min(count.saturating_sub(1)),
-                            });
-                        }
-                        KeyCode::Up => {
-                            self.overlay = Some(Overlay::Help {
-                                filter,
-                                filtering: true,
-                                selected: (selected + count - 1) % count,
-                            });
-                        }
-                        KeyCode::Down => {
-                            self.overlay = Some(Overlay::Help {
-                                filter,
-                                filtering: true,
-                                selected: (selected + 1) % count,
-                            });
-                        }
-                        KeyCode::Enter => activate(self, selected),
-                        _ => {}
+                // The filter is live from the first keystroke, the grammar
+                // every other filterable list in the app uses (the board and
+                // shield pickers, the package manager, the build dashboard).
+                // It used to hide behind `/`, with `j`/`k` walking the list
+                // until then --- one window with a mode the rest of the UI
+                // does not have, and a footer slot spent teaching it. The
+                // cost is the one the package manager already paid: with
+                // every printable character landing in the field, `j`/`k`
+                // (and `q`) stop being keys here, or `json` and `keyboard`
+                // become untypeable searches.
+                match key.code {
+                    KeyCode::Char(c) => {
+                        let mut text = filter.clone();
+                        text.push(c);
+                        self.overlay = Some(Overlay::Help {
+                            filter: text,
+                            selected: selected.min(count.saturating_sub(1)),
+                        });
                     }
-                } else {
-                    match key.code {
-                        // `?` and `q` mirror how the overlay is opened; `/`
-                        // starts the search.
-                        KeyCode::Esc | KeyCode::Char('?' | 'q') => self.overlay = None,
-                        KeyCode::Char('/') => {
-                            self.overlay = Some(Overlay::Help {
-                                filter,
-                                filtering: true,
-                                selected: selected.min(count.saturating_sub(1)),
-                            });
-                        }
-                        KeyCode::Up | KeyCode::Char('k') => {
-                            self.overlay = Some(Overlay::Help {
-                                filter,
-                                filtering: false,
-                                selected: (selected + count - 1) % count,
-                            });
-                        }
-                        KeyCode::Down | KeyCode::Char('j') => {
-                            self.overlay = Some(Overlay::Help {
-                                filter,
-                                filtering: false,
-                                selected: (selected + 1) % count,
-                            });
-                        }
-                        KeyCode::Home => {
-                            self.overlay = Some(Overlay::Help {
-                                filter,
-                                filtering: false,
-                                selected: 0,
-                            });
-                        }
-                        KeyCode::End => {
-                            self.overlay = Some(Overlay::Help {
-                                filter,
-                                filtering: false,
-                                selected: count - 1,
-                            });
-                        }
-                        KeyCode::Enter => activate(self, selected),
-                        _ => {}
+                    KeyCode::Backspace => {
+                        let mut text = filter.clone();
+                        text.pop();
+                        self.overlay = Some(Overlay::Help {
+                            filter: text,
+                            selected: selected.min(count.saturating_sub(1)),
+                        });
                     }
+                    // One press closes the window, whatever the filter says
+                    // --- there is no editing mode left to step out of.
+                    KeyCode::Esc => self.overlay = None,
+                    KeyCode::Up => {
+                        self.overlay = Some(Overlay::Help {
+                            filter,
+                            selected: (selected + count - 1) % count,
+                        });
+                    }
+                    KeyCode::Down => {
+                        self.overlay = Some(Overlay::Help {
+                            filter,
+                            selected: (selected + 1) % count,
+                        });
+                    }
+                    KeyCode::Home => {
+                        self.overlay = Some(Overlay::Help {
+                            filter,
+                            selected: 0,
+                        });
+                    }
+                    KeyCode::End => {
+                        self.overlay = Some(Overlay::Help {
+                            filter,
+                            selected: count - 1,
+                        });
+                    }
+                    KeyCode::Enter => activate(self, selected),
+                    _ => {}
                 }
             }
             Overlay::ThemePicker { selected } => {
@@ -884,6 +844,17 @@ impl App {
                     |_| {},
                 );
             }
+            Overlay::ConfirmQuit { confirm } => {
+                self.dispatch_confirm(
+                    key.code,
+                    confirm,
+                    |app, confirm| {
+                        app.overlay = Some(Overlay::ConfirmQuit { confirm });
+                    },
+                    Self::quit,
+                    |_| {},
+                );
+            }
             Overlay::ConfirmEraseForMicroPython { confirm } => {
                 self.dispatch_confirm(
                     key.code,
@@ -1094,34 +1065,95 @@ impl App {
 /// in `App::shortcuts`, and otherwise no reachable path to help while it is
 /// up.
 fn is_help_reachable_overlay(overlay: &Overlay) -> bool {
-    matches!(
-        overlay,
+    // Exhaustive on purpose --- no `_` arm. This used to be a `matches!`
+    // list maintained by hand, and the board and shield pickers were simply
+    // never added to it: `F1` did nothing there and `?` was filter text, so
+    // those two windows were the only ones in the app with no way to reach
+    // the help at all. A new `Overlay` variant now fails to compile until
+    // someone answers the question here.
+    match overlay {
         Overlay::RenameEntry { .. }
-            | Overlay::DirPicker { .. }
-            | Overlay::BuildDirPicker { .. }
-            | Overlay::ProjectPicker { .. }
-            | Overlay::DevicePicker { .. }
-            | Overlay::ThemePicker { .. }
-            | Overlay::FirmwarePicker { .. }
-            | Overlay::ProjectSetup { .. }
-            | Overlay::FileActions { .. }
-            | Overlay::RestoreDeviceScript { .. }
-            | Overlay::ZephyrActions { .. }
-            | Overlay::Packages
-            | Overlay::BuildDashboard
-    )
+        | Overlay::DirPicker { .. }
+        | Overlay::BuildDirPicker { .. }
+        | Overlay::ProjectPicker { .. }
+        | Overlay::DevicePicker { .. }
+        | Overlay::ThemePicker { .. }
+        | Overlay::FirmwarePicker { .. }
+        | Overlay::ProjectSetup { .. }
+        | Overlay::FileActions { .. }
+        | Overlay::RestoreDeviceScript { .. }
+        | Overlay::ZephyrActions { .. }
+        | Overlay::BoardPicker { .. }
+        | Overlay::ShieldPicker { .. }
+        | Overlay::Packages
+        | Overlay::BuildDashboard => true,
+        // The help itself, the confirms (whose footer is `y/n` and whose
+        // one job is to be answered), and the windows that carry their own
+        // way out.
+        Overlay::Help { .. }
+        | Overlay::Confirm { .. }
+        | Overlay::ConfirmBuild { .. }
+        | Overlay::ConfirmDownloadOverwrite { .. }
+        | Overlay::ConfirmDelete { .. }
+        | Overlay::ConfirmUpload { .. }
+        | Overlay::ConfirmRestartDevice { .. }
+        | Overlay::ConfirmEraseForMicroPython { .. }
+        | Overlay::ConfirmIdentifyDevice { .. }
+        | Overlay::ConfirmInterruptDevice { .. }
+        | Overlay::ConfirmSwitchProject { .. }
+        | Overlay::ConfirmQuit { .. }
+        | Overlay::ConfirmInstallHere { .. }
+        | Overlay::ConfirmRemovePackage { .. }
+        | Overlay::SyncPreview { .. }
+        | Overlay::SdkToolchains { .. }
+        | Overlay::ZephyrInstall
+        | Overlay::CreateEntry { .. }
+        | Overlay::FileViewer => false,
+    }
 }
 
-/// The subset of [`is_help_reachable_overlay`] that also takes free-text
-/// input --- `?` must land in the field there, so only `F1` may open help.
+/// Whether every printable character belongs to a field in this overlay ---
+/// which is what decides that `?` must land in the text rather than open
+/// the help (`F1` stays the way in for these). Exhaustive for the same
+/// reason as [`is_help_reachable_overlay`]: the two answers are a pair, and
+/// a new variant must not inherit either by default.
 fn is_text_entry_overlay(overlay: &Overlay) -> bool {
-    matches!(
-        overlay,
-        Overlay::RenameEntry { .. }
-            | Overlay::BuildDirPicker { .. }
-            | Overlay::Packages
-            | Overlay::BuildDashboard
-    )
+    match overlay {
+        Overlay::Help { .. }
+        | Overlay::RenameEntry { .. }
+        | Overlay::CreateEntry { .. }
+        | Overlay::BuildDirPicker { .. }
+        | Overlay::BoardPicker { .. }
+        | Overlay::ShieldPicker { .. }
+        | Overlay::Packages
+        | Overlay::BuildDashboard => true,
+        Overlay::DirPicker { .. }
+        | Overlay::ProjectPicker { .. }
+        | Overlay::DevicePicker { .. }
+        | Overlay::ThemePicker { .. }
+        | Overlay::FirmwarePicker { .. }
+        | Overlay::ProjectSetup { .. }
+        | Overlay::FileActions { .. }
+        | Overlay::RestoreDeviceScript { .. }
+        | Overlay::ZephyrActions { .. }
+        | Overlay::Confirm { .. }
+        | Overlay::ConfirmBuild { .. }
+        | Overlay::ConfirmDownloadOverwrite { .. }
+        | Overlay::ConfirmDelete { .. }
+        | Overlay::ConfirmUpload { .. }
+        | Overlay::ConfirmRestartDevice { .. }
+        | Overlay::ConfirmEraseForMicroPython { .. }
+        | Overlay::ConfirmIdentifyDevice { .. }
+        | Overlay::ConfirmInterruptDevice { .. }
+        | Overlay::ConfirmSwitchProject { .. }
+        | Overlay::ConfirmQuit { .. }
+        | Overlay::ConfirmInstallHere { .. }
+        | Overlay::ConfirmRemovePackage { .. }
+        | Overlay::SyncPreview { .. }
+        | Overlay::SdkToolchains { .. }
+        | Overlay::ZephyrInstall
+        | Overlay::FileViewer => false,
+    }
 }
 
 /// A modal layer drawn above the panes.
@@ -1131,16 +1163,12 @@ pub enum Overlay {
     /// [`crate::app::help`] --- Navigation as plain rows, Commands as the
     /// select. `selected` is the cursor among the (filtered) command rows;
     /// `Enter` activates the row by replaying its key after the help
-    /// closes. `filter`/`filtering` are the search state --- `/` starts
-    /// typing (every printable char is filter text, `j`/`k` included, so
-    /// `Esc` returns to the cursor first and closes on the second press),
-    /// and the filter narrows both divisions: the dashboard alone lists
-    /// twenty-eight rows, so search is the way through them.
-    Help {
-        filter: String,
-        filtering: bool,
-        selected: usize,
-    },
+    /// closes. `filter` is live from the first keystroke, the grammar the
+    /// board picker and the package manager use --- so `j`/`k` are filter
+    /// text here, not movement --- and it narrows both divisions at once:
+    /// the dashboard alone lists thirty-nine rows, so search is the way
+    /// through them.
+    Help { filter: String, selected: usize },
     /// Serial device selection (`SPEC.md` §8: never guess which board).
     DevicePicker { selected: usize },
     /// The color theme picker (`t`): `Auto` first, then every
@@ -1363,6 +1391,14 @@ pub enum Overlay {
     /// running: they are cancelled with the session, so the count is named
     /// and the default is No, like every other confirm that loses work.
     ConfirmSwitchProject { confirm: bool },
+    /// Ending the session while commands are still running. Quitting drops
+    /// the [`crate::process::ProcessManager`], and with it every build,
+    /// flash, monitor and shell --- strictly more than
+    /// [`Self::ConfirmSwitchProject`] loses, which always asked. The default
+    /// is No, like every other confirm that loses work; a second `ctrl+c`
+    /// over the open dialog quits outright, so raw mode's one escape hatch
+    /// stays one keystroke away (`App::request_quit`).
+    ConfirmQuit { confirm: bool },
     /// An interruption the user accepted has finished: how (or whether) to
     /// bring the stopped script back. A three-row picker rather than a
     /// Yes/No, because "restart" has two honest flavors with different

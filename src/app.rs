@@ -183,7 +183,6 @@ impl DocsFocus {
 /// A freshly opened help overlay: no filter, cursor on the first command.
 pub const OVERLAY_HELP: Overlay = Overlay::Help {
     filter: String::new(),
-    filtering: false,
     selected: 0,
 };
 
@@ -1300,9 +1299,16 @@ mod tests {
         );
         assert_eq!(app.terminal_cursor(), None);
 
-        // The dashboard owns the keys again: `q` quits, instead of being
-        // typed into the PTY.
+        // The dashboard owns the keys again: `q` reaches the quit path
+        // instead of being typed into the PTY. The detached shell is still
+        // running, so that path is the confirmation --- quitting would
+        // cancel it --- and answering yes ends the session.
         app.handle(key(KeyCode::Char('q')));
+        assert!(
+            matches!(app.overlay, Some(Overlay::ConfirmQuit { .. })),
+            "the key reached the dashboard, not the PTY"
+        );
+        app.handle(key(KeyCode::Char('y')));
         assert!(app.should_quit());
         app.should_quit = false;
 
@@ -1446,7 +1452,6 @@ mod tests {
             .unwrap();
         app.overlay = Some(Overlay::Help {
             filter: String::new(),
-            filtering: false,
             selected: theme,
         });
         app.handle(key(KeyCode::Enter));
@@ -1459,28 +1464,72 @@ mod tests {
             .unwrap();
         app.overlay = Some(Overlay::Help {
             filter: String::new(),
-            filtering: false,
             selected: toggle,
         });
         app.handle(key(KeyCode::Enter));
         assert_eq!(app.overlay, None);
     }
 
+    /// Every window that carries no `?`/F1 hint of its own must still be
+    /// able to reach the help, and the two board pickers were the ones that
+    /// could not: they were simply never added to the hand-maintained
+    /// `is_help_reachable_overlay` list, so `F1` did nothing there while
+    /// `?` --- their filter's own character --- typed itself into the
+    /// search. Both predicates are exhaustive `match`es now, so a new
+    /// variant cannot inherit either answer silently; this pins the
+    /// behaviour the compiler cannot.
     #[test]
-    fn help_filters_and_activates_through_the_filter() {
+    fn f1_reaches_the_help_from_the_windows_that_filter() {
+        for overlay in [
+            Overlay::BoardPicker {
+                input: String::new(),
+                selected: 0,
+                scroll: 0,
+                focus: DocsFocus::List,
+            },
+            Overlay::ShieldPicker {
+                input: String::new(),
+                selected: 0,
+                scroll: 0,
+                focus: DocsFocus::List,
+            },
+            Overlay::Packages,
+        ] {
+            let mut opened = app();
+            opened.overlay = Some(overlay.clone());
+            opened.handle(key(KeyCode::F(1)));
+            assert!(
+                matches!(opened.overlay, Some(Overlay::Help { .. })),
+                "F1 must open the help over {overlay:?}"
+            );
+
+            // `?` stays filter text there: the field owns every printable
+            // character, which is the whole reason F1 has to be the door.
+            let mut typed = app();
+            typed.overlay = Some(overlay.clone());
+            typed.handle(key(KeyCode::Char('?')));
+            assert!(
+                !matches!(typed.overlay, Some(Overlay::Help { .. })),
+                "`?` must land in {overlay:?}'s filter, not open the help"
+            );
+        }
+    }
+
+    #[test]
+    fn help_filters_from_the_first_keystroke_and_activates_the_row() {
         let mut app = app();
         app.overlay = Some(OVERLAY_HELP);
 
-        // `/` starts typing; every printable char is filter text (`j` and
-        // `k` included, so they must not move the cursor while editing).
-        app.handle(key(KeyCode::Char('/')));
+        // No `/` to press: the field is live the moment the window opens,
+        // the grammar the board picker and the package manager use. `j`/`k`
+        // are filter text here for the same reason they are there --- the
+        // word being typed owns every printable character.
         for c in "theme".chars() {
             app.handle(key(KeyCode::Char(c)));
         }
         assert!(matches!(
             app.overlay,
-            Some(Overlay::Help { ref filter, filtering: true, .. })
-                if filter == "theme"
+            Some(Overlay::Help { ref filter, .. }) if filter == "theme"
         ));
 
         // Enter activates the row the filter left --- "theme" narrows the
@@ -1490,22 +1539,35 @@ mod tests {
     }
 
     #[test]
-    fn help_esc_leaves_the_filter_before_it_closes() {
+    fn help_closes_on_the_first_esc_however_the_filter_stands() {
         let mut app = app();
         app.overlay = Some(OVERLAY_HELP);
 
-        app.handle(key(KeyCode::Char('/')));
         app.handle(key(KeyCode::Char('z')));
-        app.handle(key(KeyCode::Esc));
-        // Out of editing, filter kept: the window is still up...
         assert!(matches!(
             app.overlay,
-            Some(Overlay::Help { ref filter, filtering: false, .. })
-                if filter == "z"
+            Some(Overlay::Help { ref filter, .. }) if filter == "z"
         ));
-        // ...and the second esc closes it.
+        // One press, not two: with the search always live there is no
+        // editing mode left for the first `Esc` to step out of.
         app.handle(key(KeyCode::Esc));
         assert_eq!(app.overlay, None);
+    }
+
+    /// `j` and `k` are the letters that made the package manager's search
+    /// unusable before it dropped them as cursor keys (`json`, `keyboard`),
+    /// and the help window inherited the same field. They must type.
+    #[test]
+    fn typing_j_or_k_in_the_help_filters_instead_of_moving_the_cursor() {
+        let mut app = app();
+        app.overlay = Some(OVERLAY_HELP);
+
+        app.handle(key(KeyCode::Char('j')));
+        app.handle(key(KeyCode::Char('k')));
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::Help { ref filter, selected: 0, .. }) if filter == "jk"
+        ));
     }
 
     #[test]
