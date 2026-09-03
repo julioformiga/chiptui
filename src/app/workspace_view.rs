@@ -63,7 +63,7 @@ impl App {
                 KeyCode::Left | KeyCode::Backspace => panel.ascend_files(),
                 KeyCode::Enter => {
                     if panel.on_parent_row() {
-                        // The `[..]` row: Enter steps back up.
+                        // The `..` row: Enter steps back up.
                         panel.ascend_files();
                     } else if let Some(entry) = panel.files_selected() {
                         if entry.is_dir {
@@ -93,7 +93,7 @@ impl App {
                 // Renaming is a *name* change in the listed directory,
                 // offered for every entry kind --- a binary's name can
                 // change just as well as a text file's or a directory's.
-                // The `[..]` parent row is not an entry (`files_selected`
+                // The `..` parent row is not an entry (`files_selected`
                 // returns `None`), so `r` there is a no-op.
                 KeyCode::Char('r') => {
                     if let Some(entry) = panel.files_selected() {

@@ -954,14 +954,14 @@ fn enter_in_the_workspace_file_section_descends_directly() {
 
     // Enter descends straight into the directory --- there is no action
     // menu between the keypress and the navigation anymore. The listing
-    // inside starts on the `[..]` row, selected.
+    // inside starts on the `..` row, selected.
     app.handle(key(KeyCode::Enter));
     assert_eq!(app.overlay, None);
     let panel = app.workspace.as_ref().unwrap();
     assert_eq!(panel.files_path, root.join("src"));
-    assert!(panel.on_parent_row(), "the [..] row must lead, selected");
+    assert!(panel.on_parent_row(), "the .. row must lead, selected");
 
-    // Enter on `[..]` steps back up, leaving "src" selected in its parent.
+    // Enter on `..` steps back up, leaving "src" selected in its parent.
     app.handle(key(KeyCode::Enter));
     let panel = app.workspace.as_ref().unwrap();
     assert_eq!(panel.files_path, root);
@@ -1000,12 +1000,12 @@ fn the_workspace_file_section_titles_with_the_project_and_offers_the_parent_row(
         "the title bar must name the project:\n{frame}"
     );
     assert!(
-        !frame.contains("[..]"),
+        !frame.contains("📁 .."),
         "no parent row at the project root:\n{frame}"
     );
 
     // …and descending concatenates the walked path onto it, over a listing
-    // that leads with `[..]`.
+    // that leads with `..`.
     workspace_cursor_on(&mut app, "src");
     app.handle(key(KeyCode::Enter));
     let frame = render(&mut app, 140, 32);
@@ -1013,7 +1013,10 @@ fn the_workspace_file_section_titles_with_the_project_and_offers_the_parent_row(
         frame.contains(&format!("{project}/src/")),
         "the title must concatenate the descent:\n{frame}"
     );
-    assert!(frame.contains("[..]"), "the parent row must lead:\n{frame}");
+    assert!(
+        frame.contains("📁 .."),
+        "the parent row must lead:\n{frame}"
+    );
 }
 
 /// The upward mirror of [`workspace_cursor_on`].

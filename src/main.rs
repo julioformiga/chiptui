@@ -108,28 +108,39 @@ fn home_loop(
         guard
             .terminal()
             .draw(|frame| ui::home::draw(frame, &screen, theme))?;
-        match events.next_event()? {
-            AppEvent::Key(key) => match screen.handle_key(key) {
-                Some(HomeOutcome::Open(dir)) => return Ok(Some(dir)),
-                Some(HomeOutcome::Quit) => return Ok(None),
-                None => {}
-            },
-            AppEvent::Mouse(gesture) if mouse => {
-                // The area the drawn frame filled (a resize between the
-                // draw and the gesture gets its own redraw first).
-                let Ok(size) = guard.terminal().size() else {
-                    continue;
-                };
-                let area = ratatui::layout::Rect::new(0, 0, size.width, size.height);
-                match screen.on_mouse(gesture, area) {
+        // The area the frame just filled --- read once, because it is the
+        // geometry every gesture of this batch is hit-tested against (a
+        // resize between the draw and the gesture gets its own redraw
+        // first). `None` when the terminal cannot answer: no geometry,
+        // so the batch's gestures have nothing to land on.
+        let area = guard
+            .terminal()
+            .size()
+            .ok()
+            .map(|size| ratatui::layout::Rect::new(0, 0, size.width, size.height));
+        // The frame's events as one batch, the dashboard loop's own rule:
+        // everything already queued joins the event that unblocked the
+        // loop, so a fast wheel burst over the project rows is one
+        // redraw rather than one per notch.
+        for event in events.next_batch()? {
+            match event {
+                AppEvent::Key(key) => match screen.handle_key(key) {
                     Some(HomeOutcome::Open(dir)) => return Ok(Some(dir)),
                     Some(HomeOutcome::Quit) => return Ok(None),
                     None => {}
+                },
+                AppEvent::Mouse(gesture) if mouse => {
+                    let Some(area) = area else { continue };
+                    match screen.on_mouse(gesture, area) {
+                        Some(HomeOutcome::Open(dir)) => return Ok(Some(dir)),
+                        Some(HomeOutcome::Quit) => return Ok(None),
+                        None => {}
+                    }
                 }
+                // Ticks and resizes only need the redraw above; the home screen
+                // has no processes to poll.
+                _ => {}
             }
-            // Ticks and resizes only need the redraw above; the home screen
-            // has no processes to poll.
-            _ => {}
         }
     }
 }
@@ -198,33 +209,64 @@ fn event_loop(
             app.handle(AppEvent::Docs(event));
         }
 
-        let event = events.next_event()?;
-        let overlay_was_open = app.overlay.is_some();
-        app.handle(event);
-        if overlay_was_open && app.overlay.is_none() {
-            // Belt-and-suspenders: some terminals can mishandle a partial
-            // diff that repaints only part of a wide glyph sitting
-            // mid-screen, compared to when that same cell is part of a
-            // full repaint. Closing a modal exposes exactly that kind of
-            // region as a partial diff; forcing a full repaint here
-            // sidesteps the class of inconsistency, on top of every
-            // decorative glyph in this app now being picked so no
-            // terminal can disagree with `ratatui` about its width in
-            // the first place.
-            guard.terminal().clear()?;
-        }
+        // The frame's events: the one that unblocked the loop, plus every
+        // report already queued behind it, handled in the order
+        // `next_batch` settled on and drawn as one frame. A
+        // redraw-per-event loop turns a fast wheel burst (hundreds of
+        // notches a second on a free-scroll wheel, each a no-op once the
+        // cursor sits at a list's end) into a backlog the UI chews
+        // through one frame at a time --- seconds of a frozen list
+        // waiting for instructions that do nothing.
+        //
+        // A gesture is aimed at the frame on screen. Once an event of
+        // this batch has moved what that frame showed --- a listing
+        // walked into, an overlay opened --- the gestures behind it
+        // would be hit-tested against rows that are gone, and applied to
+        // the listing that replaced them. They are dropped instead; the
+        // next frame is one draw away, and the pointer is still where it
+        // was.
+        let mut view_moved = false;
+        for event in events.next_batch()? {
+            if view_moved && matches!(event, AppEvent::Mouse(_)) {
+                continue;
+            }
+            let before = app.view_token();
+            let overlay_was_open = app.overlay.is_some();
+            app.handle(event);
+            view_moved |= app.view_token() != before;
+            if overlay_was_open && app.overlay.is_none() {
+                // Belt-and-suspenders: some terminals can mishandle a partial
+                // diff that repaints only part of a wide glyph sitting
+                // mid-screen, compared to when that same cell is part of a
+                // full repaint. Closing a modal exposes exactly that kind of
+                // region as a partial diff; forcing a full repaint here
+                // sidesteps the class of inconsistency, on top of every
+                // decorative glyph in this app now being picked so no
+                // terminal can disagree with `ratatui` about its width in
+                // the first place.
+                guard.terminal().clear()?;
+            }
 
-        // A copy gesture (the MAC row's click, or `Enter` on a focused
-        // Device Info pane) becomes the terminal's own clipboard escape
-        // here, between frames, where stdout is ours.
-        if let Some(text) = app.take_clipboard_request() {
-            terminal::set_clipboard(&text)?;
-        }
-        if let Some(pending) = app.take_pending_edit() {
-            run_editor(app, guard, pending)?;
-        }
-        if let Some(command) = app.take_pending_command() {
-            run_interactive(app, guard, command)?;
+            // A copy gesture (the MAC row's click, or `Enter` on a focused
+            // Device Info pane) becomes the terminal's own clipboard escape
+            // here, between frames, where stdout is ours.
+            if let Some(text) = app.take_clipboard_request() {
+                terminal::set_clipboard(&text)?;
+            }
+            // Both hand the real terminal to another program and come
+            // back to a screen this loop has not drawn yet, so whatever
+            // gestures are still queued behind them are aimed at nothing.
+            if let Some(pending) = app.take_pending_edit() {
+                run_editor(app, guard, pending)?;
+                view_moved = true;
+            }
+            if let Some(command) = app.take_pending_command() {
+                run_interactive(app, guard, command)?;
+                view_moved = true;
+            }
+            if app.should_quit() || app.switch_requested() {
+                break;
+            }
         }
     }
     Ok(())

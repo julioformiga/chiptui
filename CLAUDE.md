@@ -276,14 +276,42 @@ unless `mouse_enabled` (`set_mouse_enabled` is `main.rs`'s mirror of the guard),
 recomputed per gesture, and the file panes' clicks map through the scroll offset their
 previous frame settled on and published (`WorkspacePanel::files_offset`,
 `Browser::local_offset`/`device_offset` --- `drawn_list_row`; the lists seed their `ListState`
-from it, so a click on a visible row selects without re-anchoring the view), while the overlay
+from it, so a click on a visible row selects without re-anchoring the view), and a
+*directory's* click is its own `Enter` (`click_row`: the browser's entry menu, the Zephyr
+Files pane's descent, the `..` parent row's step back up) while a file's click only selects
+--- its activation stays the double click (`maybe_double_click`); the *trailing* half of a
+habitual double click on a folder is swallowed (`take_click_guard`, same spot within the
+double-click window), since it arrives on a pane that already moved and would undo the entry
+it belongs to --- closing the menu the first half opened (the click-outside rule), or, in the
+Files pane, clicking the `..` that just took the vacated row and bouncing straight back out
+--- while the overlay
 lists keep the fresh-`ListState` minimal-scroll reproduction (`list_row`), stacked buttons land on their label rows through `run_build_action`/
 `run_flash_pane_action`, tab strips are walked by their `Tabs` ranges
 (`log_strip_tabs`/`device_strip_tabs`), and the wheel steps the cursor-walked list under the
 pointer --- row 1's Environment checklist and row 2's file panes move their cursor one row per
 notch, clamped, never taking focus (`wheel_steps_list`, the board picker's wheel grammar); the
 actions tab and a non-Ready device pane have no listing to step --- while over row 3 it scrolls
-the active tab by `WHEEL_STEP`. An open
+the active tab by `WHEEL_STEP`. Both loops (dashboard and home) batch their events per frame
+(`EventSource::next_batch`, over the blocking `next_event` and a non-blocking
+`try_next_event`): the event that unblocks the loop is handled together with everything
+already queued behind it and drawn as one frame --- a redraw-per-event loop turned a fast
+wheel burst (hundreds of notches a second on a free-scroll wheel, each a no-op once a list's
+cursor sits at an end) into seconds of frozen UI chewing a backlog of no-ops. The batch is
+**capped** (`MAX_BATCH`), because "everything queued" has no end of its own while the queue
+keeps refilling --- an uncapped drain is the same freeze with no frame drawn at all; the
+leftovers ride the next call. Its order is one testable rule (`event::prioritize`, a stable
+sort): only the *wheel* is demoted, so a continuous gesture never buries the user's next
+keypress, while a **click stays in arrival order** --- a click is discrete input like a key,
+and it carries the cursor and the focus a key right behind it acts on. A *due* tick outranks
+whatever is queued (`next_event` checks the deadline before polling: a continuous input
+stream never lets the poll time out, which starved the spinners and the tick-driven polls
+for exactly as long as the stream lasted). And because a batch draws only once, a gesture is
+hit-tested against a frame that may be several events old: the loop compares
+`App::view_token` (overlay stage, view, device tab, the three walked listings) across each
+event and **drops the batch's remaining gestures** once one moved --- their rows are gone,
+and applying them would aim the old geometry at the new listing; `$EDITOR`/menuconfig
+hand-offs count as a move for the same reason. The one shared `to_app_event`
+mapping is what keeps a discarded report (motion, repeats) from ending a batch early. An open
 overlay routes to `on_overlay_mouse` instead: confirm dialogs answer through their drawn
 No/Yes buttons by *synthesizing* `y`/`n` into `on_overlay_key` (every per-variant gate for
 free), pickers select without activating, stacked menus press via `Enter`, the SDK checklist
@@ -540,7 +568,7 @@ asks through `Overlay::ConfirmDelete` (default No), and a binary/unknown entry i
 keys (all through `App::run_file_action`, `Side::Local`); `r` renames the entry under the
 cursor --- any kind, via `Overlay::RenameEntry` pre-filled with the current name and a local
 `fs::rename` on confirm (`App::rename_entry`; a `/` in the typed name is refused, since a
-rename must not silently become a move), and a below-root listing leads with a `[..]` parent row
+rename must not silently become a move), and a below-root listing leads with a `..` parent row
 (`WorkspacePanel::parent_row`), selected after every descent, `Enter`/`→` on it stepping back
 up. Every file list (this pane, the browser's local and device panes --- one `render_list` in
 `ui::files`) carries the shared one-column scrollbar (`ui::draw_scrollbar`) over a column the

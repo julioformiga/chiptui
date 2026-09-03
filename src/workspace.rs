@@ -257,7 +257,7 @@ impl WorkspacePanel {
                 ));
             }
         }
-        // Clamped against the *drawn* row count, the `[..]` parent row
+        // Clamped against the *drawn* row count, the `..` parent row
         // included --- the cursor indexes what is on screen.
         self.files_cursor = self
             .files_cursor
@@ -282,26 +282,26 @@ impl WorkspacePanel {
         &self.files_entries
     }
 
-    /// Whether the file list leads with a `[..]` parent row: only below the
+    /// Whether the file list leads with a `..` parent row: only below the
     /// project root --- the root itself has nowhere above it to offer within
     /// this section.
     pub fn parent_row(&self) -> bool {
         self.files_path != self.files_root
     }
 
-    /// Rows the file list draws, the `[..]` parent row included when one is
+    /// Rows the file list draws, the `..` parent row included when one is
     /// present. The navigation bounds follow this count, not the raw entry
     /// count, so the cursor can never be driven past what is on screen.
     pub fn files_row_count(&self) -> usize {
         self.files_entries.len() + usize::from(self.parent_row())
     }
 
-    /// Whether the cursor sits on the `[..]` parent row.
+    /// Whether the cursor sits on the `..` parent row.
     pub fn on_parent_row(&self) -> bool {
         self.parent_row() && self.files_cursor == 0
     }
 
-    /// The entry under the file cursor, or `None` when it sits on the `[..]`
+    /// The entry under the file cursor, or `None` when it sits on the `..`
     /// parent row (below the root) or past the end of the list.
     pub fn files_selected(&self) -> Option<&LocalEntry> {
         self.files_cursor
@@ -311,7 +311,7 @@ impl WorkspacePanel {
 
     /// Descends into the directory under the cursor; a no-op on a file
     /// (mirrors [`crate::browser::Browser::enter`]'s local-pane arm). The
-    /// `[..]` parent row is "enter the directory above": the same key that
+    /// `..` parent row is "enter the directory above": the same key that
     /// goes in also comes back out, one reflex for both directions.
     pub fn enter_files(&mut self) {
         if self.on_parent_row() {
@@ -325,7 +325,7 @@ impl WorkspacePanel {
             return;
         }
         self.files_path = self.files_path.join(&entry.name);
-        // A below-root listing leads with `[..]`, and the cursor lands on
+        // A below-root listing leads with `..`, and the cursor lands on
         // it: the way back out is the first thing selected after every
         // descent.
         self.files_cursor = 0;
@@ -355,7 +355,7 @@ impl WorkspacePanel {
                 .iter()
                 .position(|entry| entry.name == left)
         {
-            // Offset past the `[..]` row when the parent listing shows one:
+            // Offset past the `..` row when the parent listing shows one:
             // the cursor addresses drawn rows, and the entry the user just
             // left sits under it.
             self.files_cursor = index + usize::from(self.parent_row());
@@ -593,13 +593,13 @@ mod tests {
         panel.enter_files();
         assert_eq!(panel.files_path, dir.join("src"));
 
-        // A below-root listing leads with `[..]`, selected: the way back
+        // A below-root listing leads with `..`, selected: the way back
         // out is the first thing the cursor lands on.
         assert!(panel.parent_row());
         assert!(panel.on_parent_row());
-        assert!(panel.files_selected().is_none(), "[..] is not an entry");
+        assert!(panel.files_selected().is_none(), ".. is not an entry");
 
-        // Entering the `[..]` row ascends, leaving the directory just
+        // Entering the `..` row ascends, leaving the directory just
         // exited selected in its parent.
         panel.enter_files();
         assert_eq!(panel.files_path, dir);

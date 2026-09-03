@@ -77,7 +77,7 @@ fn files_title(panel: &WorkspacePanel, app: &App) -> String {
 /// comparison status (`row`'s `None` arm draws no marker column at all ---
 /// this pane has no other side to compare against), so an empty listing, an
 /// overlong name and a directory marker read identically here. A below-root
-/// listing leads with a `[..]` parent row (see
+/// listing leads with a `..` parent row (see
 /// [`WorkspacePanel::parent_row`]); the walked path lives in the pane's own
 /// title (see [`files_title`]).
 fn draw_files_section(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
@@ -98,7 +98,7 @@ fn draw_files_section(frame: &mut Frame, area: Rect, app: &mut App, palette: Pal
             );
             return;
         }
-        // The `[..]` row leads whenever the listing is below the project
+        // The `..` row leads whenever the listing is below the project
         // root, so `files_cursor` (which addresses drawn rows, 0 first) can
         // be passed straight through as the list's selection. Rows build
         // against the scrollbar's reserved edge column
@@ -107,7 +107,7 @@ fn draw_files_section(frame: &mut Frame, area: Rect, app: &mut App, palette: Pal
         let mut items = Vec::with_capacity(panel.files_row_count());
         if panel.parent_row() {
             items.push(super::files::row(
-                "[..]", true, 0, None, row_width, icons, palette,
+                "..", true, 0, None, row_width, icons, palette,
             ));
         }
         items.extend(panel.visible_files().iter().map(|entry| {

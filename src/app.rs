@@ -47,6 +47,7 @@ pub mod keys;
 pub mod monitor_view;
 pub use monitor_view::{MonitorScroll, MonitorSource, MonitorView};
 mod mouse;
+pub use mouse::ViewToken;
 pub mod overlay;
 pub use overlay::Overlay;
 pub mod packages;
@@ -568,6 +569,12 @@ pub struct App {
     /// detector [`crate::app::mouse`] resets per gesture. Not a click
     /// counter: a click on a different row is a fresh single click.
     last_click: Option<(Focus, usize, std::time::Instant)>,
+    /// Where and when a click last *entered* a directory (one click is
+    /// that row's `Enter`). A click right behind it on the same spot is
+    /// a double click's trailing half: it belongs to the row already
+    /// entered, not to the listing that replaced it, so it is swallowed
+    /// --- see `mouse::click_row`.
+    click_guard: Option<((u16, u16), std::time::Instant)>,
     /// The shortcuts overlay is showing: every pane dims
     /// (`ui::mod`'s `dashboard_focused`/`dashboard_behind_dialog`) except
     /// the initial letter of each reachable one. Deliberately not an
@@ -669,6 +676,7 @@ impl App {
             row3_fullscreen: false,
             clipboard_request: None,
             last_click: None,
+            click_guard: None,
             shortcuts_overlay_active: false,
         }
     }
