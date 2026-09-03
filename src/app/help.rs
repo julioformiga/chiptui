@@ -1345,7 +1345,7 @@ impl App {
                 ("F1", "help"),
             ],
             Some(Overlay::DirPicker { .. }) => vec![("?", "help")],
-            Some(Overlay::BuildDirPicker { .. }) => vec![("F1", "help")],
+            Some(Overlay::BuildTarget { .. }) => vec![("F1", "help")],
             Some(Overlay::ProjectPicker { .. }) => vec![("?", "help")],
             // Free text, so `?` filters rather than opens help --- and no
             // action can live on a plain letter for the same reason. The

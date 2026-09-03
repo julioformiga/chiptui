@@ -486,10 +486,15 @@ pub(crate) fn overlay_popup(app: &App, overlay: &Overlay, frame: Rect) -> Rect {
                 .collect();
             (64, super::stack_height(&placeholders).saturating_add(2))
         }
+        Overlay::BuildTarget { .. } => {
+            let placeholders: Vec<super::Button> = (0..super::BUILD_TARGET_COUNT)
+                .map(|_| super::Button::new("").detail(""))
+                .collect();
+            (64, super::stack_height(&placeholders).saturating_add(2))
+        }
 
         // ---- fixed-shape modals ----------------------------------------
         Overlay::DirPicker { .. } | Overlay::ProjectPicker { .. } => (72, 18),
-        Overlay::BuildDirPicker { .. } => (60, 16),
         Overlay::SdkToolchains { .. } => (56, frame.height.saturating_sub(4)),
         Overlay::CreateEntry { .. } | Overlay::RenameEntry { .. } => (54, 6),
         Overlay::FileViewer => (

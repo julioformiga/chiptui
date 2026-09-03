@@ -865,10 +865,12 @@ Rebuild
 Menuconfig
 ```
 
-The lifecycle targets the conventional `build` directory inside the
-project (`west`'s own default, so commands stay implicit); the panel's
-list offers no directory picker --- keeping several parallel
-configurations is the shell's job, not the TUI's.
+The lifecycle targets the build directory of the selected **variant**
+(below), which for a project with a single target is the conventional
+`build` --- `west`'s own default, so commands stay implicit. There is no
+directory picker: a directory alone is not a target, and choosing one
+without the board and shield it was configured for is how the two drift
+apart.
 
 Build output should stream into a log pane and show:
 
@@ -876,6 +878,154 @@ Build output should stream into a log pane and show:
 -   elapsed time;
 -   success/failure;
 -   exit code.
+
+### Build variants
+
+A Zephyr application routinely has more than one target: the real board
+and Zephyr's own `native_sim`, or two boards, each with its own Kconfig
+fragment, its own devicetree overlay and its own build directory --- so
+building one does not discard the other. Upstream has no name for that
+pairing; the convention every project reinvents is
+
+``` text
+west build -b <board target> [-d <build dir>] [--shield <shield>]
+```
+
+with `prj.conf` holding only what every target can build and
+`boards/<qualifier with '/' written as '_'>.conf|.overlay` holding the
+rest --- files Zephyr picks up by *name*, with no flag involved.
+
+A **variant** is that pairing given a name, so it is one answer rather
+than three. The recommended project layout is the one the convention
+already produces:
+
+``` text
+project/
+  CMakeLists.txt            # find_package(Zephyr ...) + target_sources
+  prj.conf                  # only what every variant builds
+  boards/
+    xiao_esp32c3.conf       # the board's own Kconfig and devicetree
+    xiao_esp32c3.overlay
+    native_sim_native_64.conf
+    native_sim_native_64.overlay
+  src/
+  chiptui.toml              # optional, committed: names the variants
+  build/  build_sim/        # gitignored
+```
+
+Code diverges by Kconfig symbol, never by board name
+(`target_sources_ifdef(CONFIG_BOARD_NATIVE_SIM ...)`,
+`#if defined(CONFIG_WIFI)`): a hardware symbol in `prj.conf` breaks the
+simulator build.
+
+Variants come from two places, in this order:
+
+1.  the project's own `chiptui.toml`, when it declares any. Read, never
+    written (§7) --- it is there because the user committed it:
+
+    ``` toml
+    [[variant]]
+    name = "hardware"
+    board = "xiao_esp32c3"
+    shield = "seeed_xiao_round_display"
+
+    [[variant]]
+    name = "sim"
+    board = "native_sim/native/64"
+    build_dir = "build_sim"
+    ```
+
+2.  otherwise they are **discovered**, so a project that already follows
+    the convention needs no configuration at all: each existing build
+    directory's `CMakeCache.txt` names the exact board *and shield* that
+    configuration used, and each `boards/<stem>.conf|.overlay` names a
+    target once the board list has been fetched. A project with one
+    target has no variants and the panel is exactly what it was.
+
+Variants are **not** a row of the environment checklist. A project that
+keeps a host target beside its board is asked where the build runs, at
+the moment it is asked to build:
+
+``` text
+Build / Rebuild  →  Where does this build run?
+                      ▲ Device      xiao_esp32c3 · build/
+                      ▶ Simulator   native_sim/native/64 · build_sim/
+```
+
+The question opens on the last answer, so repeating a target is one
+`Enter` and changing it is one arrow. It is asked every time rather than
+remembered silently: nothing on the pane says where the next build would
+go, and a build directory quietly switching under the user is worse than
+a keypress. A project with a single target is asked nothing --- the
+command starts outright.
+
+The answer moves the **build directory**, and only that. `Clean`,
+`Menuconfig` and the dashboard follow it, because the last build is the
+artifact the user was just looking at.
+
+The project's `Board`/`Shield` answer is *not* touched. It is the
+checklist's answer to "which board is this project for", it is what the
+flash dialog names, and it is what the registry records --- and a host
+target is not an answer to that question, it is a place a build can run.
+The host variant's own board reaches `west build -b` and nothing else.
+
+**`Flash` is always the board's**, whatever was built last: a host build
+produces an executable, not an image, so it targets the board variant's
+directory and names the board in its confirm.
+
+The answer is remembered by name in the registry (§13), but it moves a
+*cursor*, not a target: a new session starts on the board, so a `Clean`
+pressed before any build cannot erase a directory that session never
+mentioned. Only the build question opens where the last one left it.
+
+Since neither the checklist nor the action stack changes for a host
+build, the panel's state line names it --- `Build (simulator) ok in
+3.2s` --- and stops naming it as soon as the next build replaces the
+report.
+
+A build answered "simulator" **runs what it built** as soon as it
+succeeds, streaming into the Monitor tab like any other command. There is
+no `Run` button: a host build that then waits for a second keypress is a
+step with no decision in it, and running it again is that same `Build`
+(incremental, so it costs a link at most). The action stack is therefore
+the same six buttons whatever the last build targeted, which is what
+keeps the declared minimum terminal size (§11) where it was measured.
+
+### Out-of-tree boards
+
+A board Zephyr does not ship reaches a build through a **module**: a
+directory carrying `zephyr/module.yml` whose `build.settings.board_root`
+names where its `boards/` tree lives (the nesting under `build:` is
+load-bearing --- west silently ignores a top-level `settings:`), pulled
+into the build by the application's own `CMakeLists.txt`:
+
+``` text
+repo/
+  zephyr/module.yml         # build.settings.board_root: . / dts_root: .
+  CMakeLists.txt            # module hook, no sources
+  Kconfig                   # module hook, no symbols
+  boards/<vendor>/<board>/  # mirrors the upstream layout, so the board
+                            # can become an upstream pull request later
+  app/                      # the application: west build runs HERE
+    CMakeLists.txt          # list(APPEND ZEPHYR_EXTRA_MODULES ${CMAKE_CURRENT_SOURCE_DIR}/..)
+    prj.conf  boards/  src/
+```
+
+That is enough for `west build` and *not* enough for `west boards`,
+which seeds its search roots from the workspace and never sees a module
+the project reaches by CMake alone. So ChipTUI finds such a module by
+walking up from the project (stopping at the projects folder) and passes
+its root to the **list** commands as `--board-root`, which is what puts
+the board in the picker. Nothing is injected into `west build`:
+inventing a `-DBOARD_ROOT` would be exactly the guess §8 forbids, and
+the application's own `CMakeLists.txt` is what makes the board
+buildable.
+
+The application being a subdirectory is part of this layout, so the
+project picker looks one level deeper through a directory that is not
+itself an application. A module hook's `CMakeLists.txt` is a comment and
+nothing else, so "has a `CMakeLists.txt`" is not the buildability test:
+`find_package(Zephyr` is.
 
 ### Flash
 
@@ -1195,7 +1345,11 @@ consults before falling back to evidence. `last_parent` is where the project
 creator's folder picker starts. `board`/`shield` are the Zephyr pickers'
 persisted answers: written when the user picks, re-applied every time the
 project opens (outranking the build directory's cache), and a cleared
-shield removes its line.
+shield removes its line. `variant` is the name of the build variant the last
+build *answer* chose (§10) --- the name only, because the variant's own
+board, shield and build directory belong to the project. It seeds the
+build question's cursor when the project reopens, never the session's
+target; a name the project no longer has is simply ignored.
 
 The blocks are machine-managed: they are rewritten as a whole, while
 everything else in the file --- other sections, comments, unknown keys ---
@@ -1211,6 +1365,7 @@ typically to commit it. Used primarily for:
 -   backend override;
 -   default device;
 -   board;
+-   `[[variant]]` blocks, the project's build variants (§10);
 -   project-specific tool options.
 
 Do not duplicate configuration already managed by the underlying
@@ -1371,8 +1526,7 @@ Possible later phases:
 -   `west update`;
 -   debug integration;
 -   signing;
--   device-tree/configuration helpers;
--   multiple boards/profiles.
+-   device-tree/configuration helpers.
 
 ### Additional backends
 

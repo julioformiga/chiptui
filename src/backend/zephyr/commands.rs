@@ -181,20 +181,67 @@ pub fn update() -> Command {
     Command::new(PROGRAM).arg("update")
 }
 
-/// `west boards` --- every known board target, `name description` per line
-/// (alphabetical; HWMv2 names carry a `/` qualifier, e.g.
-/// `nrf52840dk/nrf52840`). Slow (it walks every board root), so callers run
-/// it in the background and parse the accumulated lines at the end.
-pub fn boards() -> Command {
-    Command::new(PROGRAM).arg("boards")
+/// The `-f` format the board list is asked for. `west boards` prints
+/// **`{name}` alone** by default --- no description and, decisively, no
+/// qualifier: a real run answers `xiao_esp32c3` and `native_sim`, never
+/// `native_sim/native/64`. A bare name is not what `west build -b` takes
+/// for a board whose SoC has cpuclusters (`ttgo_t_display_s3` fails; only
+/// `ttgo_t_display_s3/esp32s3/procpu` builds), so the format string is what
+/// makes the list *usable* rather than merely prettier --- and it is
+/// machine-readable output over a human-readable line, the bias
+/// `SPEC.md` §22 states.
+///
+/// `|` is the separator because a `full_name` carries spaces
+/// (`Native simulator - native_sim`) and `{qualifiers}` is itself a
+/// comma-separated list.
+pub const BOARD_FORMAT: &str = "{name}|{qualifiers}|{vendor}|{full_name}";
+
+/// The shield list's equivalent. `west shields` offers `name`, `full_name`,
+/// `vendor` and `dir` --- no qualifiers, shields having none.
+pub const SHIELD_FORMAT: &str = "{name}|{vendor}|{full_name}";
+
+/// `west boards -f BOARD_FORMAT [--board-root ROOT]...` --- every known
+/// board, one per line in [`BOARD_FORMAT`]'s shape (alphabetical). Slow (it
+/// walks every board root), so callers run it in the background and parse
+/// the accumulated lines at the end.
+///
+/// `--board-root` is how a board that lives *outside* the workspace reaches
+/// the list: `west boards` seeds its roots from `ZEPHYR_BASE` plus the
+/// modules the manifest declares, so a project-local module's board is
+/// invisible to it however the build itself finds one
+/// ([`super::variants::board_roots`] is what supplies these).
+pub fn boards(board_roots: &[std::path::PathBuf]) -> Command {
+    with_board_roots(
+        Command::new(PROGRAM)
+            .arg("boards")
+            .arg("-f")
+            .arg(BOARD_FORMAT),
+        board_roots,
+    )
 }
 
-/// `west shields` --- every known shield, `name (description)` per line
-/// (alphabetical). Fast compared to `west boards` (it walks the boards'
-/// shield roots only), but still a subprocess: callers run it in the
-/// background like the board list.
-pub fn shields() -> Command {
-    Command::new(PROGRAM).arg("shields")
+/// `west shields -f SHIELD_FORMAT [--board-root ROOT]...` --- every known
+/// shield. Fast compared to `west boards` (it walks the boards' shield
+/// roots only), but still a subprocess: callers run it in the background
+/// like the board list. It takes the same `--board-root` flag, so an
+/// out-of-tree module contributing a shield is reachable the same way.
+pub fn shields(board_roots: &[std::path::PathBuf]) -> Command {
+    with_board_roots(
+        Command::new(PROGRAM)
+            .arg("shields")
+            .arg("-f")
+            .arg(SHIELD_FORMAT),
+        board_roots,
+    )
+}
+
+/// Appends one `--board-root DIR` per extra root. West declares the flag
+/// `action='append'`, so a repeated flag accumulates --- unlike `west sdk
+/// install -t`, whose `nargs="+"` keeps only the last occurrence.
+fn with_board_roots(command: Command, roots: &[std::path::PathBuf]) -> Command {
+    roots.iter().fold(command, |command, root| {
+        command.arg("--board-root").arg(root.display().to_string())
+    })
 }
 
 /// `west flash` --- builds (incrementally, if anything changed) and writes
@@ -409,9 +456,37 @@ mod tests {
     }
 
     #[test]
-    fn boards_and_shields_list_their_targets() {
-        assert_eq!(boards().to_string(), "west boards");
-        assert_eq!(shields().to_string(), "west shields");
+    fn boards_and_shields_ask_for_the_machine_readable_shape() {
+        // The default output is `{name}` alone --- no qualifier, which is
+        // what `west build -b` needs for a multi-cluster board.
+        assert_eq!(
+            boards(&[]).to_string(),
+            "west boards -f {name}|{qualifiers}|{vendor}|{full_name}"
+        );
+        assert_eq!(
+            shields(&[]).to_string(),
+            "west shields -f {name}|{vendor}|{full_name}"
+        );
+    }
+
+    #[test]
+    fn every_extra_board_root_reaches_the_list() {
+        // `append`, not `nargs="+"`: each root needs its own flag, and all
+        // of them survive.
+        let roots = [
+            std::path::PathBuf::from("/repo"),
+            std::path::PathBuf::from("/other"),
+        ];
+        let line = boards(&roots).to_string();
+        assert!(
+            line.ends_with("--board-root /repo --board-root /other"),
+            "{line}"
+        );
+        let line = shields(&roots).to_string();
+        assert!(
+            line.ends_with("--board-root /repo --board-root /other"),
+            "{line}"
+        );
     }
 
     #[test]

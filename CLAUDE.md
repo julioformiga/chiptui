@@ -634,9 +634,9 @@ stop as a green light for Flash); starting Build/Rebuild shows the Monitor tab
 `Clean`
 behind `Overlay::ConfirmBuild` (destructive capability). **Menuconfig** (`west build -t
 menuconfig`) is interactive ncurses, so it parks a `pending_command` that `main.rs` runs under
-`TerminalGuard::suspend` — the same hand-off as `$EDITOR`. The lifecycle always targets the
-conventional `build` directory inside the project (implicit in commands; the `BuildDirPicker`
-overlay and `set_build_dir` plumbing remain but no row offers them). Commands come from the
+`TerminalGuard::suspend` — the same hand-off as `$EDITOR`. The lifecycle targets the selected
+variant's build directory, which for a project with one target is the conventional `build`
+(implicit in commands; `-d` appears only for another). Commands come from the
 backend (`Backend::build_command`,
 `src/backend/zephyr/commands.rs`: `west build`[-`b`][`--shield`]/`-t clean`/`--pristine=always`,
 `west update`), run with the project root as cwd — the UI never names `west`
@@ -644,13 +644,92 @@ backend (`Backend::build_command`,
 `Capability::BoardSelect`) opens `Overlay::BoardPicker`: a
 filterable list over a background `west boards` fetch (`Backend::board_list_command`, parsed by
 `build::parse_boards`); a pick is persisted in the project's `[[project]]` registry entry
-(`settings::ProjectEntry`'s `board`/`shield`, written by `App::persist_board_shield`) and reloaded
+(`settings::ProjectEntry`'s `board`/`shield`/`variant`, written by `App::persist_target`) and
+reloaded
 on every open, outranking the build cache (`BoardOrigin::Config` vs `Picked` vs `Cache` — the row
 says which); nothing is ever written into the project directory. The optional `Shield` row right
 below (under `Capability::ShieldSelect`) opens `Overlay::ShieldPicker` over a background `west
 shields` fetch — same `ListFetch` machinery as boards — with a leading `(none)` row to clear the
 pick (the clearing persists too); the saved answer reaches only first-configuration builds as
-`--shield` (never an incremental build of an already-configured directory). Both pickers are
+`--shield` (never an incremental build of an already-configured directory).
+
+Both list commands are asked for **machine-readable output**: `west boards -f
+'{name}|{qualifiers}|{vendor}|{full_name}'` (and `west shields -f '{name}|{vendor}|{full_name}'`),
+because the default output is `{name}` *alone* — no description and, decisively, no qualifier, so
+the picker used to offer `ttgo_t_display_s3`, which `west build -b` rejects for a board whose SoC
+has cpuclusters. `parse_boards` splits on `|` (a `full_name` carries spaces) and expands **one row
+per qualifier**, keeping the bare name only for a board that has none. The fixture reproduces that
+shape, including the impoverished default, so reintroducing the old `name  description` belief
+breaks a test rather than passing — the `west sdk install -d` lesson applied to a second flag.
+
+The **variants** (`src/backend/zephyr/variants.rs`) are the project's parallel configurations:
+name, board, optional shield and a build directory each, so switching targets does not
+reconfigure the other one. A project's own `chiptui.toml` may declare them (`[[variant]]` blocks,
+`project::config::parse_variants` — read, never written); otherwise `variants::discover` infers
+them from the two places the Zephyr convention already leaves them: each existing `build*/`
+directory's CMake cache (`build::cached_target`, which reads `CACHED_BOARD:STRING=` **and**
+`SHIELD:STRING=` — a board-only read silently dropped the `--shield` half) and each
+`boards/<stem>.conf|.overlay`, whose stem is matched against the real board catalogue in both
+spellings Zephyr accepts (bare name and full target with `/` as `_`; no rule splits
+`native_sim_native_64` without knowing the targets, since `_` is legal inside a board name).
+Hardware sorts before simulators so the conventional `build/` lands on the board. Fewer than two
+targets is no list at all — one board is not a choice. The catalogue only arrives when the board
+picker has been opened, so `App::refresh_variants` runs again then (`west boards` walks every
+board root; running it eagerly on each project open would spend seconds to sharpen a list the
+build directories usually already answer).
+
+**Variants are not a checklist row.** A project with both a board and a host target
+(`BuildPanel::offers_build_choice`) is asked where the build runs when `Build`/`Rebuild` is
+pressed: `Overlay::BuildTarget { kind, selected }`, two stacked buttons naming the board and the
+directory under each (`ZephyrActions`' widget and its `BUILD_TARGET_COUNT` discipline — the drawn
+count and the walked count are one number). It replaced the build-directory picker, which was
+fully wired and reachable from no row. The window opens on the last answer, so repeating a target
+is `Enter` and changing it is one arrow; it is asked *every* time rather than remembered silently,
+because nothing on the pane says where the next build would go. A single-target project is asked
+nothing and the command starts outright.
+
+The answer moves the **build directory and nothing else** (`BuildPanel::select_variant`).
+`BuildPanel::board`/`shield` are deliberately left alone: they are the *project's* answer to
+"which board is this for" — picked, saved, or read from the board's own cache — and they are what
+the checklist row shows, what the flash confirm's target names and what `persist_target` writes as
+`board =`. Writing `native_sim/native/64` into them made all three claim the simulator was the
+project's board (and corrupted the saved answer). The host variant's board reaches `west build -b`
+through `BuildPanel::build_board`/`build_shield` instead, which prefer the variant only when it is
+a host one. `Clean`, `Menuconfig` and the dashboard follow the build directory; **`Flash` is
+always the board's** (`flash_build_dir`), because a host build produces an executable and no
+runner writes one.
+
+The remembered answer is a *cursor*, not a target: `BuildPanel::remembered_simulator` is seeded
+from the registry when the project opens and updated by every answer, while `set_variants` lands
+the session on the **board** variant. So a `Clean` pressed right after opening cannot erase a
+directory that session never mentioned. And because neither the checklist nor the stack changes
+for a host build, `BuildReport::simulator` makes the state line say `Build (simulator) ok in
+3.2s`, until the next build replaces the report.
+
+A successful host build **runs what it built** (`simulator_built` → `take_simulator_built` →
+`App::start_run`, drained beside the flash and size-report flags), streaming into the Monitor like
+any other command. `BuildAction::Run` exists only to carry that through the panel's one process
+slot and is **never a row** — the `Dashboard`/`SizeReport` pattern — so the stack stays six buttons
+and `ui::MIN_HEIGHT` stays where it was measured; a finished host build also parks the cursor on
+`Build` rather than `Flash`, since there is nothing to flash. It runs `<build>/zephyr/zephyr.exe`
+by its own path (`BuildPanel::run_command`: the west *environment* but never the west program),
+and re-running is that same `Build` (incremental, a link at most). It is piped, so `native_sim`'s
+console shell gets no stdin; a PTY is the follow-up, not a silent claim.
+
+An **out-of-tree board** reaches the picker through its module: `variants::board_roots` walks up
+from the project (stopping at the projects folder) for a `zephyr/module.yml` declaring
+`build.settings.board_root` — nesting that is load-bearing, since west ignores a top-level
+`settings:` without error — and passes each root to the *list* commands as `--board-root`.
+Nothing is injected into `west build`: what makes such a board buildable is the application's own
+`CMakeLists.txt` (`ZEPHYR_EXTRA_MODULES`), and inventing a `-DBOARD_ROOT` would be the guess
+`SPEC.md` §8 forbids. That layout also puts the application one level below the repository root,
+so `projects::is_buildable` now *reads* the `CMakeLists.txt` for `find_package(Zephyr` (a module
+hook is a comment-only file that passed a mere `is_file()` check while `west build` refused it)
+and `projects::project_rows` looks one level deeper through a non-application directory, listing
+its buildable children as `parent/child`. The little YAML the manifests and `build_info.yml`
+share is one reader now, `src/backend/zephyr/yaml.rs`.
+
+Both pickers are
 full-frame modals (`src/ui/overlay.rs`'s shared `draw_docs_picker`): the window fills the frame
 minus one column per side and two rows above and below, and the geometry is one definition in
 `ui::layout::docs_picker` shared with the click hit-testing (like the dashboard's own tree).

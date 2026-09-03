@@ -248,8 +248,8 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
             error.as_deref(),
             palette,
         ),
-        Overlay::BuildDirPicker { input, selected } => {
-            draw_build_dir_picker(frame, popup, app, &input, selected, palette)
+        Overlay::BuildTarget { selected, .. } => {
+            draw_build_target(frame, popup, app, selected, app.icon_set(), palette)
         }
         Overlay::ProjectPicker {
             mpy,
@@ -1766,75 +1766,58 @@ fn draw_project_picker(
     );
 }
 
-/// Build-directory selection: the project's configured directories plus a
-/// typed new name (`west build -d`).
-fn draw_build_dir_picker(
+/// How many buttons [`draw_build_target`] draws. Two by construction ---
+/// the question is "board or host", and a project reaches this window only
+/// when it has one of each.
+pub(crate) const BUILD_TARGET_COUNT: usize = 2;
+
+/// Where a build should run: on the board, or on the host simulator.
+///
+/// Each button names the target underneath it, because "Simulator" alone
+/// does not say *which* build directory is about to be written --- and
+/// that directory is what `Clean` and the dashboard follow afterwards.
+fn draw_build_target(
     frame: &mut Frame,
     popup: Rect,
     app: &App,
-    input: &str,
     selected: usize,
+    icons: crate::icons::IconSet,
     palette: Palette,
 ) {
+    let (device, simulator) = app
+        .build
+        .as_ref()
+        .map(|panel| (panel.device_variant(), panel.simulator_variant()))
+        .unwrap_or((None, None));
+    let detail = |variant: Option<&crate::backend::zephyr::variants::Variant>| {
+        variant.map_or_else(
+            || "no target".to_string(),
+            |variant| {
+                format!(
+                    "{} · {}/",
+                    variant.board.clone().unwrap_or_else(|| "?".to_string()),
+                    variant.build_dir
+                )
+            },
+        )
+    };
+
+    let buttons = vec![
+        super::button::Button::new("Device")
+            .icon(icons.flash(), palette.warning)
+            .detail(detail(device))
+            .selected(selected == 0),
+        super::button::Button::new("Simulator")
+            .icon(icons.play(), palette.success)
+            .detail(detail(simulator))
+            .selected(selected == 1),
+    ];
+
     frame.render_widget(Clear, popup);
-
-    let Some(panel) = app.build.as_ref() else {
-        return;
-    };
-    let title = format!("Build directory (currently {})", panel.build_dir);
-    frame.render_widget(modal(&title, palette), popup);
-
-    let [filter_area, hint_area, list_area] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Length(2),
-        Constraint::Min(1),
-    ])
-    .areas(modal(&title, palette).inner(popup));
-
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("name  ", muted_style(palette)),
-            Span::styled(input.to_string(), Style::new().fg(palette.fg)),
-            Span::styled("▏", Style::new().fg(palette.accent)),
-        ])),
-        filter_area,
-    );
-
-    let dirs = panel.filtered_build_dirs(input);
-    let hint = if input.trim().is_empty() {
-        "Enter picks; type a new name to create another".to_string()
-    } else if dirs.is_empty() {
-        "not a name: no path separators".to_string()
-    } else {
-        format!("{} of {} directories", dirs.len(), dirs.len())
-    };
-    frame.render_widget(
-        Paragraph::new(vec![Line::from(hint.fg(palette.muted)), Line::from("")]),
-        hint_area,
-    );
-
-    let items: Vec<ListItem> = dirs
-        .iter()
-        .map(|dir| {
-            ListItem::new(Line::from(vec![
-                Span::styled(format!(" {dir} "), Style::new().fg(palette.fg)),
-                Span::styled(
-                    if *dir == crate::build::DEFAULT_BUILD_DIR {
-                        "default"
-                    } else {
-                        ""
-                    },
-                    muted_style(palette),
-                ),
-            ]))
-        })
-        .collect();
-    let mut state = ListState::default().with_selected(Some(selected));
-    frame.render_stateful_widget(
-        List::new(items).highlight_style(selection_style(palette)),
-        list_area,
-        &mut state,
-    );
+    let block = modal("Where does this build run?", palette);
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+    super::button::render_stack(frame, inner, inner.y, &buttons, palette);
 }
 
 /// Chooses among several `.bin`/`.elf` candidates found in the project root.

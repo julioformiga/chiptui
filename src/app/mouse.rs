@@ -903,23 +903,20 @@ impl App {
                     self.set_overlay_selected(index);
                 }
             }
-            Overlay::BuildDirPicker { input, selected } => {
-                let Some(len) = self
-                    .build
-                    .as_ref()
-                    .map(|panel| panel.filtered_build_dirs(input).len())
-                else {
+            Overlay::BuildTarget { .. } => {
+                // A stacked-button menu, drawn the way `ZephyrActions` is:
+                // the click presses the button its row belongs to, through
+                // the same `Enter` the keyboard sends, so the gate and the
+                // effect stay one path.
+                let placeholders: Vec<crate::ui::Button> = (0..crate::ui::BUILD_TARGET_COUNT)
+                    .map(|_| crate::ui::Button::new("").detail(""))
+                    .collect();
+                let Some(row) = point.1.checked_sub(rect.y + 1) else {
                     return;
                 };
-                if let Some(index) = list_row(
-                    point,
-                    rect,
-                    *selected,
-                    len,
-                    3,
-                    0,
-                ) {
+                if let Some(index) = crate::ui::button_at_row(&placeholders, row) {
                     self.set_overlay_selected(index);
+                    self.overlay_key(KeyCode::Enter);
                 }
             }
             Overlay::BoardPicker { input, .. } => {
@@ -1232,7 +1229,7 @@ impl App {
             | Overlay::FileActions { selected, .. }
             | Overlay::DirPicker { selected, .. }
             | Overlay::ProjectPicker { selected, .. }
-            | Overlay::BuildDirPicker { selected, .. }
+            | Overlay::BuildTarget { selected, .. }
             | Overlay::BoardPicker { selected, .. }
             | Overlay::ShieldPicker { selected, .. }
             | Overlay::SdkToolchains { selected, .. }
@@ -1613,9 +1610,11 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
+        // A real application's entry point: `find_package(Zephyr` is what
+        // `west build` --- and so the project gate --- looks for.
         std::fs::write(
             root.join("CMakeLists.txt"),
-            "cmake_minimum_required(VERSION 3.28)\n",
+            "cmake_minimum_required(VERSION 3.28)\nfind_package(Zephyr REQUIRED)\n",
         )
         .unwrap();
         for i in 0..count {
@@ -3006,7 +3005,10 @@ mod tests {
             matches!(
                 app.overlay,
                 Some(Overlay::BoardPicker {
-                    selected: 4,
+                    // Seventh target in the fixture's list: the three
+                    // boards before `rpi_pico` each carry two qualifiers,
+                    // and every qualifier is a target of its own.
+                    selected: 6,
                     focus: DocsFocus::List,
                     ..
                 })
@@ -3237,6 +3239,7 @@ mod tests {
             .map(|i| crate::build::Board {
                 name: format!("board_{i:02}"),
                 description: format!("test board {i}"),
+                vendor: String::new(),
             })
             .collect();
         app.build.as_mut().unwrap().boards.state = crate::build::ListState::Loaded(boards);

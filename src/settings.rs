@@ -135,6 +135,18 @@ pub struct ProjectEntry {
     pub board: Option<String>,
     /// The shield picker's answer, same lifetime as [`Self::board`].
     pub shield: Option<String>,
+    /// Which of the project's build variants is selected, by *name*
+    /// (`sim`, `hardware`) --- the answer the Target row's picker gives.
+    ///
+    /// The name, not the variant: a variant's own board, shield and build
+    /// directory belong to the project (declared in its `chiptui.toml` or
+    /// derived from its directories), and duplicating them here would let
+    /// the two drift. It is also what keeps this a flat scalar key --- the
+    /// registry writer re-renders whole blocks and has no nesting to
+    /// express a table with.
+    ///
+    /// A name the project no longer has is simply not applied.
+    pub variant: Option<String>,
 }
 
 impl ProjectEntry {
@@ -152,6 +164,7 @@ impl ProjectEntry {
             last_opened: None,
             board: None,
             shield: None,
+            variant: None,
         }
     }
 
@@ -229,6 +242,7 @@ impl ProjectRegistry {
                 "last_opened" => pending.last_opened = Some(value),
                 "board" => pending.board = Some(value),
                 "shield" => pending.shield = Some(value),
+                "variant" => pending.variant = Some(value),
                 _ => {}
             }
         }
@@ -303,6 +317,7 @@ struct PendingEntry {
     last_opened: Option<String>,
     board: Option<String>,
     shield: Option<String>,
+    variant: Option<String>,
 }
 
 impl PendingEntry {
@@ -316,6 +331,7 @@ impl PendingEntry {
         entry.last_opened = self.last_opened.filter(|stamp| !stamp.is_empty());
         entry.board = self.board.filter(|board| !board.is_empty());
         entry.shield = self.shield.filter(|shield| !shield.is_empty());
+        entry.variant = self.variant.filter(|variant| !variant.is_empty());
         Some(entry)
     }
 }
@@ -630,6 +646,9 @@ fn render_projects(other: &str, entries: &[ProjectEntry]) -> String {
         }
         if let Some(shield) = &entry.shield {
             out.push_str(&format!("shield = {}\n", quote(shield)));
+        }
+        if let Some(variant) = &entry.variant {
+            out.push_str(&format!("variant = {}\n", quote(variant)));
         }
         if let Some(stamp) = &entry.last_opened {
             out.push_str(&format!("last_opened = {}\n", quote(stamp)));
@@ -1087,14 +1106,30 @@ mod tests {
     }
 
     #[test]
+    fn the_selected_variant_round_trips_and_clears() {
+        let mut entry = ProjectEntry::new("/p", BackendKind::Zephyr);
+        entry.variant = Some("sim".to_string());
+        let text = render_projects("", std::slice::from_ref(&entry));
+        assert!(text.contains("variant = \"sim\"\n"), "{text}");
+        assert_eq!(ProjectRegistry::parse(&text).entries()[0], entry);
+
+        // A project that stops keeping variants leaves no line behind ---
+        // the same rule the shield follows.
+        entry.variant = None;
+        let text = render_projects("", std::slice::from_ref(&entry));
+        assert!(!text.contains("variant ="), "{text}");
+    }
+
+    #[test]
     fn hand_written_board_and_shield_keys_are_read() {
         let registry = ProjectRegistry::parse(
             "[[project]]\npath = \"/apps/blinky\"\nbackend = \"zephyr\"\n\
-             board = 'nrf52840dk/nrf52840'\nshield = \"nrf7002ek\"\n",
+             board = 'nrf52840dk/nrf52840'\nshield = \"nrf7002ek\"\nvariant = 'sim'\n",
         );
         let entry = &registry.entries()[0];
         assert_eq!(entry.board.as_deref(), Some("nrf52840dk/nrf52840"));
         assert_eq!(entry.shield.as_deref(), Some("nrf7002ek"));
+        assert_eq!(entry.variant.as_deref(), Some("sim"));
     }
 
     #[test]

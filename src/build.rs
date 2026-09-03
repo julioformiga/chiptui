@@ -42,12 +42,37 @@ const OUTPUT_CAPACITY: usize = 2_000;
 /// configured for (`build/zephyr/CMakeCache.txt` on a normal application).
 const CACHED_BOARD_KEY: &str = "CACHED_BOARD:STRING=";
 
+/// The `CMakeCache.txt` entry holding the shield that configuration
+/// carried, if any. Absent for a build with no shield --- which is not the
+/// same as an empty answer, so [`cached_target`] reports it as `None`.
+const CACHED_SHIELD_KEY: &str = "SHIELD:STRING=";
+
+/// What a configured build directory says it was built for: the two
+/// answers `west build` took at configure time, recovered together.
+///
+/// Reading them as a pair is what lets a *variant* be recovered whole from
+/// a directory that already exists --- a board alone would silently drop
+/// the `--shield` half and produce a build that configures differently
+/// from the one sitting right there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CachedTarget {
+    pub board: String,
+    pub shield: Option<String>,
+}
+
 /// Result of the last finished command, for the panel's header line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuildReport {
     /// What ran, as a label ("Build", "Clean", "Flash", …).
     pub what: &'static str,
     pub ok: bool,
+    /// Whether the command ran against the host simulator rather than the
+    /// board. The state line says so --- `Build (simulator) ok in 3.2s` ---
+    /// because nothing else on the pane does: the checklist names the
+    /// project's board (which a host build does not change), and the
+    /// action stack is the same six rows either way. It follows the report,
+    /// so the next build's answer replaces it.
+    pub simulator: bool,
     /// The user stopped this command (`Stop`): not a failure, whatever the
     /// exit status says --- the process tree was killed mid-run by design.
     /// `ok` stays `false` (nothing was completed), but the footer and the
@@ -79,21 +104,34 @@ struct Running {
     progress: Option<crate::progress::Progress>,
 }
 
-/// One board target from `west boards`: the name `west build -b` takes and
-/// the human description shown beside it.
+/// One board *target* from `west boards`: exactly the string
+/// `west build -b` takes, its human description, and the vendor.
+///
+/// A board with cpuclusters produces several targets (`ttgo_t_display_s3`
+/// answers `esp32s3/procpu` and `esp32s3/appcpu`), and each becomes its own
+/// row: the qualifier is not decoration, it is the only spelling `west
+/// build` accepts for such a board. [`parse_boards`] is where one line
+/// becomes N rows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Board {
+    /// The full target: `xiao_esp32c3`, `native_sim/native/64`,
+    /// `ttgo_t_display_s3/esp32s3/procpu`.
     pub name: String,
+    /// The board's `full_name` --- its commercial name.
     pub description: String,
+    /// The board's vendor, filtered on but not drawn (the row is already
+    /// two columns wide).
+    pub vendor: String,
 }
 
-/// One shield from `west shields`: the name `west build --shield` takes and
-/// the human description shown beside it. The same `name description` line
-/// shape as the board list, which is why the parse is shared.
+/// One shield from `west shields`: the name `west build --shield` takes,
+/// its description and its vendor. The same three fields the board rows
+/// carry, minus the qualifier expansion --- a shield has no qualifiers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Shield {
     pub name: String,
     pub description: String,
+    pub vendor: String,
 }
 
 /// Where the panel's board answer came from --- the header's one-word hint,
@@ -181,6 +219,14 @@ impl<T> Default for ListFetch<T> {
     }
 }
 
+impl<T> ListState<T> {
+    /// Whether the list is here. The distinction the callers care about is
+    /// "can I read entries", not which of the three not-here states it is.
+    pub fn is_loaded(&self) -> bool {
+        matches!(self, Self::Loaded(_))
+    }
+}
+
 impl<T> ListFetch<T> {
     /// Starts `command` unless a fetch is already running or the list is
     /// already here: each fetch is once per session.
@@ -191,6 +237,18 @@ impl<T> ListFetch<T> {
         self.state = ListState::Loading;
         self.output.clear();
         self.process = Some(processes.spawn(command, BOARDS_TIMEOUT));
+    }
+
+    /// Drops a finished list so the next [`Self::start`] runs again ---
+    /// what a change in the *search roots* calls for: the answer the list
+    /// holds was computed for a different set of directories. A fetch still
+    /// in flight is left alone; its `Finished` will land on the state this
+    /// leaves behind.
+    fn invalidate(&mut self) {
+        if self.process.is_none() {
+            self.state = ListState::Idle;
+            self.output.clear();
+        }
     }
 
     /// Records an output line when `id` is this fetch's process. Whether it
@@ -276,6 +334,18 @@ pub enum BuildAction {
     /// knows where the cursor came from), and never gated: an unconfigured
     /// build directory is `west`'s own error to explain in the Monitor.
     Dashboard,
+    /// Runs the host executable a simulator build produced
+    /// (`<build>/zephyr/zephyr.exe`).
+    ///
+    /// **Never a row of the stack**, the way [`Self::Dashboard`] and
+    /// [`Self::SizeReport`] are not: the pane's six buttons are the
+    /// measured height `ui::MIN_HEIGHT` was fixed against, and this needs
+    /// no button --- a build that was answered "simulator" runs what it
+    /// built as soon as it succeeds, and running it again is that same
+    /// `Build` (incremental, so it costs a link at most). It exists as an
+    /// action only so the panel's one process slot can carry it and report
+    /// it like anything else.
+    Run,
     /// `size_report` --- the memory report the build dashboard's Memory tab
     /// reads, generated on request from that window. [`Self::Dashboard`]'s
     /// twin in every structural way: never a row of the stack, never a
@@ -351,6 +421,37 @@ pub struct BuildPanel {
     pub cursor: usize,
     pub last: Option<BuildReport>,
     pub output: VecDeque<String>,
+    /// The project's build variants --- its parallel configurations, each a
+    /// board, an optional shield and a build directory of its own. Empty
+    /// for a project with a single target, which is the common case and
+    /// keeps the panel exactly as it was.
+    pub variants: Vec<crate::backend::zephyr::variants::Variant>,
+    /// Which of [`Self::variants`] the lifecycle targets. `None` while the
+    /// list is empty; otherwise always a valid index, kept so by
+    /// [`Self::set_variants`] and [`Self::select_variant`]. A fresh session
+    /// starts on the *board* variant, whatever was built last time --- see
+    /// [`Self::remembered_simulator`].
+    pub variant: Option<usize>,
+    /// Which half the build question opens on: `true` the simulator.
+    ///
+    /// Seeded from the registry when the project opens, so the question
+    /// comes back where the last session left it, and updated by every
+    /// answer. Deliberately *not* the same thing as [`Self::variant`]: a
+    /// session starts targeting the board, so a `Clean` pressed before any
+    /// build cannot erase a directory this session never mentioned. The
+    /// remembered answer moves a cursor; it does not move the target.
+    pub remembered_simulator: bool,
+    /// Extra board search roots for the *list* commands: directories a
+    /// project-local Zephyr module contributes
+    /// ([`crate::backend::zephyr::variants::board_roots`]). Empty for a
+    /// project that defines no board of its own.
+    ///
+    /// They reach `west boards`/`west shields` only. Nothing is injected
+    /// into `west build`: what makes an out-of-tree board *buildable* is
+    /// the application's own `CMakeLists.txt` pulling the module in
+    /// (`ZEPHYR_EXTRA_MODULES`), and inventing a `-DBOARD_ROOT` here would
+    /// be the guess `SPEC.md` §8 forbids.
+    pub board_roots: Vec<PathBuf>,
     /// The `west boards` fetch, for the board picker.
     pub boards: ListFetch<Board>,
     /// The `west shields` fetch, for the shield picker.
@@ -368,6 +469,12 @@ pub struct BuildPanel {
     /// Only success sets it --- a failure leaves the Monitor holding the
     /// explanation, which a modal over it would hide.
     size_report_finished: bool,
+    /// Set when a `Build`/`Rebuild` that targeted the *simulator* finished
+    /// successfully and has not been consumed
+    /// ([`Self::take_simulator_built`]): building a host target and then
+    /// asking the user to press something else to see it is a step with no
+    /// decision in it, so the app runs it.
+    simulator_built: bool,
     /// Overrides the executable the backend's commands name (`west`), the
     /// seam tests (and later `[tools]` config) plug a substitute into.
     tool_path: Option<String>,
@@ -394,15 +501,171 @@ impl BuildPanel {
             cursor: 0,
             last: None,
             output: VecDeque::new(),
+            variants: Vec::new(),
+            variant: None,
+            remembered_simulator: false,
+            board_roots: Vec::new(),
             boards: ListFetch::default(),
             shields: ListFetch::default(),
             offset,
             running: None,
             flash_finished: false,
             size_report_finished: false,
+            simulator_built: false,
             tool_path: None,
             tool_env: Vec::new(),
         }
+    }
+
+    /// Sets the extra board search roots (see [`Self::board_roots`]).
+    /// A change drops the cached board and shield lists: they were fetched
+    /// against the old roots, and the whole point of a root is that it adds
+    /// entries the previous answer could not have held.
+    pub fn set_board_roots(&mut self, roots: Vec<PathBuf>) {
+        if self.board_roots == roots {
+            return;
+        }
+        self.board_roots = roots;
+        self.boards.invalidate();
+        self.shields.invalidate();
+    }
+
+    /// Replaces the variant list, keeping the selection *by name* when the
+    /// new list still carries it --- a re-derivation (a fresh board
+    /// catalogue arriving, a directory appearing) must not silently switch
+    /// which target the buttons act on.
+    ///
+    /// Selecting is what applies a variant's answers; an empty list clears
+    /// the selection and leaves the panel's own board/shield/build-dir
+    /// exactly as they were, which is the no-variants behaviour.
+    pub fn set_variants(&mut self, variants: Vec<crate::backend::zephyr::variants::Variant>) {
+        if self.variants == variants {
+            return;
+        }
+        let current = self.variant_name().map(str::to_string);
+        self.variants = variants;
+        if self.variants.is_empty() {
+            self.variant = None;
+            return;
+        }
+        // Keep the target when the re-derived list still carries it (a
+        // fresh board catalogue arriving must not move the build
+        // directory under a running session); otherwise land on the board
+        // variant, which is where a session starts.
+        let index = current
+            .and_then(|name| self.variants.iter().position(|v| v.name == name))
+            .or_else(|| self.variant_index_for(false))
+            .unwrap_or(0);
+        self.select_variant(index);
+    }
+
+    /// Points the lifecycle at one variant --- which is to say, at its
+    /// **build directory**, and nothing else.
+    ///
+    /// [`Self::board`] and [`Self::shield`] are deliberately left alone.
+    /// They are the *project's* answer to "which board is this for",
+    /// picked or saved or read from the board's own build cache, and they
+    /// are what the environment checklist shows, what the flash confirm
+    /// names and what the registry records. A host target is not an answer
+    /// to that question --- it is a place a build can run --- so writing
+    /// `native_sim/native/64` into them made the checklist, the flash
+    /// dialog and the saved `board =` line all claim the simulator was the
+    /// project's board.
+    ///
+    /// The variant's own board and shield reach the build command instead,
+    /// through [`Self::build_board`]/[`Self::build_shield`].
+    pub fn select_variant(&mut self, index: usize) {
+        let Some(variant) = self.variants.get(index).cloned() else {
+            return;
+        };
+        self.variant = Some(index);
+        self.build_dir = variant.build_dir;
+        self.last = None;
+    }
+
+    /// The board the *next build command* passes as `-b`.
+    ///
+    /// A host variant carries its own, because nothing else names it: the
+    /// user never picks `native_sim` and no board cache of the project's
+    /// own holds it. Everything else --- including the board variant ---
+    /// defers to [`Self::board`], which is where the picked, saved and
+    /// cached answers already rank against each other.
+    pub fn build_board(&self) -> Option<&str> {
+        match self.variant() {
+            Some(variant) if variant.is_simulator() => variant.board.as_deref(),
+            _ => self.board_name(),
+        }
+    }
+
+    /// The shield the next build command passes, by the same rule as
+    /// [`Self::build_board`]. A host build carries the shield its variant
+    /// declares, which is normally none --- there is no board to put one on.
+    pub fn build_shield(&self) -> Option<&str> {
+        match self.variant() {
+            Some(variant) if variant.is_simulator() => variant.shield.as_deref(),
+            _ => self.shield_name(),
+        }
+    }
+
+    /// The selected variant, if the project has any.
+    pub fn variant(&self) -> Option<&crate::backend::zephyr::variants::Variant> {
+        self.variant.and_then(|index| self.variants.get(index))
+    }
+
+    pub fn variant_name(&self) -> Option<&str> {
+        self.variant().map(|variant| variant.name.as_str())
+    }
+
+    /// Whether the last answered build targets a host build --- no board to
+    /// flash, an executable to run instead. False for a project with no
+    /// variants: the board answer alone is what such a project has, and
+    /// nothing in it says a simulator was ever meant.
+    pub fn targets_simulator(&self) -> bool {
+        self.variant().is_some_and(|variant| variant.is_simulator())
+    }
+
+    /// The project's board variant --- the first that is not a host
+    /// target. What `Flash` always writes, whatever the last build was
+    /// (there is nothing to flash from a host build), and the left half of
+    /// the build question.
+    pub fn device_variant(&self) -> Option<&crate::backend::zephyr::variants::Variant> {
+        self.variants.iter().find(|v| !v.is_simulator())
+    }
+
+    /// The project's host variant, if it keeps one. Its presence is the
+    /// whole condition for asking where a build should run.
+    pub fn simulator_variant(&self) -> Option<&crate::backend::zephyr::variants::Variant> {
+        self.variants.iter().find(|v| v.is_simulator())
+    }
+
+    /// Whether the project offers a choice at build time: both a board and
+    /// a host target. One of either is no question --- the command starts
+    /// outright.
+    pub fn offers_build_choice(&self) -> bool {
+        self.device_variant().is_some() && self.simulator_variant().is_some()
+    }
+
+    /// The index of the variant a build answer selects, `simulator` naming
+    /// which half was answered.
+    pub fn variant_index_for(&self, simulator: bool) -> Option<usize> {
+        self.variants
+            .iter()
+            .position(|v| v.is_simulator() == simulator)
+    }
+
+    /// The build directory `Flash` writes from: the board variant's, never
+    /// the host one's.
+    ///
+    /// Every other command follows the *last build* (`self.build_dir`),
+    /// because that is the artifact the user was just looking at. Flash
+    /// cannot: a host build produces an executable, not an image, so
+    /// following the last build would offer to write a file no runner
+    /// understands. With no variants at all this is `build_dir` --- the
+    /// project has one target and it is the board's.
+    pub fn flash_build_dir(&self) -> String {
+        self.device_variant()
+            .map(|variant| variant.build_dir.clone())
+            .unwrap_or_else(|| self.build_dir.clone())
     }
 
     pub fn set_tool_path(&mut self, program: impl Into<String>) {
@@ -495,25 +758,13 @@ impl BuildPanel {
         // The shield rides on the board answer and is project-scoped the
         // same way; with no cache to re-read, it resets to "none".
         self.shield = None;
+        // The variants describe the project being left --- its build
+        // directories, its `boards/` fragments. The caller re-derives them
+        // for the project being entered.
+        self.variants.clear();
+        self.variant = None;
         self.last = None;
         self.cursor = 0;
-    }
-
-    /// The project's configured build directories: immediate subdirectories
-    /// holding a `zephyr/CMakeCache.txt` (west's own footprint), `build`
-    /// first when present. What the build-directory picker lists; an empty
-    /// answer simply means nothing is configured yet.
-    pub fn discover_build_dirs(root: &Path) -> Vec<String> {
-        let mut dirs: Vec<String> = std::fs::read_dir(root)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .filter(|entry| entry.path().join("zephyr/CMakeCache.txt").is_file())
-            .map(|entry| entry.file_name().to_string_lossy().into_owned())
-            .collect();
-        dirs.sort();
-        dirs.dedup();
-        dirs
     }
 
     pub fn is_busy(&self) -> bool {
@@ -592,7 +843,9 @@ impl BuildPanel {
         match &self.boards.state {
             ListState::Loaded(boards) => boards
                 .iter()
-                .filter(|board| matches_filter(&board.name, &board.description, &filter))
+                .filter(|board| {
+                    matches_filter(&board.name, &board.description, &board.vendor, &filter)
+                })
                 .collect(),
             _ => Vec::new(),
         }
@@ -604,7 +857,9 @@ impl BuildPanel {
         match &self.shields.state {
             ListState::Loaded(shields) => shields
                 .iter()
-                .filter(|shield| matches_filter(&shield.name, &shield.description, &filter))
+                .filter(|shield| {
+                    matches_filter(&shield.name, &shield.description, &shield.vendor, &filter)
+                })
                 .collect(),
             _ => Vec::new(),
         }
@@ -619,7 +874,9 @@ impl BuildPanel {
         match &self.boards.state {
             ListState::Loaded(boards) => boards
                 .iter()
-                .filter(|board| matches_filter(&board.name, &board.description, &filter))
+                .filter(|board| {
+                    matches_filter(&board.name, &board.description, &board.vendor, &filter)
+                })
                 .count(),
             _ => 0,
         }
@@ -632,7 +889,9 @@ impl BuildPanel {
         match &self.shields.state {
             ListState::Loaded(shields) => shields
                 .iter()
-                .filter(|shield| matches_filter(&shield.name, &shield.description, &filter))
+                .filter(|shield| {
+                    matches_filter(&shield.name, &shield.description, &shield.vendor, &filter)
+                })
                 .count(),
             _ => 0,
         }
@@ -664,7 +923,7 @@ impl BuildPanel {
         &self,
         backend: &dyn crate::backend::Backend,
     ) -> Option<crate::process::Command> {
-        let command = backend.board_list_command()?;
+        let command = backend.board_list_command(&self.board_roots)?;
         Some(self.decorated(command.current_dir(&self.root)))
     }
 
@@ -674,7 +933,7 @@ impl BuildPanel {
         &self,
         backend: &dyn crate::backend::Backend,
     ) -> Option<crate::process::Command> {
-        let command = backend.shield_list_command()?;
+        let command = backend.shield_list_command(&self.board_roots)?;
         Some(self.decorated(command.current_dir(&self.root)))
     }
 
@@ -692,44 +951,6 @@ impl BuildPanel {
         self.running.as_ref().and_then(|running| running.progress)
     }
 
-    /// The build-directory picker's rows for a filter: the typed name first
-    /// when it would create something new, then the conventional `build`,
-    /// then every other configured directory --- so even a fresh project
-    /// (nothing configured yet) has the default to fall back on. A name is
-    /// only ever a *name*: path separators and `..` never qualify (the
-    /// directory lives inside the project root, like `west`'s own `-d`
-    /// argument).
-    pub fn filtered_build_dirs(&self, filter: &str) -> Vec<String> {
-        let filter = filter.trim();
-        if !filter.is_empty() && !Self::is_build_dir_name(filter) {
-            return Vec::new();
-        }
-        let mut dirs: Vec<String> = Self::discover_build_dirs(&self.root)
-            .into_iter()
-            .filter(|dir| filter.is_empty() || dir.contains(filter))
-            .collect();
-        // A filter that matches nothing is a name being typed for a new
-        // directory: it leads the list (first Enter lands on it).
-        if !filter.is_empty() && dirs.is_empty() {
-            dirs.push(filter.to_string());
-        }
-        if (filter.is_empty() || DEFAULT_BUILD_DIR.contains(filter))
-            && !dirs.contains(&DEFAULT_BUILD_DIR.to_string())
-        {
-            dirs.insert(0, DEFAULT_BUILD_DIR.to_string());
-        }
-        dirs
-    }
-
-    /// A legal build-directory name: a single path component.
-    fn is_build_dir_name(name: &str) -> bool {
-        !name.is_empty()
-            && name != "."
-            && name != ".."
-            && !name.contains('/')
-            && !name.contains(std::path::MAIN_SEPARATOR_STR)
-    }
-
     /// The command for `kind`, as the app should run it: the backend's
     /// construction, rooted at the project, pointed at the override tool if
     /// one is set. `None` means the backend offers no such operation.
@@ -740,22 +961,61 @@ impl BuildPanel {
     ) -> Option<crate::process::Command> {
         let command = backend.build_command(
             kind,
-            self.board_name(),
-            self.shield_name(),
+            self.build_board(),
+            self.build_shield(),
             self.has_build_dir(),
             &self.build_dir,
         )?;
         Some(self.decorated(command.current_dir(&self.root)))
     }
 
-    /// The flash command, rooted and decorated like the build ones.
-    /// `None` when the backend has no single flash command.
+    /// The flash command, rooted and decorated like the build ones, and
+    /// always over the *board* variant's build directory
+    /// ([`Self::flash_build_dir`]). `None` when the backend has no single
+    /// flash command.
     pub fn flash_command(
         &self,
         backend: &dyn crate::backend::Backend,
     ) -> Option<crate::process::Command> {
-        let command = backend.flash_command(&self.build_dir)?;
+        let command = backend.flash_command(&self.flash_build_dir())?;
         Some(self.decorated(command.current_dir(&self.root)))
+    }
+
+    /// The command that runs a simulator variant's host executable.
+    ///
+    /// Not `west`, and deliberately not `decorated`: this is the program the
+    /// build produced, launched by its own path, and running it through the
+    /// workspace's west would name a subcommand that does not exist. It
+    /// still gets the west *environment* --- the executable is a Zephyr
+    /// build and may read it --- and the project root as cwd, so a relative
+    /// path in the application resolves the way it does under `west build`.
+    ///
+    /// `None` when the last build did not target a simulator, or its
+    /// executable is not there: nothing offers this command directly, so a
+    /// `None` here simply means the build that just finished produced no
+    /// program to launch.
+    pub fn run_command(&self) -> Option<crate::process::Command> {
+        let variant = self.variant()?;
+        if !variant.is_simulator() {
+            return None;
+        }
+        let executable = variant.executable(&self.root);
+        if !executable.is_file() {
+            return None;
+        }
+        Some(
+            self.in_west_env(crate::process::Command::new(
+                executable.display().to_string(),
+            ))
+            .current_dir(&self.root),
+        )
+    }
+
+    /// Consumes the "a simulator build just succeeded" flag, so the app
+    /// can launch what it produced. Reading it clears it: the run happens
+    /// once per build, not once per event drained afterwards.
+    pub fn take_simulator_built(&mut self) -> bool {
+        std::mem::take(&mut self.simulator_built)
     }
 
     /// The interactive configuration command (`menuconfig`), rooted and
@@ -1013,6 +1273,7 @@ impl BuildPanel {
 
         self.last = Some(BuildReport {
             what: running.what,
+            simulator: self.targets_simulator(),
             ok,
             cancelled: matches!(outcome, Outcome::Cancelled),
             duration,
@@ -1038,6 +1299,12 @@ impl BuildPanel {
         let settled = BuildAction::list(caps, false);
         let target = match running.action {
             BuildAction::Build(BuildKind::Clean) => BuildAction::Build(BuildKind::Build),
+            // A host build has nothing to flash --- it is about to run
+            // instead --- so the cursor stays on the row that would build
+            // it again, which is the loop the user is actually in.
+            BuildAction::Build(_) if ok && self.targets_simulator() => {
+                BuildAction::Build(BuildKind::Build)
+            }
             BuildAction::Build(_) if ok => BuildAction::Flash,
             BuildAction::Build(_) => BuildAction::Build(BuildKind::Build),
             // `Dashboard` has no row of its own (it is reached through the
@@ -1050,6 +1317,10 @@ impl BuildPanel {
             // Neither has a row of its own, so the cursor lands on the row
             // that opens the menu they were reached from.
             BuildAction::Dashboard | BuildAction::SizeReport => BuildAction::UpdateZephyr,
+            // Also rowless: the run was started by the build that finished
+            // just before it, so the cursor belongs where that build left
+            // it --- on the row that would build again.
+            BuildAction::Run => BuildAction::Build(BuildKind::Build),
             other => other,
         };
         self.cursor = settled
@@ -1062,6 +1333,15 @@ impl BuildPanel {
         }
         if ok && running.action == BuildAction::SizeReport {
             self.size_report_finished = true;
+        }
+        if ok
+            && matches!(
+                running.action,
+                BuildAction::Build(BuildKind::Build | BuildKind::Rebuild)
+            )
+            && self.targets_simulator()
+        {
+            self.simulator_built = true;
         }
         if ok && running.updates_board {
             let cached = cached_board(&self.root, &self.build_dir).map(|name| BoardChoice {
@@ -1109,51 +1389,116 @@ impl BuildPanel {
 /// `None` when neither exists or neither holds the entry (a cache written
 /// by something other than a Zephyr app build).
 pub fn cached_board(root: &Path, build_dir: &str) -> Option<String> {
-    let build = root.join(build_dir);
-    parse_cached_board(&build.join("zephyr/CMakeCache.txt"))
-        .or_else(|| parse_cached_board(&build.join("CMakeCache.txt")))
+    cached_target(root, build_dir).map(|target| target.board)
 }
 
-fn parse_cached_board(cache: &Path) -> Option<String> {
+/// The board *and* shield a configured build directory holds, from the same
+/// two cache locations [`cached_board`] reads. `None` when neither cache
+/// exists or neither names a board --- a shield without a board is not a
+/// target, so the board is what makes the answer.
+pub fn cached_target(root: &Path, build_dir: &str) -> Option<CachedTarget> {
+    let build = root.join(build_dir);
+    parse_cached_target(&build.join("zephyr/CMakeCache.txt"))
+        .or_else(|| parse_cached_target(&build.join("CMakeCache.txt")))
+}
+
+fn parse_cached_target(cache: &Path) -> Option<CachedTarget> {
     let cache = std::fs::read_to_string(cache).ok()?;
-    cache
-        .lines()
-        .find_map(|line| line.strip_prefix(CACHED_BOARD_KEY))
-        .map(str::trim)
-        .filter(|board| !board.is_empty())
-        .map(str::to_string)
+    let value = |key: &str| {
+        cache
+            .lines()
+            .find_map(|line| line.strip_prefix(key))
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    };
+    Some(CachedTarget {
+        board: value(CACHED_BOARD_KEY)?,
+        shield: value(CACHED_SHIELD_KEY),
+    })
 }
 
 /// The picker filters' shared rule: everything when the filter is empty,
-/// else a case-insensitive substring on the name or the description.
-fn matches_filter(name: &str, description: &str, lowercase_filter: &str) -> bool {
+/// else a case-insensitive substring on the name, the description or the
+/// vendor --- the vendor is not drawn on the row, but "lilygo" or "seeed"
+/// is exactly how someone looks for their board.
+fn matches_filter(name: &str, description: &str, vendor: &str, lowercase_filter: &str) -> bool {
     lowercase_filter.is_empty()
         || name.to_lowercase().contains(lowercase_filter)
         || description.to_lowercase().contains(lowercase_filter)
+        || vendor.to_lowercase().contains(lowercase_filter)
 }
 
-/// Parses `west boards` output: one target per line as `name description`
-/// (description optional; HWMv2 names carry a `/`). Blank and non-matching
-/// lines are skipped rather than fatal --- the list is hundreds of lines
-/// long and one odd row must not empty it.
+/// Parses `west boards -f BOARD_FORMAT` output:
+/// `name|qualifiers|vendor|full_name` per line, where `qualifiers` is
+/// itself comma-separated and may be empty (a legacy board, or one whose
+/// SoC has no cpuclusters).
+///
+/// **One line becomes one row per qualifier**, joined with `/`: the board
+/// `ttgo_t_display_s3|esp32s3/procpu,esp32s3/appcpu|...` yields
+/// `ttgo_t_display_s3/esp32s3/procpu` and `.../appcpu`, because those --- not
+/// the bare name --- are the strings `west build -b` accepts. A board with
+/// no qualifiers keeps its bare name, which is a valid target on its own.
+///
+/// The split is on `|` rather than whitespace: a `full_name` carries spaces
+/// (`Native simulator - native_sim`), and the fields would otherwise run
+/// into each other. A line without the separators is skipped rather than
+/// fatal --- the list is 1400+ lines and one odd row must not empty it.
 pub fn parse_boards(text: &str) -> Vec<Board> {
-    parse_entries(text, |name, description| Board { name, description })
+    let mut boards = Vec::new();
+    for entry in parse_entries(text, 4) {
+        let Ok([name, qualifiers, vendor, description]) = <[String; 4]>::try_from(entry) else {
+            continue;
+        };
+        let targets: Vec<String> = qualifiers
+            .split(',')
+            .map(str::trim)
+            .filter(|qualifier| !qualifier.is_empty())
+            .map(|qualifier| format!("{name}/{qualifier}"))
+            .collect();
+        let targets = if targets.is_empty() {
+            vec![name]
+        } else {
+            targets
+        };
+        boards.extend(targets.into_iter().map(|name| Board {
+            name,
+            description: description.clone(),
+            vendor: vendor.clone(),
+        }));
+    }
+    boards
 }
 
-/// Parses `west shields` output: the same one-entry-per-line
-/// `name description` shape `west boards` prints, so the entries share the
-/// parse and differ only in what they feed.
+/// Parses `west shields -f SHIELD_FORMAT` output:
+/// `name|vendor|full_name` per line. The same `|`-separated shape the board
+/// list uses, with no qualifier expansion --- a shield has none.
 pub fn parse_shields(text: &str) -> Vec<Shield> {
-    parse_entries(text, |name, description| Shield { name, description })
+    parse_entries(text, 3)
+        .into_iter()
+        .filter_map(|entry| {
+            let [name, vendor, description] = <[String; 3]>::try_from(entry).ok()?;
+            Some(Shield {
+                name,
+                description,
+                vendor,
+            })
+        })
+        .collect()
 }
 
-fn parse_entries<T>(text: &str, make: impl Fn(String, String) -> T) -> Vec<T> {
+/// Splits each non-empty line into exactly `fields` `|`-separated, trimmed
+/// parts. A line with the wrong arity is dropped: west emits the format
+/// string verbatim, so a short line is a line that is not an entry (a
+/// warning on stdout, say), never an entry to guess at.
+fn parse_entries(text: &str, fields: usize) -> Vec<Vec<String>> {
     text.lines()
         .filter_map(|line| {
-            let mut parts = line.split_whitespace();
-            let name = parts.next()?;
-            let description = parts.collect::<Vec<_>>().join(" ");
-            Some(make(name.to_string(), description))
+            let parts: Vec<String> = line
+                .split('|')
+                .map(|part| part.trim().to_string())
+                .collect();
+            (parts.len() == fields && !parts[0].is_empty()).then_some(parts)
         })
         .collect()
 }
@@ -1436,12 +1781,6 @@ mod tests {
         );
         let build = panel.command(BuildKind::Build, &ZephyrBackend).unwrap();
         assert_eq!(build.to_string(), "west build -d build-thingy");
-
-        assert_eq!(
-            BuildPanel::discover_build_dirs(&dir),
-            vec!["build", "build-thingy"],
-            "only configured directories count, sorted"
-        );
     }
 
     #[test]
@@ -1465,39 +1804,6 @@ mod tests {
     }
 
     #[test]
-    fn the_dir_picker_offers_the_default_and_a_new_typed_name() {
-        let dir = fixture_dir("picker");
-        std::fs::create_dir_all(dir.join("build-nrf/zephyr")).unwrap();
-        std::fs::write(
-            dir.join("build-nrf/zephyr/CMakeCache.txt"),
-            "CACHED_BOARD:STRING=nrf\n",
-        )
-        .unwrap();
-        let panel = BuildPanel::new(&dir, UtcOffset::UTC);
-
-        // Empty filter: the conventional default plus what is configured.
-        assert_eq!(
-            panel.filtered_build_dirs(""),
-            vec![DEFAULT_BUILD_DIR.to_string(), "build-nrf".to_string()]
-        );
-
-        // A new name leads the list (first Enter press lands on it); an
-        // existing name filters to itself.
-        assert_eq!(
-            panel.filtered_build_dirs("build-91"),
-            vec!["build-91".to_string()]
-        );
-        assert_eq!(
-            panel.filtered_build_dirs("nrf"),
-            vec!["build-nrf".to_string()]
-        );
-
-        // Not a name: no rows, so Enter cannot apply it.
-        assert!(panel.filtered_build_dirs("../escape").is_empty());
-        assert!(panel.filtered_build_dirs("a/b").is_empty());
-    }
-
-    #[test]
     fn duration_reads_like_a_person() {
         assert_eq!(BuildPanel::secs(Duration::from_millis(12_400)), "12.4s");
         assert_eq!(BuildPanel::secs(Duration::from_secs(127)), "2m 07s");
@@ -1506,30 +1812,60 @@ mod tests {
     #[test]
     fn west_boards_output_parses_into_targets() {
         let boards = parse_boards(
-            "96b_carbon                   96Boards Carbon (STM32F407VE)\n\
+            "96b_carbon|stm32f407xx|96boards|96Boards Carbon\n\
              \n\
-             nrf52840dk/nrf52840          Nordic nRF52840 DK\n\
-             bare_name\n",
+             nrf52840dk|nrf52840,nrf52840/qspi|nordic|Nordic nRF52840 DK\n\
+             legacy_board|||\n\
+             a bare name with no separators\n",
         );
-        assert_eq!(boards.len(), 3);
-        assert_eq!(boards[0].name, "96b_carbon");
-        assert_eq!(boards[0].description, "96Boards Carbon (STM32F407VE)");
-        // HWMv2 qualifiers stay part of the name; a name-only line is a
-        // target with an empty description, not an error.
+        // One row per qualifier --- `west build -b` takes the qualified
+        // target, never the bare name, for a board that has any.
+        assert_eq!(boards.len(), 4);
+        assert_eq!(boards[0].name, "96b_carbon/stm32f407xx");
+        assert_eq!(boards[0].description, "96Boards Carbon");
+        assert_eq!(boards[0].vendor, "96boards");
         assert_eq!(boards[1].name, "nrf52840dk/nrf52840");
-        assert_eq!(boards[2].description, "");
+        assert_eq!(boards[2].name, "nrf52840dk/nrf52840/qspi");
+        // No qualifiers: the bare name *is* the target.
+        assert_eq!(boards[3].name, "legacy_board");
+        assert_eq!(boards[3].description, "");
+    }
+
+    /// The default `west boards` output --- bare names, which is what a
+    /// caller that forgot `-f` gets --- carries none of the fields, so it
+    /// yields nothing rather than a list of descriptionless half-targets
+    /// that `west build -b` would reject.
+    #[test]
+    fn the_default_west_boards_shape_is_not_mistaken_for_a_target_list() {
+        assert!(parse_boards("xiao_esp32c3\nnative_sim\n").is_empty());
+    }
+
+    /// A `full_name` carries spaces, so the fields cannot be split on
+    /// whitespace --- the bug the `|` format exists to make impossible.
+    #[test]
+    fn a_description_with_spaces_survives_whole() {
+        let boards =
+            parse_boards("native_sim|native,native/64|zephyr|Native simulator - native_sim\n");
+        assert_eq!(boards[0].name, "native_sim/native");
+        assert_eq!(boards[1].name, "native_sim/native/64");
+        assert_eq!(boards[1].description, "Native simulator - native_sim");
     }
 
     #[test]
     fn the_board_filter_matches_names_and_descriptions_case_insensitively() {
         let mut panel = BuildPanel::new("/nonexistent", UtcOffset::UTC);
         panel.boards.state = ListState::Loaded(parse_boards(
-            "nrf52840dk/nrf52840  Nordic nRF52840 DK\nsting\n",
+            "nrf52840dk|nrf52840|nordic|Nordic nRF52840 DK\nsting|||\n",
         ));
 
         assert_eq!(panel.filtered_boards("NRF52").len(), 1);
         assert_eq!(panel.filtered_boards("carbon").len(), 0);
         assert_eq!(panel.filtered_boards("st").len(), 1, "matches the name");
+        assert_eq!(
+            panel.filtered_boards("nordic").len(),
+            1,
+            "the vendor filters even though the row never draws it"
+        );
         assert_eq!(
             panel.filtered_boards("").len(),
             2,
@@ -1537,7 +1873,7 @@ mod tests {
         );
         // `filtered_boards_count` must never diverge from the list it
         // avoids collecting.
-        for filter in ["NRF52", "carbon", "st", ""] {
+        for filter in ["NRF52", "carbon", "st", "nordic", ""] {
             assert_eq!(
                 panel.filtered_boards_count(filter),
                 panel.filtered_boards(filter).len()
@@ -1549,17 +1885,19 @@ mod tests {
     fn west_shields_output_parses_and_filters_like_boards() {
         let mut panel = BuildPanel::new("/nonexistent", UtcOffset::UTC);
         panel.shields.state = ListState::Loaded(parse_shields(
-            "link_board_eth  WIZnet W5500 Ethernet Shield\nnrf7002ek\n",
+            "link_board_eth|wiznet|WIZnet W5500 Ethernet Shield\nnrf7002ek||\n",
         ));
         assert_eq!(panel.shields.state, {
             ListState::Loaded(vec![
                 Shield {
                     name: "link_board_eth".to_string(),
                     description: "WIZnet W5500 Ethernet Shield".to_string(),
+                    vendor: "wiznet".to_string(),
                 },
                 Shield {
                     name: "nrf7002ek".to_string(),
                     description: String::new(),
+                    vendor: String::new(),
                 },
             ])
         });

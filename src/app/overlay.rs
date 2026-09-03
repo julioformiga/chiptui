@@ -622,45 +622,28 @@ impl App {
                     _ => rebuild(self, selected, error),
                 }
             }
-            Overlay::BuildDirPicker { input, selected } => {
-                // Same grammar as the board picker: printable characters are
-                // filter/name text, arrows walk, Enter applies.
-                let rebuild = |app: &mut Self, input: String, mut selected: usize| {
-                    if let Some(panel) = app.build.as_ref() {
-                        let count = panel.filtered_build_dirs(&input).len();
-                        selected = selected.min(count.saturating_sub(1));
-                    }
-                    app.overlay = Some(Overlay::BuildDirPicker { input, selected });
-                };
-                let count = self
-                    .build
-                    .as_ref()
-                    .map(|panel| panel.filtered_build_dirs(&input).len())
-                    .unwrap_or(0)
-                    .max(1);
+            Overlay::BuildTarget { kind, selected } => {
+                // The stacked-menu grammar `ZephyrActions` has: two rows,
+                // no filter, so `q` is free to close and the letters mean
+                // nothing.
+                const COUNT: usize = crate::ui::BUILD_TARGET_COUNT;
                 match key.code {
                     KeyCode::Esc | KeyCode::Char('q') => self.overlay = None,
-                    KeyCode::Backspace => {
-                        let mut input = input;
-                        input.pop();
-                        rebuild(self, input, selected);
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        self.overlay = Some(Overlay::BuildTarget {
+                            kind,
+                            selected: (selected + COUNT - 1) % COUNT,
+                        });
                     }
-                    KeyCode::Char(c) => {
-                        let mut input = input;
-                        input.push(c);
-                        rebuild(self, input, selected);
-                    }
-                    KeyCode::Up => {
-                        let selected = (selected + count - 1) % count;
-                        rebuild(self, input, selected);
-                    }
-                    KeyCode::Down => {
-                        let selected = (selected + 1) % count;
-                        rebuild(self, input, selected);
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        self.overlay = Some(Overlay::BuildTarget {
+                            kind,
+                            selected: (selected + 1) % COUNT,
+                        });
                     }
                     KeyCode::Enter => {
                         self.overlay = None;
-                        self.apply_build_dir_picker(&input, selected);
+                        self.apply_build_target(kind, selected);
                     }
                     _ => {}
                 }
@@ -1074,7 +1057,7 @@ fn is_help_reachable_overlay(overlay: &Overlay) -> bool {
     match overlay {
         Overlay::RenameEntry { .. }
         | Overlay::DirPicker { .. }
-        | Overlay::BuildDirPicker { .. }
+        | Overlay::BuildTarget { .. }
         | Overlay::ProjectPicker { .. }
         | Overlay::DevicePicker { .. }
         | Overlay::ThemePicker { .. }
@@ -1122,13 +1105,13 @@ fn is_text_entry_overlay(overlay: &Overlay) -> bool {
         Overlay::Help { .. }
         | Overlay::RenameEntry { .. }
         | Overlay::CreateEntry { .. }
-        | Overlay::BuildDirPicker { .. }
         | Overlay::BoardPicker { .. }
         | Overlay::ShieldPicker { .. }
         | Overlay::Packages
         | Overlay::BuildDashboard => true,
         Overlay::DirPicker { .. }
         | Overlay::ProjectPicker { .. }
+        | Overlay::BuildTarget { .. }
         | Overlay::DevicePicker { .. }
         | Overlay::ThemePicker { .. }
         | Overlay::FirmwarePicker { .. }
@@ -1268,9 +1251,24 @@ pub enum Overlay {
         selected: usize,
         error: Option<String>,
     },
-    /// The build-directory picker: the project's configured `build*`
-    /// directories plus a typed new name (`west build -d`).
-    BuildDirPicker { input: String, selected: usize },
+    /// Where a `Build`/`Rebuild` should run: on the board, or on the host
+    /// simulator the project also keeps
+    /// ([`crate::backend::zephyr::variants`]).
+    ///
+    /// Only opened when the project *has* both --- with a single target
+    /// there is no question and the command starts outright. `kind` is the
+    /// action that asked, so the answer starts that command rather than a
+    /// remembered one, and `selected` opens on the last answer: repeating
+    /// a target is `Enter`, changing it is one arrow.
+    ///
+    /// Not a confirm: nothing here is destructive
+    /// (`SPEC.md` §15) and neither answer is the safe one. It is a
+    /// two-button menu, drawn with the same stacked widget
+    /// [`Self::ZephyrActions`] uses.
+    BuildTarget {
+        kind: crate::backend::BuildKind,
+        selected: usize,
+    },
     /// The entry under the cursor in the file browser (`enter`): a small
     /// menu of what to do with it. Which actions show up depends on the pane,
     /// on whether it is a directory, and --- for a file --- whether

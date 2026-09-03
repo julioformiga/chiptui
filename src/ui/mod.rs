@@ -23,7 +23,7 @@ pub(crate) use install::area as install_area;
 pub(crate) mod layout;
 mod monitor;
 mod overlay;
-pub(crate) use overlay::ZEPHYR_ACTIONS_COUNT;
+pub(crate) use overlay::{BUILD_TARGET_COUNT, ZEPHYR_ACTIONS_COUNT};
 mod panels;
 pub(crate) use panels::board_shield_click_is_board;
 pub(crate) use panels::device_mac_row;

@@ -763,7 +763,9 @@ impl App {
             // deliberately ungated: a build directory that is not
             // configured yet is `west`'s own error to explain in the
             // Monitor (the report's whole point is an existing build).
-            crate::build::BuildAction::Dashboard | crate::build::BuildAction::SizeReport => true,
+            crate::build::BuildAction::Dashboard
+            | crate::build::BuildAction::SizeReport
+            | crate::build::BuildAction::Run => true,
         }
     }
 }
@@ -2042,17 +2044,15 @@ mod tests {
     /// `?` has to land in the field instead).
     #[test]
     fn overlays_with_no_hint_of_their_own_still_reach_help() {
-        let text_entry_overlays: Vec<Overlay> = vec![
-            Overlay::RenameEntry {
-                name: "old".into(),
-                input: "old".into(),
-            },
-            Overlay::BuildDirPicker {
-                input: String::new(),
+        let text_entry_overlays: Vec<Overlay> = vec![Overlay::RenameEntry {
+            name: "old".into(),
+            input: "old".into(),
+        }];
+        let other_silent_overlays: Vec<Overlay> = vec![
+            Overlay::BuildTarget {
+                kind: crate::backend::BuildKind::Build,
                 selected: 0,
             },
-        ];
-        let other_silent_overlays: Vec<Overlay> = vec![
             Overlay::DirPicker {
                 purpose: crate::workspace::DirPurpose::Installation,
                 path: std::path::PathBuf::new(),

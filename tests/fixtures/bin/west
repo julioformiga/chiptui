@@ -12,33 +12,79 @@
 # `VERSION`, an SDK bundle directory --- so a test exercises the same
 # filesystem evidence `Step::already_done` reads on a real machine.
 case "$1" in
-    boards)
-        # Real Zephyr targets, enough of them (16) that a picker's list
-        # overflows its pane at the dashboard's declared minimum --- the
-        # scrollbar is part of that surface and needs the overflow to be
-        # exercised.
-        printf 'esp32_devkitc_wrover/esp32/procpu  ESP32 DevKitC-WROVER\n'
-        printf 'native/native64                   Native POSIX\n'
-        printf 'nrf52840dk/nrf52840               Nordic nRF52840 DK\n'
-        printf 'nrf52840dk/nrf52840/qspi          Nordic nRF52840 DK (QSPI)\n'
-        printf 'rpi_pico/rp2040                   Raspberry Pi Pico\n'
-        printf 'adafruit_feather_esp32s3/esp32s3/procpu  Adafruit Feather ESP32-S3\n'
-        printf 'bbc_microbit/nrf51822             BBC Micro:bit\n'
-        printf 'bl654_dvk/nrf52840                Laird BL654 Dev Kit\n'
-        printf 'blackpill_f411ce/stm32f411xe      WeAct BlackPill V3.0\n'
-        printf 'disco_l475_iot1/stm32l475xx       ST Discovery IoT Node\n'
-        printf 'esp32s3_devkitc/esp32s3/procpu    ESP32-S3 DevKitC\n'
-        printf 'frdm_k64f/mk64f12                 NXP Freedom K64F\n'
-        printf 'nucleo_f401re/stm32f401xe         ST Nucleo F401RE\n'
-        printf 'reel_board/nrf52840               Phytec Reel Board\n'
-        printf 'thingy52/nrf52832                 Nordic Thingy:52\n'
-        printf 'xiao_ble/nrf52840                 Seeed XIAO BLE\n'
-        exit 0
-        ;;
-    shields)
-        printf 'link_board_eth  WIZnet W5500 Ethernet Shield\n'
-        printf 'nrf7002ek       Nordic nRF7002 EK\n'
-        printf 'x_nucleo_iks02a1 ST IKS02A1 MEMS shield\n'
+    boards|shields)
+        # `west boards` / `west shields` reproduced as they really behave,
+        # which is the point of this arm: the default output is `{name}`
+        # **alone** --- no description, and no qualifier. A caller that
+        # forgets `-f` therefore gets bare names the app's parser drops, so
+        # reintroducing the old "name  description" belief breaks a test
+        # instead of passing (AGENTS.md: reproduce the tool, not the belief
+        # about it).
+        #
+        # `-f FORMAT` substitutes {name}/{qualifiers}/{vendor}/{full_name},
+        # and `--board-root DIR` (repeatable, `action='append'`) adds the
+        # out-of-tree board a project-local module contributes.
+        what=$1
+        shift
+        format='{name}'
+        roots=0
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                -f|--format) format=$2; shift 2 ;;
+                --board-root) roots=$((roots + 1)); shift 2 ;;
+                -n|--name) shift 2 ;;
+                *) shift ;;
+            esac
+        done
+
+        if [ "$what" = boards ]; then
+            # Sixteen real boards; the qualifiers expand to 21 targets, so a
+            # picker's list still overflows its pane at the dashboard's
+            # declared minimum (the scrollbar needs that overflow).
+            records='esp32_devkitc_wrover|esp32/procpu,esp32/appcpu|espressif|ESP32 DevKitC-WROVER
+native_sim|native,native/64|zephyr|Native simulator - native_sim
+nrf52840dk|nrf52840,nrf52840/qspi|nordic|Nordic nRF52840 DK
+rpi_pico|rp2040|raspberrypi|Raspberry Pi Pico
+adafruit_feather_esp32s3|esp32s3/procpu,esp32s3/appcpu|adafruit|Adafruit Feather ESP32-S3
+bbc_microbit|nrf51822|bbc|BBC Micro:bit
+bl654_dvk|nrf52840|ezurio|Laird BL654 Dev Kit
+blackpill_f411ce|stm32f411xe|weact|WeAct BlackPill V3.0
+disco_l475_iot1|stm32l475xx|st|ST Discovery IoT Node
+esp32s3_devkitc|esp32s3/procpu,esp32s3/appcpu|espressif|ESP32-S3 DevKitC
+frdm_k64f|mk64f12|nxp|NXP Freedom K64F
+nucleo_f401re|stm32f401xe|st|ST Nucleo F401RE
+reel_board|nrf52840|phytec|Phytec Reel Board
+thingy52|nrf52832|nordic|Nordic Thingy:52
+xiao_ble|nrf52840|seeed|Seeed XIAO BLE
+xiao_esp32c3|esp32c3|seeed|XIAO ESP32C3'
+            # Only a board root makes the out-of-tree board visible ---
+            # exactly the difference the real command shows.
+            if [ "$roots" -gt 0 ]; then
+                records="$records
+ttgo_t_display_s3|esp32s3/procpu,esp32s3/appcpu|lilygo|T-Display-S3"
+            fi
+        else
+            records='link_board_eth|wiznet|WIZnet W5500 Ethernet Shield
+nrf7002ek|nordic|Nordic nRF7002 EK
+x_nucleo_iks02a1|st|ST IKS02A1 MEMS shield'
+            if [ "$roots" -gt 0 ]; then
+                records="$records
+ttgo_grove|lilygo|TTGO Grove expansion"
+            fi
+        fi
+
+        # A shield record has no qualifiers column, so its fields shift by
+        # one --- the same asymmetry the real format strings carry.
+        printf '%s\n' "$records" | awk -v fmt="$format" -v what="$what" -F'|' '{
+            if (what == "boards") { name=$1; quals=$2; vendor=$3; full=$4 }
+            else                  { name=$1; quals="";  vendor=$2; full=$3 }
+            out = fmt
+            gsub(/\{name\}/, name, out)
+            gsub(/\{qualifiers\}/, quals, out)
+            gsub(/\{vendor\}/, vendor, out)
+            gsub(/\{full_name\}/, full, out)
+            print out
+        }'
         exit 0
         ;;
     init)

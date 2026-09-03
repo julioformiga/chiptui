@@ -353,13 +353,21 @@ impl App {
 
         if let Some(mut build) = self.build.take() {
             let caps = self.manager.capabilities();
+            let catalogue_before = build.boards.state.is_loaded();
             let notices = build.on_process(event, &caps);
+            // The board catalogue is the second input the variant list
+            // needs: a `boards/<stem>.conf` names a target only once the
+            // real targets are known.
+            let catalogue_arrived = !catalogue_before && build.boards.state.is_loaded();
             // The flash contents may have just changed under a build-panel
             // command; read the flag before the panel goes back.
             let flashed = build.take_flash_finished();
             // The build dashboard closed itself to run this; it comes back
             // on the tab that asked, with the fresh report loaded.
             let reported = build.take_size_report_finished();
+            // A build answered "simulator" just produced a program; running
+            // it is the step with no decision in it.
+            let simulated = build.take_simulator_built();
             self.build = Some(build);
             for (level, message) in notices {
                 self.logs.push(level, message);
@@ -369,6 +377,12 @@ impl App {
             }
             if reported {
                 self.reopen_dashboard_on_memory();
+            }
+            if simulated {
+                self.start_run();
+            }
+            if catalogue_arrived {
+                self.refresh_variants();
             }
         }
 

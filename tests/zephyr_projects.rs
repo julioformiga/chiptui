@@ -382,3 +382,49 @@ fn a_project_switch_applies_the_new_projects_saved_board_and_shield() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// The out-of-tree board layout in the picker: the repository root is a
+/// Zephyr *module* whose `CMakeLists.txt` adds no sources, so it is not
+/// buildable and `west build` would refuse it. The application one level
+/// down is what the picker must offer --- and picking it re-roots the
+/// lifecycle there.
+#[test]
+fn the_project_picker_reaches_an_application_inside_a_board_module() {
+    let (mut app, root) = bare_app("nested", None);
+    let projects = root.join("projects");
+    std::fs::create_dir_all(&projects).unwrap();
+
+    // A plain application beside the module repository.
+    app_dir(&projects, "blinky", true);
+
+    // The module: a comment-only CMakeLists (west refuses it), a board
+    // tree, and the real application in `app/`.
+    let repo = projects.join("t-display");
+    std::fs::create_dir_all(repo.join("boards/lilygo")).unwrap();
+    std::fs::write(
+        repo.join("CMakeLists.txt"),
+        "# The module contributes a board only. No source files are added.\n",
+    )
+    .unwrap();
+    app_dir(&repo, "app", true);
+
+    let (rows, error) = chiptui::backend::zephyr::projects::project_rows(&projects);
+    assert_eq!(error, None);
+    let names: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["blinky", "t-display/app"],
+        "the module root is replaced by the application it holds"
+    );
+    assert!(rows.iter().all(|row| row.buildable));
+    assert_eq!(rows[1].path, repo.join("app"));
+
+    // And the gate agrees: the module root is not a place a build runs.
+    assert!(!chiptui::backend::zephyr::projects::is_buildable(&repo));
+    assert!(chiptui::backend::zephyr::projects::is_buildable(
+        &repo.join("app")
+    ));
+
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = app.build.take();
+}

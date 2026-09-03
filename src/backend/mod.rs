@@ -444,14 +444,29 @@ pub trait Backend {
     /// for (`west boards`). Returns `None` if the backend has no board
     /// selection ([`Capability::BoardSelect`]) or has not implemented it.
     /// The command may be slow; callers run it in the background.
-    fn board_list_command(&self) -> Option<crate::process::Command> {
+    ///
+    /// `board_roots` are extra directories to search beyond the ones the
+    /// environment declares --- how a board that lives in the *project*
+    /// rather than the workspace reaches the list. Empty for a backend or a
+    /// project with none.
+    fn board_list_command(
+        &self,
+        board_roots: &[std::path::PathBuf],
+    ) -> Option<crate::process::Command> {
+        let _ = board_roots;
         None
     }
 
     /// Returns the command listing the shields the backend's targets can
     /// carry (`west shields`). Returns `None` if the backend has no shield
     /// selection ([`Capability::ShieldSelect`]) or has not implemented it.
-    fn shield_list_command(&self) -> Option<crate::process::Command> {
+    /// `board_roots` carries the same extra search roots the board list
+    /// takes --- a module contributing a board can contribute a shield too.
+    fn shield_list_command(
+        &self,
+        board_roots: &[std::path::PathBuf],
+    ) -> Option<crate::process::Command> {
+        let _ = board_roots;
         None
     }
 

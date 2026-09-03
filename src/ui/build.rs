@@ -96,7 +96,16 @@ fn draw_state(
 }
 
 fn report_line(report: &BuildReport, palette: Palette, width: u16) -> Line<'static> {
-    let what = report.what;
+    // A host build is the one thing the pane cannot otherwise say: the
+    // checklist names the project's board either way, and the action stack
+    // is the same six rows. So the report names it, and stops naming it the
+    // moment the next build replaces the report.
+    let what = if report.simulator {
+        format!("{} (simulator)", report.what)
+    } else {
+        report.what.to_string()
+    };
+    let what = what.as_str();
     // Three outcomes, and three marks: a command the user stopped is not a
     // failure --- stopping is exactly what was asked for --- but it is not a
     // success either, and giving it the success check made the two
@@ -210,6 +219,9 @@ fn draw_rows(
             // (see `BuildAction::Dashboard`).
             crate::build::BuildAction::Dashboard => {
                 unreachable!("Dashboard is drawn in the Zephyr Actions menu")
+            }
+            crate::build::BuildAction::Run => {
+                unreachable!("the simulator run follows its own build, from no row")
             }
             crate::build::BuildAction::SizeReport => {
                 unreachable!("the memory report is started from the dashboard window")

@@ -7,7 +7,9 @@
 pub mod commands;
 pub mod projects;
 pub mod report;
+pub mod variants;
 pub mod workspace;
+pub mod yaml;
 
 use crate::backend::{
     Backend, BackendKind, BuildKind, BuildReportContext, Capabilities, Capability,
@@ -160,12 +162,18 @@ impl Backend for ZephyrBackend {
         })
     }
 
-    fn board_list_command(&self) -> Option<crate::process::Command> {
-        Some(commands::boards())
+    fn board_list_command(
+        &self,
+        board_roots: &[std::path::PathBuf],
+    ) -> Option<crate::process::Command> {
+        Some(commands::boards(board_roots))
     }
 
-    fn shield_list_command(&self) -> Option<crate::process::Command> {
-        Some(commands::shields())
+    fn shield_list_command(
+        &self,
+        board_roots: &[std::path::PathBuf],
+    ) -> Option<crate::process::Command> {
+        Some(commands::shields(board_roots))
     }
 
     fn flash_command(&self, build_dir: &str) -> Option<crate::process::Command> {

@@ -653,7 +653,7 @@ fn the_board_picker_fetches_filters_and_picks_for_the_session() {
     // The modal lists the targets.
     let frame = render(&mut app, 100, 32);
     assert!(
-        frame.contains("native/native64"),
+        frame.contains("native_sim/native"),
         "list not shown:\n{frame}"
     );
     assert!(
@@ -671,7 +671,7 @@ fn the_board_picker_fetches_filters_and_picks_for_the_session() {
         "filter failed:\n{frame}"
     );
     assert!(
-        !frame.contains("native/native64"),
+        !frame.contains("native_sim/native"),
         "a non-matching target must be filtered out:\n{frame}"
     );
 
@@ -2013,42 +2013,73 @@ fn menuconfig_hands_the_terminal_over_instead_of_piping() {
     assert!(app.take_pending_command().is_none(), "consumed once");
 }
 
+/// Two configured build directories are two variants, discovered with no
+/// configuration at all, and picking one moves the board, the shield and
+/// the build directory together --- which is the whole point of the
+/// variant being one answer instead of three.
+/// A project that keeps a host target beside its board is asked, on every
+/// Build, where the build runs --- and the answer moves the board, the
+/// shield and the build directory together, which is the whole reason the
+/// question is one question.
 #[test]
-fn the_build_dir_picker_switches_the_lifecycle_target() {
-    let (mut app, root) = zephyr_app("builddir", Some("nrf52840dk/nrf52840"));
+fn build_asks_where_it_runs_and_the_answer_moves_the_whole_target() {
+    let (mut app, root) = zephyr_app("asktarget", Some("nrf52840dk/nrf52840"));
     app.build.as_mut().unwrap().set_tool_path(fake("west"));
-    std::fs::create_dir_all(root.join("build-thingy/zephyr")).unwrap();
+    // `build/` already exists with the board `zephyr_app` cached; give it a
+    // shield, and add a host configuration beside it.
     std::fs::write(
-        root.join("build-thingy/zephyr/CMakeCache.txt"),
-        "CACHED_BOARD:STRING=thingy91/nrf9160\n",
+        root.join("build/zephyr/CMakeCache.txt"),
+        "CACHED_BOARD:STRING=nrf52840dk/nrf52840\nSHIELD:STRING=nrf7002ek\n",
     )
     .unwrap();
+    std::fs::create_dir_all(root.join("build-sim/zephyr")).unwrap();
+    std::fs::write(
+        root.join("build-sim/zephyr/CMakeCache.txt"),
+        "CACHED_BOARD:STRING=native_sim/native/64\n",
+    )
+    .unwrap();
+    app.refresh_variants();
     app.focus = Focus::Build;
 
-    // The panel's list no longer offers a Dir row (the lifecycle targets
-    // the conventional `build` inside the project), but the picker and its
-    // plumbing remain, reachable here directly for the switch itself.
-    app.overlay = Some(Overlay::BuildDirPicker {
-        input: String::new(),
-        selected: 0,
-    });
+    let panel = app.build.as_ref().unwrap();
+    assert_eq!(panel.variants.len(), 2, "both directories are variants");
+    let board = panel.board_name().map(str::to_string);
+    assert_eq!(board.as_deref(), Some("nrf52840dk/nrf52840"));
 
-    // Filter to the configured directory and pick it.
-    app.handle(key(KeyCode::Char('t')));
-    app.handle(key(KeyCode::Char('h')));
+    // Build asks instead of starting.
+    cursor_on(&mut app, BuildAction::Build(BuildKind::Build));
     app.handle(key(KeyCode::Enter));
-    assert_eq!(
-        app.build.as_ref().unwrap().build_dir,
-        "build-thingy",
-        "the pick lands"
+    assert!(
+        matches!(app.overlay, Some(Overlay::BuildTarget { selected: 0, .. })),
+        "the question opens on the last answer, which is the board"
     );
-    assert_eq!(
-        app.build.as_ref().unwrap().board_name(),
-        Some("thingy91/nrf9160"),
-        "the board answer follows the directory's cache"
+    assert!(
+        !app.build.as_ref().unwrap().is_busy(),
+        "nothing runs until it is answered"
     );
 
-    // And the lifecycle commands now target it.
+    // Answering "simulator" re-targets and starts.
+    app.handle(key(KeyCode::Down));
+    app.handle(key(KeyCode::Enter));
+    assert!(app.overlay.is_none());
+
+    let panel = app.build.as_ref().unwrap();
+    assert_eq!(panel.build_dir, "build-sim");
+    assert!(panel.targets_simulator());
+    assert!(panel.is_busy(), "the answer started the build");
+    // The *project's* board answer is untouched: a host target is a place
+    // a build runs, not an answer to "which board is this for". The
+    // checklist, the flash confirm and the saved `board =` line all read
+    // this field, and all three claimed the simulator before.
+    assert_eq!(
+        panel.board_name().map(str::to_string),
+        board,
+        "a host build never rewrites the project's board answer"
+    );
+    // The simulator's own board reaches the build command instead.
+    assert_eq!(panel.build_board(), Some("native_sim/native/64"));
+
+    // Clean, menuconfig and the dashboard follow the last build...
     let backend = app.manager.backend().unwrap();
     let clean = app
         .build
@@ -2059,8 +2090,263 @@ fn the_build_dir_picker_switches_the_lifecycle_target() {
     assert!(
         clean
             .to_string()
-            .ends_with("west build -d build-thingy -t clean")
+            .ends_with("west build -d build-sim -t clean"),
+        "{clean}"
     );
+    // ...but Flash never leaves the board's directory: a host build has no
+    // image to write.
+    let flash = app.build.as_ref().unwrap().flash_command(backend).unwrap();
+    assert_eq!(flash.to_string(), "west flash", "{flash}");
+
+    // And the next Build opens on the answer just given.
+    app.build.as_mut().unwrap().stop(&mut app.processes);
+    app.ask_build_target(BuildKind::Build);
+    assert!(matches!(
+        app.overlay,
+        Some(Overlay::BuildTarget { selected: 1, .. })
+    ));
+}
+
+/// After a host build, *everything the user reads about flashing* still
+/// names the board --- the checklist row, the confirm's target, and the
+/// command it quotes. The command alone was already right; the three
+/// readings were not, because the host board had been written into the
+/// panel's own answer.
+#[test]
+fn a_host_build_never_makes_the_flash_dialog_name_the_simulator() {
+    let (mut app, root) = zephyr_app("flashafter", Some("nrf52840dk/nrf52840"));
+    app.build.as_mut().unwrap().set_tool_path(fake("west"));
+    std::fs::create_dir_all(root.join("build-sim/zephyr")).unwrap();
+    std::fs::write(
+        root.join("build-sim/zephyr/CMakeCache.txt"),
+        "CACHED_BOARD:STRING=native_sim/native/64\n",
+    )
+    .unwrap();
+    app.refresh_variants();
+
+    let index = app
+        .build
+        .as_ref()
+        .unwrap()
+        .variants
+        .iter()
+        .position(|v| v.is_simulator())
+        .expect("the simulator variant was discovered");
+    app.build.as_mut().unwrap().select_variant(index);
+
+    // The checklist row.
+    let frame = render(&mut app, 160, 32);
+    assert!(
+        frame.contains("nrf52840dk/nrf52840"),
+        "the checklist still names the project's board:\n{frame}"
+    );
+    assert!(
+        !frame.contains("native_sim"),
+        "and never the host target:\n{frame}"
+    );
+
+    // The flash confirm: its target line and the command it quotes.
+    app.overlay = Some(Overlay::ConfirmBuild {
+        action: BuildAction::Flash,
+        confirm: false,
+    });
+    let frame = render(&mut app, 160, 32);
+    assert!(
+        frame.contains("Flash the board?"),
+        "the confirm opened:\n{frame}"
+    );
+    assert!(
+        frame.contains("nrf52840dk/nrf52840"),
+        "the confirm names the board it will write:\n{frame}"
+    );
+    assert!(
+        !frame.contains("native_sim") && !frame.contains("build-sim"),
+        "never the host target or its directory:\n{frame}"
+    );
+
+    // And what would actually run.
+    let backend = app.manager.backend().unwrap();
+    let flash = app.build.as_ref().unwrap().flash_command(backend).unwrap();
+    assert_eq!(flash.to_string(), "west flash", "{flash}");
+}
+
+/// A successful host build runs what it produced, with no second keypress
+/// --- and a board build does not.
+#[test]
+fn a_finished_simulator_build_runs_its_executable() {
+    let (mut app, root) = zephyr_app("autorun", Some("nrf52840dk/nrf52840"));
+    app.build.as_mut().unwrap().set_tool_path(fake("west"));
+    std::fs::create_dir_all(root.join("build-sim/zephyr")).unwrap();
+    std::fs::write(
+        root.join("build-sim/zephyr/CMakeCache.txt"),
+        "CACHED_BOARD:STRING=native_sim/native/64\n",
+    )
+    .unwrap();
+    // The executable a real build would have written.
+    let exe = root.join("build-sim/zephyr/zephyr.exe");
+    std::fs::write(&exe, "#!/bin/sh\necho simulator running\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    app.refresh_variants();
+    app.focus = Focus::Build;
+
+    cursor_on(&mut app, BuildAction::Build(BuildKind::Build));
+    app.handle(key(KeyCode::Enter));
+    app.handle(key(KeyCode::Down));
+    app.handle(key(KeyCode::Enter));
+
+    // The build finishes, and the run starts on its own.
+    let ran = pump_until(
+        &mut app,
+        |app| {
+            app.build
+                .as_ref()
+                .is_some_and(|panel| panel.running_label() == Some("Run"))
+                || common::log_mentions(app, "simulator running")
+        },
+        10,
+    );
+    assert!(ran, "the finished host build never launched its executable");
+
+    // The output lands in the Monitor tab, like every other command's.
+    assert_eq!(app.log_tab, LogTab::Monitor);
+}
+
+/// A repository that contributes its own board is a Zephyr module, and
+/// `west boards` cannot see it from the workspace --- the project's
+/// `--board-root` is what puts it in the picker. Nothing is injected into
+/// `west build`: the application's own CMakeLists is what makes it build.
+#[test]
+fn an_out_of_tree_board_reaches_the_picker_through_its_module() {
+    let (mut app, root) = zephyr_app("boardroot", None);
+    app.build.as_mut().unwrap().set_tool_path(fake("west"));
+
+    // Without a module, the list command carries no roots and the fixture
+    // lists only in-tree boards.
+    app.refresh_board_roots();
+    assert!(app.build.as_ref().unwrap().board_roots.is_empty());
+
+    // The module layout: `zephyr/module.yml` declaring a board root, and a
+    // `boards/` tree for it to point at.
+    std::fs::create_dir_all(root.join("zephyr")).unwrap();
+    std::fs::create_dir_all(root.join("boards/lilygo/ttgo_t_display_s3")).unwrap();
+    std::fs::write(
+        root.join("zephyr/module.yml"),
+        "name: ttgo\nbuild:\n  cmake: .\n  settings:\n    board_root: .\n    dts_root: .\n",
+    )
+    .unwrap();
+    app.refresh_board_roots();
+    assert_eq!(app.build.as_ref().unwrap().board_roots.len(), 1);
+
+    // The list command carries it, and the fixture answers with the
+    // out-of-tree board only when it is passed.
+    app.open_board_picker();
+    let loaded = pump_until(
+        &mut app,
+        |app| {
+            matches!(
+                app.build.as_ref().unwrap().boards.state,
+                chiptui::build::ListState::Loaded(_)
+            )
+        },
+        10,
+    );
+    assert!(loaded, "the fake west boards never finished");
+
+    app.handle(key(KeyCode::Char('t')));
+    app.handle(key(KeyCode::Char('t')));
+    app.handle(key(KeyCode::Char('g')));
+    app.handle(key(KeyCode::Char('o')));
+    let frame = render(&mut app, 100, 32);
+    // The list column is narrow, so the row's tail is clipped --- the
+    // qualified form is asserted on the command below, where it matters.
+    assert!(
+        frame.contains("ttgo_t_display_s3"),
+        "the out-of-tree board is offered:\n{frame}"
+    );
+    assert!(
+        frame.contains("2 of 23 targets"),
+        "both of its qualifiers are targets of their own:\n{frame}"
+    );
+
+    // Picking it reaches the build command as `-b`, with no board-root
+    // flag of any kind: the app's CMakeLists pulls the module in.
+    app.handle(key(KeyCode::Enter));
+    let backend = app.manager.backend().unwrap();
+    let build = app
+        .build
+        .as_ref()
+        .unwrap()
+        .command(BuildKind::Build, backend)
+        .unwrap()
+        .to_string();
+    assert!(
+        build.ends_with("west build -b ttgo_t_display_s3/esp32s3/procpu"),
+        "{build}"
+    );
+    assert!(!build.contains("BOARD_ROOT"), "{build}");
+}
+
+/// The action stack never changes shape, whatever the last build targeted:
+/// six buttons with `Flash` always among them, because `Flash` is always
+/// the board's. The simulator has no button --- its build runs it --- and
+/// that is what keeps `ui::MIN_HEIGHT` where it was measured.
+#[test]
+fn the_action_stack_is_the_same_six_buttons_for_either_target() {
+    let (mut app, root) = zephyr_app("stack", Some("nrf52840dk/nrf52840"));
+    std::fs::create_dir_all(root.join("build-sim/zephyr")).unwrap();
+    std::fs::write(
+        root.join("build-sim/zephyr/CMakeCache.txt"),
+        "CACHED_BOARD:STRING=native_sim/native/64\n",
+    )
+    .unwrap();
+    app.refresh_variants();
+
+    let caps = app.manager.capabilities();
+    let on_device = app.build.as_ref().unwrap().actions(&caps);
+    assert_eq!(on_device.len(), 6, "{on_device:?}");
+    assert!(on_device.contains(&BuildAction::Flash));
+    assert!(!on_device.contains(&BuildAction::Run));
+
+    let index = app
+        .build
+        .as_ref()
+        .unwrap()
+        .variants
+        .iter()
+        .position(|v| v.is_simulator())
+        .expect("the simulator variant was discovered");
+    app.build.as_mut().unwrap().select_variant(index);
+
+    let on_host = app.build.as_ref().unwrap().actions(&caps);
+    assert_eq!(
+        on_host, on_device,
+        "the stack is the same rows whatever the last build was"
+    );
+    // And `Flash` still points at the board's directory, not the host's.
+    let backend = app.manager.backend().unwrap();
+    let flash = app.build.as_ref().unwrap().flash_command(backend).unwrap();
+    assert_eq!(flash.to_string(), "west flash", "{flash}");
+}
+
+/// A project with one target is asked nothing: Build starts outright, and
+/// the environment checklist is the `Board · Shield` row it always was.
+#[test]
+fn a_single_target_project_is_never_asked_where_to_build() {
+    let (mut app, _root) = zephyr_app("novariant", Some("nrf52840dk/nrf52840"));
+    app.build.as_mut().unwrap().set_tool_path(fake("west"));
+    app.refresh_variants();
+    assert!(app.build.as_ref().unwrap().variants.is_empty());
+    assert!(!app.build.as_ref().unwrap().offers_build_choice());
+    app.focus = Focus::Build;
+
+    cursor_on(&mut app, BuildAction::Build(BuildKind::Build));
+    app.handle(key(KeyCode::Enter));
+    assert!(app.overlay.is_none(), "no question with nothing to ask");
+    assert!(app.build.as_ref().unwrap().is_busy(), "the build started");
 }
 
 /// The wheel over a cursor-walked list steps that list's cursor one row

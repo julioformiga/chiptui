@@ -491,8 +491,8 @@ fn the_panes_show_a_scrollbar_only_when_they_overflow() {
     let frame = render(&mut app, 100, 32);
     assert!(frame.contains('┃'), "the details overflow:\n{frame}");
 
-    // And the list itself: with the filter cleared the sixteen rows no
-    // longer fit the pane (the board back under the cursor has no docs
+    // And the list itself: with the filter cleared the twenty-one targets
+    // no longer fit the pane (the board back under the cursor has no docs
     // entry, so the short details cannot be the source).
     for _ in 0..3 {
         app.handle(key(KeyCode::Backspace));
@@ -500,7 +500,7 @@ fn the_panes_show_a_scrollbar_only_when_they_overflow() {
     let frame = render(&mut app, 100, 32);
     assert!(frame.contains('┃'), "the list overflows:\n{frame}");
     assert!(
-        frame.contains("native/native64"),
+        frame.contains("native_sim/native"),
         "the unfiltered list's rows:\n{frame}"
     );
 }

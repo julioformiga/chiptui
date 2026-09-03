@@ -11,9 +11,14 @@
 //! into this file. It is the same bias as the config parsers
 //! ([`crate::settings`]): one known shape, hand-rolled, no dependency.
 //!
+//! The reader itself is [`super::super::yaml`], shared with the module
+//! manifests that carry the same shape.
+//!
 //! The compiler's *version* is the one Summary fact this file does not
 //! carry. `dashboard.py` reads it out of `CMakeFiles/<ver>/CMakeCCompiler.cmake`
 //! and so does [`toolchain_version`], from the same two `set(...)` lines.
+
+use crate::backend::zephyr::yaml::{read_entries, scalar, sequence};
 
 /// The Build Summary's facts, each independently optional: a build
 /// interrupted before CMake finished, or a future CMake that renames a key,
@@ -92,110 +97,6 @@ fn trim_program(program: &str) -> &str {
 }
 
 /// One key's value, flattened out of the nesting.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Entry {
-    Scalar(String),
-    Sequence(Vec<String>),
-}
-
-/// Flattens the document into `("dotted.path", value)` pairs in source
-/// order. A pair whose value is empty on its key line and is followed by
-/// deeper `- ` lines becomes a [`Entry::Sequence`]; a key with neither is
-/// simply a parent and contributes nothing of its own.
-fn read_entries(text: &str) -> Vec<(String, Entry)> {
-    let mut entries: Vec<(String, Entry)> = Vec::new();
-    // The open path: one (indent, key) per level currently in scope.
-    let mut stack: Vec<(usize, String)> = Vec::new();
-    for line in text.lines() {
-        let trimmed = line.trim_start();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        let indent = line.len() - trimmed.len();
-
-        // A sequence item belongs to the key most recently opened, whatever
-        // its exact indentation --- CMake writes these one space deeper than
-        // the key, which is legal YAML but not what a naive `indent + 2`
-        // rule expects.
-        if let Some(item) = trimmed.strip_prefix("- ").or_else(|| {
-            // A bare `-` with the value on the same line but no space is not
-            // written here; a lone `-` (empty item) is, in principle.
-            (trimmed == "-").then_some("")
-        }) {
-            let Some((key_indent, _)) = stack.last() else {
-                continue;
-            };
-            if indent <= *key_indent {
-                continue;
-            }
-            let path = dotted(&stack);
-            let value = unquote(item.trim());
-            match entries.iter_mut().find(|(name, _)| *name == path) {
-                Some((_, Entry::Sequence(items))) => items.push(value),
-                Some(_) => {}
-                None => entries.push((path, Entry::Sequence(vec![value]))),
-            }
-            continue;
-        }
-
-        let Some((key, rest)) = trimmed.split_once(':') else {
-            continue;
-        };
-        while stack.last().is_some_and(|(open, _)| *open >= indent) {
-            stack.pop();
-        }
-        stack.push((indent, key.trim().to_string()));
-        let rest = rest.trim();
-        if !rest.is_empty() {
-            entries.push((dotted(&stack), Entry::Scalar(unquote(rest))));
-        }
-    }
-    entries
-}
-
-fn dotted(stack: &[(usize, String)]) -> String {
-    stack
-        .iter()
-        .map(|(_, key)| key.as_str())
-        .collect::<Vec<_>>()
-        .join(".")
-}
-
-/// The scalar at `path`, `None` when absent or empty. An empty string is
-/// treated as absent on purpose: `revision: ''` is how CMake writes "this
-/// board has no revision", and a row reading `Revision: ` says less than no
-/// row at all.
-fn scalar(entries: &[(String, Entry)], path: &str) -> Option<String> {
-    entries.iter().find_map(|(name, entry)| match entry {
-        Entry::Scalar(value) if name == path && !value.is_empty() => Some(value.clone()),
-        _ => None,
-    })
-}
-
-fn sequence(entries: &[(String, Entry)], path: &str) -> Vec<String> {
-    entries
-        .iter()
-        .find_map(|(name, entry)| match entry {
-            Entry::Sequence(items) if name == path => Some(items.clone()),
-            _ => None,
-        })
-        .unwrap_or_default()
-}
-
-/// Strips the quoting CMake writes. Single quotes are what this file uses;
-/// double quotes are accepted because nothing costs, and a YAML `''` inside
-/// a single-quoted scalar is the one escape that form has.
-fn unquote(value: &str) -> String {
-    if let Some(inner) = value.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')) {
-        return inner.replace("''", "'");
-    }
-    value
-        .strip_prefix('"')
-        .and_then(|v| v.strip_suffix('"'))
-        .unwrap_or(value)
-        .to_string()
-}
-
 /// The C compiler's id and version, read from a
 /// `CMakeFiles/<ver>/CMakeCCompiler.cmake` file's text, e.g. `GNU 14.3.0`.
 ///

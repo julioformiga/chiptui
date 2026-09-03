@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
 use crate::backend::BuildKind;
-use crate::build::BuildAction;
+use crate::build::{BuildAction, BuildPanel};
 
 use super::{App, DocsFocus, Focus, LogTab, MonitorSource, Overlay};
 
@@ -49,7 +49,7 @@ impl App {
     /// Opens the board picker, kicking off the background `west boards`
     /// fetch on first open (the list is slow to produce and useless until
     /// asked for), plus the docs index that enriches it.
-    pub(super) fn open_board_picker(&mut self) {
+    pub fn open_board_picker(&mut self) {
         self.overlay = Some(Overlay::BoardPicker {
             input: String::new(),
             selected: 0,
@@ -136,15 +136,16 @@ impl App {
         };
         panel.set_picked(name.clone());
         self.logs.info(format!("board set to {name}"));
-        self.persist_board_shield();
+        self.persist_target();
     }
 
-    /// Writes the panel's current board and shield answers into the
-    /// registry entry for the project the panel is rooted at (creating the
-    /// entry when the project is not recorded yet --- opening it would do
-    /// the same). Everything else already recorded --- backend, name,
-    /// last-opened stamp --- survives untouched.
-    fn persist_board_shield(&mut self) {
+    /// Writes the panel's current target answers --- board, shield and the
+    /// selected variant's name --- into the registry entry for the project
+    /// the panel is rooted at (creating the entry when the project is not
+    /// recorded yet --- opening it would do the same). Everything else
+    /// already recorded --- backend, name, last-opened stamp --- survives
+    /// untouched.
+    fn persist_target(&mut self) {
         let Some(panel) = &self.build else {
             return;
         };
@@ -158,13 +159,20 @@ impl App {
         };
         entry.board = panel.board_name().map(str::to_string);
         entry.shield = panel.shield_name().map(str::to_string);
+        // The *answer*, not the live target: a session starts on the board
+        // whatever was built last, so recording the target here would
+        // forget the answer the moment the project reopened.
+        entry.variant = panel
+            .variant_index_for(panel.remembered_simulator)
+            .and_then(|index| panel.variants.get(index))
+            .map(|variant| variant.name.clone());
         let config = self.user_config_path();
         match crate::settings::record_project(&config, entry) {
             Ok(()) => self
                 .logs
-                .info(format!("board/shield answer saved to {}", config.display())),
+                .info(format!("target answer saved to {}", config.display())),
             Err(err) => self.logs.warn(format!(
-                "could not save the board/shield answer in {}: {err}",
+                "could not save the target answer in {}: {err}",
                 config.display()
             )),
         }
@@ -173,6 +181,46 @@ impl App {
                 &self.config_dir,
                 &self.home_dir,
             ));
+    }
+
+    /// Opens the build question: on the board, or on the host simulator?
+    ///
+    /// Only when the project has both ([`BuildPanel::offers_build_choice`])
+    /// --- with a single target there is nothing to ask and `kind` starts
+    /// outright. The cursor opens on the *last* answer, so repeating a
+    /// target is one `Enter` and changing it is one arrow: the question is
+    /// asked every time (nothing on the pane says where the next build
+    /// goes, so remembering silently would hide it), but it never costs
+    /// more than a keypress.
+    pub fn ask_build_target(&mut self, kind: BuildKind) {
+        self.overlay = Some(Overlay::BuildTarget {
+            kind,
+            selected: usize::from(
+                self.build
+                    .as_ref()
+                    .is_some_and(|panel| panel.remembered_simulator),
+            ),
+        });
+    }
+
+    /// Applies the build question's answer and starts the command: the
+    /// chosen variant becomes the panel's target --- its board, its shield
+    /// and its build directory together --- and `kind` runs against it.
+    ///
+    /// That target then outlives the command: `Clean`, `Menuconfig` and the
+    /// dashboard follow the last build, because that is the artifact the
+    /// user was just looking at. Only `Flash` is pinned to the board
+    /// ([`BuildPanel::flash_build_dir`]).
+    pub(super) fn apply_build_target(&mut self, kind: BuildKind, selected: usize) {
+        let simulator = selected == 1;
+        if let Some(panel) = &mut self.build {
+            panel.remembered_simulator = simulator;
+            if let Some(index) = panel.variant_index_for(simulator) {
+                panel.select_variant(index);
+            }
+            self.persist_target();
+        }
+        self.start_build(kind);
     }
 
     /// Opens the shield picker, kicking off the background `west shields`
@@ -210,7 +258,7 @@ impl App {
         if selected == 0 {
             panel.set_shield(None);
             self.logs.info("shield cleared");
-            self.persist_board_shield();
+            self.persist_target();
             return;
         }
         let filtered = panel.filtered_shields(filter);
@@ -219,7 +267,7 @@ impl App {
         };
         panel.set_shield(Some(name.clone()));
         self.logs.info(format!("shield set to {name}"));
-        self.persist_board_shield();
+        self.persist_target();
     }
 
     /// Runs a panel action: destructive ones (`Clean`, `Flash`, and
@@ -276,6 +324,14 @@ impl App {
                         action,
                         confirm: false,
                     });
+                } else if self
+                    .build
+                    .as_ref()
+                    .is_some_and(BuildPanel::offers_build_choice)
+                {
+                    // The project keeps a host target beside the board, so
+                    // where this build runs is a question, not a default.
+                    self.ask_build_target(kind);
                 } else {
                     self.start_build(kind);
                 }
@@ -295,6 +351,9 @@ impl App {
             BuildAction::InstallZephyr => self.open_install_picker(),
             BuildAction::Dashboard => self.start_dashboard(),
             BuildAction::SizeReport => self.start_size_report(),
+            // Rowless, and not started by a press either: a finished
+            // simulator build launches it ([`App::start_run`]).
+            BuildAction::Run => self.start_run(),
         }
     }
 
@@ -331,6 +390,77 @@ impl App {
         ));
         self.open_project_flow();
         false
+    }
+
+    /// Re-derives the extra board search roots for the build panel's
+    /// current project and pushes them in.
+    ///
+    /// The walk stops at the configured projects folder when there is one:
+    /// a module *above* the projects base is somebody else's, and climbing
+    /// to `$HOME` looking for one would be a search, not a resolution.
+    pub fn refresh_board_roots(&mut self) {
+        let Some(panel) = &self.build else {
+            return;
+        };
+        let stop_at = self
+            .workspace
+            .as_ref()
+            .and_then(|workspace| workspace.projects.clone());
+        let roots = crate::backend::zephyr::variants::board_roots(&panel.root, stop_at.as_deref());
+        if let Some(panel) = &mut self.build {
+            panel.set_board_roots(roots);
+        }
+    }
+
+    /// Re-derives the build panel's variant list for its current project.
+    ///
+    /// Called whenever one of its two inputs can have changed: the project
+    /// (a switch, a panel just created) and the board catalogue (the
+    /// `west boards` fetch landing). The catalogue is what turns a
+    /// `boards/<stem>.conf` into a real target, so a project that has never
+    /// been built shows its variants only once the list has been fetched
+    /// --- which is when the user opens the board picker. A project with
+    /// build directories answers immediately from their CMake caches, needing
+    /// no catalogue at all, and that is the case in the field: `west boards`
+    /// walks every board root in the workspace, so running it eagerly on
+    /// every project open would spend seconds of CPU to sharpen a list that
+    /// is usually already right.
+    pub fn refresh_variants(&mut self) {
+        let Some(panel) = &self.build else {
+            return;
+        };
+        let declared = std::fs::read_to_string(panel.root.join(crate::project::config::FILE_NAME))
+            .map(|text| crate::project::config::parse_variants(&text))
+            .unwrap_or_default();
+        let catalogue: Vec<String> = match &panel.boards.state {
+            crate::build::ListState::Loaded(boards) => {
+                boards.iter().map(|board| board.name.clone()).collect()
+            }
+            _ => Vec::new(),
+        };
+        let variants =
+            crate::backend::zephyr::variants::variants(&panel.root, &declared, &catalogue);
+        let saved = self
+            .manager
+            .known_projects()
+            .entry_for(&panel.root)
+            .and_then(|entry| entry.variant.clone());
+        let Some(panel) = &mut self.build else {
+            return;
+        };
+        panel.set_variants(variants);
+        // The registry's answer seeds the *question's cursor*, not the
+        // target: the session starts on the board (`set_variants` lands
+        // there), so a `Clean` pressed before any build cannot erase a
+        // directory this session never mentioned. Only a name the project
+        // still has counts.
+        if let Some(name) = saved {
+            panel.remembered_simulator = panel
+                .variants
+                .iter()
+                .find(|v| v.name == name)
+                .is_some_and(|v| v.is_simulator());
+        }
     }
 
     /// Opens whichever picker the project question needs next: the projects
@@ -417,6 +547,11 @@ impl App {
         if let Some(panel) = &mut self.build {
             panel.set_project(dir.clone());
         }
+        // The board roots belong to the *project*, so they are re-derived
+        // with it: a switch from a plain application to one carrying its
+        // own board module changes what `west boards` can even see.
+        self.refresh_board_roots();
+        self.refresh_variants();
         if let Some(entry) = self.manager.known_projects().entry_for(&dir) {
             let board = entry.board.clone();
             let shield = entry.shield.clone();
@@ -545,6 +680,21 @@ impl App {
         );
     }
 
+    /// Runs what a simulator build just produced, streaming into the
+    /// Monitor tab with the cursor parked on `Stop` --- the build rule.
+    ///
+    /// Reached only from the finished build itself, never from a row: a
+    /// host build that succeeds and then waits for a second keypress is a
+    /// step with no decision in it. The program is not `west`, so it is
+    /// composed by the panel rather than the backend
+    /// ([`crate::build::BuildPanel::run_command`]); a build that produced
+    /// no executable simply logs and starts nothing.
+    pub(super) fn start_run(&mut self) {
+        self.start_build_command("Run", false, BuildAction::Run, Focus::Build, |panel, _| {
+            panel.run_command()
+        });
+    }
+
     pub(super) fn start_dashboard(&mut self) {
         self.start_build_command(
             "Dashboard",
@@ -553,24 +703,6 @@ impl App {
             Focus::Build,
             |panel, backend| panel.dashboard_command(backend),
         );
-    }
-
-    /// Applies the build-directory choice (picked row or typed name):
-    /// session-only --- the directory is an argument on the next command,
-    /// never a persisted setting (`SPEC.md` §10's no-silent-writes rule).
-    /// The panel's list no longer offers the picker (the lifecycle targets
-    /// the conventional `build`), but the overlay and this path remain.
-    pub(super) fn apply_build_dir_picker(&mut self, filter: &str, selected: usize) {
-        let Some(panel) = &mut self.build else {
-            return;
-        };
-        let dirs = panel.filtered_build_dirs(filter);
-        let Some(dir) = dirs.get(selected).cloned() else {
-            return;
-        };
-        panel.set_build_dir(dir.clone());
-        self.logs
-            .info(format!("build directory set to {dir} for this session"));
     }
 
     /// The shared body of [`Self::start_build`]/[`Self::start_flash`]:

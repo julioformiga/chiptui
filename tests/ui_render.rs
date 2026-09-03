@@ -201,7 +201,15 @@ fn header_fixture(tag: &str) -> App {
 fn header_fixture_named(tag: &str, project: &str) -> App {
     use chiptui::device::DeviceInfo;
 
-    let base = std::env::temp_dir().join(format!("chiptui-header-{tag}-{}", std::process::id()));
+    // The thread id joins the tag: five of these tests share the tag
+    // `focus`, and each fixture starts by *removing* its base --- so under
+    // the default parallel run one test could delete the directory another
+    // was writing into (`create_dir_all` then failing with `NotFound`).
+    let base = std::env::temp_dir().join(format!(
+        "chiptui-header-{tag}-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
     let _ = std::fs::remove_dir_all(&base);
     let root = base.join(project);
     std::fs::create_dir_all(root.join("dev")).unwrap();
@@ -2004,6 +2012,7 @@ fn the_monitor_tab_marks_the_last_finished_command() {
     app.set_monitor_source(chiptui::app::MonitorSource::Build);
     let report = |ok| chiptui::build::BuildReport {
         what: "Build",
+        simulator: false,
         ok,
         cancelled: false,
         duration: std::time::Duration::from_secs(3),
@@ -2028,6 +2037,7 @@ fn the_monitor_tab_marks_the_last_finished_command() {
     // for) and not the success check either (nothing finished).
     app.build.as_mut().unwrap().last = Some(chiptui::build::BuildReport {
         what: "Build",
+        simulator: false,
         ok: false,
         cancelled: true,
         duration: std::time::Duration::from_secs(3),
