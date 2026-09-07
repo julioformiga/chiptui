@@ -14,6 +14,11 @@
 //! operations trait: there is exactly one caller shape per operation today,
 //! and `AGENTS.md` §8 asks for no abstraction without a concrete use case.
 
+/// `esptool` --- the Espressif chip tool. A *chip* tool, not a MicroPython
+/// one: firmware identification reads flash with it, and the Zephyr flash
+/// path writes MCUboot images with it, so it sits beside the backends
+/// rather than inside one of them.
+pub mod esptool;
 pub mod micropython;
 pub mod registry;
 pub mod zephyr;
@@ -205,6 +210,15 @@ pub enum Capability {
     /// destructive as a capability --- the pane confirms the
     /// state-changing action itself.
     WorkspaceSync,
+    /// The backend's projects can be instrumented for over-the-air updates
+    /// (the prepare writes project files). Not destructive as a
+    /// capability: the modal's own confirm covers the writes, and putting
+    /// the prepare beside erase/flash would misstate what it does.
+    OtaPrepare,
+    /// The backend can push a built image to a running board without a
+    /// cable. Destructive: it overwrites the running firmware and reboots
+    /// the board.
+    OtaUpdate,
 }
 
 impl Capability {
@@ -226,6 +240,8 @@ impl Capability {
         Capability::ShieldSelect,
         Capability::ProjectSelect,
         Capability::WorkspaceSync,
+        Capability::OtaPrepare,
+        Capability::OtaUpdate,
     ];
 
     const fn bit(self) -> u32 {
@@ -251,6 +267,8 @@ impl Capability {
             Self::ShieldSelect => "select shield",
             Self::ProjectSelect => "select project",
             Self::WorkspaceSync => "sync workspace",
+            Self::OtaPrepare => "prepare OTA",
+            Self::OtaUpdate => "OTA update",
         }
     }
 
@@ -259,7 +277,10 @@ impl Capability {
     /// `SPEC.md` §15: these always require confirmation. Marking it on the
     /// capability keeps the rule in one place instead of in every view.
     pub const fn is_destructive(self) -> bool {
-        matches!(self, Self::Flash | Self::EraseFlash | Self::Clean)
+        matches!(
+            self,
+            Self::Flash | Self::EraseFlash | Self::Clean | Self::OtaUpdate
+        )
     }
 }
 
@@ -363,6 +384,57 @@ pub struct BuildReportContext<'a> {
     pub out_dir: &'a std::path::Path,
 }
 
+/// The facts a build-lifecycle command needs beyond its [`BuildKind`].
+///
+/// [`MonitorContext`]'s and [`BuildReportContext`]'s sibling, and for the
+/// same reason those exist: a sixth positional argument is where a
+/// parameter list stops being readable, and every one of these is a fact
+/// the caller resolved rather than something the lifecycle's own arguments
+/// carry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct BuildContext<'a> {
+    /// The target to configure for, when one is known.
+    pub board: Option<&'a str>,
+    /// The add-on board riding on it. `None` means no shield, and must lead
+    /// to no shield flag at all --- an empty `--shield` *clears* a cached
+    /// one.
+    pub shield: Option<&'a str>,
+    /// Lets an incremental build skip the flags only a first configuration
+    /// needs.
+    pub build_dir_exists: bool,
+    /// The directory the lifecycle targets. A backend with a single fixed
+    /// directory may ignore it.
+    pub build_dir: &'a str,
+    /// Whether the build runs sysbuild: the bootloader built beside the
+    /// application, which is what produces a signed image at all. Like
+    /// `board` and `shield` this is a configuration-time answer, so it
+    /// rides only on a configuration.
+    pub sysbuild: bool,
+}
+
+/// The facts a flash command needs beyond the build directory.
+///
+/// A build directory is no longer enough to say how its images reach the
+/// board: a sysbuild build holds several, and on one runner family they
+/// have to be written by address with a tool that needs a port. So the
+/// same treatment [`MonitorContext`] gets --- the caller resolves the
+/// facts, the backend decides the command, and a missing fact becomes a
+/// named refusal instead of a guess.
+#[derive(Debug, Clone, Copy)]
+pub struct FlashContext<'a> {
+    /// The project root the build directory is relative to.
+    pub root: &'a std::path::Path,
+    /// The directory whose images are written --- always the *board*
+    /// variant's, never a simulator's.
+    pub build_dir: &'a str,
+    /// The selected device, for the paths that need one. `west flash`
+    /// never does; `esptool` always does.
+    pub port: Option<&'a str>,
+    /// The chip, when it has been identified. Optional because esptool
+    /// detects it itself; passing it only saves a probe.
+    pub chip: Option<esptool::ChipFamily>,
+}
+
 /// A framework-specific backend.
 pub trait Backend {
     fn kind(&self) -> BackendKind;
@@ -382,6 +454,22 @@ pub trait Backend {
 
     /// External executables this backend delegates to (`AGENTS.md` §2).
     fn required_tools(&self) -> &'static [&'static str];
+
+    /// The executable this backend's *own* commands name --- the one a
+    /// caller holding a resolved location for it may substitute
+    /// ([`crate::build::BuildPanel::set_tool_path`], fed the venv's
+    /// `west`).
+    ///
+    /// It is not "the program of whatever command was returned": a backend
+    /// may build a command for another tool entirely, and a sysbuild flash
+    /// on the esp32 runner does exactly that
+    /// ([`zephyr::flash_plan`](crate::backend::zephyr::flash_plan)), whose
+    /// invocation is `esptool`'s. Substituting west's path there handed
+    /// `--port /dev/ttyACM0 --chip esp32c3 write-flash …` to west, which
+    /// answered `unknown command "/dev/ttyACM0"`. Keying the substitution
+    /// on this name is what keeps the resolved tool applying to the
+    /// backend's own commands and to nothing else.
+    fn tool_program(&self) -> &'static str;
 
     /// The layout a new project of this kind starts with (`SPEC.md` §7),
     /// for a project directory named `name`. Empty by default: a backend
@@ -419,24 +507,15 @@ pub trait Backend {
     }
 
     /// Returns the command for one flavor of the build lifecycle
-    /// (`AGENTS.md` §2: delegate to the ecosystem's own tools). `board` is
-    /// the target the backend should configure for, when one is known;
-    /// `shield` the optional add-on board riding on it (`None` means no
-    /// shield, and must lead to no shield flag at all); `build_dir_exists`
-    /// lets an incremental build skip the flags only a first configuration
-    /// needs; `build_dir` names the directory the lifecycle targets (a
-    /// backend with a single fixed directory may ignore it). Returns `None`
-    /// if the backend offers no build capability or has not implemented it
-    /// yet.
+    /// (`AGENTS.md` §2: delegate to the ecosystem's own tools). Returns
+    /// `None` if the backend offers no build capability or has not
+    /// implemented it yet.
     fn build_command(
         &self,
         kind: BuildKind,
-        board: Option<&str>,
-        shield: Option<&str>,
-        build_dir_exists: bool,
-        build_dir: &str,
+        ctx: &BuildContext<'_>,
     ) -> Option<crate::process::Command> {
-        let _ = (kind, board, shield, build_dir_exists, build_dir);
+        let _ = (kind, ctx);
         None
     }
 
@@ -470,13 +549,15 @@ pub trait Backend {
         None
     }
 
-    /// Returns the command that writes the built image to the device.
-    /// Returns `None` if the backend has no [`Capability::Flash`] single
-    /// command --- MicroPython's flashing is a multi-step esptool flow the
-    /// Flash dialog owns, so it stays `None` there.
-    fn flash_command(&self, build_dir: &str) -> Option<crate::process::Command> {
-        let _ = build_dir;
-        None
+    /// Returns the command that writes the built images to the device.
+    ///
+    /// `Err` is a refusal already phrased as a sentence naming what is
+    /// missing --- the contract [`Backend::monitor_command`] established.
+    /// The default is such a refusal: MicroPython's flashing is a
+    /// multi-step esptool flow the Flash dialog owns, not one command.
+    fn flash_command(&self, ctx: &FlashContext<'_>) -> Result<crate::process::Command, String> {
+        let _ = ctx;
+        Err("this backend has no single flash command".to_string())
     }
 
     /// Returns the interactive configuration command over the configured

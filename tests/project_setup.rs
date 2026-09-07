@@ -80,6 +80,24 @@ fn an_empty_directory_prompts_and_records_the_choice() {
     app.handle(key(KeyCode::Down));
     app.handle(key(KeyCode::Enter));
 
+    // Answering the prompt chains straight into the environment's own
+    // first question. `main.rs` asks it right after the prompt opens, where
+    // it can do nothing --- the prompt's overlay is up and there is no
+    // workspace panel yet --- so before this the from-zero path was the one
+    // path that never got asked at all, while starting inside an existing
+    // Zephyr app was asked immediately.
+    assert!(
+        matches!(
+            app.overlay,
+            Some(Overlay::DirPicker {
+                purpose: chiptui::workspace::DirPurpose::Installation,
+                ..
+            })
+        ),
+        "the installation question follows the backend answer: {:?}",
+        app.overlay
+    );
+    app.handle(key(KeyCode::Esc));
     assert_eq!(app.overlay, None);
     assert_eq!(app.manager.selected_kind(), Some(BackendKind::Zephyr));
     assert!(
@@ -215,7 +233,7 @@ fn a_project_the_config_already_names_is_never_prompted() {
     app.bootstrap();
     app.maybe_open_project_setup();
 
-    assert_eq!(app.overlay, None);
+    assert_eq!(app.overlay, None, "the registry already answered");
     assert_eq!(app.manager.selected_kind(), Some(BackendKind::Zephyr));
 }
 
@@ -256,7 +274,14 @@ fn a_project_carrying_its_own_config_file_still_wins() {
     // project that carries one (checked in, shared by a team) is still read,
     // and it outranks whatever the registry remembers about that directory.
     let dir = TempDir::new("project-file");
-    config::write(&dir.path, BackendKind::MicroPython).unwrap();
+    // Written literally rather than through ChipTUI: this test is about a
+    // file the *user* checked in, so pinning the on-disk format here is the
+    // point, not round-tripping through the code under test.
+    std::fs::write(
+        dir.path.join(config::FILE_NAME),
+        "project_type = \"micropython\"\n",
+    )
+    .unwrap();
     settings::record_project(
         &settings::user_config_path(&dir.config_dir()),
         settings::ProjectEntry::new(&dir.path, BackendKind::Zephyr),

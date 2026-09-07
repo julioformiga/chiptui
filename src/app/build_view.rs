@@ -336,12 +336,7 @@ impl App {
                     self.start_build(kind);
                 }
             }
-            BuildAction::Flash => {
-                self.overlay = Some(Overlay::ConfirmBuild {
-                    action,
-                    confirm: false,
-                });
-            }
+            BuildAction::Flash => self.open_flash_method(),
             BuildAction::Menuconfig => self.start_menuconfig(),
             BuildAction::UpdateZephyr => {
                 self.overlay = Some(Overlay::ZephyrActions { selected: 0 });
@@ -582,7 +577,11 @@ impl App {
             updates_board,
             BuildAction::Build(kind),
             Focus::Build,
-            |panel, backend| panel.command(kind, backend),
+            |panel, backend| {
+                panel
+                    .command(kind, backend)
+                    .ok_or_else(|| "this backend offers no such action".to_string())
+            },
         );
         // Clean parks the cursor on Build: the build is the step a clean
         // exists to clear the way for (a build/rebuild already sits on
@@ -597,14 +596,96 @@ impl App {
     /// Starts the flash command, same hand-off as the build kinds except
     /// that focus follows the output (the device is the thing changing).
     /// Reached only through the confirm overlay (flash is destructive).
+    /// `Flash`'s one question: over the cable, or over the air.
+    ///
+    /// This is the whole centralisation (`SPEC.md` §10). A backend that can
+    /// update over the air has two honest paths and the pane says nothing
+    /// about which one a press would take, so the row asks --- and asks
+    /// *every* time, like [`Overlay::BuildTarget`]: repeating an answer is
+    /// `Enter`, changing it is one arrow. A backend without
+    /// [`Capability::OtaUpdate`] has one path and no question, so it goes
+    /// straight to the §15 confirm exactly as before --- the capability
+    /// rule, not a backend name.
+    ///
+    /// The rows are resolved once, here, and carried by the overlay: the
+    /// wired one costs a walk through `runners.yaml`, `domains.yaml` and the
+    /// build's devicetree, which is not work for the draw path.
+    pub(super) fn open_flash_method(&mut self) {
+        if !self
+            .manager
+            .capabilities()
+            .contains(crate::backend::Capability::OtaUpdate)
+        {
+            self.overlay = Some(Overlay::ConfirmBuild {
+                action: BuildAction::Flash,
+                confirm: false,
+            });
+            return;
+        }
+        let Some(rows) = self.flash_method_rows() else {
+            return;
+        };
+        let selected = crate::backend::zephyr::flash_method::first_enabled(&rows);
+        self.overlay = Some(Overlay::FlashMethod { rows, selected });
+    }
+
+    /// The two rows, from the project's own answers: what is plugged in,
+    /// what `[ota] transport` says, and how the board's build directory
+    /// would be written. `None` with no build panel --- nothing can ask
+    /// this question then.
+    fn flash_method_rows(
+        &self,
+    ) -> Option<
+        [crate::backend::zephyr::flash_method::MethodRow;
+            crate::backend::zephyr::flash_method::COUNT],
+    > {
+        let panel = self.build.as_ref()?;
+        // The *board's* build directory, never the last build's: a host
+        // build produces an executable no bootloader and no runner writes
+        // (`BuildPanel::flash_build_dir`, and the OTA modal's own reason for
+        // reading the same one).
+        let plan = crate::backend::zephyr::flash_plan::plan(&panel.root, &panel.flash_build_dir());
+        let transport = std::fs::read_to_string(panel.root.join(crate::project::config::FILE_NAME))
+            .ok()
+            .and_then(|text| crate::project::config::parse_ota(&text))
+            .unwrap_or_default()
+            .transport;
+        Some(crate::backend::zephyr::flash_method::rows(
+            &crate::backend::zephyr::flash_method::Facts {
+                connected: !self.devices.devices().is_empty(),
+                port: self.devices.selected_port(),
+                transport,
+                plan,
+            },
+        ))
+    }
+
     pub(super) fn start_flash(&mut self) {
+        // Read before the panel is borrowed: the port lives on the device
+        // pane and the chip on the flash panel, and only some plans need
+        // either.
+        let (port, chip) = self.flash_facts();
         self.start_build_command(
             "Flash",
             false,
             BuildAction::Flash,
             Focus::Logs,
-            |panel, backend| panel.flash_command(backend),
+            move |panel, backend| panel.flash_command(backend, port.as_deref(), chip),
         );
+    }
+
+    /// The device facts a flash command may need: the selected port, and
+    /// the chip if anything has identified it. Both optional --- `west
+    /// flash` needs neither, and `esptool` detects the chip itself.
+    pub(crate) fn flash_facts(
+        &self,
+    ) -> (Option<String>, Option<crate::backend::esptool::ChipFamily>) {
+        (
+            self.devices.selected_port().map(str::to_string),
+            self.flash
+                .as_ref()
+                .and_then(crate::flash::FlashPanel::chip_family),
+        )
     }
 
     /// Hands the terminal to `west build -t menuconfig` (`SPEC.md` §11's
@@ -676,7 +757,7 @@ impl App {
             false,
             BuildAction::SizeReport,
             Focus::Build,
-            move |_, _| Some(command),
+            move |_, _| Ok(command),
         );
     }
 
@@ -691,7 +772,9 @@ impl App {
     /// no executable simply logs and starts nothing.
     pub(super) fn start_run(&mut self) {
         self.start_build_command("Run", false, BuildAction::Run, Focus::Build, |panel, _| {
-            panel.run_command()
+            panel
+                .run_command()
+                .ok_or_else(|| "the last build produced no program to run".to_string())
         });
     }
 
@@ -701,7 +784,11 @@ impl App {
             false,
             BuildAction::Dashboard,
             Focus::Build,
-            |panel, backend| panel.dashboard_command(backend),
+            |panel, backend| {
+                panel
+                    .dashboard_command(backend)
+                    .ok_or_else(|| "this backend has no build dashboard".to_string())
+            },
         );
     }
 
@@ -720,7 +807,7 @@ impl App {
         command: impl FnOnce(
             &mut crate::build::BuildPanel,
             &dyn crate::backend::Backend,
-        ) -> Option<crate::process::Command>,
+        ) -> Result<crate::process::Command, String>,
     ) {
         let Some(backend) = self.manager.backend() else {
             return;
@@ -737,10 +824,16 @@ impl App {
                 .warn("a build command is already running — stop it first");
             return;
         }
-        let Some(command) = command(panel, backend) else {
-            self.logs
-                .warn(format!("{label}: this backend offers no such action"));
-            return;
+        // The refusal arrives already phrased as a sentence naming what is
+        // missing, so it is shown rather than flattened into "no such
+        // action" --- which is what the user needs when a flash refuses for
+        // want of a port.
+        let command = match command(panel, backend) {
+            Ok(command) => command,
+            Err(why) => {
+                self.logs.warn(format!("{label}: {why}"));
+                return;
+            }
         };
         let full_label = command.to_string();
         let caps = self.manager.capabilities();

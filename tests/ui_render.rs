@@ -16,7 +16,7 @@ use ratatui::crossterm::event::KeyCode;
 use chiptui::app::help::{self, HelpSection};
 use chiptui::app::{App, Focus, LogTab, Overlay};
 use chiptui::backend::BackendKind;
-use chiptui::backend::micropython::esptool::{ChipFamily, DeviceDetails};
+use chiptui::backend::esptool::{ChipFamily, DeviceDetails};
 use chiptui::firmware_id::FirmwareVerdict;
 use chiptui::flash::FlashPanel;
 
@@ -720,7 +720,7 @@ fn a_start_dir_below_the_project_root_rides_the_root_line() {
 /// apart in silence.
 #[test]
 fn the_declared_minimum_fits_the_whole_dashboard() {
-    use chiptui::backend::micropython::esptool::{ChipFamily, DeviceDetails};
+    use chiptui::backend::esptool::{ChipFamily, DeviceDetails};
 
     let mut app = header_fixture("minimum");
     let mut flash = FlashPanel::new(std::env::temp_dir());
@@ -1191,7 +1191,7 @@ fn output_panes_dim_behind_a_dialog_but_never_for_focus_alone() {
 #[test]
 fn destructive_confirmations_name_the_action_the_target_and_the_cost() {
     use chiptui::backend::BuildKind;
-    use chiptui::backend::micropython::esptool::{ChipFamily, DeviceDetails};
+    use chiptui::backend::esptool::{ChipFamily, DeviceDetails};
     use chiptui::build::BuildAction;
     use chiptui::flash::FlashAction;
 

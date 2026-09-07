@@ -280,11 +280,26 @@ This is how a brand-new, otherwise-empty project directory gets a working
 backend: the user is not required to create marker files like `boot.py` or
 `west.yml` by hand before the TUI becomes useful.
 
-The application does **not** write a configuration file into the project
-directory. What ChipTUI knows about a project lives in the user
-configuration; a project's own `chiptui.toml` is read when it exists (see
-below) but is never created --- a directory the user did not ask ChipTUI to
-modify stays as they left it.
+Nothing is written into the project directory by a **passive** act. What
+ChipTUI works out on its own --- that this looks like a Zephyr project, that
+this directory was opened before --- lives in the user configuration, never
+in someone's repository: a directory the user did not ask ChipTUI to modify
+stays as they left it.
+
+The rule used to be stated as "ChipTUI never writes `chiptui.toml`". That
+was a proxy, and it held while every project answer ChipTUI had was a
+passive one. It stops holding the moment the user *explicitly asks* ChipTUI
+to change the project --- preparing one for over-the-air updates (§10)
+writes `sysbuild.conf`, a `VERSION` file and a Kconfig block, all far more
+invasive than a line of configuration --- at which point refusing to record
+*which answers produced those files* is not restraint, it is an omission the
+user has to reconstruct by hand.
+
+So the rule is stated in terms of its reason: **a passive act writes
+nothing; an explicit, confirmed action may write, and when it writes
+`chiptui.toml` it writes surgically.** Surgically means the guarantee the
+user configuration already carries (§13): the touched key changes, and every
+other section, comment, unknown key and blank line survives byte-for-byte.
 
 ### Manual override
 
@@ -305,12 +320,12 @@ project_type = "zephyr"
 The file is named `chiptui.toml` and lives at the project root. ChipTUI
 reads it and lets it win over everything else --- it is the most specific
 answer there is, it travels with the project, and it can be committed so a
-team shares it. ChipTUI does not create it: the persisted counterpart of the
-automatic prompt is the registry entry (§13), and the file is the one manual
-override --- there is no dashboard action that swaps the backend of a session
-anymore; a session that started on the wrong backend switches projects
-(`shift+p`) instead. Writing this file is the user's decision, made by
-putting it there.
+team shares it. ChipTUI does not write `project_type` itself: the persisted
+counterpart of the automatic prompt is the registry entry (§13), and the
+file is the one manual override --- there is no dashboard action that swaps
+the backend of a session anymore; a session that started on the wrong
+backend switches projects (`shift+p`) instead. Declaring the backend is the
+user's decision, made by putting it there.
 
 ## 8. Device Management
 
@@ -714,8 +729,15 @@ system-wide. The distinction is the whole design:
 One confirmation covers the whole sequence, naming the target folder, the
 cost (several GB) and the literal first command. A finished installation is
 persisted the same way every environment answer is --- `[zephyr] workspace`,
-plus `[zephyr] sdk` when a bundle landed --- and the flow continues into the
-projects-folder question below, but only while that question is still open.
+plus `[zephyr] sdk` when a bundle landed --- the moment the last step lands,
+not when the user gets around to acknowledging it.
+
+The modal itself stays open on the finished checklist, with its button
+reading `✓ Done`. A run that costs many minutes and several gigabytes should
+not end by having its window taken away and the next question thrown up in
+its place, unread. The flow continues into the projects-folder question
+below --- but on the way *out* of the modal, and only while that question is
+still open.
 
 ##### A second installation, and adopting an existing one
 
@@ -920,8 +942,10 @@ simulator build.
 
 Variants come from two places, in this order:
 
-1.  the project's own `chiptui.toml`, when it declares any. Read, never
-    written (§7) --- it is there because the user committed it:
+1.  the project's own `chiptui.toml`, when it declares any. Read, and not
+    written: variants are a description of how the user builds, which
+    ChipTUI has no answer of its own for, so the blocks are there because
+    the user committed them:
 
     ``` toml
     [[variant]]
@@ -1035,12 +1059,144 @@ rather than assuming a single programmer.
 The TUI should expose a simple `Flash` action while preserving
 backend-specific configuration.
 
-> **Status**: implemented as the project panel's `Flash` button --- a plain
-> `west flash`, which delegates to the board's own runner from the build
-> directory's `runner.yml` (no port or programmer is ever assumed). The
-> dashboard's `x` routes a build-panel backend here and a filesystem backend
-> to the esptool dialog. Destructive (`SPEC.md` §15): it always runs through
-> a confirm quoting the literal command.
+> **Status**: implemented as the project panel's `Flash` button. How the
+> build directory's images reach the board is a decision, not a constant
+> (`backend::zephyr::flash_plan`):
+>
+> -   **`west flash`** for every runner, which delegates to the board's own
+>     runner from the build directory's `runners.yaml` --- no port and no
+>     programmer is ever assumed. This is the default branch and covers
+>     every board this project has not had in its hands.
+> -   **`esptool` at explicit addresses** for the one case that branch gets
+>     wrong: a sysbuild build on the `esp32` runner. That runner honours
+>     `--esp-app-address` and ignores `--flash-address`, so a plain
+>     `west flash` writes only the application and leaves the boot
+>     partition holding whatever was there, while `west flash --domain
+>     mcuboot` writes the bootloader *to the application's address*. Either
+>     way the board boots nothing and prints nothing --- a failure that
+>     reads like dead hardware. So both images go in one `esptool
+>     write-flash`, at the addresses this board's own devicetree gives for
+>     `boot_partition` and `slot0_partition`. The addresses are read, never
+>     tabulated per SoC: a wrong one produces exactly the silent failure
+>     this exists to prevent. `esptool` needs a port where `west flash` did
+>     not, so a plan with no device selected refuses by name.
+>
+> Which images exist comes from sysbuild's own `domains.yaml`, whose
+> presence is also the honest marker that this build directory *is* a
+> sysbuild one --- `sysbuild.conf` in the project says what the *next*
+> configuration will do, which is a different question.
+>
+> The dashboard's `x` routes a build-panel backend here and a filesystem
+> backend to the esptool dialog. Destructive (`SPEC.md` §15): it always runs
+> through a confirm quoting the literal command --- both addresses included,
+> and the refusal in its place when the plan cannot be composed.
+>
+> **`Flash` is the one door.** Writing firmware over a cable and writing it
+> over the air are the same intent, so the button asks which way before it
+> asks anything else (`backend::zephyr::flash_method`, `Overlay::
+> FlashMethod`): a two-row stacked menu, `Flash over USB` above `OTA update
+> (<transport>)`, each row carrying what it would do or --- dimmed --- why
+> it cannot. Only a *serial* transport depends on the cable this menu is
+> about, so a board updated over UDP or BLE keeps its row live with nothing
+> plugged in, and an unresolvable flash plan does **not** dim the wired row:
+> that refusal is a sentence about the build directory, and the confirm
+> behind the row already shows it where the command would go.
+>
+> The menu opens even when only one row can run --- that is its reason to
+> open. A dimmed row with its reason beneath it is the only place the user
+> reads why the other way is unavailable, and skipping the question would
+> take that sentence away exactly when it is needed. A backend without
+> `Capability::OtaUpdate` has one path and no question, so it goes straight
+> to the confirm.
+>
+> The rows are one definition (label, detail and enabled-ness together),
+> consumed by the renderer, the key handler and the click handler alike:
+> the split between a label decided in `ui` and an effect decided in `app`
+> is how a dimmed button with a live action behind it ships. They are
+> resolved once, when the menu opens, and carried by the overlay --- the
+> wired row costs a walk through `runners.yaml`, `domains.yaml` and the
+> devicetree, which is not work for the draw path, and none of the facts
+> can move while the menu is up (the hotplug poll is suppressed under an
+> open overlay).
+
+### Over-the-air updates
+
+A board that is already running should be updatable without a cable.
+
+On Zephyr this means MCUboot: two image slots and a bootloader that swaps
+between them. Making a project capable of it is an **explicit action** --- it writes
+`sysbuild.conf`, a `VERSION` file and a Kconfig block into the project
+(§7's "explicit act may write") --- and updating it afterwards is a second
+one. Both live behind one modal, and which of the two it offers is not the
+user's choice: an unprepared project cannot update and a prepared one has
+nothing to prepare, so the modal decides and the button says what it
+decided.
+
+The mechanism is not assumed. Which one a project uses, over which
+transport, and where its board is, are the project's answers, recorded in
+its own `chiptui.toml`:
+
+``` toml
+[ota]
+method    = "mcumgr"        # the mechanism
+transport = "udp"           # udp | serial | ble
+address   = "192.168.1.42"  # whatever the transport addresses
+```
+
+Only `address` has no default: the mechanism and transport are what a
+Zephyr project almost always wants, and the address is the one fact ChipTUI
+cannot work out. A section naming a mechanism or transport this build does
+not have is refused rather than read as the default --- accepting it would
+tell the user their answer was taken and then run a different one.
+
+Whether a project is *already* prepared is answered by reading the project
+--- the files and the Kconfig block --- never by a flag recorded here. A
+flag would be a second truth, and the first one to drift; it is the rule
+`install/steps.rs` already follows for the workspace installer.
+
+The update itself is a *sequence*, not a command: upload the signed image,
+read the staged slot's hash, mark it pending, reset, verify what came back,
+confirm. The mechanism owns that list --- the runner walks the driver's own
+stages and never a hard-coded one --- and the last of them is deliberately
+left unpressed. **A verified swap halts, unconfirmed.** Until the confirm
+runs, the next reset reverts to the image that was there, which is the
+safety net the whole mechanism exists to provide; making it permanent is a
+separate answer to a separate question. A tool that ran on ahead would have
+spent that safety net on the user's behalf.
+
+> **Status**: implemented for Zephyr, end to end, behind
+> `Capability::OtaPrepare`/`OtaUpdate` --- one modal, reached through the
+> `Flash` row's one question (§10's flash section: the door it used to have
+> of its own, an `o` key beside a Zephyr Actions row, made the two ways of
+> writing firmware look unrelated and left the pane pointing at neither),
+> whose single button is
+> one decision (`OtaAction`: prepare, rebuild, set the address, update, the
+> three retries, confirm) read by the renderer and the key handler alike ---
+> a retry names *what* it retries, since one shared variant labelled itself
+> "Update" while asking whichever question had failed. Beside the button,
+> `t` answers the transport and `p` probes the board alone (`os echo` is a
+> read, and the address is typed by hand). The
+> vocabulary and the project configuration are `src/ota/mod.rs` +
+> `project::config::parse_ota`/`save_ota`; the mechanism is one driver
+> behind a registry (`src/ota/mcumgr.rs` --- every `smpmgr` invocation
+> built in that one module, so a second mechanism adds a file and its own
+> `stages()`, and nothing outside a driver may assume MCUmgr's seven).
+> Preparation is `src/ota/prepare.rs`: the installer's
+> requirements-then-steps shape with synchronous writes, the Kconfig
+> fragment landing in `boards/<target>.conf` (never `prj.conf` --- a
+> hardware symbol there breaks the simulator build) through `scaffold`'s
+> guarded block, a managed region between `# >>> chiptui:ota` markers where
+> everything outside is byte-identical and an unclosed or duplicated marker
+> is a refusal rather than a guess. The slot precondition is read from the
+> build's own devicetree (`report::partitions::FlashLayout`) and reports
+> "not checked" for a project never built rather than asserting slots it
+> cannot see. The cycle is `src/ota/update.rs` (per-stage timeouts, the
+> bootloader's swap modelled as a settle after the reset --- 90 s, measured
+> against real hardware, not the 45 s of the hand-run notes), the UI
+> `src/ui/ota.rs` + `src/app/ota_view.rs`. The build and flash halves an
+> image set needs are the `--sysbuild` build line and the two-image flash
+> above. `smpmgr` is detected and reported, never installed --- a missing
+> one blocks with `pipx install smpmgr` as the hint.
 
 ### Monitor
 
@@ -1358,15 +1514,26 @@ is dropped on the next write.
 
 ### Project configuration
 
-A project may carry its own `chiptui.toml`. ChipTUI reads it but never
-writes it (§7), so it is only there because the user put it there ---
-typically to commit it. Used primarily for:
+A project may carry its own `chiptui.toml`. ChipTUI reads it, and writes
+only what an explicit action of the user's answered (§7) --- everything else
+in it is there because the user put it there, typically to commit it. Used
+primarily for:
 
--   backend override;
+-   backend override (read only);
 -   default device;
 -   board;
--   `[[variant]]` blocks, the project's build variants (§10);
+-   `[[variant]]` blocks, the project's build variants (§10; read only);
+-   `[ota]`, the over-the-air mechanism, transport and device address
+    (§10) --- written by the preparation action, and the only section
+    ChipTUI writes today;
 -   project-specific tool options.
+
+A write here carries the same guarantee as one into the user config, and by
+sharing its implementation rather than repeating it: `settings::upsert_key`
+merges the one key, `settings::write_config` replaces the file through a
+temporary and a rename, so a half-written `chiptui.toml` cannot replace a
+whole one. An array of tables (`[[variant]]`) is a different shape needing a
+different writer; nothing writes those, so no such writer exists.
 
 Do not duplicate configuration already managed by the underlying
 framework.
@@ -1451,7 +1618,8 @@ Use fake executables for:
 -   `esptool`;
 -   `west`;
 -   `cmake`;
--   `ninja`.
+-   `ninja`;
+-   `smpmgr`.
 
 The fakes should simulate:
 
@@ -1460,6 +1628,22 @@ The fakes should simulate:
 -   slow operations;
 -   malformed output;
 -   cancellation.
+
+A fake must reproduce the tool, not the belief about it: where a flag's
+meaning is load-bearing, it is read out of the tool's own source before the
+fake is written, and the fake **rejects** the wrong form so reintroducing it
+breaks a test rather than passing one (`west sdk install -d`, which looks
+like "install into DIR" and is not).
+
+A device the fakes stand in for may also need *state*. The `smpmgr` family
+is the case that forced it: an OTA cycle is six commands whose answers
+depend on each other, so the fake keeps a board per address --- staged,
+pending, swapped, confirmed --- and logs every invocation, which is what
+lets a test assert the stage order rather than each stage alone. Its
+variants are the failure paths of that same board: an upload that dies
+mid-transfer, an upload slow enough for a `Stop` to land in, and a
+bootloader that never swaps (so `Verify` reports the *old* image and must
+be a named failure, never a silent pass).
 
 ### Hardware tests
 
@@ -1569,6 +1753,10 @@ These should only be implemented when a real use case exists.
 -   User can clean.
 -   User can flash.
 -   User can monitor serial output when supported.
+-   User can prepare a project for over-the-air updates, and a re-run of
+    the preparation changes nothing.
+-   User can push a new image to a running board without a cable, and the
+    cycle stops before confirming it.
 
 ### General
 

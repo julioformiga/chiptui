@@ -15,6 +15,7 @@
 //! only when the panel targets another directory, keeping the common case
 //! free of noise while the header still names the target.
 
+use crate::backend::BuildContext;
 use crate::process::Command;
 
 pub const PROGRAM: &str = "west";
@@ -40,19 +41,15 @@ fn build_dir(command: Command, dir: &str) -> Command {
 /// a configuration-time answer, so it rides along only on the first
 /// configuration of this build directory (`west` applies a shield through
 /// SHIELD at configure time).
-pub fn build(
-    board: Option<&str>,
-    shield: Option<&str>,
-    build_dir_exists: bool,
-    dir: &str,
-) -> Command {
+pub fn build(ctx: &BuildContext<'_>) -> Command {
     let mut command = Command::new(PROGRAM).arg("build");
-    command = build_dir(command, dir);
-    if !build_dir_exists {
-        if let Some(board) = board {
+    command = build_dir(command, ctx.build_dir);
+    if !ctx.build_dir_exists {
+        if let Some(board) = ctx.board {
             command = command.arg("-b").arg(board);
         }
-        command = shield_args(command, shield);
+        command = shield_args(command, ctx.shield);
+        command = sysbuild_args(command, ctx.sysbuild);
     }
     command
 }
@@ -71,12 +68,31 @@ pub fn clean(dir: &str) -> Command {
 /// and shield are attached whenever one is known (the board from the cache of
 /// the build directory being discarded), so the fresh configuration lands on
 /// the same target instead of asking the user again.
-pub fn rebuild(board: Option<&str>, shield: Option<&str>, dir: &str) -> Command {
-    let mut command = build_dir(Command::new(PROGRAM).arg("build"), dir).arg("--pristine=always");
-    if let Some(board) = board {
+pub fn rebuild(ctx: &BuildContext<'_>) -> Command {
+    let mut command =
+        build_dir(Command::new(PROGRAM).arg("build"), ctx.build_dir).arg("--pristine=always");
+    if let Some(board) = ctx.board {
         command = command.arg("-b").arg(board);
     }
-    shield_args(command, shield)
+    command = shield_args(command, ctx.shield);
+    sysbuild_args(command, ctx.sysbuild)
+}
+
+/// Appends `--sysbuild` when the project builds one.
+///
+/// A configuration-time answer like `-b` and `--shield`, and it rides with
+/// them: on a first configuration and on every `--pristine` rebuild, never
+/// on an incremental build of a directory that already decided. `west` has
+/// a `--no-sysbuild` counterpart, deliberately not emitted --- the absence
+/// of the flag already means "not sysbuild", and passing the negative form
+/// would be this app asserting something about a directory it did not
+/// configure.
+fn sysbuild_args(command: Command, sysbuild: bool) -> Command {
+    if sysbuild {
+        command.arg("--sysbuild")
+    } else {
+        command
+    }
 }
 
 /// Appends `--shield NAME` when one is chosen (`--shield` with no value is
@@ -278,6 +294,23 @@ pub fn monitor(port: &str) -> Command {
 mod tests {
     use super::*;
 
+    /// A [`BuildContext`] for the lifecycle tests: the two answers that
+    /// vary, and the defaults every other case shares.
+    fn ctx<'a>(
+        board: Option<&'a str>,
+        shield: Option<&'a str>,
+        build_dir_exists: bool,
+        build_dir: &'a str,
+    ) -> BuildContext<'a> {
+        BuildContext {
+            board,
+            shield,
+            build_dir_exists,
+            build_dir,
+            sysbuild: false,
+        }
+    }
+
     /// The three flag forms that are load-bearing, pinned against the call
     /// `dashboard.py::_create_memory_reports` makes.
     #[test]
@@ -350,15 +383,20 @@ mod tests {
 
     #[test]
     fn first_build_carries_the_board_and_shield() {
-        let command = build(Some("nrf52840dk/nrf52840"), None, false, BUILD_DIR_DEFAULT);
+        let command = build(&ctx(
+            Some("nrf52840dk/nrf52840"),
+            None,
+            false,
+            BUILD_DIR_DEFAULT,
+        ));
         assert_eq!(command.to_string(), "west build -b nrf52840dk/nrf52840");
 
-        let command = build(
+        let command = build(&ctx(
             Some("nrf52840dk/nrf52840"),
             Some("nrf7002ek"),
             false,
             BUILD_DIR_DEFAULT,
-        );
+        ));
         assert_eq!(
             command.to_string(),
             "west build -b nrf52840dk/nrf52840 --shield nrf7002ek"
@@ -369,7 +407,7 @@ mod tests {
     fn a_shield_without_a_board_still_reaches_the_first_build() {
         // `-b` is the required answer, `--shield` the optional one; the
         // shield must not wait for the board.
-        let command = build(None, Some("link_board_eth"), false, BUILD_DIR_DEFAULT);
+        let command = build(&ctx(None, Some("link_board_eth"), false, BUILD_DIR_DEFAULT));
         assert_eq!(command.to_string(), "west build --shield link_board_eth");
     }
 
@@ -378,19 +416,19 @@ mod tests {
         // A configured build/ directory already carries the board and shield;
         // `-b`/`--shield` on it is at best redundant and at worst an error
         // when the names disagree.
-        let command = build(
+        let command = build(&ctx(
             Some("nrf52840dk/nrf52840"),
             Some("nrf7002ek"),
             true,
             BUILD_DIR_DEFAULT,
-        );
+        ));
         assert_eq!(command.to_string(), "west build");
     }
 
     #[test]
     fn a_named_build_dir_reaches_every_lifecycle_command() {
         assert_eq!(
-            build(None, None, true, "build-nrf52840").to_string(),
+            build(&ctx(None, None, true, "build-nrf52840")).to_string(),
             "west build -d build-nrf52840"
         );
         assert_eq!(
@@ -398,7 +436,13 @@ mod tests {
             "west build -d build-nrf52840 -t clean"
         );
         assert_eq!(
-            rebuild(Some("nrf52840dk/nrf52840"), None, "build-nrf52840").to_string(),
+            rebuild(&ctx(
+                Some("nrf52840dk/nrf52840"),
+                None,
+                false,
+                "build-nrf52840"
+            ))
+            .to_string(),
             "west build -d build-nrf52840 --pristine=always -b nrf52840dk/nrf52840"
         );
         assert_eq!(
@@ -416,7 +460,7 @@ mod tests {
         // actionable message ("no board specified"), which is more useful
         // than the panel guessing a substitute.
         assert_eq!(
-            build(None, None, false, BUILD_DIR_DEFAULT).to_string(),
+            build(&ctx(None, None, false, BUILD_DIR_DEFAULT)).to_string(),
             "west build"
         );
     }
@@ -508,23 +552,88 @@ mod tests {
     #[test]
     fn rebuild_is_always_pristine() {
         assert_eq!(
-            rebuild(Some("nrf52840dk/nrf52840"), None, BUILD_DIR_DEFAULT).to_string(),
+            rebuild(&ctx(
+                Some("nrf52840dk/nrf52840"),
+                None,
+                false,
+                BUILD_DIR_DEFAULT
+            ))
+            .to_string(),
             "west build --pristine=always -b nrf52840dk/nrf52840"
         );
         assert_eq!(
-            rebuild(None, None, BUILD_DIR_DEFAULT).to_string(),
+            rebuild(&ctx(None, None, false, BUILD_DIR_DEFAULT)).to_string(),
             "west build --pristine=always"
         );
         // A pristine rebuild reconfigures, so the shield rides along like
         // the board does.
         assert_eq!(
-            rebuild(
+            rebuild(&ctx(
                 Some("nrf52840dk/nrf52840"),
                 Some("nrf7002ek"),
+                false,
                 BUILD_DIR_DEFAULT
-            )
+            ))
             .to_string(),
             "west build --pristine=always -b nrf52840dk/nrf52840 --shield nrf7002ek"
         );
+    }
+
+    #[test]
+    fn sysbuild_rides_with_the_first_configuration() {
+        // Sysbuild is what builds MCUboot beside the application, and it is
+        // a configuration-time answer like the board: it belongs on the
+        // build that configures.
+        let first = BuildContext {
+            sysbuild: true,
+            ..ctx(Some("xiao_esp32c3"), None, false, BUILD_DIR_DEFAULT)
+        };
+        assert_eq!(
+            build(&first).to_string(),
+            "west build -b xiao_esp32c3 --sysbuild"
+        );
+    }
+
+    #[test]
+    fn an_incremental_build_never_passes_sysbuild() {
+        // The directory already decided; re-asserting it is at best noise
+        // and at worst a disagreement with the cache.
+        let later = BuildContext {
+            sysbuild: true,
+            ..ctx(Some("xiao_esp32c3"), None, true, BUILD_DIR_DEFAULT)
+        };
+        assert_eq!(build(&later).to_string(), "west build");
+    }
+
+    #[test]
+    fn a_pristine_rebuild_always_passes_sysbuild() {
+        // A pristine rebuild reconfigures, so the answer has to ride along
+        // or the directory comes back without a bootloader.
+        let pristine = BuildContext {
+            sysbuild: true,
+            ..ctx(
+                Some("xiao_esp32c3"),
+                Some("seeed_xiao_round_display"),
+                true,
+                BUILD_DIR_DEFAULT,
+            )
+        };
+        assert_eq!(
+            rebuild(&pristine).to_string(),
+            concat!(
+                "west build --pristine=always -b xiao_esp32c3",
+                " --shield seeed_xiao_round_display --sysbuild"
+            )
+        );
+    }
+
+    #[test]
+    fn a_project_without_sysbuild_gets_no_flag_at_all() {
+        // Never `--no-sysbuild`: the absence of the flag already means it,
+        // and the negative form would assert something about a directory
+        // this app did not configure.
+        let plain = ctx(Some("xiao_esp32c3"), None, false, BUILD_DIR_DEFAULT);
+        assert_eq!(build(&plain).to_string(), "west build -b xiao_esp32c3");
+        assert!(!rebuild(&plain).to_string().contains("sysbuild"));
     }
 }

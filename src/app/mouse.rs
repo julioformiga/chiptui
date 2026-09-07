@@ -1006,6 +1006,39 @@ impl App {
                     self.overlay_key(KeyCode::Enter);
                 }
             }
+            Overlay::FlashMethod { rows, .. } => {
+                // The rows the menu carries, in the same detailed-button
+                // shape `draw_flash_method` renders --- `button_at_row` is
+                // the shared row-to-index rule. A click on a dimmed row
+                // presses `Enter` like the keyboard does, and `Enter` is
+                // what refuses it: the gate lives in one place.
+                let placeholders: Vec<crate::ui::Button> = rows
+                    .iter()
+                    .map(|_| crate::ui::Button::new("").detail(""))
+                    .collect();
+                let Some(row) = point.1.checked_sub(rect.y + 1) else {
+                    return;
+                };
+                if let Some(index) = crate::ui::button_at_row(&placeholders, row) {
+                    self.set_overlay_selected(index);
+                    self.overlay_key(KeyCode::Enter);
+                }
+            }
+            Overlay::OtaTransport { .. } => {
+                // The same detailed-button row shape `ZephyrActions` uses,
+                // over the driver-independent transport list.
+                let placeholders: Vec<crate::ui::Button> = crate::ota::Transport::ALL
+                    .iter()
+                    .map(|_| crate::ui::Button::new("").detail(""))
+                    .collect();
+                let Some(row) = point.1.checked_sub(rect.y + 1) else {
+                    return;
+                };
+                if let Some(index) = crate::ui::button_at_row(&placeholders, row) {
+                    self.set_overlay_selected(index);
+                    self.overlay_key(KeyCode::Enter);
+                }
+            }
             Overlay::ZephyrInstall => {
                 // The installer's footer button, pinned to the modal's
                 // bottom rows on the right --- the same box `Enter` presses.
@@ -1024,6 +1057,20 @@ impl App {
                     height: inner.height.saturating_sub(footer_top - inner.y),
                 };
                 if contains(button, point) {
+                    self.overlay_key(KeyCode::Enter);
+                }
+            }
+            Overlay::Ota => {
+                // The button's rect comes from the renderer's own helper,
+                // not a second copy of the arithmetic: written on both
+                // sides they had drifted, and the box drawn half the modal
+                // wide was answering clicks only in its last thirteen
+                // columns.
+                let (inner, footer_top) = crate::ui::ota::footer_geometry(rect);
+                if contains(
+                    crate::ui::ota::footer_button_rect(inner, footer_top),
+                    point,
+                ) {
                     self.overlay_key(KeyCode::Enter);
                 }
             }
@@ -1233,6 +1280,8 @@ impl App {
             | Overlay::BoardPicker { selected, .. }
             | Overlay::ShieldPicker { selected, .. }
             | Overlay::SdkToolchains { selected, .. }
+            | Overlay::OtaTransport { selected, .. }
+            | Overlay::FlashMethod { selected, .. }
             | Overlay::ZephyrActions { selected, .. },
         ) = &mut self.overlay
         {

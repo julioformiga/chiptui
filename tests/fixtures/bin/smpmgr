@@ -1,0 +1,251 @@
+#!/bin/sh
+# Fake `smpmgr` for ChipTUI's OTA flows: a board running 0.1.0 (hash
+# 1122...) that accepts an upload into slot 1 (hash aabb...), swaps it in
+# on `os reset` once marked, and confirms it on `state-write --confirm`.
+#
+# The shapes are smpmgr 0.19.0's real ones: `smpmgr [--ip ADDR | --port DEV
+# | --ble ADDR] [--version] <group> <command>`, and `image state-read`'s
+# table is the rich pretty-print of smp 4.1.0's `ImageState` (upper-case
+# hex in a `HashBytes(...)` block) --- the same rendering M3's parser tests
+# pin.
+#
+# State is per-address, in /tmp, so parallel tests each get their own
+# board: `... --ip <unique-address> ...` and the address names the state
+# directory. Every invocation is appended to `<state>/log`, which is what
+# lets a test assert the cycle's stage order.
+
+OLD_HASH=1122334411223344112233441122334411223344112233441122334411223344
+NEW_HASH=AABBCCDDAABBCCDDAABBCCDDAABBCCDDAABBCCDDAABBCCDDAABBCCDDAABBCCDD
+
+# Peel the callback options (smpmgr 0.19.0's main.py: they precede the
+# subcommand).
+ADDR=default
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --version)
+            printf '0.19.0\n'
+            exit 0
+            ;;
+        --ip|--port|--ble)
+            ADDR=$2
+            shift 2
+            ;;
+        --timeout|--mtu|--baudrate|--line-length|--line-buffers)
+            shift 2
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
+
+S="/tmp/chiptui-fake-smpmgr-$ADDR"
+mkdir -p "$S"
+printf '%s\n' "$*" >> "$S/log"
+
+# Every command prints two `rich` status lines before its answer --- captured
+# from smpmgr 0.19.0 against a real board (a XIAO ESP32-C3 over UDP). The
+# leading glyph is a spinner frame, so which one appears varies run to run;
+# the parser has to skip these lines whatever they say, which is the point of
+# emitting them here at all.
+status() {
+    printf '\xe2\xa0\x99 Connecting to %s... OK\n' "$ADDR"
+    printf '\xe2\xa0\x8b Waiting for %s... OK\n' "$1"
+}
+
+state_read() {
+    status 'image states'
+    if [ -f "$S/swapped" ]; then
+        # After the swap: the new image runs from slot 0, unconfirmed
+        # until the flag, and the old one is parked in slot 1.
+        CONFIRMED=False
+        [ -f "$S/confirmed" ] && CONFIRMED=True
+        cat <<EOF
+ImageState(
+    slot=0,
+    version='0.2.0',
+    image=None,
+    hash=HashBytes(
+        '$NEW_HASH'
+    ),
+    bootable=True,
+    pending=False,
+    confirmed=$CONFIRMED,
+    active=True,
+    permanent=$CONFIRMED
+)
+ImageState(
+    slot=1,
+    version='0.1.0',
+    image=None,
+    hash=HashBytes(
+        '$OLD_HASH'
+    ),
+    bootable=True,
+    pending=False,
+    confirmed=True,
+    active=False,
+    permanent=True
+)
+EOF
+    elif [ -f "$S/staged" ]; then
+        # Uploaded and marked: the new image waits in slot 1 for the reset.
+        cat <<EOF
+ImageState(
+    slot=0,
+    version='0.1.0',
+    image=None,
+    hash=HashBytes(
+        '$OLD_HASH'
+    ),
+    bootable=True,
+    pending=False,
+    confirmed=True,
+    active=True,
+    permanent=True
+)
+ImageState(
+    slot=1,
+    version='0.2.0',
+    image=None,
+    hash=HashBytes(
+        '$NEW_HASH'
+    ),
+    bootable=True,
+    pending=True,
+    confirmed=False,
+    active=False,
+    permanent=False
+)
+EOF
+    else
+        cat <<EOF
+ImageState(
+    slot=0,
+    version='0.1.0',
+    image=None,
+    hash=HashBytes(
+        '$OLD_HASH'
+    ),
+    bootable=True,
+    pending=False,
+    confirmed=True,
+    active=True,
+    permanent=True
+)
+EOF
+    fi
+}
+
+case "$*" in
+    "os echo "*)
+        status 'response to EchoWrite'
+        # The real repr, captured: `rich` pretty-prints the whole pydantic
+        # model, header included --- not the one-line form this used to
+        # print. Nothing parses it (a `Probe` answers with its exit status),
+        # but a fake that shortens its tool teaches the next reader wrong.
+        cat <<EOF
+EchoWriteResponse(
+    header=Header(
+        op=<OP.WRITE_RSP: 3>,
+        version=<Version.V2: 1>,
+        flags=<Flag.UNUSED: 0>,
+        length=12,
+        group_id=0,
+        sequence=1,
+        command_id=0
+    ),
+    version=<Version.V2: 1>,
+    sequence=1,
+    smp_data=b'\\x0b\\x00\\x00\\x0c\\x00\\x00\\x01\\x00\\xbfarg${3:-chiptui}\\xff',
+    r='${3:-chiptui}'
+)
+EOF
+        ;;
+    "os reset")
+        status 'response to ResetWrite'
+        # The captured repr: `os reset` answers with the whole pydantic
+        # model, header and raw SMP frame included, like `os echo`.
+        cat <<'EOF'
+ResetWriteResponse(
+    header=Header(
+        op=<OP.WRITE_RSP: 3>,
+        version=<Version.V2: 1>,
+        flags=<Flag.UNUSED: 0>,
+        length=2,
+        group_id=0,
+        sequence=1,
+        command_id=5
+    ),
+    version=<Version.V2: 1>,
+    sequence=1,
+    smp_data=b'\x0b\x00\x00\x02\x00\x00\x01\x05\xbf\xff'
+)
+EOF
+        # MCUboot swaps only a *marked* image; a bare reset changes nothing.
+        # SMPMGR_FAKE_NO_SWAP (the `smpmgr-no-swap` wrapper) models a board
+        # whose bootloader never swaps: the old image comes back up.
+        if [ -f "$S/staged" ] && [ -f "$S/pending" ] && [ -z "$SMPMGR_FAKE_NO_SWAP" ]; then
+            touch "$S/swapped"
+        fi
+        ;;
+    "image upload "*)
+        # An upload prints its connect line and then **nothing at all** until
+        # it is over. Captured 2026-09-07: 1.3 MB over UDP took 25 s and
+        # produced 218 bytes, of which the only progress is one final frame
+        # at 100%. `rich` draws a live bar to a terminal; to a pipe --- which
+        # is how `ProcessManager::spawn` always runs it --- it renders once,
+        # at the end, wrapped to an assumed 80 columns with the size, rate
+        # and ETA ellipsised away. There is no `\r` anywhere in it, and no
+        # intermediate percentage ever arrives.
+        printf '\xe2\xa0\x99 Connecting to %s... OK\n' "$ADDR"
+        # SMPMGR_FAKE_FAIL_UPLOAD (the `smpmgr-fail-upload` wrapper): a link
+        # that dies mid-upload. Silent until it does, like the real one.
+        if [ -n "$SMPMGR_FAKE_FAIL_UPLOAD" ]; then
+            printf 'Connection to device lost\n' >&2
+            exit 1
+        fi
+        # SMPMGR_FAKE_SLOW_UPLOAD (the `smpmgr-slow-upload` wrapper): the
+        # upload a `Stop` has time to land in --- silence is exactly what the
+        # real one offers for those seconds.
+        if [ -n "$SMPMGR_FAKE_SLOW_UPLOAD" ]; then
+            sleep 60
+        fi
+        touch "$S/staged"
+        # The single final frame, reproduced with its truncation: the two
+        # `\u2501` bar cells, the percentage, and the three ellipsised fields
+        # whose remainders wrap onto a line of their own.
+        printf '%s \xe2\x94\x81\xe2\x94\x81 100.0%% \xe2\x80\xa2 1.\xe2\x80\xa6 \xe2\x80\xa2 5\xe2\x80\xa6 \xe2\x80\xa2 0:0\xe2\x80\xa6\n' "$3"
+        printf '%*sMB    k\xe2\x80\xa6       \n' 65 ''
+        ;;
+    "image state-read")
+        state_read
+        # Real smpmgr closes the table with this; nothing reads it, and that
+        # is exactly why the fixture prints it.
+        printf 'splitStatus: 0\n'
+        ;;
+    "image state-write --confirm")
+        # Captured: a state write answers with its two status lines and no
+        # table at all --- 78 bytes. Nothing reads it; the exit status is
+        # the answer.
+        status 'image state write'
+        [ -f "$S/swapped" ] && touch "$S/confirmed"
+        ;;
+    "image state-write "*)
+        status 'image state write'
+        # Marking names the staged image's hash; a wrong one is an error,
+        # the way the server would reject a hash it does not hold.
+        case "$3" in
+            $NEW_HASH) touch "$S/pending" ;;
+            *)
+                printf 'ErrorResponse(rc=2)\n' >&2
+                exit 1
+                ;;
+        esac
+        ;;
+    *)
+        printf 'fake smpmgr: unexpected %s\n' "$*" >&2
+        exit 1
+        ;;
+esac
+exit 0

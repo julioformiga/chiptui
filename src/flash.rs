@@ -10,10 +10,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use crate::backend::micropython::curl::{commands as curl_commands, parse as curl_parse};
-use crate::backend::micropython::esptool::{
+use crate::backend::esptool::{
     ChipFamily, DeviceDetails, FlashFreq, FlashMode, FlashOptions, FlashSize, commands, parse,
 };
+use crate::backend::micropython::curl::{commands as curl_commands, parse as curl_parse};
 use crate::backend::micropython::firmware::{self, BoardCandidate, FirmwareFile, FirmwareKind};
 use crate::backend::tool_available;
 use crate::files::{self, LocalEntry};
@@ -386,6 +386,13 @@ pub struct FlashUpdate {
 }
 
 impl FlashPanel {
+    /// The chip, if detection or an override has named one. Read by the
+    /// build panel's flash path, which may need it for a tool that takes
+    /// `--chip`.
+    pub fn chip_family(&self) -> Option<ChipFamily> {
+        self.chip.family()
+    }
+
     pub fn new(firmware_dir: impl Into<PathBuf>) -> Self {
         Self {
             firmware_dir: firmware_dir.into(),

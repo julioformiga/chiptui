@@ -51,28 +51,11 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 /// and `pip` several hundred; the tail is what explains a failure.
 const OUTPUT_CAPACITY: usize = 2_000;
 
-/// Where a step stands. `Skipped` is the user's answer to the SDK, not a
-/// failure --- it is drawn differently and never blocks what follows.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum StepState {
-    Pending,
-    Running,
-    Done,
-    Failed(String),
-    Skipped,
-}
-
-/// What the panel as a whole is doing, for the state line.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Phase {
-    /// Probing prerequisites, or waiting for the user to start.
-    Idle,
-    Running,
-    /// Every step reached `Done` or `Skipped`.
-    Finished,
-    /// A step failed; the sequence stopped there.
-    Stopped(String),
-}
+/// Where a step stands, and where the sequence does. Defined in
+/// [`crate::stepper`] because the OTA flow has the same shape and neither
+/// should read as depending on the other; re-exported here so every path
+/// that named them through `install` still resolves.
+pub use crate::stepper::{Phase, StepState};
 
 /// What the panel's one action button *is*, right now.
 ///
@@ -142,10 +125,16 @@ impl Action {
     }
 
     /// Whether pressing it does anything. The two that do not are the two
-    /// whose explanation is already on screen: an open prerequisite, and
-    /// nothing left to run.
+    /// whose explanation is already on screen: an open prerequisite.
+    ///
+    /// `Done` used to be dim beside it, which made it a button whose word
+    /// promised an action it refused to perform --- "Done" reads as "close
+    /// this", and `Esc` was the only way out. It closes now. Unlike the OTA
+    /// modal's `Done` it resets nothing: every step's completion is read
+    /// back off the filesystem when the installer is next opened, so there
+    /// is no finished state to clear.
     pub const fn enabled(self) -> bool {
-        !matches!(self, Self::Blocked | Self::Done)
+        !matches!(self, Self::Blocked)
     }
 }
 

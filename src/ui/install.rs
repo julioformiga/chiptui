@@ -22,7 +22,7 @@ use crate::install::{Action, Installer, Phase, Prereq, Probe, Step, StepState};
 
 use super::button::{self, Button};
 use super::workspace::{RowMark, marked_row};
-use super::{Palette, SPINNER, centered, muted_style, tilde_path};
+use super::{Palette, SPINNER, muted_style, tilde_path};
 
 /// The step labels' column (`Update the workspace` is the longest), wider
 /// than the panes' 13 --- these are sentences, not field names.
@@ -38,11 +38,7 @@ const FIXED_ROWS: u16 = 1 + 1 + 1 + 4 + 1 + 1 + 12 + 1 + 1;
 /// rows and the output needs room to be worth reading. Capped so it does
 /// not sprawl on a very wide terminal.
 pub(crate) fn area(body: Rect) -> Rect {
-    centered(
-        body,
-        body.width.saturating_sub(4).min(96),
-        body.height.saturating_sub(2),
-    )
+    super::layout::wide_modal(body)
 }
 
 /// Rows of output the modal can show at `body`'s size --- published so the

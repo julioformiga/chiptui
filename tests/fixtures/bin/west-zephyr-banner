@@ -1,17 +1,32 @@
-#!/bin/sh
+#!/bin/bash
 # Fake `west` whose `espressif monitor` reproduces idf_monitor's real
-# startup shape closely enough to exercise the live version capture's
-# parsing (`AGENTS.md`'s "reproduce the tool, not the belief about it"):
-# its own startup banner first, then --- across a separate output chunk,
-# the same shape a real reboot-then-print would arrive in --- the Zephyr
-# app's own boot banner, which is the only line the parser actually looks
-# for.
+# startup shape closely enough to exercise the live version capture
+# (`AGENTS.md`'s "reproduce the tool, not the belief about it"): its own
+# startup banner first, then *silence* --- a board attached mid-run says
+# nothing on its own, which is exactly why the capture reboots it --- and
+# the application's boot banner only once idf_monitor's own reset command
+# (Ctrl+T Ctrl+R) arrives on stdin. Anything else there is refused, so
+# dropping the reset breaks a test rather than passing.
+#
+# The one bash fixture in this directory, and the reason is the read: the
+# reset is two raw control bytes with no newline behind them, which no
+# POSIX `sh` builtin can take off stdin --- and the workspace env these
+# fakes run under carries a venv-only `PATH`, so `head`/`dd` are not
+# there to fall back on either.
 
 case "$1 $2" in
     "espressif monitor")
         printf -- '--- idf_monitor on %s 115200 ---\n' "$4"
         printf -- '--- Quit: Ctrl+] | Menu: Ctrl+T | Help: Ctrl+T followed by Ctrl+H ---\n'
-        sleep 0.1
+        IFS= read -r -N 2 keys
+        if [ "$keys" != $'\x14\x12' ]; then
+            printf -- '--- fake west: expected the reset command, got something else ---\n'
+            exit 1
+        fi
+        # The reboot the reset provokes, in a chunk of its own: the ROM's
+        # own lines, MCUboot's, then the one line the parser looks for.
+        printf 'ESP-ROM:esp32c3-api1-20210207\n'
+        printf 'I (soc_init): MCUboot 2nd stage bootloader\n'
         printf '*** Booting Zephyr OS build v4.4.0-11847-gc5dffcb7c9da ***\n'
         ;;
     *)

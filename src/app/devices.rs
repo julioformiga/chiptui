@@ -83,6 +83,26 @@ impl App {
             self.focus = Focus::FilesDevice;
             return;
         }
+        // A backend whose environment is not answered yet starts on the
+        // pane that asks. The Environment pane is deliberately off the
+        // `Tab` tour, so landing on Files while all four of its rows read
+        // `□ ?` left the one pane with something to do the hardest to
+        // reach --- and `first_open_project_row` exists for exactly this
+        // cursor. Once the questions are answered, nothing changes: the
+        // tour's first stop is the fallback, as before.
+        if self
+            .manager
+            .capabilities()
+            .contains(Capability::WorkspaceSync)
+            && let Some(row) = self
+                .project_rows()
+                .iter()
+                .position(|row| self.project_row_open(*row))
+        {
+            self.project_cursor = row;
+            self.focus = Focus::Project;
+            return;
+        }
         self.focus = self.fallback_pane();
     }
 
@@ -713,6 +733,17 @@ impl App {
         // backend, the workspace pane for a build one) instead of merely
         // clamping --- the user has not navigated anywhere yet to keep.
         self.place_startup_focus();
+        // And then the environment's own first question, which until now
+        // the from-zero path never got asked at all. `main.rs` calls this
+        // right after `maybe_open_project_setup`, where it does nothing
+        // twice over: the prompt's overlay is open, and there is no
+        // workspace panel yet to be unresolved. So starting inside an
+        // existing Zephyr app asked "Where is the Zephyr installation?"
+        // immediately, while `mkdir x && cd x && chiptui` --- the path a
+        // new user actually takes --- landed on four unanswered rows and
+        // no prompt. `ensure_workspace_panel` above is what makes the
+        // question answerable here.
+        self.maybe_open_workspace_picker();
     }
 
     /// The facts [`crate::backend::MonitorContext`] needs, gathered once and
@@ -791,6 +822,13 @@ impl App {
                 command
             }) {
             Some(command) => {
+                // Which monitor this is decides what the footer may offer:
+                // only idf_monitor has a reboot chord, and only it needs
+                // one (see `App::device_monitor_is_platform`). The command
+                // the backend returned is the answer --- mpremote's REPL or
+                // the platform's own monitor.
+                self.device_monitor_is_platform =
+                    command.program() != crate::backend::micropython::commands::PROGRAM;
                 // Otherwise the process starts receiving keystrokes only once the
                 // user separately tabs over to the pane that just opened for it.
                 self.focus = super::Focus::Logs;

@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
 use crate::backend::BackendKind;
+use crate::backend::zephyr::flash_method::FlashMethod;
 use crate::browser::Side;
 use crate::build::BuildAction;
 use crate::device::ScriptState;
@@ -258,6 +259,20 @@ impl App {
                 );
             }
             Overlay::ZephyrInstall => self.on_install_key(key),
+            Overlay::Ota => self.on_ota_key(key),
+            Overlay::OtaAddress { input } => self.on_ota_address_key(key, input),
+            Overlay::OtaTransport { selected } => self.on_ota_transport_key(key, selected),
+            Overlay::ConfirmOta { what, confirm } => {
+                self.dispatch_confirm(
+                    key.code,
+                    confirm,
+                    move |app, confirm| {
+                        app.overlay = Some(Overlay::ConfirmOta { what, confirm });
+                    },
+                    move |app| app.accept_ota_confirm(what),
+                    |app| app.decline_ota_confirm(),
+                );
+            }
             Overlay::SdkToolchains { selected } => self.on_sdk_toolchains_key(key, selected),
             Overlay::FirmwarePicker { selected } => {
                 let count = self
@@ -289,8 +304,15 @@ impl App {
                 match key.code {
                     // No `q`/esc-cancels-quietly here: leaving this open
                     // means the project stays unrecognized, which is exactly
-                    // what re-running detection will ask about again.
-                    KeyCode::Esc | KeyCode::Char('q') => self.overlay = None,
+                    // what re-running detection will ask about again --- so
+                    // the log says so. Dismissing used to leave a dashboard
+                    // with no backend, no rows and no action, and nothing
+                    // anywhere naming the key that asks again.
+                    KeyCode::Esc | KeyCode::Char('q') => {
+                        self.overlay = None;
+                        self.logs
+                            .info("no project type chosen — press r to be asked again");
+                    }
                     KeyCode::Up | KeyCode::Char('k') => {
                         self.overlay = Some(Overlay::ProjectSetup {
                             selected: (selected + count - 1) % count,
@@ -986,6 +1008,57 @@ impl App {
                     _ => {}
                 }
             }
+            Overlay::FlashMethod { rows, selected } => {
+                // The stacked-menu grammar again: arrows and `Enter`, `q`
+                // free to close because no letter means anything here.
+                let count = rows.len();
+                let step = |app: &mut Self, selected: usize| {
+                    app.overlay = Some(Overlay::FlashMethod {
+                        rows: rows.clone(),
+                        selected,
+                    });
+                };
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('q') => self.overlay = None,
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        step(self, (selected + count - 1) % count);
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => step(self, (selected + 1) % count),
+                    KeyCode::Enter => {
+                        let Some(row) = rows.get(selected) else {
+                            return;
+                        };
+                        // A dimmed row is a no-op, the stacked-button rule
+                        // --- and never a silent one here: the reason is
+                        // drawn on the row's own second line, which is why
+                        // this menu opens even when only one path can run.
+                        if !row.enabled {
+                            return;
+                        }
+                        match row.method {
+                            FlashMethod::Usb => {
+                                // The §15 confirm, unchanged: this menu
+                                // chooses the path, it does not start a
+                                // command.
+                                self.overlay = Some(Overlay::ConfirmBuild {
+                                    action: BuildAction::Flash,
+                                    confirm: false,
+                                });
+                            }
+                            // The modal replaces the menu --- it is the
+                            // window this row leads to. Closed first so a
+                            // refusal (a project with no board answer)
+                            // lands in a log the user can see rather than
+                            // behind a menu that did not react.
+                            FlashMethod::Ota => {
+                                self.overlay = None;
+                                self.open_ota();
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
             Overlay::RestoreDeviceScript {
                 selected,
                 return_to_packages,
@@ -1056,6 +1129,7 @@ fn is_help_reachable_overlay(overlay: &Overlay) -> bool {
     // someone answers the question here.
     match overlay {
         Overlay::RenameEntry { .. }
+        | Overlay::OtaAddress { .. }
         | Overlay::DirPicker { .. }
         | Overlay::BuildTarget { .. }
         | Overlay::ProjectPicker { .. }
@@ -1066,6 +1140,8 @@ fn is_help_reachable_overlay(overlay: &Overlay) -> bool {
         | Overlay::FileActions { .. }
         | Overlay::RestoreDeviceScript { .. }
         | Overlay::ZephyrActions { .. }
+        | Overlay::FlashMethod { .. }
+        | Overlay::OtaTransport { .. }
         | Overlay::BoardPicker { .. }
         | Overlay::ShieldPicker { .. }
         | Overlay::Packages
@@ -1090,6 +1166,8 @@ fn is_help_reachable_overlay(overlay: &Overlay) -> bool {
         | Overlay::SyncPreview { .. }
         | Overlay::SdkToolchains { .. }
         | Overlay::ZephyrInstall
+        | Overlay::Ota
+        | Overlay::ConfirmOta { .. }
         | Overlay::CreateEntry { .. }
         | Overlay::FileViewer => false,
     }
@@ -1105,6 +1183,7 @@ fn is_text_entry_overlay(overlay: &Overlay) -> bool {
         Overlay::Help { .. }
         | Overlay::RenameEntry { .. }
         | Overlay::CreateEntry { .. }
+        | Overlay::OtaAddress { .. }
         | Overlay::BoardPicker { .. }
         | Overlay::ShieldPicker { .. }
         | Overlay::Packages
@@ -1112,6 +1191,7 @@ fn is_text_entry_overlay(overlay: &Overlay) -> bool {
         Overlay::DirPicker { .. }
         | Overlay::ProjectPicker { .. }
         | Overlay::BuildTarget { .. }
+        | Overlay::OtaTransport { .. }
         | Overlay::DevicePicker { .. }
         | Overlay::ThemePicker { .. }
         | Overlay::FirmwarePicker { .. }
@@ -1119,6 +1199,7 @@ fn is_text_entry_overlay(overlay: &Overlay) -> bool {
         | Overlay::FileActions { .. }
         | Overlay::RestoreDeviceScript { .. }
         | Overlay::ZephyrActions { .. }
+        | Overlay::FlashMethod { .. }
         | Overlay::Confirm { .. }
         | Overlay::ConfirmBuild { .. }
         | Overlay::ConfirmDownloadOverwrite { .. }
@@ -1135,6 +1216,8 @@ fn is_text_entry_overlay(overlay: &Overlay) -> bool {
         | Overlay::SyncPreview { .. }
         | Overlay::SdkToolchains { .. }
         | Overlay::ZephyrInstall
+        | Overlay::Ota
+        | Overlay::ConfirmOta { .. }
         | Overlay::FileViewer => false,
     }
 }
@@ -1417,6 +1500,28 @@ pub enum Overlay {
     /// itself a choice: giving up on "what to run" has no implicit action
     /// the way giving up on "how to restore" does.
     ZephyrActions { selected: usize },
+    /// How firmware reaches the board: over the cable, or over the air.
+    ///
+    /// The one door `Flash` opens (`SPEC.md` §10). It replaced three
+    /// unrelated ones --- the `Flash` row went straight to its confirm, and
+    /// OTA hung off an `o` key and a menu row that nothing on the pane
+    /// pointed at --- so the question is now asked in one place, every time,
+    /// the way [`Self::BuildTarget`] asks where a build runs.
+    ///
+    /// A stacked-button menu in [`Self::ZephyrActions`]' grammar. Unlike
+    /// every other menu here it carries its own rows rather than deriving
+    /// them at draw time: resolving the wired one means reading
+    /// `runners.yaml`, `domains.yaml` and the build's devicetree
+    /// ([`crate::backend::zephyr::flash_plan::plan`]), which is not work for
+    /// the draw path once per frame. The snapshot is safe because none of
+    /// its facts can move while it is up: the hotplug poll is suppressed
+    /// under an open overlay, so a board plugged in now is seen when the
+    /// menu closes.
+    FlashMethod {
+        rows: [crate::backend::zephyr::flash_method::MethodRow;
+            crate::backend::zephyr::flash_method::COUNT],
+        selected: usize,
+    },
     /// The Zephyr installer: prerequisites, the sequence, and the running
     /// step's output. Carries nothing at all --- every piece of its state
     /// lives on [`App::installer`], which is what lets the panel keep a
@@ -1447,4 +1552,34 @@ pub enum Overlay {
         reason: String,
         confirm: bool,
     },
+    /// The OTA modal: target, requirements, the prepare steps, the update
+    /// stages, and the running stage's output. Carries nothing at all ---
+    /// every piece of its state lives on [`App::ota`], which is what lets
+    /// the panel keep a process slot and an output buffer while the overlay
+    /// value is rebuilt on each keystroke (the rule [`Self::ZephyrInstall`]
+    /// and [`Self::Packages`] already follow).
+    Ota,
+    /// The device address entry (`OtaAction::SetAddress`): free text, the
+    /// [`Self::CreateEntry`] grammar. Replaces [`Self::Ota`] and hands it
+    /// back on either answer.
+    OtaAddress {
+        /// The edit buffer, pre-filled with the current answer.
+        input: String,
+    },
+    /// One of the OTA flow's three destructive questions (`SPEC.md` §15's
+    /// grammar: title as a question, target, consequence, the literal
+    /// command). Replaces [`Self::Ota`] and hands it back on either answer.
+    ConfirmOta {
+        what: crate::ota::update::OtaConfirm,
+        confirm: bool,
+    },
+    /// The transport picker (`t` on the OTA modal): which line the update
+    /// travels over, which is also what decides the Kconfig block the
+    /// prepare writes. A stacked-button menu in [`Self::ZephyrActions`]'
+    /// grammar, opened on the current answer.
+    ///
+    /// Not a confirm: choosing a transport writes only `[ota]`, and the
+    /// Kconfig block it makes stale is rewritten under the prepare's own
+    /// confirm. Replaces [`Self::Ota`] and hands it back either way.
+    OtaTransport { selected: usize },
 }

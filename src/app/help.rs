@@ -393,7 +393,7 @@ const DASHBOARD_COMMANDS: [HelpBinding; 28] = [
     ),
     action(
         "x",
-        "open the device pane's Actions tab",
+        "flash: the menu, or the device pane's Actions tab",
         KeyCode::Char('x'),
         &[site(
             "x",
@@ -1281,7 +1281,16 @@ impl App {
         // `on_key` intercepts it ahead of this capture, so it still reaches
         // `toggle_row3_fullscreen` rather than the pty.
         if self.is_monitor_active() {
-            return vec![("ctrl+f", "fullscreen"), ("ctrl+]", "exit REPL/monitor")];
+            let mut keys = vec![("ctrl+f", "fullscreen"), ("ctrl+]", "exit REPL/monitor")];
+            // The platform monitor attaches without resetting the board, so
+            // an application that only speaks at boot has already said
+            // everything it was going to say. idf_monitor's own chord is
+            // what makes it talk, and it reaches the session untouched like
+            // every other key --- the footer is where the user finds out.
+            if self.device_monitor_is_platform {
+                keys.push(("ctrl+t ctrl+r", "reboot board"));
+            }
+            return keys;
         }
         // The same truth for the Terminal tab's shell: while it owns the
         // keyboard only two escapes exist --- the shell's own exit (`ctrl+d`
@@ -1319,9 +1328,35 @@ impl App {
                     vec![("r", "re-check"), ("s", "skip SDK"), ("t", "toolchains")]
                 }
             }
-            Some(Overlay::ConfirmInstallHere { .. } | Overlay::ConfirmRemovePackage { .. }) => {
+            Some(Overlay::Ota) => {
+                if self
+                    .ota
+                    .as_ref()
+                    .is_some_and(crate::ota::update::OtaPanel::is_busy)
+                {
+                    // The panel's own Stop button carries the way out, like
+                    // the installer's.
+                    vec![]
+                } else {
+                    vec![
+                        ("r", "re-check"),
+                        ("s", "net shell"),
+                        ("t", "transport"),
+                        ("p", "probe"),
+                    ]
+                }
+            }
+            // A stacked menu answered by the arrows and `Enter`, like
+            // `ZephyrActions`; nothing here a reader cannot guess.
+            Some(Overlay::OtaTransport { .. }) => vec![],
+            Some(
+                Overlay::ConfirmInstallHere { .. }
+                | Overlay::ConfirmRemovePackage { .. }
+                | Overlay::ConfirmOta { .. },
+            ) => {
                 vec![("y/n", "quick reply")]
             }
+            Some(Overlay::OtaAddress { .. }) => vec![("enter", "save address")],
             Some(Overlay::SdkToolchains { .. }) => vec![("space", "toggle")],
             Some(Overlay::FileViewer) => vec![("e", "edit with $EDITOR")],
             // The trailing-/ convention is the one thing a user cannot
@@ -1372,6 +1407,7 @@ impl App {
                 | Overlay::ProjectSetup { .. }
                 | Overlay::FileActions { .. }
                 | Overlay::RestoreDeviceScript { .. }
+                | Overlay::FlashMethod { .. }
                 | Overlay::ZephyrActions { .. },
             ) => vec![("?", "help")],
             Some(

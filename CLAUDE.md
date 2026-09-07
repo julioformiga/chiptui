@@ -20,7 +20,8 @@ the dashboard returns to the list (`App::request_home_screen` → `Overlay::Conf
 when commands are running → `switch_requested`, read by `main.rs`, which drops the `App` and with
 it every child process). Answering the backend prompt writes the backend's own starting layout
 (`Backend::scaffold` → `project::scaffold::create`, never overwriting) and records the project;
-it no longer creates a `chiptui.toml`.
+it no longer creates a `chiptui.toml` to record detection (an explicit
+action may write one surgically --- see the OTA section).
 
 Phase 1 of `SPEC.md` §17 is done (core, TUI, detection, backend registry, capabilities), plus the
 process manager and the first real device operation: a dual-pane local/device **file browser** for
@@ -402,14 +403,21 @@ The **workspace pane**
 half: it resolves the Zephyr *installation* (`src/backend/zephyr/workspace.rs`) from
 configuration and nowhere else --- `chiptui.toml`'s `[zephyr] workspace`, then the user
 config `~/.config/chiptui/config.toml` (both parsed by `src/settings.rs`); no directory
-conventions, no `$ZEPHYR_BASE`. Startup focus lands on this pane (`App::place_startup_focus`, after
-`maybe_scan_devices` in `main.rs`): the environment questions come first --- unless the device pane
-carries the Project actions strip (MicroPython), which starts there instead: the tab's stack sizes
-the row, its panel is created (no board plugged in means no background query ever will), and the
-empty-project prompt's answer (`apply_project_setup`) places focus the same way, being the
-backend's first entry too. When nothing is
+conventions, no `$ZEPHYR_BASE`. Startup focus (`App::place_startup_focus`, after
+`maybe_scan_devices` in `main.rs`) lands on whichever pane holds the first thing to do: the
+device pane's Project actions strip for MicroPython (the tab's stack sizes the row, its panel
+is created --- no board plugged in means no background query ever will), the **Environment
+pane** for a `WorkspaceSync` backend with any checklist row still open, cursor on
+`first_open_project_row`, and the tour's own first stop otherwise. That middle case is the
+one that used to be missing: the Environment pane is deliberately off the `Tab` tour, so
+landing on Files while all four of its rows read `□ ?` made the only pane with anything to do
+the hardest one to reach, at the exact moment it held every remaining question. When nothing is
 configured, `main.rs` calls
-`maybe_open_workspace_picker` right after: `Overlay::DirPicker` is a real
+`maybe_open_workspace_picker` right after --- **and so does `apply_project_setup`**, which is
+the whole from-zero path: `main.rs` asks between the two moments the call can do nothing (the
+prompt's overlay is open, and no workspace panel exists yet), so starting inside an existing
+Zephyr app was asked immediately while `mkdir x && cd x && chiptui` was never asked at all.
+`Overlay::DirPicker` is a real
 filesystem browser (`workspace::dir_rows`, starting at `$HOME`) where the user navigates
 to the installation and accepts it; descending lands on the "use this directory" row so
 the reflex `Enter` accepts the folder just entered. The accepted directory is validated by
@@ -557,8 +565,17 @@ failures so `Retry` can resume them, and searching from 0 would re-run the
 failure forever. A fatal stop still calls `App::salvage_installation`, which
 records the workspace when `install_state` says it is already `Complete`, so a
 late failure never discards a good `west init` + `west update`. `esc` is ignored while a step runs --- `Stop` is the way out. A finished
-run writes `[zephyr] workspace` (+ `sdk`), re-resolves, and chains into the
-projects-folder picker. Its four-state row grammar (`✓ ⚠ ✗ □`) is the shared
+run writes `[zephyr] workspace` (+ `sdk`) and re-resolves *the moment the last
+step lands* (`finish_install`), but the modal **stays up**: it used to close
+itself and throw the projects picker over the space, so a run of many minutes
+ended by having its window yanked away with the finished checklist and the last
+of the output never seen --- and, structurally, that made `Action::Done`
+unreachable, since the one moment `action()` would answer it was the moment the
+window vanished. The button reads `✓ Done`, and the chain into the
+projects-folder picker moved to the way out (`close_installer`, shared by
+`Enter` on `Done`, `esc`/`q` and a click outside, so the two doors cannot
+drift; the panel is dropped there because `open_installer` always builds a
+fresh one anyway --- every step's completion is read back off the filesystem). Its four-state row grammar (`✓ ⚠ ✗ □`) is the shared
 `ui::workspace::marked_row`, which `checklist_row` now delegates to. The **Files**
 pane (the old workspace pane, `src/ui/workspace.rs`) is the project's own listing, whole:
 its title carries the walked path (`Files: proj/src/`, never truncating the
@@ -731,7 +748,18 @@ share is one reader now, `src/backend/zephyr/yaml.rs`.
 
 Both pickers are
 full-frame modals (`src/ui/overlay.rs`'s shared `draw_docs_picker`): the window fills the frame
-minus one column per side and two rows above and below, and the geometry is one definition in
+minus one column per side and two rows above and below --- the same *width* the installer and
+OTA modals now take (`ui::layout::wide_modal`, one definition for the pair; they keep two more
+rows of height for their step lists and output panes). That width is load-bearing, not
+cosmetic: at their old `width - 4` those two opened on column 2, which is the **second** cell
+of the file panes' two-cell `📁`/`📄`, and ratatui never draws the cell a wide glyph covers ---
+so the modal's left border went missing and the emoji spilled across it. Column 1 is the
+glyph's *first* cell, which the popup owns and `Clear` erases. The general guard is
+`ui::clear_straddling_glyphs`, run over every popup (and the flash dialog) before it draws: it
+blanks a genuinely wide glyph in the column immediately left of the box --- and only there,
+since a glyph starting on the popup's last column is overwritten by the border itself and one
+past the right edge covers nothing --- so no future geometry can bring the bleed back. The
+geometry is one definition in
 `ui::layout::docs_picker` shared with the click hit-testing (like the dashboard's own tree).
 Under a search line (the icon set's `⌕` magnifier standing in for the old `filter` label) and the
 hint, the body fixes its left column at 32 columns — the west list with the row's *preview* (its
@@ -763,7 +791,28 @@ fully offline (tests inject `BoardDocs::set_fetch` and never touch the network).
 re-derives both answers for the project switched to (`App::set_project_root`). `Flash`
 (`west flash`, the board's own
 runner from `runner.yml` — never a hard-coded programmer) sits last under
-`Capability::Flash`, always behind `Overlay::ConfirmBuild` (destructive); the dashboard's `x`
+`Capability::Flash`, always behind `Overlay::ConfirmBuild` (destructive) — but the row's
+own press asks **which way** first, since writing firmware over the cable and writing it
+over the air are one intent and the pane said nothing about which a press would take
+(`App::open_flash_method` → `Overlay::FlashMethod`, whose two rows come from
+`backend::zephyr::flash_method::rows`, a pure function of what is plugged in, the project's
+`[ota] transport` and `flash_plan::plan`'s verdict). `Flash over USB` leads into that same
+confirm; `OTA update (<transport>)` opens the modal, which decides prepare-vs-update on its
+own. The menu opens **every** time and even when only one row can run — a dimmed row with
+its reason on its own second line (`Button::detail_color`, warning over the muted
+descriptions) is the only place the user reads why the other way is unavailable, so skipping
+the question would take that sentence away exactly when it is needed; `Enter` on a dimmed
+row is a no-op, and a click presses through that same `Enter` so the gate lives in one
+place. Only a *serial* transport rides the cable this menu asks about (a UDP/BLE row stays
+live with nothing plugged in), and an unresolvable plan does not dim the wired row: that
+refusal is a sentence about the build directory, and the confirm behind the row already
+shows it where the command goes — saying it twice would read as two problems. The rows are
+resolved once, at open, and *carried by the overlay* (the `FileActions` snapshot precedent,
+not the carries-nothing one): the wired row costs a walk through `runners.yaml`,
+`domains.yaml` and the devicetree, which is not draw-path work, and nothing it reads can
+move while the menu is up since the hotplug poll is suppressed under an open overlay. A
+backend without `Capability::OtaUpdate` has one path and no question, so it goes straight to
+the confirm. The dashboard's `x`
 routes a build-panel backend there instead of esptool's dialog, and the "Device Info" pane shows
 esptool's report for any backend whose board answers the background `chip-id` query (Zephyr
 included; the query itself asks first — see the identification-authorization paragraph below —
@@ -811,6 +860,112 @@ instead of sitting at a stale answer. With that,
 Zephyr's Phase 3 surface (detect, board, build, clean, flash, monitor) plus its environment
 layer (workspace/venv/SDK resolution, menuconfig, build dirs, `west update`)
 is complete; debug/signing remain Roadmap items.
+
+**Over-the-air updates** (`src/ota/`, `src/ui/ota.rs`, `src/app/ota_view.rs`) are one
+modal behind `Capability::OtaPrepare`/`OtaUpdate`, opened by the `Flash` row's one question
+(`Overlay::FlashMethod`, above) and from nowhere else — the `o` key, the `Zephyr Actions`
+fifth row and the help launcher's replay of that key are gone with the scattering they were:
+three doors onto the over-the-air half while the `Flash` button beside them wrote firmware
+without ever mentioning it existed. It carries nothing (`Overlay::Ota`, the
+`ZephyrInstall`/`Packages` rule) --- `App::ota` holds the panel, its process slot and its
+output buffer. Prepare-vs-update is **not** the user's choice: an unprepared project cannot
+update and a prepared one has nothing to prepare, so `OtaPanel::action` decides and the one
+button says what it decided (`OtaAction`, `install::Action`'s one-decision rule: label,
+enabled-ness and effect read by the renderer and the key handler from the same call). The
+three questions it asks --- prepare, update, confirm --- are one `Overlay::ConfirmOta` in
+the §15 destructive grammar, and `Overlay::OtaAddress` is the address entry; both *replace*
+`Overlay::Ota` and hand it back on either answer, the one-deep-slot discipline.
+**Preparing** (`src/ota/prepare.rs`) is the installer's shape --- `src/stepper.rs`'s
+`StepState`/`Phase`, extracted from `install.rs` for exactly this --- with one stated
+divergence: every step is a synchronous filesystem write that settles immediately, and the
+only process it runs is the `smpmgr` requirement probe (detected and reported, never
+installed; `pipx install smpmgr` is the hint and a missing one blocks). It writes
+`sysbuild.conf`, `VERSION` (only when absent --- one that exists but fails
+`cmake/modules/version.cmake`'s own four-field 0--255 contract is a named refusal, never an
+overwrite), the Kconfig block into `boards/<target>.conf` (never `prj.conf`: a hardware
+symbol there breaks the simulator build) and `[ota]` into `chiptui.toml`. The Kconfig and
+sysbuild writes go through `scaffold`'s **guarded block** --- the primitive `scaffold::create`
+lacks, since a fragment the project already has must be *extended*: a managed region between
+`# >>> chiptui:ota` markers, everything outside byte-identical, an unclosed or duplicated
+marker an `Err` rather than a guess, and `already_done` read off the content
+(`block_matches`) so a re-run is a no-op with every step `Done`. The slot precondition comes
+from the build's own devicetree (`report::partitions::FlashLayout::supports_ab`/
+`missing_for_ab`) and a project never built reports `not checked` **without blocking** ---
+refusing to prepare it would be ChipTUI asserting slots it cannot see (parsing the board's
+`.dts` sources under `$ZEPHYR_BASE` was rejected: they are `#include`-based preprocessor
+input, and a reader for them would be a second devicetree implementation that is wrong for
+any board whose partitions arrive via a shield or an overlay).
+The modal serves the **board's** build directory --- `BuildPanel::flash_build_dir`, never
+`build_dir` (the last build): a host build produces an executable and no bootloader swaps
+one, the same reason `Flash` never follows the last build. Reading `build_dir` left a project
+with a `native_sim` target reporting `Build first` for as long as the session's last build had
+been the simulator, since `build_sim/` has no `domains.yaml` and no signed image resolves out
+of it --- and rebuilding the board did not help, because the modal was not looking there.
+**Updating** (`src/ota/update.rs`) walks the *driver's* declared stages, never a hard-coded
+list: `OtaMethodDriver` (`src/ota/mod.rs`) is the seam, `src/ota/registry.rs` the table of
+`&'static dyn` unit structs, and `src/ota/mcumgr.rs` the first driver --- this feature's
+`zephyr/commands.rs`, where every `smpmgr` invocation is built and nowhere else
+(`--ip`/`--port`/`--ble` per transport, a missing address refused by name). Its seven stages
+are `Probe, Upload, ReadState, MarkPending, Reset, Verify, Confirm`, each with its own
+`OtaStage::timeout` (an upload is minutes, a state read answers in a heartbeat or not at
+all) and the bootloader's swap modelled as `OtaStage::settle` *after* the reset --- there is
+no command to wait on. That settle is **90 s and measured**: it was 45 s from the hand-run
+notes until a full cycle against real hardware had the board answering again at 58 s for a
+1.3 MB image, which would have run `Verify` into a board still swapping and reported `Retry`
+on an update that had worked. A swap moves both images, so the figure scales with image size
+and the constant carries headroom over the measurement rather than matching it --- a
+too-long settle costs a countdown on a board already back, a too-short one misreports a
+success as a failure. `read_answer` reads slot 1's hash for `ReadState` and
+**slot 0's for `Verify`**: the image keeps its hash across the swap, so the verify half
+compares against the hash `MarkPending` armed, and a `Verify` reporting the old one is a
+named failure rather than a silent pass. **The runner halts in front of `Confirm`**: a
+verified swap leaves the image unconfirmed, the button becomes `OtaAction::ConfirmImage` and
+the state line says in `palette.warning` that the next reset reverts. Auto-confirming would
+spend the safety net the mechanism exists to provide --- and so, less obviously, did
+*closing the window*: `Esc` used to drop `App::ota` and `OtaPanel::new` starts
+`awaiting_confirm: false`, so reopening offered to update a board whose running image would
+revert. The overlay closes, the panel **stays**; `open_ota` reuses one that still `serves`
+the same root/board/build directory, refreshing only the synchronous facts (slots, image) ---
+never the requirement probe, whose subprocess would read a dim `Blocked` over the very halt
+the reopen exists to show (`r` is the key that asks again). A retry names *what* it retries
+(`RetryPrepare`/`RetryUpdate`/`RetryConfirm`, each carrying its question through
+`OtaAction::confirm`): one shared `Retry` labelled itself `"Update"` while routing to
+whichever question had failed, so a failed confirm showed a button whose word contradicted
+its effect. `Blocked` names which of its three preconditions is holding the button down, and
+the A/B slot check is a *row* (`slot0/slot1`, the `SlotCheck` three states) --- it gated the
+button while being drawn nowhere, so a blocked panel showed a green checklist and pointed at
+a requirement that read fine. `Rebuild` (the old dim `BuildFirst`) runs the pristine sysbuild
+build through the *build panel's* slot, closing the modal first. `p` probes the board alone
+--- no confirm, `os echo` is a read, and it is a one-shot (`Run::chain`) or success would
+chain straight into an upload nobody agreed to; `t` opens `Overlay::OtaTransport`, and
+`Prepare::set_config` re-derives *every* step afterwards, since the transport decides the
+Kconfig body. The net shell toggles both ways now
+(`scaffold::remove_block`, `upsert_block`'s exact counterpart): `s` records the answer, the
+prepare's own confirm performs it. The state line reports a stopwatch and
+no percentage on purpose: `smpmgr`'s upload prints nothing between its connect line and a
+single final frame (captured --- see the testing section), so `McumgrDriver::progress` answers
+`None` rather than letting `progress::detect` match that frame by accident.
+
+**`west flash` is broken for sysbuild on the esp32 runner** --- the trap the whole flash half
+was built around. It writes only the default domain (the application) and leaves `0x0`
+holding whatever was there; `west flash --domain mcuboot` writes MCUboot *to the
+application's address*. Either way the board boots nothing and prints nothing, which reads
+like dead hardware. So the flash is a decision, not a constant: `zephyr::flash_plan::plan`
+answers `Delegate` for an unreadable `runners.yaml`, a `flash-runner` that is not `esp32`,
+or a build with no `domains.yaml` (whose *existence* is the marker that a build directory is
+a sysbuild one, and whose `default` names the application domain so the signed image is
+found without guessing), and otherwise `Images` --- MCUboot at `boot_partition`'s address
+and the signed app at `slot0_partition`'s, **read from the devicetree, never tabulated**.
+Anything unresolvable is an `Err` phrased as a sentence, never a fallback to `Delegate`: on
+the one family this exists for, delegating is the broken path, and the confirm dialog shows
+the refusal where it would show the command so the user reads *why* before saying yes. The
+images go out in **one** `esptool` invocation (`esptool::commands::write_flash_images`, of
+which the single-image `write_flash` is a one-element call) --- one connection, one reset, so
+a board is never left holding half a set. `--sysbuild` rides only on a *configuration* (a
+first build or any `--pristine` rebuild), never on an incremental one, and `--no-sysbuild` is
+deliberately never emitted; `BuildPanel::sysbuild()` answers from `sysbuild.conf` existing
+rather than a remembered setting. `backend/esptool/` sits outside `backend/micropython/` for
+this reason: it is a chip tool, not a MicroPython one, and the Zephyr flash path uses it too.
 
 The **build dashboard** (`Overlay::BuildDashboard`, `src/build_dashboard.rs`,
 `src/ui/build_dashboard.rs`, `src/app/build_dashboard_view.rs`) is `west build -t
@@ -986,13 +1141,19 @@ These are the decisions that shape most code, and getting them wrong causes wide
   `[projects]` and `[[project]]` blocks) are parsed by tolerant hand-rolled parsers
   (`src/project/config.rs`, `src/settings.rs`) — still no TOML dependency, per the same bias as
   the other one-shape parsers.
-- **Nothing is written into a project directory except its own sources.** ChipTUI *reads* a
-  project's `chiptui.toml` (and lets it outrank everything) but never creates one; the persisted
+- **Nothing is written into a project directory by a passive act.** ChipTUI *reads* a
+  project's `chiptui.toml` (and lets it outrank everything) and never writes it to record
+  something it worked out on its own; the persisted
   "this directory is a Zephyr project" lives in the user config's `[[project]]` registry
   (`settings::ProjectRegistry`, fed into `ProjectManager::set_known_projects` and consulted by
   `detect_from_known` as `DetectionSource::Registered`, just under `Config`).
   `App::record_open_project` is the one place a project is recorded, and `main.rs` calls it for
-  every route. The registry file is rewritten on every project open, so `settings::write_config`
+  every route. What an *explicit* action answers is different: preparing a project for OTA
+  writes `sysbuild.conf`, `VERSION`, a Kconfig block and an `[ota]` section, and
+  `project::config::set_key` records the last of those through `settings::upsert_key` +
+  `settings::write_config` — shared, not copied, because that pair *is* the preservation and
+  atomicity guarantee and two copies would drift into two definitions of "preserve".
+  The registry file is rewritten on every project open, so `settings::write_config`
   is atomic (tmp + rename) — it carries `[zephyr]` too. Tests that answer the empty-project
   prompt **must** `set_home_dir` first, or they write into the developer's real config.
 - **The renderer publishes `App::log_viewport`** each frame so page-scrolling matches the drawn
@@ -1211,7 +1372,16 @@ These are the decisions that shape most code, and getting them wrong causes wide
   case-insensitive banner strings — MicroPython-on-Zephyr reads as Zephyr, the structural
   truth — then the `esp_app_desc_t` magic `0xABCD5432` scanned in the *app* region names a
   plain ESP-IDF app; bootloader bytes never classify anything, since the ESP-IDF bootloader
-  is shared by all three firmwares), and the answer lands on its own row of the Device Info
+  is shared by all three firmwares --- **except MCUboot's own**
+  (`firmware_id::MCUBOOT_BANNER`, the sentence `MCUboot 2nd stage bootloader`), which is the
+  only thing a Zephyr *sysbuild* board leaves inside the window at all: its partitions live in
+  the devicetree, so no ESP-IDF table is written for the label rule to read; MCUboot itself
+  never says "Zephyr"; and the stock `partitions_0x0_default_4M.dtsi` layout puts `image-0` at
+  `0x20000` --- exactly the byte `READ_SIZE` ends on --- with the application's own
+  `*** Booting Zephyr OS build … ***` a further megabyte in (`0x131068` on the ESP32-C3 this
+  was read off). Without that rule every such board reported `Firmware: undefined` under a
+  green `Identify firmware: done`. Matching the whole sentence rather than the bare word keeps
+  a passing mention of MCUboot from naming a firmware), and the answer lands on its own row of the Device Info
   pane, directly under the MAC, as `Firmware: MicroPython|Zephyr|ESP-IDF`
   (`DeviceDetails::firmware`) --- the verdict carries the version the *same read* found
   (`firmware_id::version`: the `MicroPython v1.28.0 on …` / `*** Booting Zephyr OS build
@@ -1227,12 +1397,28 @@ These are the decisions that shape most code, and getting them wrong causes wide
   --- a round display driven by LVGL, same chip --- pushed the banner to 0xd06a8, past even a
   widened 1 MiB byte-window guess). Guessing a bigger window only ever buys one more size before
   the next app outgrows it, so a versionless Zephyr verdict tries a live answer first
-  (`App::start_version_capture`, `src/app/version_capture.rs`): `esptool` has already reset the
-  board back into run mode to perform the identification read, so the app reboots and prints its
-  own boot banner on the UART regardless of image size or where in flash it physically sits ---
-  the same trick `App::mpy_version` already uses for MicroPython's live REPL banner, generalized
-  to Zephyr's own platform monitor (`west espressif monitor`, not `mpremote`) instead of a second
-  flash read. The capture is a short-lived, self-closing PTY session modeled on
+  (`App::start_version_capture`, `src/app/version_capture.rs`): a Zephyr image prints its own
+  boot banner on the UART *every time it boots*, regardless of image size or where in flash it
+  physically sits --- the same trick `App::mpy_version` already uses for MicroPython's live REPL
+  banner, generalized to Zephyr's own platform monitor (`west espressif monitor`, not
+  `mpremote`) instead of a second flash read. Catching it means being attached when it prints,
+  which is why the capture **reboots the board itself** once idf_monitor announces the port
+  (`MONITOR_READY`, then `RESET_COMMAND` --- idf_monitor's own `Ctrl+T Ctrl+R`, written into the
+  session's PTY exactly as the Monitor tab forwards that chord when a user types it). `esptool`
+  does reset the board when the identification read finishes (its default `--after hard-reset`),
+  but that boot is over --- banner and all --- seconds before `west`, Python and idf_monitor have
+  finished starting, and `west espressif monitor -p PORT` resets nothing on attach (idf_monitor
+  sets `dtr`/`rts` false, and the `-p` skips the extension's own port-probing `hard_reset`), so
+  a board whose application only speaks at boot stayed silent for the capture's whole 15s
+  (measured on an ESP32-C3: attached, silent; reset from inside the monitor, banner in 1.1s ---
+  and the same silence is what the interactive Monitor tab shows, where `Ctrl+T Ctrl+R` is the
+  user's own way to make a quiet board talk). The reset is not a silent interruption: the
+  identification question the user answered yes to ("stops it and reads its data") is the
+  authorization the whole chain rides on, and esptool has already reset the board twice under it
+  by the time the capture starts. `tests/fixtures/bin/west-zephyr-banner` is the one bash fixture
+  in that directory, and only because of this: it prints the boot banner *only* after taking the
+  two raw reset bytes off its stdin (no POSIX `sh` builtin reads those, and the workspace env
+  these fakes run under carries a venv-only `PATH`), so dropping the reset breaks a test. The capture is a short-lived, self-closing PTY session modeled on
   [`DeviceProbe`](`src/app/probe.rs`) --- never the interactive Monitor tab's
   `device_monitor_process` (a background courtesy must not hijack focus, the log tab or the
   monitor source) --- that feeds decoded output into a `LineConsole` and re-scans it with
@@ -1303,7 +1489,25 @@ The normal suite must run without hardware. `tests/fixtures/bin/` holds fake exe
 `mpremote` reproducing the 1.28 output formats, plus `slow` and `noisy` for timeout/cancel/stderr
 paths, `mpremote-busy-board`/`mpremote-quiet-board` for a board stuck in a printing/silent
 blocking loop (see `tests/busy_device.rs`), and `bursty` guarding output-before-`Finished`
-ordering. Tests reference them by **absolute path** (`env!("CARGO_MANIFEST_DIR")`) and point the
+ordering. The `smpmgr` family is the one fake that keeps *state*: an OTA cycle is six commands
+whose answers depend on each other, so `tests/fixtures/bin/smpmgr` holds a board per `--ip`
+address (staged / pending / swapped / confirmed) and appends every invocation to a `log`, which
+is what lets `tests/ota_update.rs` assert the stage *order* rather than each stage alone;
+`smpmgr-fail-upload`, `smpmgr-slow-upload` (long enough for a `Stop` to land in) and
+`smpmgr-no-swap` (a bootloader that never swaps, so `Verify` reads back the old image) are that
+same board's failure paths. Its `image state-read` table is smpmgr 0.19.0's real shape ---
+`rich`'s pretty-print of `smp` 4.1.0's `ImageState`, hash as `hash=HashBytes('UPPERHEX')` ---
+and it is **captured**, from a XIAO ESP32-C3 over UDP, redirected to a file the way
+`ProcessManager::spawn` pipes it, since not being a tty is what decides what `rich` prints at
+all. The table had been reconstructed from those packages' own rendering code and was right
+line for line; what a reconstruction cannot know is everything *around* it. Two `rich` status
+lines ride in front of every answer and a `splitStatus` line behind, and `os echo`
+pretty-prints its whole `EchoWriteResponse` with the SMP header rather than the one-liner the
+fixture used to print --- so nothing had ever proved `read_answer` walks past that noise. It
+does, and `the_real_clients_status_lines_do_not_confuse_the_read` pins it against the capture
+while the synthetic `STATE_READ` keeps the slot arithmetic (a board given the same image twice
+reports one hash in both slots and cannot tell slot 0 from slot 1). Still owed is the upload's
+`rich` progress bar, which is why no parser for it exists yet. Tests reference them by **absolute path** (`env!("CARGO_MANIFEST_DIR")`) and point the
 browser at them with `Browser::set_tool_path`; nothing mutates `PATH`, so tests stay parallel-safe.
 Add fakes for `esptool`, `west`, `cmake` and `ninja` the same way. Hardware tests stay separate and
 explicitly documented.

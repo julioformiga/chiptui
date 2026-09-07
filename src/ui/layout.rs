@@ -270,6 +270,31 @@ pub(crate) fn docs_picker(area: Rect) -> DocsPickerAreas {
     }
 }
 
+/// The rect the two **wide modals** --- the Zephyr installer and the OTA
+/// panel --- fill: one column of margin per side, one row above and below.
+///
+/// One definition rather than two copies of the same expression, which is
+/// what let the pair drift into a shape nothing else on screen had. Its
+/// width is [`docs_picker`]'s (and the package manager's, and the build
+/// dashboard's), so every modal that is not a dialog now has the same left
+/// and right edges; the height is *not* --- these two carry a step list and
+/// a streaming output pane, and they need the two rows a picker can spare.
+///
+/// The width is load-bearing beyond looks. A popup one column further in
+/// (the old `width - 4`) put its left border on the *second* cell of the
+/// file panes' two-cell `📁`/`📄`, where ratatui's renderer skips it
+/// entirely and the emoji spills over the frame. Landing on the glyph's
+/// first cell instead means the popup owns it and `Clear` erases it ---
+/// with [`super::clear_straddling_glyphs`] as the general guard for every
+/// other popup, at every other width.
+pub(crate) fn wide_modal(area: Rect) -> Rect {
+    super::centered(
+        area,
+        area.width.saturating_sub(2),
+        area.height.saturating_sub(2),
+    )
+}
+
 /// Where the package manager's panes sit inside `area`.
 ///
 /// The docs pickers' modal geometry ([`docs_picker`]) without the preview
@@ -426,7 +451,8 @@ pub(crate) fn overlay_popup(app: &App, overlay: &Overlay, frame: Rect) -> Rect {
         Overlay::Confirm { .. } => (70, 7),
         Overlay::ConfirmBuild { .. }
         | Overlay::ConfirmInstallHere { .. }
-        | Overlay::ConfirmRemovePackage { .. } => (DESTRUCTIVE_WIDTH, 9),
+        | Overlay::ConfirmRemovePackage { .. }
+        | Overlay::ConfirmOta { .. } => (DESTRUCTIVE_WIDTH, 9),
         Overlay::ConfirmRestartDevice { .. } => (54, 8),
         Overlay::ConfirmSwitchProject { .. } | Overlay::ConfirmQuit { .. } => (62, 9),
         Overlay::ConfirmEraseForMicroPython { .. } => (65, 9),
@@ -480,8 +506,23 @@ pub(crate) fn overlay_popup(app: &App, overlay: &Overlay, frame: Rect) -> Rect {
             );
             (44, actions.len() as u16 + 2)
         }
+        // Two detailed buttons, the rows the menu carries with it.
+        Overlay::FlashMethod { rows, .. } => {
+            let placeholders: Vec<super::Button> = rows
+                .iter()
+                .map(|_| super::Button::new("").detail(""))
+                .collect();
+            (64, super::stack_height(&placeholders).saturating_add(2))
+        }
         Overlay::ZephyrActions { .. } => {
             let placeholders: Vec<super::Button> = (0..super::ZEPHYR_ACTIONS_COUNT)
+                .map(|_| super::Button::new("").detail(""))
+                .collect();
+            (64, super::stack_height(&placeholders).saturating_add(2))
+        }
+        Overlay::OtaTransport { .. } => {
+            let placeholders: Vec<super::Button> = crate::ota::Transport::ALL
+                .iter()
                 .map(|_| super::Button::new("").detail(""))
                 .collect();
             (64, super::stack_height(&placeholders).saturating_add(2))
@@ -496,7 +537,9 @@ pub(crate) fn overlay_popup(app: &App, overlay: &Overlay, frame: Rect) -> Rect {
         // ---- fixed-shape modals ----------------------------------------
         Overlay::DirPicker { .. } | Overlay::ProjectPicker { .. } => (72, 18),
         Overlay::SdkToolchains { .. } => (56, frame.height.saturating_sub(4)),
-        Overlay::CreateEntry { .. } | Overlay::RenameEntry { .. } => (54, 6),
+        Overlay::CreateEntry { .. } | Overlay::RenameEntry { .. } | Overlay::OtaAddress { .. } => {
+            (54, 6)
+        }
         Overlay::FileViewer => (
             frame.width.saturating_sub(6).max(20),
             frame.height.saturating_sub(4).max(6),
@@ -510,6 +553,7 @@ pub(crate) fn overlay_popup(app: &App, overlay: &Overlay, frame: Rect) -> Rect {
             return docs_picker(frame).popup;
         }
         Overlay::ZephyrInstall => return super::install_area(frame),
+        Overlay::Ota => return super::ota_area(frame),
     };
     super::centered(frame, width, height)
 }
@@ -609,6 +653,27 @@ mod tests {
             wide.details.width > narrow_details,
             "every added column goes to the details pane"
         );
+    }
+
+    /// The two wide modals share the pickers' left and right edges.
+    ///
+    /// Not cosmetic: at the old `width - 4` they opened on column 2, which
+    /// is the *second* cell of the file panes' two-cell icons, and ratatui
+    /// never draws the cell a wide glyph covers --- so the modal's border
+    /// column went missing and the emoji spilled across it. Column 1 is the
+    /// glyph's first cell, which the popup owns and clears.
+    #[test]
+    fn the_wide_modals_open_where_the_pickers_do() {
+        let picker = docs_picker(area()).popup;
+        let modal = wide_modal(area());
+        assert_eq!(modal.x, 1, "one column of margin, like the pickers");
+        assert_eq!(modal.width, picker.width, "and the same width");
+        // The height is deliberately *not* the pickers': these two carry a
+        // step list over a streaming output pane and need the two rows a
+        // picker can spare.
+        assert_eq!(modal.height, area().height - 2);
+        assert_eq!(super::super::ota_area(area()), modal);
+        assert_eq!(super::super::install_area(area()), modal);
     }
 
     #[test]

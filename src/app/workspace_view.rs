@@ -145,6 +145,15 @@ impl App {
                 }
                 self.open_project_flow();
             }
+            // Deliberately ungated, unlike `Project`. The pickers are filled
+            // by a background `west boards`/`west shields` which only
+            // *prefers* the workspace's west (`BuildPanel::decorated`
+            // decorates when there is one and runs the bare program when
+            // there is not), so a machine with west on `PATH` picks boards
+            // with no ChipTUI-resolved installation at all --- and a gate
+            // on `resolved` would refuse that working case. A fetch that
+            // does fail explains itself where it happened: the picker's
+            // hint line renders `FetchState::Failed`'s own message.
             WorkspaceAction::BoardShield => {
                 if self.board_segment {
                     self.open_board_picker();

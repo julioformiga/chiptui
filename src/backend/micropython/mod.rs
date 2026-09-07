@@ -9,7 +9,6 @@
 pub mod commands;
 pub mod curl;
 pub mod deps;
-pub mod esptool;
 pub mod firmware;
 pub mod packages;
 pub mod parse;
@@ -118,6 +117,10 @@ impl Backend for MicroPythonBackend {
 
     fn required_tools(&self) -> &'static [&'static str] {
         &["mpremote", "esptool"]
+    }
+
+    fn tool_program(&self) -> &'static str {
+        commands::PROGRAM
     }
 
     /// `src/` holds what is kept in sync with the device and `firmware/`

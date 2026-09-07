@@ -74,6 +74,19 @@ fn pump_until(app: &mut App, secs: u64, ready: impl Fn(&App) -> bool) -> bool {
     common::pump_until(app, ready, secs)
 }
 
+/// The sequence reaching its end.
+///
+/// Deliberately **not** "the modal closed", which is what these tests used
+/// to wait on: a finished run now stays on screen with its checklist and
+/// its last output, and closing is the user's own press
+/// (`App::finish_install`). Reading the phase says what is meant, and works
+/// for the adopted runs too, whose button never says `Done`.
+fn sequence_finished(app: &App) -> bool {
+    app.installer
+        .as_ref()
+        .is_some_and(|installer| installer.phase == Phase::Finished)
+}
+
 fn probes_done(app: &App) -> bool {
     app.installer.as_ref().is_some_and(|installer| {
         installer
@@ -264,7 +277,7 @@ fn the_sequence_installs_a_workspace_and_saves_it() {
 
     accept_confirm(&mut app);
     assert!(
-        pump_until(&mut app, 60, |app| app.installer.is_none()),
+        pump_until(&mut app, 60, sequence_finished),
         "the sequence must run to the end"
     );
 
@@ -303,7 +316,13 @@ fn the_sequence_installs_a_workspace_and_saves_it() {
             .first(),
         Some(&chiptui::build::BuildAction::UpdateZephyr)
     );
-    // And the flow moves to the next question the checklist still has open.
+    // The window is still up on the finished checklist --- everything
+    // above was written the moment the last step landed, not when the user
+    // got around to closing it.
+    assert!(matches!(app.overlay, Some(Overlay::ZephyrInstall)));
+    // And leaving it moves the flow to the next question the checklist
+    // still has open.
+    app.handle(key(KeyCode::Enter));
     assert!(
         matches!(
             app.overlay,
@@ -383,7 +402,7 @@ fn an_interrupted_installation_resumes_where_it_stopped() {
 
     accept_confirm(&mut app);
     assert!(
-        pump_until(&mut app, 60, |app| app.installer.is_none()),
+        pump_until(&mut app, 60, sequence_finished),
         "resuming must reach the end"
     );
     assert!(target.join("zephyr/VERSION").is_file());
@@ -406,7 +425,7 @@ fn skipping_the_sdk_leaves_the_rest_of_the_sequence_alone() {
 
     accept_confirm(&mut app);
     assert!(
-        pump_until(&mut app, 60, |app| app.installer.is_none()),
+        pump_until(&mut app, 60, sequence_finished),
         "the sequence must still finish"
     );
     assert!(target.join(".west/config").is_file());
@@ -605,13 +624,74 @@ fn every_button_state_either_acts_or_explains_itself() {
         Action::Done,
     ] {
         assert!(!action.label().is_empty());
-        // Only the two whose explanation is elsewhere on screen are inert:
-        // an open prerequisite (the checklist says so) and nothing left.
-        assert_eq!(
-            action.enabled(),
-            !matches!(action, Action::Blocked | Action::Done)
-        );
+        // Only `Blocked` is inert, and its explanation is the prerequisite
+        // checklist above it. `Done` used to be dim beside it, which made
+        // it a button whose word promised an action it refused to perform
+        // --- "Done" reads as "close this", and `Esc` was the only way out.
+        assert_eq!(action.enabled(), !matches!(action, Action::Blocked));
     }
+}
+
+/// `Done` closes the installer.
+///
+/// Unlike the OTA modal's, it resets nothing: every step's completion is
+/// read back off the filesystem when the installer is next opened, so there
+/// is no finished state to clear.
+///
+/// The state itself was unreachable until the finished modal stopped
+/// closing itself: `Action::Done` is what `action()` answers with nothing
+/// left to run, and the one moment that was true was the moment
+/// `finish_install` dropped the window.
+#[test]
+fn done_closes_the_installer() {
+    let (mut app, root) = install_app("done-closes");
+    let ws = root.join("ws");
+    open(&mut app, &ws);
+    accept_confirm(&mut app);
+    let finished = pump_until(&mut app, 60, |app| {
+        app.installer
+            .as_ref()
+            .is_some_and(|installer| installer.action() == Action::Done)
+    });
+    assert!(finished, "the fixture install runs to the end");
+
+    app.handle(key(KeyCode::Enter));
+    assert!(app.installer.is_none(), "Enter on Done closes it");
+    assert!(
+        !matches!(app.overlay, Some(Overlay::ZephyrInstall)),
+        "and the window with it: {:?}",
+        app.overlay
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// `Esc` is the same door as `Done`, and owes the same question.
+///
+/// The two exits are one call (`App::close_installer`) precisely so they
+/// cannot drift: a finished run that is dismissed rather than acknowledged
+/// still had its installation recorded, and the projects folder is still
+/// unanswered.
+#[test]
+fn leaving_a_finished_run_by_esc_asks_the_next_question_too() {
+    let (mut app, root) = install_app("esc-closes");
+    open(&mut app, &root.join("ws"));
+    accept_confirm(&mut app);
+    assert!(pump_until(&mut app, 60, sequence_finished));
+
+    app.handle(key(KeyCode::Esc));
+    assert!(app.installer.is_none(), "Esc closes a finished run");
+    assert!(
+        matches!(
+            app.overlay,
+            Some(Overlay::DirPicker {
+                purpose: chiptui::workspace::DirPurpose::Projects,
+                ..
+            })
+        ),
+        "and owes the same next question: {:?}",
+        app.overlay
+    );
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -918,7 +998,7 @@ fn a_second_installation_switches_the_active_one_and_says_so() {
 
     accept_confirm(&mut app);
     assert!(
-        pump_until(&mut app, 60, |app| app.installer.is_none()),
+        pump_until(&mut app, 60, sequence_finished),
         "the second installation must run to the end"
     );
 
@@ -943,7 +1023,9 @@ fn a_second_installation_switches_the_active_one_and_says_so() {
         log_mentions(&app, "switched from"),
         "the log must name the installation it replaced"
     );
-    // And an answered question is not asked again.
+    // And an answered question is not asked again. The chain fires when
+    // the finished modal is left, so it is the press that has to prove it.
+    app.handle(key(KeyCode::Enter));
     assert!(
         app.overlay.is_none(),
         "the projects folder is already configured: {:?}",
@@ -958,7 +1040,11 @@ fn the_first_installation_still_chains_into_the_projects_question() {
     let (mut app, root) = install_app("chain");
     open(&mut app, &root.join("ws"));
     accept_confirm(&mut app);
-    assert!(pump_until(&mut app, 60, |app| app.installer.is_none()));
+    assert!(pump_until(&mut app, 60, sequence_finished));
+    // The finished run stays up; the next question comes on the way out,
+    // rather than over the window the user is still reading.
+    assert!(matches!(app.overlay, Some(Overlay::ZephyrInstall)));
+    app.handle(key(KeyCode::Enter));
     assert!(
         matches!(
             app.overlay,
@@ -1017,7 +1103,7 @@ fn the_sdk_confirmation_failing_does_not_undo_the_install() {
     open(&mut app, &root.join("ws"));
     accept_confirm(&mut app);
     assert!(
-        pump_until(&mut app, 60, |app| app.installer.is_none()),
+        pump_until(&mut app, 60, sequence_finished),
         "an optional step's failure must not stop the sequence"
     );
 
@@ -1118,7 +1204,7 @@ fn an_installation_missing_only_its_sdk_can_finish_it() {
     );
 
     assert!(
-        pump_until(&mut app, 60, |app| app.installer.is_none()),
+        pump_until(&mut app, 60, sequence_finished),
         "the SDK step must run to the end"
     );
     assert!(ws.join("zephyr-sdk-0.17.0/sdk_version").is_file());
@@ -1278,7 +1364,7 @@ fn adding_a_toolchain_asks_west_only_for_the_missing_one() {
 
     app.handle(key(KeyCode::Enter));
     assert!(
-        pump_until(&mut app, 60, |app| app.installer.is_none()),
+        pump_until(&mut app, 60, sequence_finished),
         "the SDK step must run to the end"
     );
 

@@ -29,6 +29,11 @@ pub const BUILD_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 /// the ecosystem's own convention.
 pub const DEFAULT_BUILD_DIR: &str = "build";
 
+/// The file whose presence means a Zephyr project builds with sysbuild.
+/// `west build --sysbuild` reads it for the bootloader's own configuration,
+/// so a project that has one intends to build that way.
+pub const SYSBUILD_CONF: &str = "sysbuild.conf";
+
 /// `west boards` walks every board root, and `west shields` the shield
 /// roots; two minutes covers a full Zephyr SDK checkout without letting a
 /// wedged west live forever.
@@ -687,13 +692,24 @@ impl BuildPanel {
     /// Applies the resolved executable and environment to a backend-built
     /// command, next to the cwd the panel also owns.
     ///
-    /// The program rewrite is right for every command the backend builds as
-    /// `west …`, which is all of them but one --- see [`Self::in_west_env`]
-    /// for the exception and why it exists.
-    fn decorated(&self, command: crate::process::Command) -> crate::process::Command {
+    /// The program rewrite reaches only the commands the backend built with
+    /// its *own* tool ([`crate::backend::Backend::tool_program`]): the
+    /// resolved path is a location for that program and for no other. A
+    /// command the backend built around a different tool --- the `esptool`
+    /// image write a sysbuild flash on the esp32 runner resolves to --- keeps
+    /// its own program and takes the environment alone, exactly like the
+    /// memory report's Python (see [`Self::in_west_env`], the call sites that
+    /// know statically they are not west).
+    fn decorated(
+        &self,
+        backend: &dyn crate::backend::Backend,
+        command: crate::process::Command,
+    ) -> crate::process::Command {
         let command = match &self.tool_path {
-            Some(program) => command.with_program(program),
-            None => command,
+            Some(program) if command.program() == backend.tool_program() => {
+                command.with_program(program)
+            }
+            _ => command,
         };
         self.in_west_env(command)
     }
@@ -924,7 +940,7 @@ impl BuildPanel {
         backend: &dyn crate::backend::Backend,
     ) -> Option<crate::process::Command> {
         let command = backend.board_list_command(&self.board_roots)?;
-        Some(self.decorated(command.current_dir(&self.root)))
+        Some(self.decorated(backend, command.current_dir(&self.root)))
     }
 
     /// The shield-list command, rooted and decorated like the others.
@@ -934,7 +950,7 @@ impl BuildPanel {
         backend: &dyn crate::backend::Backend,
     ) -> Option<crate::process::Command> {
         let command = backend.shield_list_command(&self.board_roots)?;
-        Some(self.decorated(command.current_dir(&self.root)))
+        Some(self.decorated(backend, command.current_dir(&self.root)))
     }
 
     /// Elapsed time of the running command, for the header's live counter.
@@ -961,12 +977,15 @@ impl BuildPanel {
     ) -> Option<crate::process::Command> {
         let command = backend.build_command(
             kind,
-            self.build_board(),
-            self.build_shield(),
-            self.has_build_dir(),
-            &self.build_dir,
+            &crate::backend::BuildContext {
+                board: self.build_board(),
+                shield: self.build_shield(),
+                build_dir_exists: self.has_build_dir(),
+                build_dir: &self.build_dir,
+                sysbuild: self.sysbuild(),
+            },
         )?;
-        Some(self.decorated(command.current_dir(&self.root)))
+        Some(self.decorated(backend, command.current_dir(&self.root)))
     }
 
     /// The flash command, rooted and decorated like the build ones, and
@@ -976,9 +995,17 @@ impl BuildPanel {
     pub fn flash_command(
         &self,
         backend: &dyn crate::backend::Backend,
-    ) -> Option<crate::process::Command> {
-        let command = backend.flash_command(&self.flash_build_dir())?;
-        Some(self.decorated(command.current_dir(&self.root)))
+        port: Option<&str>,
+        chip: Option<crate::backend::esptool::ChipFamily>,
+    ) -> Result<crate::process::Command, String> {
+        let build_dir = self.flash_build_dir();
+        let command = backend.flash_command(&crate::backend::FlashContext {
+            root: &self.root,
+            build_dir: &build_dir,
+            port,
+            chip,
+        })?;
+        Ok(self.decorated(backend, command.current_dir(&self.root)))
     }
 
     /// The command that runs a simulator variant's host executable.
@@ -1026,7 +1053,7 @@ impl BuildPanel {
         backend: &dyn crate::backend::Backend,
     ) -> Option<crate::process::Command> {
         let command = backend.menuconfig_command(&self.build_dir)?;
-        Some(self.decorated(command.current_dir(&self.root)))
+        Some(self.decorated(backend, command.current_dir(&self.root)))
     }
 
     /// The build-dashboard command (`west build -t dashboard`), rooted and
@@ -1076,7 +1103,7 @@ impl BuildPanel {
         backend: &dyn crate::backend::Backend,
     ) -> Option<crate::process::Command> {
         let command = backend.dashboard_command(&self.build_dir)?;
-        Some(self.decorated(command.current_dir(&self.root)))
+        Some(self.decorated(backend, command.current_dir(&self.root)))
     }
 
     /// Whether the lifecycle's build directory exists (configured by a
@@ -1084,6 +1111,26 @@ impl BuildPanel {
     /// monitor reads the build's runner configuration.
     pub fn has_build_dir(&self) -> bool {
         self.root.join(&self.build_dir).is_dir()
+    }
+
+    /// Whether this project builds with sysbuild --- the bootloader built
+    /// beside the application, which is what an over-the-air update needs.
+    ///
+    /// Answered by `sysbuild.conf` being in the project, not by a
+    /// remembered setting: the file is the record, so a project prepared by
+    /// ChipTUI, by hand, or by a teammate's commit all build the same way,
+    /// and deleting it reverts the project with no state left behind
+    /// anywhere. It is the same rule the installer's `already_done` follows
+    /// --- read the filesystem, never a note of what this app did before.
+    ///
+    /// This says what the *next* configuration will do. What a build
+    /// directory already holds is a different question, answered by
+    /// [`crate::backend::zephyr::domains::Domains`], and the two can
+    /// disagree: a project that gained the file after its build directory
+    /// was configured still has a non-sysbuild directory until it is
+    /// reconfigured.
+    pub fn sysbuild(&self) -> bool {
+        self.root.join(SYSBUILD_CONF).is_file()
     }
 
     /// Starts `command` as this panel's running process. `what` labels it in
@@ -1729,6 +1776,65 @@ mod tests {
         assert!(!build.to_string().contains("-b"));
         let rebuild = panel.command(BuildKind::Rebuild, &ZephyrBackend).unwrap();
         assert!(rebuild.to_string().ends_with("-b nrf52840dk/nrf52840"));
+    }
+
+    #[test]
+    fn an_esptool_flash_keeps_its_own_program() {
+        // Regression: the panel rewrote *every* backend-built command's
+        // program with the resolved west, so a sysbuild flash on the esp32
+        // runner --- which resolves to an `esptool` image write, not to
+        // `west flash` --- reached the board as
+        // `west --port /dev/ttyACM0 --chip esp32c3 write-flash …` and died
+        // with `unknown command "/dev/ttyACM0"`.
+        let dir = fixture_dir("esptool-flash");
+        let build = dir.join("build");
+        let app = build.join("app/zephyr");
+        std::fs::create_dir_all(&app).unwrap();
+        std::fs::write(
+            build.join("domains.yaml"),
+            "default: app\ndomains:\n  - name: app\n  - name: mcuboot\nflash_order:\n               - mcuboot\n  - app\n",
+        )
+        .unwrap();
+        std::fs::write(
+            app.join("runners.yaml"),
+            "runners:\n- esp32\nflash-runner: esp32\n",
+        )
+        .unwrap();
+        std::fs::write(
+            app.join("zephyr.dts"),
+            "/* node '/soc/flash@0/partitions' defined in board.dtsi:10 */\n             partitions {\n             \t/* node '/soc/flash@0/partitions/partition@0' defined in board.dtsi:13 */\n             \tboot_partition: partition@0 {\n             \t\tlabel = \"mcuboot\";\n             \t\treg = < 0x0 0x10000 >;\n             \t};\n             \t/* node '/soc/flash@0/partitions/partition@20000' defined in board.dtsi:25 */\n             \tslot0_partition: partition@20000 {\n             \t\tlabel = \"image-0\";\n             \t\treg = < 0x20000 0x1c0000 >;\n             \t};\n             };\n",
+        )
+        .unwrap();
+        std::fs::write(app.join("zephyr.signed.bin"), b"app").unwrap();
+        let boot = build.join("mcuboot/zephyr");
+        std::fs::create_dir_all(&boot).unwrap();
+        std::fs::write(boot.join("zephyr.bin"), b"boot").unwrap();
+
+        let mut panel = BuildPanel::new(&dir, UtcOffset::UTC);
+        panel.set_tool_path(fake("west"));
+        panel.set_tool_env(vec![("ZEPHYR_BASE".to_string(), "/zephyr".to_string())]);
+
+        let flash = panel
+            .flash_command(&ZephyrBackend, Some("/dev/ttyACM0"), None)
+            .unwrap();
+        assert_eq!(
+            flash.program(),
+            crate::backend::esptool::commands::PROGRAM,
+            "the image write is esptool's command, not west's: {flash}"
+        );
+        assert!(
+            flash
+                .to_string()
+                .starts_with("esptool --port /dev/ttyACM0 write-flash "),
+            "{flash}"
+        );
+        // The workspace environment still reaches it --- only the program
+        // is the other tool's.
+        assert_eq!(
+            flash.envs_slice(),
+            [("ZEPHYR_BASE".to_string(), "/zephyr".to_string())]
+        );
+        assert_eq!(flash.cwd(), Some(&dir));
     }
 
     #[test]

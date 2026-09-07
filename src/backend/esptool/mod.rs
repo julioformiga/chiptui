@@ -2,8 +2,15 @@
 //!
 //! `SPEC.md` §9: esptool operations (chip/flash info, erase, write, verify,
 //! reset) are presented separately from the `mpremote` filesystem browser and
-//! own their own tool. Mirrors [`super::commands`]/[`super::parse`]'s split:
+//! own their own tool. Same split as every other tool wrapper here:
 //! [`commands`] builds invocations, [`parse`] reads their output.
+//!
+//! It sits beside the backends rather than inside one. It lived under
+//! `micropython` while that was its only caller, but esptool is a property
+//! of the *chip*, not of the framework running on it:
+//! [`crate::firmware_id`] reads flash with it to identify whatever is on a
+//! board, and the Zephyr flash path writes MCUboot images with it. A tool
+//! two backends reach for does not belong to either.
 
 pub mod commands;
 pub mod features;

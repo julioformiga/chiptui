@@ -493,6 +493,10 @@ fn a_west_flash_reidentifies_the_firmware() {
         app.handle(key(KeyCode::Down));
     }
     app.handle(key(KeyCode::Enter));
+    // The row asks which way first; with this board on the bus the cursor
+    // opens on the wired one, so the reflex `Enter` reaches the confirm.
+    assert!(matches!(app.overlay, Some(Overlay::FlashMethod { .. })));
+    app.handle(key(KeyCode::Enter));
     assert!(matches!(app.overlay, Some(Overlay::ConfirmBuild { .. })));
     app.handle(key(KeyCode::Char('y')));
     assert!(pump_until(

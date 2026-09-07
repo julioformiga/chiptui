@@ -66,9 +66,31 @@ pub fn write_flash(
     file: &Path,
     options: &FlashOptions,
 ) -> Command {
-    apply_flash_options(global(port, chip).arg("write-flash"), options)
-        .arg(offset)
-        .arg(file.to_string_lossy().into_owned())
+    write_flash_images(port, chip, &[(offset.to_string(), file)], options)
+}
+
+/// `esptool … write-flash [flash options] OFFSET FILE [OFFSET FILE …]` ---
+/// several images in one invocation.
+///
+/// `write-flash` takes offset/file pairs by design, and one invocation is
+/// not merely a convenience: it is one connection, one reset and one
+/// verify pass, so the board cannot be left holding half a set. That is
+/// what a Zephyr sysbuild image set needs --- the bootloader and the signed
+/// application are only bootable together, and a board carrying one without
+/// the other boots nothing and prints nothing.
+///
+/// The single-image [`write_flash`] is this function with one pair, so the
+/// argument order both produce is one definition rather than two.
+pub fn write_flash_images(
+    port: Option<&str>,
+    chip: Option<ChipFamily>,
+    images: &[(String, &Path)],
+    options: &FlashOptions,
+) -> Command {
+    let command = apply_flash_options(global(port, chip).arg("write-flash"), options);
+    images.iter().fold(command, |command, (offset, file)| {
+        command.arg(offset).arg(file.to_string_lossy().into_owned())
+    })
 }
 
 /// The global options that must precede the sub-command.
@@ -113,7 +135,7 @@ fn apply_flash_options(mut command: Command, options: &FlashOptions) -> Command 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::micropython::esptool::{FlashMode, FlashSize};
+    use crate::backend::esptool::{FlashMode, FlashSize};
 
     #[test]
     fn chip_id_takes_only_the_global_options() {

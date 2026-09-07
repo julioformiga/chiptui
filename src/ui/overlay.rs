@@ -24,6 +24,9 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
     // mouse hit-testing (`app::mouse`) --- the numbers used to be written
     // out on both sides and drifted apart.
     let popup = super::layout::overlay_popup(app, &overlay, area);
+    // Before anything is drawn: a two-cell glyph behind the popup's left
+    // edge would otherwise eat the border column (see the helper).
+    super::clear_straddling_glyphs(frame.buffer_mut(), popup);
     match overlay {
         Overlay::Help { filter, selected } => {
             draw_help(frame, popup, app, &filter, selected, palette)
@@ -56,6 +59,26 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
                 );
             }
         }
+        Overlay::Ota => {
+            // `install_viewport`'s contract, for the OTA modal's own
+            // output section.
+            if let Some(panel) = &app.ota {
+                app.ota_viewport = super::ota::output_viewport(area, panel);
+                super::ota::draw(
+                    frame,
+                    area,
+                    panel,
+                    app.home_dir(),
+                    app.ticks,
+                    app.icon_set(),
+                    palette,
+                );
+            }
+        }
+        Overlay::OtaAddress { input } => draw_ota_address(frame, popup, app, &input, palette),
+        Overlay::ConfirmOta { what, confirm } => {
+            draw_ota_confirm(frame, popup, app, what, confirm, palette)
+        }
         // The declared `overlay_popup` rect, like every other centered
         // modal: this arm once passed `area` (the whole frame) instead ---
         // the exact drift `overlay_popup` exists to end, camouflaged by the
@@ -85,7 +108,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
                         .fg(palette.fg),
                 ),
                 Line::from(""),
-                Line::from(shorten_tail(&message, DESTRUCTIVE_BUDGET).fg(palette.muted)),
+                Line::from(shorten_middle(&message, DESTRUCTIVE_BUDGET).fg(palette.muted)),
             ],
             confirm,
             palette,
@@ -96,9 +119,9 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
                     frame,
                     popup,
                     Destructive {
-                        title: "Erase the flash?",
+                        title: "Erase the flash?".to_string(),
                         target: chip_target(app),
-                        consequence: "Erases the whole chip — firmware and filesystem alike.",
+                        consequence: "Erases the whole chip — firmware and filesystem alike.".to_string(),
                         command: message,
                     },
                     confirm,
@@ -108,9 +131,9 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
                     frame,
                     popup,
                     Destructive {
-                        title: "Write the firmware?",
+                        title: "Write the firmware?".to_string(),
                         target: chip_target(app),
-                        consequence: "Overwrites the firmware currently on it.",
+                        consequence: "Overwrites the firmware currently on it.".to_string(),
                         command: message,
                     },
                     confirm,
@@ -153,9 +176,9 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
                 frame,
                 popup,
                 Destructive {
-                    title: "Update the workspace?",
+                    title: "Update the workspace?".to_string(),
                     target,
-                    consequence: "Rewrites the checkouts every project in it shares.",
+                    consequence: "Rewrites the checkouts every project in it shares.".to_string(),
                     command,
                 },
                 confirm,
@@ -178,9 +201,19 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
                         crate::build::BuildAction::Build(kind) => panel
                             .command(kind, backend)
                             .map(|command| command.to_string()),
-                        crate::build::BuildAction::Flash => panel
-                            .flash_command(backend)
-                            .map(|command| command.to_string()),
+                        crate::build::BuildAction::Flash => {
+                            let (port, chip) = app.flash_facts();
+                            // A refusal is shown where the command would
+                            // be: the answer to "what will this do" is
+                            // "nothing, because ...", and the user is
+                            // better off reading that before saying yes
+                            // than after.
+                            Some(
+                                panel
+                                    .flash_command(backend, port.as_deref(), chip)
+                                    .map_or_else(|why| why, |command| command.to_string()),
+                            )
+                        }
                         // Only destructive actions reach this overlay.
                         _ => None,
                     }
@@ -213,9 +246,9 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
                 frame,
                 popup,
                 Destructive {
-                    title,
+                    title: title.to_string(),
                     target,
-                    consequence,
+                    consequence: consequence.to_string(),
                     command,
                 },
                 confirm,
@@ -331,7 +364,104 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
         Overlay::ZephyrActions { selected } => {
             draw_zephyr_actions(frame, popup, selected, app.icon_set(), palette)
         }
+        Overlay::FlashMethod { rows, selected } => {
+            draw_flash_method(frame, popup, &rows, selected, app.icon_set(), palette)
+        }
+        Overlay::OtaTransport { selected } => {
+            draw_ota_transport(frame, popup, app, selected, palette)
+        }
     }
+}
+
+/// How the firmware reaches the board: the one question the `Flash` row
+/// asks (`crate::backend::zephyr::flash_method`).
+///
+/// The rows come in already decided --- label, detail and enabled-ness
+/// together --- so nothing here judges what can run: this function draws
+/// what `flash_method::rows` said, and `on_overlay_key` presses what it
+/// said, which is the one-decision rule `install::Action` keeps.
+fn draw_flash_method(
+    frame: &mut Frame,
+    popup: Rect,
+    rows: &[crate::backend::zephyr::flash_method::MethodRow],
+    selected: usize,
+    icons: crate::icons::IconSet,
+    palette: Palette,
+) {
+    use crate::backend::zephyr::flash_method::FlashMethod;
+
+    let buttons: Vec<super::button::Button> = rows
+        .iter()
+        .enumerate()
+        .map(|(index, row)| {
+            let (glyph, color) = match row.method {
+                FlashMethod::Usb => (icons.flash(), palette.warning),
+                FlashMethod::Ota => (icons.bolt(), palette.info),
+            };
+            let button = super::button::Button::new(row.label.clone())
+                .icon(glyph, color)
+                .detail(row.detail.clone())
+                .enabled(row.enabled)
+                .selected(index == selected);
+            // A disabled row's detail *is* the refusal, so it keeps the
+            // warning color the dimming would otherwise swallow --- the
+            // enabled rows' descriptions stay muted.
+            if row.enabled {
+                button
+            } else {
+                button.detail_color(palette.warning)
+            }
+        })
+        .collect();
+
+    frame.render_widget(Clear, popup);
+    let block = modal("How does the firmware get there?", palette);
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+    super::button::render_stack(frame, inner, inner.y, &buttons, palette);
+}
+
+/// The OTA transport picker: one stacked button per [`Transport`], in the
+/// `ZephyrActions` grammar, each detailing what the address means for it
+/// and what the prepare will write.
+fn draw_ota_transport(
+    frame: &mut Frame,
+    popup: Rect,
+    app: &App,
+    selected: usize,
+    palette: Palette,
+) {
+    use crate::ota::Transport;
+
+    let current = app
+        .ota
+        .as_ref()
+        .map(|panel| panel.config().transport)
+        .unwrap_or_default();
+    let buttons: Vec<super::button::Button> = Transport::ALL
+        .iter()
+        .enumerate()
+        .map(|(index, transport)| {
+            let detail = match transport {
+                Transport::Udp => "over the network --- the address is the board's IP",
+                Transport::Serial => "over the console line --- the address is a serial port",
+                Transport::Ble => "over Bluetooth LE --- the address is the board's BLE address",
+            };
+            let label = if *transport == current {
+                format!("{} (current)", transport.label())
+            } else {
+                transport.label().to_string()
+            };
+            super::button::Button::new(label)
+                .detail(detail)
+                .selected(index == selected)
+        })
+        .collect();
+    frame.render_widget(Clear, popup);
+    let block = modal("OTA transport", palette);
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+    super::button::render_stack(frame, inner, inner.y, &buttons, palette);
 }
 
 fn draw_confirm_dialog(
@@ -615,6 +745,9 @@ fn draw_zephyr_actions(
             "west build -t dashboard — the same report, in the browser",
         ),
     ];
+    // No OTA row here any more: writing firmware is the `Flash` row's one
+    // question (`crate::backend::zephyr::flash_method`), and a second door
+    // in a workspace menu is exactly the scattering that change undid.
     let colors = [palette.warning, palette.success, palette.info, palette.info];
     let buttons: Vec<super::button::Button> = CHOICES
         .iter()
@@ -800,9 +933,9 @@ fn draw_file_viewer(frame: &mut Frame, popup: Rect, app: &mut App, palette: Pale
     }
 }
 
-/// A command too long for one dialog line, cut from the left: the tail
-/// (program name, arguments) is what identifies it, not the `/tmp` or
-/// workspace prefix the environment puts in front.
+/// A *path* too long for one dialog line, cut from the left: the tail (the
+/// project, the build directory, the file) is what identifies it, not the
+/// `/home/...` prefix the environment puts in front.
 fn shorten_tail(text: &str, max_chars: usize) -> String {
     let length = text.chars().count();
     if length <= max_chars {
@@ -815,6 +948,48 @@ fn shorten_tail(text: &str, max_chars: usize) -> String {
                 .collect::<String>()
         )
     }
+}
+
+/// A *command* too long for one dialog line, cut in the **middle**. The
+/// head names what runs and against what (`smpmgr --ip 10.77.0.10 image
+/// upload`), the tail names the file it acts on, and the absolute path
+/// between them is the only part that carries nothing. Cutting from the
+/// left --- right for a path, which is [`shorten_tail`]'s whole job --- drops
+/// the program and the address instead, which is the half a confirmation
+/// exists to show: `smpmgr --ip <addr> image upload <build path>` is longer
+/// than the dialog on any real project, so the tail-cut form showed a
+/// `zephyr.signed.bin` and never said what would be done to it or where.
+///
+/// Each half is trimmed back to a boundary so neither ends mid-token: the
+/// head to its last space (a whole argument), the tail forward to its next
+/// `/` (a whole path segment). Both may come back shorter than their share,
+/// which only ever fits better.
+fn shorten_middle(text: &str, max_chars: usize) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    // Below a handful of columns there is no middle left to keep.
+    if chars.len() <= max_chars || max_chars < 8 {
+        return shorten_tail(text, max_chars);
+    }
+    let keep = max_chars - 1; // the ellipsis costs a column
+    // A file is identified by its last segments; a command by its whole
+    // head --- so the tail takes a third and the head takes the rest.
+    let head: String = {
+        let cut: String = chars[..keep - keep / 3].iter().collect();
+        match cut.rfind(' ') {
+            Some(at) => cut[..at].to_string(),
+            None => cut,
+        }
+    };
+    let tail: String = {
+        let cut: String = chars[chars.len() - (keep - head.chars().count())..]
+            .iter()
+            .collect();
+        match cut.find('/') {
+            Some(at) => cut[at..].to_string(),
+            None => cut,
+        }
+    };
+    format!("{head}…{tail}")
 }
 
 fn token_style(kind: TokenKind, palette: Palette) -> Style {
@@ -973,6 +1148,166 @@ fn draw_rename_entry(frame: &mut Frame, popup: Rect, name: &str, input: &str, pa
     );
 }
 
+/// The OTA device address entry --- the [`draw_create_entry`] grammar over
+/// the transport's own word for it ("IP address", "serial port",
+/// "Bluetooth address"), pre-filled with the current answer.
+fn draw_ota_address(frame: &mut Frame, popup: Rect, app: &App, input: &str, palette: Palette) {
+    let block = modal("Device address", palette);
+    let inner = block.inner(popup);
+
+    frame.render_widget(Clear, popup);
+    frame.render_widget(block, popup);
+
+    let label = app
+        .ota
+        .as_ref()
+        .map(|panel| panel.config().transport.address_label())
+        .unwrap_or("address");
+    let [hint_area, input_area] =
+        Layout::vertical([Constraint::Length(1), Constraint::Length(3)]).areas(inner);
+
+    frame.render_widget(
+        Paragraph::new(format!("the board's {label} --- recorded in [ota]").fg(palette.muted)),
+        hint_area,
+    );
+
+    let field = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(palette.accent));
+    let field_inner = field.inner(input_area);
+    frame.render_widget(field, input_area);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(input.to_string(), Style::new().fg(palette.fg)),
+            Span::raw("_").fg(palette.accent),
+        ])),
+        field_inner,
+    );
+}
+
+/// The OTA flow's destructive questions, one dialog for all three in
+/// `SPEC.md` §15's grammar: the action as a question, *what it happens to*
+/// in the warning color, the cost in a plain sentence, then the literal
+/// command muted underneath.
+///
+/// Everything is derived from the panel at draw time (`ConfirmBuild`'s
+/// rule): the board, address and image cannot change while the dialog is
+/// open, and this way the quoted command is always the one that would run.
+fn draw_ota_confirm(
+    frame: &mut Frame,
+    popup: Rect,
+    app: &App,
+    what: crate::ota::update::OtaConfirm,
+    confirm: bool,
+    palette: Palette,
+) {
+    use crate::ota::OtaStage;
+    use crate::ota::update::OtaConfirm as Kind;
+
+    let Some(panel) = &app.ota else {
+        return;
+    };
+    let project = panel
+        .prepare
+        .root
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| panel.prepare.root.display().to_string());
+    let board = panel.board();
+    let address = panel
+        .config()
+        .address
+        .as_deref()
+        .unwrap_or("no address answered");
+    // The literal line a stage would run, quoted from the panel itself ---
+    // or its refusal in the command's place, the rule the flash confirm
+    // already follows: the answer to "what will this do" is "nothing,
+    // because ...", and that is better read before saying yes than after.
+    let stage_command = |stage: OtaStage| {
+        panel
+            .stage_list()
+            .iter()
+            .position(|candidate| *candidate == stage)
+            .map(|index| {
+                panel
+                    .stage_command(index)
+                    .map_or_else(|why| why, |command| command.to_string())
+            })
+            .unwrap_or_default()
+    };
+    let dialog = match what {
+        Kind::Prepare => Destructive {
+            title: "Prepare this project for OTA?".to_string(),
+            target: format!("{project} · {board}"),
+            // The net shell is an opt-in block with a real cost, so the
+            // sentence has to name it when it is going to be written ---
+            // §15's consequence is what it *will* write, not a fixed list.
+            consequence: if panel.prepare.netshell() {
+                format!(
+                    "writes sysbuild.conf, VERSION, the boards/ fragment and chiptui.toml, \
+                     plus the net shell block ({}).",
+                    crate::ota::prepare::NETSHELL_COST
+                )
+            } else {
+                "writes sysbuild.conf, VERSION, the boards/ fragment and chiptui.toml.".to_string()
+            },
+            // The build the prepare implies: with `sysbuild.conf` written,
+            // the next configuration build is the sysbuild one. Built
+            // through the backend's own command construction.
+            command: crate::backend::zephyr::commands::build(&crate::backend::BuildContext {
+                board: Some(board),
+                shield: None,
+                build_dir_exists: false,
+                build_dir: panel.build_dir().unwrap_or("build"),
+                sysbuild: true,
+            })
+            .to_string(),
+        },
+        // A resumed cycle is not the question a fresh one asks, and quoting
+        // `image upload` for a run that starts at `Verify` breaks §15's
+        // literal-command rule. Both come from the stage that will actually
+        // start.
+        Kind::Update => {
+            let next = panel
+                .next_stage_command()
+                .map_or(OtaStage::Upload, |(stage, _)| stage);
+            // A run that has not reached the upload yet is still the
+            // question the user thinks they are answering, and the command
+            // to quote is the *destructive* one the sentence describes ---
+            // the leading `os echo` probe replaces nothing. Past it, the
+            // upload is done and promising one would be the drift this
+            // whole rule exists to prevent, so the quote follows the stage
+            // that will actually start.
+            let fresh = matches!(next, OtaStage::Probe | OtaStage::Upload);
+            Destructive {
+                title: if fresh {
+                    "Push this image over the air?".to_string()
+                } else {
+                    "Resume the update?".to_string()
+                },
+                target: format!("{board} at {address}"),
+                consequence: if fresh {
+                    format!(
+                        "Replaces the running firmware; the swap takes ~{}s after the reset.",
+                        OtaStage::Reset.settle().as_secs()
+                    )
+                } else {
+                    format!("Resumes the update at '{}'.", next.label())
+                },
+                command: stage_command(if fresh { OtaStage::Upload } else { next }),
+            }
+        }
+        Kind::ConfirmImage => Destructive {
+            title: "Confirm the running image?".to_string(),
+            target: format!("{board} at {address}"),
+            consequence: "Makes the update permanent --- without it, the next reset reverts."
+                .to_string(),
+            command: stage_command(OtaStage::Confirm),
+        },
+    };
+    draw_destructive(frame, popup, dialog, confirm, palette);
+}
+
 /// "Remove this package?" --- the manager's `Del`, in the destructive
 /// grammar every other one follows (`SPEC.md` §15): the action as a
 /// question, *what it happens to* in the warning color, what is lost in a
@@ -1021,9 +1356,9 @@ fn draw_confirm_remove_package(
         frame,
         popup,
         Destructive {
-            title: "Remove this package?",
+            title: "Remove this package?".to_string(),
             target,
-            consequence,
+            consequence: consequence.to_string(),
             command,
         },
         confirm,
@@ -1361,9 +1696,13 @@ fn draw_confirm(frame: &mut Frame, popup: Rect, message: &str, confirm: bool, pa
 ///
 /// `No` stays the default everywhere ([`draw_confirm_dialog`]).
 struct Destructive {
-    title: &'static str,
+    /// The action as a question. Owned rather than `&'static str`: a
+    /// resumed OTA cycle is not the question a fresh one asks, and a
+    /// consequence that has to name what it will actually write cannot be
+    /// a literal either.
+    title: String,
     target: String,
-    consequence: &'static str,
+    consequence: String,
     command: String,
 }
 
@@ -1387,10 +1726,10 @@ fn draw_destructive(
         ),
         Line::from(dialog.consequence.fg(palette.fg)),
         Line::from(""),
-        Line::from(shorten_tail(&dialog.command, DESTRUCTIVE_BUDGET).fg(palette.muted)),
+        Line::from(shorten_middle(&dialog.command, DESTRUCTIVE_BUDGET).fg(palette.muted)),
     ];
     // Four content rows over the three-row button block, plus the borders.
-    draw_confirm_dialog(frame, popup, dialog.title, lines, confirm, palette);
+    draw_confirm_dialog(frame, popup, &dialog.title, lines, confirm, palette);
 }
 
 /// The board a project command acts on, named the way the user recognizes
@@ -2673,4 +3012,63 @@ pub(super) fn modal(title: &str, palette: Palette) -> Block<'static> {
             format!(" {title} "),
             Style::new().fg(palette.accent).add_modifier(Modifier::BOLD),
         ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The row that broke: `smpmgr --ip <addr> image upload <path>` is
+    /// longer than the dialog on any real project, and the tail-cut form
+    /// dropped exactly the half the confirmation exists to show.
+    #[test]
+    fn a_long_command_keeps_its_head_and_the_files_last_segments() {
+        let command = "smpmgr --ip 10.77.0.10 image upload \
+            /home/dev/zephyr_projects/esp32c3-round-display/build/app/zephyr/zephyr.signed.bin";
+        let short = shorten_middle(command, DESTRUCTIVE_BUDGET);
+        assert!(short.chars().count() <= DESTRUCTIVE_BUDGET, "{short}");
+        assert!(
+            short.starts_with("smpmgr --ip 10.77.0.10 image upload"),
+            "the program, the address and the operation survive: {short}"
+        );
+        assert!(
+            short.ends_with("zephyr.signed.bin"),
+            "and the file it acts on: {short}"
+        );
+        assert!(short.contains('…'), "{short}");
+    }
+
+    /// Neither half ends mid-token: the head on a whole argument, the tail
+    /// on a whole path segment.
+    #[test]
+    fn both_halves_are_cut_on_a_boundary() {
+        let short = shorten_middle(
+            "west build -b xiao_esp32c3 --sysbuild /a/very/long/path/to/an/application/directory/somewhere",
+            48,
+        );
+        let (head, tail) = short.split_once('…').expect("a middle cut");
+        assert!(!head.ends_with(' '), "{short}");
+        assert!(tail.starts_with('/'), "{short}");
+        assert!(short.chars().count() <= 48, "{short}");
+    }
+
+    /// A command that fits is untouched --- every `west` confirm is one.
+    #[test]
+    fn a_command_that_fits_is_left_alone() {
+        let command = "west build -t clean";
+        assert_eq!(shorten_middle(command, DESTRUCTIVE_BUDGET), command);
+        assert_eq!(shorten_tail(command, DESTRUCTIVE_BUDGET), command);
+    }
+
+    /// A path is still cut from the left: its tail is what identifies it.
+    #[test]
+    fn a_path_keeps_its_tail() {
+        let path = "/home/dev/zephyr_projects/esp32c3-round-display/build/app/zephyr";
+        let short = shorten_tail(path, 24);
+        assert_eq!(short.chars().count(), 24, "{short}");
+        assert!(
+            short.starts_with('…') && short.ends_with("app/zephyr"),
+            "{short}"
+        );
+    }
 }

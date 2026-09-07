@@ -99,13 +99,16 @@ impl App {
                 Action::Adopt => self.adopt_installation(),
                 Action::InstallSdk | Action::AddToolchains => self.install_missing_sdk(),
                 Action::Install | Action::Retry => self.confirm_install(),
-                // Their explanation is already on screen: the prerequisite
-                // checklist above, or a sequence with nothing left.
-                Action::Blocked | Action::Done => {}
+                // Nothing left to run: the button says so and closing is
+                // what pressing it means.
+                Action::Done => self.close_installer(),
+                // Its explanation is already on screen: the prerequisite
+                // checklist above.
+                Action::Blocked => {}
             },
             // A running installation is not something to leave by reflex:
             // `Stop` is the way out, and it is on screen (`SPEC.md` §12).
-            KeyCode::Esc | KeyCode::Char('q') if !installer.is_busy() => self.overlay = None,
+            KeyCode::Esc | KeyCode::Char('q') if !installer.is_busy() => self.close_installer(),
             _ => {}
         }
     }
@@ -326,8 +329,22 @@ impl App {
 
     /// A finished installation: persist it the way every other environment
     /// answer is persisted (config first --- a pick only counts once
-    /// written, see [`crate::workspace::WorkspacePanel::apply_resolution`]),
-    /// then move on to the next question the checklist still has open.
+    /// written, see [`crate::workspace::WorkspacePanel::apply_resolution`]).
+    ///
+    /// The modal is deliberately **left open**, and the panel with it. This
+    /// used to close both here and open the projects picker on the spot,
+    /// which had two costs. The visible one: a run of many minutes and
+    /// several gigabytes ended by having its window yanked away and another
+    /// question thrown up in its place, with the finished checklist and the
+    /// last of the output never seen. The structural one: it made
+    /// [`Action::Done`] unreachable --- the button reads `✓ Done` and
+    /// pressing it is what closing means, but no state could ever show it,
+    /// because the one moment it would appear was the moment the window
+    /// vanished.
+    ///
+    /// The next question is not dropped, only deferred to the way out:
+    /// [`Self::close_installer`] chains into it when the user leaves a run
+    /// that reached the end.
     fn finish_install(&mut self) {
         let Some(installer) = &self.installer else {
             return;
@@ -335,9 +352,30 @@ impl App {
         let root = installer.root.clone();
         let sdk = installer.installed_sdk();
         self.persist_installation(&root, sdk);
+    }
+
+    /// Leaves the installer modal --- `Enter` on `Done`, `Esc`, `q`, or a
+    /// click outside the box, which all mean the same thing here.
+    ///
+    /// The panel goes with the window: [`Self::open_installer`] builds a
+    /// fresh [`Installer`] every time (every step's completion is read back
+    /// off the filesystem, so there is no progress to preserve), and the
+    /// `Esc` arm only fires when nothing is running, so no step is ever
+    /// orphaned by this.
+    ///
+    /// A run that reached the end chains into the projects folder on the
+    /// way out --- the question `finish_install` no longer asks over the
+    /// modal it would have covered.
+    fn close_installer(&mut self) {
+        let finished = self
+            .installer
+            .as_ref()
+            .is_some_and(|installer| installer.phase == crate::stepper::Phase::Finished);
         self.overlay = None;
         self.installer = None;
-        self.offer_projects_folder();
+        if finished {
+            self.offer_projects_folder();
+        }
     }
 
     /// Writes the installation into the config and re-resolves from it.

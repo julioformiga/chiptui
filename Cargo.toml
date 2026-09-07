@@ -103,5 +103,12 @@ codegen-units = 1
 opt-level = "z"
 panic = "abort"
 
+# Full debuginfo grows `target/` past ~7.8 GB of `.debug_info` on this
+# crate, at which point the linker dies on 32-bit relocations with a
+# *rotating* failing target. Line tables keep backtraces useful and settle
+# `target/` around 3 GB.
+[profile.dev]
+debug = "line-tables-only"
+
 [lints.clippy]
 all = { level = "deny", priority = -1 }

@@ -1,0 +1,6 @@
+#!/bin/sh
+# Fake `smpmgr` whose bootloader never swaps: after `os reset` the old image
+# comes back up, so the cycle's Verify reads the *old* hash in slot 0. The
+# behavior lives in `smpmgr` proper; this wrapper only selects it (per
+# process, so parallel tests never share it).
+exec env SMPMGR_FAKE_NO_SWAP=1 "$(dirname "$0")/smpmgr" "$@"

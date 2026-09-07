@@ -102,6 +102,23 @@ const TABLE_OFFSET_IN_WINDOW: usize = 0x8000 - READ_OFFSET;
 /// Labels only a Zephyr (sysbuild/MCUboot) layout produces.
 const ZEPHYR_LABELS: [&str; 3] = ["mcuboot", "slot0_partition", "slot1_partition"];
 
+/// The one line MCUboot's Espressif port compiles into the bootloader
+/// region, and on a Zephyr sysbuild board the only marker the
+/// identification window carries at all. Verified on hardware (an
+/// ESP32-C3 running Zephyr 4.4 through the stock
+/// `partitions_0x0_default_4M.dtsi` layout): the partitions live in the
+/// *devicetree*, so no ESP-IDF partition table is written for
+/// [`zephyr_partition_label`] to read; MCUboot itself never says
+/// "Zephyr"; and `image-0` starts at `0x20000` --- exactly the byte
+/// [`READ_SIZE`] ends on --- with its own `*** Booting Zephyr OS build
+/// … ***` a further megabyte in (`0x131068` on that board), so neither
+/// the app's banner nor its version is inside any window worth reading.
+/// Matching the whole sentence rather than the bare word keeps a
+/// passing mention of MCUboot from naming a firmware; that it names
+/// *Zephyr* is the same bet the `mcuboot` partition label above already
+/// makes.
+const MCUBOOT_BANNER: &[u8] = b"mcuboot 2nd stage bootloader";
+
 /// Where the conventional application area starts inside the window
 /// (`0x10000` in flash, window-relative since [`READ_OFFSET`] is 0x0).
 const APP_REGION_OFFSET: usize = 0x10000;
@@ -126,7 +143,9 @@ const DESC_IDF_VERSION_OFFSET: usize = 112;
 /// answer: Zephyr is what manages the board). Banner strings are the
 /// fallback, matched case-insensitively across the whole window, since
 /// builds differ in casing and in where they keep their banner (Zephyr/
-/// MCUboot names itself in the bootloader, MicroPython in the app).
+/// MCUboot names itself in the bootloader, MicroPython in the app), and
+/// a sysbuild board whose bootloader says only [`MCUBOOT_BANNER`] is
+/// read as Zephyr too --- the window it leaves has nothing else in it.
 pub fn identify(data: &[u8]) -> Option<FlashFirmware> {
     if zephyr_partition_label(data) {
         return Some(FlashFirmware::Zephyr);
@@ -134,7 +153,7 @@ pub fn identify(data: &[u8]) -> Option<FlashFirmware> {
     if contains_ascii_ci(data, b"micropython") {
         return Some(FlashFirmware::MicroPython);
     }
-    if contains_ascii_ci(data, b"zephyr") {
+    if contains_ascii_ci(data, b"zephyr") || contains_ascii_ci(data, MCUBOOT_BANNER) {
         return Some(FlashFirmware::Zephyr);
     }
     if has_esp_idf_app_descriptor(data) {
@@ -385,6 +404,56 @@ mod tests {
         let mut data = vec![0xFF; TABLE_OFFSET_IN_WINDOW];
         data[..b"ZEPHYR".len()].copy_from_slice(b"ZEPHYR");
         assert_eq!(identify(&data), Some(FlashFirmware::Zephyr));
+    }
+
+    /// The identification window a Zephyr sysbuild board really hands
+    /// back, reproduced from a captured `esptool read-flash 0x0 0x20000`
+    /// (ESP32-C3, Zephyr 4.4): MCUboot's own log strings near the start,
+    /// no ESP-IDF partition table at 0x8000 (Zephyr keeps its partitions
+    /// in the devicetree), and nothing but code from there on --- the
+    /// application, and with it every `Zephyr` string, starts at 0x20000,
+    /// where the window ends.
+    fn mcuboot_window() -> Vec<u8> {
+        let mut data = vec![0x00; READ_SIZE];
+        let strings: &[&[u8]] = &[
+            b"soc_init\x00",
+            b"I (%s): MCUboot 2nd stage bootloader\n\x00",
+            b"I (%s): compile time Sep  4 2026 13:32:16\n\x00",
+            b"I (%s): chip revision: v%d.%d\x00",
+        ];
+        let mut at = 0xc8;
+        for text in strings {
+            data[at..at + text.len()].copy_from_slice(text);
+            at += text.len();
+        }
+        data
+    }
+
+    #[test]
+    fn a_sysbuild_bootloader_alone_identifies_zephyr() {
+        let data = mcuboot_window();
+        assert!(
+            !contains_ascii_ci(&data, b"zephyr"),
+            "the window this reproduces carries no Zephyr string at all"
+        );
+        assert_eq!(identify(&data), Some(FlashFirmware::Zephyr));
+        // Named but undated: the application's banner is past the window,
+        // which is what arms the follow-up hunt.
+        assert_eq!(
+            classify(&data),
+            Some(FirmwareVerdict::Firmware(FlashFirmware::Zephyr, None))
+        );
+    }
+
+    #[test]
+    fn the_bare_word_mcuboot_names_no_firmware() {
+        // Only the bootloader's own sentence counts: a passing mention
+        // (a path, a Kconfig symbol, a signing tool's name) is not
+        // evidence of what the board runs.
+        let mut data = vec![0x00; 0x1000];
+        data[..b"CONFIG_MCUBOOT_SIGNATURE_KEY_FILE".len()]
+            .copy_from_slice(b"CONFIG_MCUBOOT_SIGNATURE_KEY_FILE");
+        assert_eq!(identify(&data), None);
     }
 
     #[test]

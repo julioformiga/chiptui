@@ -307,6 +307,35 @@ fn free_build_dir(found: &[Variant], target: &str) -> String {
     candidate
 }
 
+/// The project's existing Kconfig fragment for `board`, in either spelling
+/// Zephyr accepts: the qualified stem first (`xiao_esp32c3_esp32c3.conf`
+/// names exactly one target), then the bare name (`xiao_esp32c3.conf`,
+/// which covers every qualifier the board has --- [`fragment_targets`]'
+/// matching rule, read from the writing side). `None` when the project has
+/// no fragment for the board at all.
+///
+/// The answer is relative to `root`, like [`Variant::build_dir`]: callers
+/// that write hand it to `scaffold`'s project-rooted guard, and callers
+/// that read join it themselves.
+pub fn fragment_path(root: &Path, board: &str) -> Option<PathBuf> {
+    let qualified = fragment_path_for(board);
+    if root.join(&qualified).exists() {
+        return Some(qualified);
+    }
+    let bare = board.split('/').next().unwrap_or(board);
+    let bare_path = PathBuf::from("boards").join(format!("{bare}.conf"));
+    (root.join(&bare_path).exists() && bare_path != qualified).then_some(bare_path)
+}
+
+/// Where a *new* fragment for `board` goes (relative to the project root):
+/// the qualified spelling, which names exactly one target --- a fragment
+/// written for a bare name would silently apply to every qualifier the
+/// board has. Nothing is created here; this is the path a writer uses, not
+/// the write.
+pub fn fragment_path_for(board: &str) -> PathBuf {
+    PathBuf::from("boards").join(format!("{}.conf", board.replace('/', "_")))
+}
+
 /// The variant's display name: the build directory's own suffix when it has
 /// one (`build_sim` and `build-sim` both read `sim`, which is what their
 /// authors meant), and otherwise a short name off the board. The default
@@ -672,5 +701,44 @@ mod tests {
         assert!(!sim("xiao_esp32c3/esp32c3").is_simulator());
         // `native_sim` is the head, never a substring elsewhere.
         assert!(!sim("acme_native_sim/soc").is_simulator());
+    }
+
+    #[test]
+    fn a_new_fragment_goes_to_the_qualified_spelling() {
+        assert_eq!(
+            fragment_path_for("xiao_esp32c3/esp32c3"),
+            PathBuf::from("boards/xiao_esp32c3_esp32c3.conf")
+        );
+        assert_eq!(
+            fragment_path_for("xiao_esp32c3"),
+            PathBuf::from("boards/xiao_esp32c3.conf"),
+            "a bare name is already exactly one board"
+        );
+    }
+
+    #[test]
+    fn an_existing_fragment_is_found_in_either_spelling() {
+        let root = fixture("fragment-find");
+        let board = "xiao_esp32c3/esp32c3";
+        assert_eq!(fragment_path(&root, board), None, "no fragment yet");
+
+        std::fs::create_dir_all(root.join("boards")).unwrap();
+        std::fs::write(root.join("boards/xiao_esp32c3.conf"), "# bare\n").unwrap();
+        assert_eq!(
+            fragment_path(&root, board),
+            Some(PathBuf::from("boards/xiao_esp32c3.conf")),
+            "the bare spelling covers every qualifier"
+        );
+
+        std::fs::write(
+            root.join("boards/xiao_esp32c3_esp32c3.conf"),
+            "# one target\n",
+        )
+        .unwrap();
+        assert_eq!(
+            fragment_path(&root, board),
+            Some(PathBuf::from("boards/xiao_esp32c3_esp32c3.conf")),
+            "the qualified spelling wins when both exist"
+        );
     }
 }

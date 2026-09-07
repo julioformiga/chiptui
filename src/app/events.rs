@@ -55,6 +55,8 @@ impl App {
                     self.drive_held_root_listing();
                 }
                 self.drive_held_root_listing();
+                // The OTA modal's settle deadline and image refresh.
+                self.drive_ota();
                 // The board/shield pickers' documentation fetches: whatever
                 // row the cursor rests on is the one whose picture and
                 // details are worth fetching, debounced by the tick.
@@ -350,6 +352,7 @@ impl App {
         }
 
         self.install_on_process(event);
+        self.ota_on_process(event);
 
         if let Some(mut build) = self.build.take() {
             let caps = self.manager.capabilities();

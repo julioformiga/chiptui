@@ -9,8 +9,8 @@ use ratatui::widgets::{Paragraph, Tabs, Wrap};
 
 use crate::app::{App, Focus, LogTab, MonitorSource, ProjectRow};
 use crate::backend::Capability;
+use crate::backend::esptool::features;
 use crate::backend::micropython::deps;
-use crate::backend::micropython::esptool::features;
 use crate::firmware_id::{FirmwareVerdict, FlashFirmware};
 use crate::flash::RunState;
 use crate::logs::{Level, PREFIX_WIDTH};

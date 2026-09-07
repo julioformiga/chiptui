@@ -60,6 +60,18 @@ fn app_with_west(tag: &str, tool: &str) -> App {
     app
 }
 
+/// The same, with a board on the fixture's USB bus so `Flash`'s menu can
+/// offer the wired row (`flash_method::rows`). Planting the port and
+/// rescanning only *arms* the identification question --- its overlay opens
+/// on a tick, and nothing here pumps one before the menu is answered.
+fn app_with_west_and_board(tag: &str, tool: &str) -> (App, std::path::PathBuf) {
+    let (mut app, root) = zephyr_app(tag, Some("nrf52840dk/nrf52840"));
+    app.build.as_mut().unwrap().set_tool_path(fake(tool));
+    std::fs::write(root.join("dev/ttyACM0"), b"").unwrap();
+    app.scan_serial_devices();
+    (app, root)
+}
+
 /// Walks the build panel's cursor onto `action`, so a test names the row it
 /// means instead of counting `Down` presses --- the count moves whenever the
 /// action list does, and a miscount lands on a neighbouring row silently.
@@ -80,10 +92,15 @@ fn the_panel_appears_and_is_a_focus_stop_for_a_build_backend() {
 
     assert!(app.build.is_some(), "Zephyr gets a build panel");
     assert!(app.build_pane_visible());
+    // This fixture has a board but no resolved Zephyr installation, so the
+    // environment still has questions --- and focus goes to the pane that
+    // asks them, which is off the `Tab` tour and otherwise the hardest to
+    // reach. Still never the paneless `FilesLocal` default, which is what
+    // this assertion has always really been guarding.
     assert_eq!(
         app.focus,
-        Focus::Workspace,
-        "startup focus lands on the workspace pane, not the paneless FilesLocal default"
+        Focus::Project,
+        "an unanswered environment claims startup focus for the pane that asks"
     );
 
     // Tab tour: Workspace -> Build -> Logs -> Workspace.
@@ -1387,7 +1404,7 @@ fn a_missing_west_explains_itself_in_the_picker() {
 
 #[test]
 fn flash_is_listed_confirms_and_runs_through_west() {
-    let mut app = app_with_west("flash", "west");
+    let (mut app, _root) = app_with_west_and_board("flash", "west");
     app.focus = Focus::Build;
 
     // Flash sits last: Update Zephyr, SDK List, Menuconfig, Clean, Build,
@@ -1395,6 +1412,14 @@ fn flash_is_listed_confirms_and_runs_through_west() {
     for _ in 0..6 {
         app.handle(key(KeyCode::Down));
     }
+    app.handle(key(KeyCode::Enter));
+
+    // The row asks which way first --- with a board plugged in the cursor
+    // opens on the wired row, so the reflex `Enter` is the old behaviour.
+    assert!(matches!(
+        app.overlay,
+        Some(Overlay::FlashMethod { selected: 0, .. })
+    ));
     app.handle(key(KeyCode::Enter));
 
     // Destructive (Capability::Flash): the confirm quotes the literal
@@ -1417,7 +1442,9 @@ fn flash_is_listed_confirms_and_runs_through_west() {
     assert!(!app.build.as_ref().unwrap().is_busy());
 
     // Accepting runs it, streaming into the Monitor tab, and the report
-    // line names Flash --- not a recycled Build label.
+    // line names Flash --- not a recycled Build label. Two `Enter`s now:
+    // the menu, then the row.
+    app.handle(key(KeyCode::Enter));
     app.handle(key(KeyCode::Enter));
     app.handle(key(KeyCode::Char('y')));
     assert!(app.build.as_ref().unwrap().is_busy());
@@ -1445,10 +1472,13 @@ fn flash_is_listed_confirms_and_runs_through_west() {
 
 #[test]
 fn x_routes_a_build_backend_to_west_flash_and_micropython_to_the_actions_tab() {
-    // Zephyr: `x` opens the flash confirm of the build panel, not esptool's
-    // dialog --- that dialog cannot talk to this board.
-    let mut app = app_with_west("x-zephyr", "west");
+    // Zephyr: `x` reaches the build panel's flash question, not esptool's
+    // dialog --- that dialog cannot talk to this board. It is the same one
+    // door the `Flash` row opens, so `x` still answers into `west flash`.
+    let (mut app, _root) = app_with_west_and_board("x-zephyr", "west");
     app.handle(key(KeyCode::Char('x')));
+    assert!(matches!(app.overlay, Some(Overlay::FlashMethod { .. })));
+    app.handle(key(KeyCode::Enter));
     assert_eq!(
         app.overlay,
         Some(Overlay::ConfirmBuild {
@@ -2095,7 +2125,12 @@ fn build_asks_where_it_runs_and_the_answer_moves_the_whole_target() {
     );
     // ...but Flash never leaves the board's directory: a host build has no
     // image to write.
-    let flash = app.build.as_ref().unwrap().flash_command(backend).unwrap();
+    let flash = app
+        .build
+        .as_ref()
+        .unwrap()
+        .flash_command(backend, None, None)
+        .unwrap();
     assert_eq!(flash.to_string(), "west flash", "{flash}");
 
     // And the next Build opens on the answer just given.
@@ -2166,7 +2201,12 @@ fn a_host_build_never_makes_the_flash_dialog_name_the_simulator() {
 
     // And what would actually run.
     let backend = app.manager.backend().unwrap();
-    let flash = app.build.as_ref().unwrap().flash_command(backend).unwrap();
+    let flash = app
+        .build
+        .as_ref()
+        .unwrap()
+        .flash_command(backend, None, None)
+        .unwrap();
     assert_eq!(flash.to_string(), "west flash", "{flash}");
 }
 
@@ -2328,7 +2368,12 @@ fn the_action_stack_is_the_same_six_buttons_for_either_target() {
     );
     // And `Flash` still points at the board's directory, not the host's.
     let backend = app.manager.backend().unwrap();
-    let flash = app.build.as_ref().unwrap().flash_command(backend).unwrap();
+    let flash = app
+        .build
+        .as_ref()
+        .unwrap()
+        .flash_command(backend, None, None)
+        .unwrap();
     assert_eq!(flash.to_string(), "west flash", "{flash}");
 }
 

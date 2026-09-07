@@ -24,6 +24,8 @@ pub(crate) mod layout;
 mod monitor;
 mod overlay;
 pub(crate) use overlay::{BUILD_TARGET_COUNT, ZEPHYR_ACTIONS_COUNT};
+pub(crate) mod ota;
+pub(crate) use ota::area as ota_area;
 mod panels;
 pub(crate) use panels::board_shield_click_is_board;
 pub(crate) use panels::device_mac_row;
@@ -33,6 +35,7 @@ mod workspace;
 use std::path::Path;
 
 use ratatui::Frame;
+use ratatui::buffer::CellWidth;
 use ratatui::layout::{Alignment, Constraint, Flex, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
@@ -153,8 +156,40 @@ fn draw_flash_dialog(frame: &mut Frame, body: Rect, app: &App, palette: Palette)
     let Some(flash) = &app.flash else { return };
     let (width, height) = flash::dialog_size(flash);
     let popup = centered(body, width, height);
+    clear_straddling_glyphs(frame.buffer_mut(), popup);
     frame.render_widget(Clear, popup);
     flash::draw(frame, popup, app, palette);
+}
+
+/// Blanks any two-cell glyph whose *second* half falls under `popup`'s left
+/// border.
+///
+/// `Clear` resets the cells a popup covers, and that is not enough. A wide
+/// glyph drawn behind it --- the file panes' `📁`/`📄` --- keeps its first
+/// cell one column outside, and ratatui's renderer *skips* the cell a wide
+/// symbol covers, so the popup's border column there is never drawn at all:
+/// the emoji spills over the frame and the border vanishes. The straddling
+/// glyph has to be erased where it starts, which is one column outside the
+/// popup --- a box cannot un-draw a cell it does not own.
+///
+/// Only the left edge can straddle. A glyph starting on the popup's last
+/// column is inside, and the border drawn there overwrites it; one starting
+/// past the right edge lies wholly outside and covers nothing. And only a
+/// glyph that really is wide is touched (ratatui's own [`CellWidth`], the
+/// same measure its renderer uses), so ordinary content beside a popup is
+/// left exactly as it was --- this is a repair, not a margin.
+pub(crate) fn clear_straddling_glyphs(buffer: &mut ratatui::buffer::Buffer, popup: Rect) {
+    if popup.x == 0 || popup.is_empty() {
+        return;
+    }
+    let x = popup.x - 1;
+    let bottom = popup.bottom().min(buffer.area.bottom());
+    for y in popup.y..bottom {
+        let cell = &mut buffer[(x, y)];
+        if cell.symbol().cell_width() > 1 {
+            cell.set_symbol(" ");
+        }
+    }
 }
 
 /// Centers a `width`×`height` box inside `area`, shrinking to fit. Shared
@@ -749,8 +784,45 @@ pub(crate) fn draw_scrollbar(
 
 #[cfg(test)]
 mod tests {
-    use super::tilde_path;
+    use super::{clear_straddling_glyphs, tilde_path};
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
     use std::path::Path;
+
+    /// The folder icon, two cells wide --- the glyph that reported this.
+    const FOLDER: &str = "\u{1f4c1}";
+
+    /// The repair, in isolation: a two-cell glyph whose second half lies
+    /// under the popup's left border is erased, and nothing else is.
+    #[test]
+    fn a_glyph_straddling_the_left_border_is_erased_and_nothing_else() {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 10, 2));
+        buffer[(1, 0)].set_symbol(FOLDER); // covers columns 1 and 2
+        buffer[(1, 1)].set_symbol("x"); // one cell, same column
+        buffer[(4, 0)].set_symbol(FOLDER); // wide, but wholly inside
+
+        // A popup starting at column 2: its border lands on the folder's
+        // second cell, where ratatui would never draw it.
+        clear_straddling_glyphs(&mut buffer, Rect::new(2, 0, 6, 2));
+
+        assert_eq!(buffer[(1, 0)].symbol(), " ", "the straddling glyph goes");
+        assert_eq!(buffer[(1, 1)].symbol(), "x", "a narrow neighbour stays");
+        assert_eq!(
+            buffer[(4, 0)].symbol(),
+            FOLDER,
+            "a glyph inside the popup is the popup's own business"
+        );
+    }
+
+    /// A popup flush against the left edge has no outside column to repair,
+    /// and must not read one.
+    #[test]
+    fn a_popup_at_column_zero_touches_nothing() {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 10, 1));
+        buffer[(0, 0)].set_symbol(FOLDER);
+        clear_straddling_glyphs(&mut buffer, Rect::new(0, 0, 10, 1));
+        assert_eq!(buffer[(0, 0)].symbol(), FOLDER);
+    }
 
     #[test]
     fn home_prefixed_paths_collapse_to_a_tilde() {

@@ -1423,7 +1423,7 @@ fn settle_app(app: &mut App) {
 
 #[test]
 fn disconnecting_the_device_clears_the_stale_dashboard_details() {
-    use chiptui::backend::micropython::esptool::{ChipFamily, DeviceDetails};
+    use chiptui::backend::esptool::{ChipFamily, DeviceDetails};
     use chiptui::flash::FlashPanel;
     use ratatui::crossterm::event::KeyCode;
 

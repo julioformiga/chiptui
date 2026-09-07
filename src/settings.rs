@@ -597,7 +597,11 @@ pub fn forget_project(config: &Path, path: &Path) -> std::io::Result<()> {
 /// registry, and it is rewritten on every project open --- a truncated write
 /// would lose both at once. Falls back to a direct write when the rename
 /// fails (a filesystem without atomic rename should still get the update).
-fn write_config(config: &Path, text: &str) -> std::io::Result<()> {
+///
+/// Shared with [`crate::project::config`], which makes the same promise
+/// about the *project's* `chiptui.toml`: this function is the atomicity
+/// guarantee, and a second copy of it would become a second, weaker one.
+pub(crate) fn write_config(config: &Path, text: &str) -> std::io::Result<()> {
     if let Some(parent) = config.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -667,7 +671,14 @@ fn render_projects(other: &str, entries: &[ProjectEntry]) -> String {
 /// through *every* header, not just the one being written --- otherwise a
 /// key of the same name in a later section (or inside a `[[project]]`
 /// block) would be the one replaced.
-fn upsert_key(text: &str, section: &str, key: &str, value: &str) -> String {
+///
+/// Shared with [`crate::project::config`] rather than copied. `unquote` is
+/// deliberately duplicated there ("one small function is a cheaper coupling
+/// than none"), but this one *is* the preservation guarantee --- section
+/// tracking, comment stripping before the `=` split, insert-after-header
+/// versus append-a-section --- and two copies of it would drift into two
+/// different definitions of "preserve".
+pub(crate) fn upsert_key(text: &str, section: &str, key: &str, value: &str) -> String {
     let header_name = |line: &str| {
         line.split('#')
             .next()

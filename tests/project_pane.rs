@@ -146,8 +146,11 @@ fn connected_mpy_app(tag: &str, requirements: &str) -> (App, PathBuf) {
 #[test]
 fn the_shortcut_letter_lands_on_the_first_open_question() {
     let (mut app, _root) = zephyr_app("enter");
-    app.place_startup_focus();
-    assert_ne!(app.focus, Focus::Project);
+    // Park focus elsewhere on purpose. Startup now *lands* on this pane
+    // when the environment is unanswered, which is this fixture --- so
+    // leaning on `place_startup_focus` to establish "we start somewhere
+    // else" would make the assertion below prove nothing.
+    app.focus = Focus::Logs;
 
     enter_project_pane(&mut app);
     assert_eq!(app.focus, Focus::Project);

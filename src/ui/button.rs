@@ -62,6 +62,10 @@ pub struct Button {
     /// bold/muted weight (see [`Button::icon`]). `None` renders the label as
     /// one plain span, exactly as before this field existed.
     icon: Option<(&'static str, Color)>,
+    /// An override for the detail row's color (see
+    /// [`Button::detail_color`]). `None` --- every button that had a detail
+    /// before this field existed --- keeps the muted default.
+    detail_color: Option<Color>,
     enabled: bool,
     selected: bool,
 }
@@ -71,6 +75,7 @@ impl Button {
         Self {
             label: label.into(),
             detail: None,
+            detail_color: None,
             icon: None,
             enabled: true,
             selected: false,
@@ -101,6 +106,18 @@ impl Button {
         self
     }
 
+    /// Colors the detail row, overriding the muted default.
+    ///
+    /// For the one thing a detail line says that is not a description: why
+    /// a disabled row cannot run. Dimming alone leaves a reader comparing
+    /// two greys to work out which line is the explanation, so the reason
+    /// takes the theme's warning color while the descriptions stay muted
+    /// (`crate::backend::zephyr::flash_method`).
+    pub fn detail_color(mut self, color: Color) -> Self {
+        self.detail_color = Some(color);
+        self
+    }
+
     /// How many rows this button occupies.
     fn rows(&self) -> u16 {
         if self.detail.is_some() { 2 } else { 1 }
@@ -127,6 +144,16 @@ impl Button {
             Style::new().fg(palette.fg).bold()
         } else {
             muted_style(palette)
+        }
+    }
+
+    /// The detail row's style: the muted default, or the explicit color
+    /// [`Button::detail_color`] set. A disabled button keeps that color ---
+    /// the reason is the one thing on a dimmed row that must still be read.
+    fn detail_style(&self, palette: Palette) -> Style {
+        match self.detail_color {
+            Some(color) => Style::new().fg(color),
+            None => muted_style(palette),
         }
     }
 
@@ -266,7 +293,7 @@ impl Widget for ButtonStack {
                         Span::styled("│", frame),
                         Span::styled(
                             pad_left(&format!("{}{text}", " ".repeat(DETAIL_INDENT)), inner),
-                            muted_style(self.palette),
+                            button.detail_style(self.palette),
                         ),
                         Span::styled("│", frame),
                     ]),

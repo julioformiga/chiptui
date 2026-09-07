@@ -48,6 +48,7 @@ pub mod monitor_view;
 pub use monitor_view::{MonitorScroll, MonitorSource, MonitorView};
 mod mouse;
 pub use mouse::ViewToken;
+mod ota_view;
 pub mod overlay;
 pub use overlay::Overlay;
 pub mod packages;
@@ -342,6 +343,16 @@ pub struct App {
     /// renderer so page scrolling matches the drawn height --- the same
     /// contract [`Self::log_viewport`] has for the log pane.
     pub install_viewport: usize,
+    /// The OTA modal's panel (`Overlay::Ota`): prepare + update state, kept
+    /// off the overlay so a confirm can replace the window and hand it back
+    /// unchanged (the one-deep-slot discipline `Packages` follows).
+    pub ota: Option<crate::ota::update::OtaPanel>,
+    /// Rows of OTA output the last frame drew --- `install_viewport`'s
+    /// contract, for the OTA modal's own output section.
+    pub ota_viewport: usize,
+    /// The `smpmgr` program override, for tests (recorded here because the
+    /// panel is created when the modal opens).
+    ota_tool_path: Option<String>,
     /// Whether the open `Overlay::Confirm` is the installer's. The shared
     /// confirm is otherwise the flash panel's, which reads its action from
     /// `FlashPanel::pending`.
@@ -402,6 +413,17 @@ pub struct App {
 
     /// The interactive device monitor session spawned inside a PTY.
     pub device_monitor_process: Option<crate::process::ProcessId>,
+    /// Whether that session is the *platform* monitor (idf_monitor, under
+    /// `west espressif monitor`) rather than `mpremote repl`. It is what
+    /// the footer keys on to offer idf_monitor's own reboot chord: the
+    /// platform monitor attaches without resetting the board (it sets
+    /// `dtr`/`rts` false, and the `-p` skips the west extension's own
+    /// probing `hard_reset`), so an application that only speaks at boot
+    /// says nothing until `ctrl+t ctrl+r` reboots it --- while in
+    /// `mpremote`'s REPL that chord means nothing and must not be
+    /// advertised. Answered by the command the backend actually returned,
+    /// never by a second reading of which backend this is.
+    device_monitor_is_platform: bool,
     /// Accumulated lines from the PTY session.
     pub device_monitor_output: Vec<String>,
     /// VT interpretation of the monitor's raw output (cursor position and
@@ -621,6 +643,9 @@ impl App {
             installer: None,
             installer_tool_paths: Vec::new(),
             install_viewport: 0,
+            ota: None,
+            ota_viewport: 0,
+            ota_tool_path: None,
             install_confirm_pending: false,
             project_cursor: 0,
             board_segment: true,
@@ -639,6 +664,7 @@ impl App {
             viewer_viewport: 1,
             pending_edit: None,
             device_monitor_process: None,
+            device_monitor_is_platform: false,
             device_monitor_output: Vec::new(),
             monitor_console: LineConsole::new(),
             terminal_process: None,
@@ -1394,6 +1420,27 @@ mod tests {
     }
 
     #[test]
+    fn only_the_platform_monitor_offers_the_reboot_chord() {
+        // idf_monitor attaches without resetting the board, so its footer
+        // has to name the chord that makes a boot-only application talk;
+        // `mpremote repl` has no such command, and advertising one there
+        // would be a lie.
+        let (mut app, id) = app_in_monitor();
+        let keys = |app: &App| -> Vec<&'static str> {
+            app.shortcuts().iter().map(|(key, _)| *key).collect()
+        };
+        assert!(
+            !keys(&app).contains(&"ctrl+t ctrl+r"),
+            "an mpremote REPL session must not offer idf_monitor's chord"
+        );
+        app.device_monitor_is_platform = true;
+        assert!(keys(&app).contains(&"ctrl+t ctrl+r"));
+        // The escapes it shares with every session stay where they were.
+        assert!(keys(&app).contains(&"ctrl+]") && keys(&app).contains(&"ctrl+f"));
+        app.processes.cancel(id);
+    }
+
+    #[test]
     fn the_footer_names_the_terminal_sessions_escapes() {
         let (mut app, id) = app_in_terminal();
         let keys: Vec<&str> = app.shortcuts().iter().map(|(key, _)| *key).collect();
@@ -1663,10 +1710,20 @@ mod tests {
             .unwrap();
         switch.apply_project_setup(zephyr);
         assert_eq!(switch.manager.selected_kind(), Some(BackendKind::Zephyr));
+        // Nothing about this fresh project's environment is answered, so
+        // focus lands on the pane that asks --- which is deliberately off
+        // the `Tab` tour and was otherwise the hardest pane to reach at the
+        // exact moment it had every remaining question. The tour's own
+        // first stop takes over once they are answered.
         assert_eq!(
             switch.focus,
-            Focus::Workspace,
-            "clamping must land on the workspace pane, the row's first stop"
+            Focus::Project,
+            "an unanswered environment claims focus for the pane that asks"
+        );
+        assert_eq!(
+            switch.project_cursor,
+            switch.first_open_project_row(),
+            "and the cursor sits on the first question still open"
         );
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&home);

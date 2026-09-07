@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use chiptui::app::{App, Focus, LogTab, MonitorSource, Overlay, View};
 use chiptui::backend::BackendKind;
-use chiptui::backend::micropython::esptool::ChipFamily;
+use chiptui::backend::esptool::ChipFamily;
 use chiptui::browser::Browser;
 use chiptui::device::{DeviceInfo, ScriptState};
 use chiptui::event::AppEvent;

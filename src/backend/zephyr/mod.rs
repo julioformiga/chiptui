@@ -5,6 +5,9 @@
 //! split (`SPEC.md` §12 --- one seam per tool).
 
 pub mod commands;
+pub mod domains;
+pub mod flash_method;
+pub mod flash_plan;
 pub mod projects;
 pub mod report;
 pub mod variants;
@@ -89,11 +92,17 @@ impl Backend for ZephyrBackend {
             Capability::ShieldSelect,
             Capability::ProjectSelect,
             Capability::WorkspaceSync,
+            Capability::OtaPrepare,
+            Capability::OtaUpdate,
         ])
     }
 
     fn required_tools(&self) -> &'static [&'static str] {
         &["west", "cmake", "ninja"]
+    }
+
+    fn tool_program(&self) -> &'static str {
+        commands::PROGRAM
     }
 
     /// The three files `west build -b <board>` needs and nothing more: the
@@ -150,15 +159,12 @@ impl Backend for ZephyrBackend {
     fn build_command(
         &self,
         kind: BuildKind,
-        board: Option<&str>,
-        shield: Option<&str>,
-        build_dir_exists: bool,
-        build_dir: &str,
+        ctx: &crate::backend::BuildContext<'_>,
     ) -> Option<crate::process::Command> {
         Some(match kind {
-            BuildKind::Build => commands::build(board, shield, build_dir_exists, build_dir),
-            BuildKind::Clean => commands::clean(build_dir),
-            BuildKind::Rebuild => commands::rebuild(board, shield, build_dir),
+            BuildKind::Build => commands::build(ctx),
+            BuildKind::Clean => commands::clean(ctx.build_dir),
+            BuildKind::Rebuild => commands::rebuild(ctx),
         })
     }
 
@@ -176,8 +182,19 @@ impl Backend for ZephyrBackend {
         Some(commands::shields(board_roots))
     }
 
-    fn flash_command(&self, build_dir: &str) -> Option<crate::process::Command> {
-        Some(commands::flash(build_dir))
+    fn flash_command(
+        &self,
+        ctx: &crate::backend::FlashContext<'_>,
+    ) -> Result<crate::process::Command, String> {
+        // How the images reach the board is a decision, not a constant:
+        // `west flash` for every runner that handles a sysbuild image set
+        // correctly, explicit addresses for the one that does not.
+        flash_plan::plan(ctx.root, ctx.build_dir)?.command(
+            ctx.build_dir,
+            ctx.port,
+            ctx.chip,
+            &crate::backend::esptool::FlashOptions::default(),
+        )
     }
 
     fn menuconfig_command(&self, build_dir: &str) -> Option<crate::process::Command> {

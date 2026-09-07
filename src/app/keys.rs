@@ -255,6 +255,12 @@ impl App {
                 self.open_flash();
                 return;
             }
+            // No `o` for the OTA modal any more: writing firmware is one
+            // door, the Actions pane's `Flash` row, which asks which way
+            // (`App::open_flash_method`). A second key straight into the
+            // over-the-air half made the two paths look unrelated, and
+            // nothing on the pane ever pointed at it --- `x` reaches the
+            // same menu from any pane.
             KeyCode::Char('P') => {
                 self.request_home_screen();
                 return;

@@ -63,6 +63,7 @@ pub mod elf_stat;
 pub mod json;
 pub mod kconfig;
 pub mod memory;
+pub mod partitions;
 
 /// Where each artifact lives, given a project root and a build directory.
 ///
