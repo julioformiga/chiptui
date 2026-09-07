@@ -105,6 +105,10 @@ fn the_cycle_runs_the_declared_stages_and_halts_unconfirmed() {
     let address = "10.99.0.1";
     let _ = std::fs::remove_dir_all(format!("/tmp/chiptui-fake-smpmgr-{address}"));
     let (mut panel, mut processes, root) = ready_panel("cycle", "smpmgr", address);
+    // The halt is the project's answer now: `[ota] auto_confirm = false`.
+    // With the default a verified swap confirms itself, which is the next
+    // test.
+    panel.set_auto_confirm(false).unwrap();
 
     assert!(panel.start_update(&mut processes));
     let halted = pump(&mut panel, &mut processes, 15, |panel| {
@@ -134,9 +138,64 @@ fn the_cycle_runs_the_declared_stages_and_halts_unconfirmed() {
     // The hash the read answered is the one the mark wrote.
     assert_eq!(panel.slot_hash(), Some(NEW_HASH));
 
+    // The answer that produced the halt is recorded in the project, not
+    // held in the session: a project that wants its revert keeps it.
+    let toml = std::fs::read_to_string(root.join("chiptui.toml")).unwrap();
+    assert!(
+        toml.contains("auto_confirm"),
+        "the setting is persisted: {toml}"
+    );
+
     // The halt is never a silent success: the panel parks in front of the
     // confirm, which is a separate decision.
     assert_eq!(panel.action(), OtaAction::ConfirmImage);
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_dir_all(format!("/tmp/chiptui-fake-smpmgr-{address}"));
+}
+
+/// A verified swap confirms itself.
+///
+/// `[ota] auto_confirm` is the default: the board swapped, came back and
+/// answered with the hash the cycle armed, which is every check the tool
+/// can make --- so one press runs the whole declared order, `Confirm`
+/// included, and the cycle never parks. What that spends is the revert,
+/// which is why the setting exists and why the halt is one keypress away.
+#[test]
+fn a_verified_swap_is_confirmed_without_a_second_question() {
+    let address = "10.99.0.11";
+    let _ = std::fs::remove_dir_all(format!("/tmp/chiptui-fake-smpmgr-{address}"));
+    let (mut panel, mut processes, root) = ready_panel("autoconfirm", "smpmgr", address);
+    assert!(panel.auto_confirm(), "the default");
+
+    assert!(panel.start_update(&mut processes));
+    let done = pump(&mut panel, &mut processes, 15, |panel| {
+        panel.action() == OtaAction::Done
+    });
+    assert!(done, "one press runs the cycle to the end");
+    assert!(
+        !panel.awaiting_confirm(),
+        "and never parks in front of Confirm"
+    );
+    assert!(matches!(panel.update_phase, Phase::Finished));
+
+    let log = fixture_log(address);
+    let lines: Vec<&str> = log.lines().collect();
+    assert_eq!(
+        lines,
+        vec![
+            "os echo chiptui",
+            &format!(
+                "image upload {}",
+                root.join("build/app/zephyr/zephyr.signed.bin").display()
+            ),
+            "image state-read",
+            &format!("image state-write {NEW_HASH}"),
+            "os reset",
+            "image state-read",
+            "image state-write --confirm",
+        ],
+        "the declared order, confirm included"
+    );
     let _ = std::fs::remove_dir_all(&root);
     let _ = std::fs::remove_dir_all(format!("/tmp/chiptui-fake-smpmgr-{address}"));
 }
@@ -146,6 +205,7 @@ fn the_confirm_is_a_separate_step_that_completes_the_cycle() {
     let address = "10.99.0.2";
     let _ = std::fs::remove_dir_all(format!("/tmp/chiptui-fake-smpmgr-{address}"));
     let (mut panel, mut processes, root) = ready_panel("confirm", "smpmgr", address);
+    panel.set_auto_confirm(false).unwrap();
     assert!(panel.start_update(&mut processes));
     assert!(pump(&mut panel, &mut processes, 15, |panel| panel
         .awaiting_confirm()));
@@ -264,7 +324,9 @@ fn a_verify_reporting_the_old_hash_is_a_named_failure() {
         !panel.awaiting_confirm(),
         "never parked in front of Confirm"
     );
-    assert_eq!(panel.action(), OtaAction::RetryUpdate);
+    // Nothing is left to write --- only the read that judges the swap ---
+    // so the button says `Verify` and pressing it asks nothing.
+    assert_eq!(panel.action(), OtaAction::ResumeVerify);
     let _ = std::fs::remove_dir_all(&root);
     let _ = std::fs::remove_dir_all(format!("/tmp/chiptui-fake-smpmgr-{address}"));
 }
@@ -296,8 +358,13 @@ fn stopping_the_settle_says_so_and_resumes_at_verify() {
         "the stop names itself instead of reading as ready: {:?}",
         panel.update_phase
     );
-    // And the button resumes rather than offering a fresh push.
-    assert_eq!(panel.action(), OtaAction::RetryUpdate);
+    // And the button resumes rather than offering a fresh push --- naming
+    // the read it will run, since the swap is already written.
+    assert_eq!(panel.action(), OtaAction::ResumeVerify);
+    assert!(
+        !panel.resume_writes(),
+        "so it asks nothing: everything the cycle writes is written"
+    );
     let (stage, _) = panel.next_stage_command().expect("a stage to resume at");
     assert_eq!(
         stage,
@@ -305,6 +372,105 @@ fn stopping_the_settle_says_so_and_resumes_at_verify() {
         "the swap already happened; verifying is the honest next question"
     );
 
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_dir_all(format!("/tmp/chiptui-fake-smpmgr-{address}"));
+}
+
+/// The settle is a ceiling, not a schedule.
+///
+/// `OtaStage::settle` carries headroom over a swap that was measured at
+/// 58 s and scales with the image's size, so waiting it out blindly spent
+/// half a minute counting down at a board that was already back. The runner
+/// polls through it with the driver's own `Verify` read and moves on the
+/// moment slot 0 answers the hash the cycle armed.
+#[test]
+fn the_settle_ends_when_the_board_reports_the_swap() {
+    let address = "10.99.0.9";
+    let _ = std::fs::remove_dir_all(format!("/tmp/chiptui-fake-smpmgr-{address}"));
+    let (mut panel, mut processes, root) = ready_panel("settlepoll", "smpmgr", address);
+    // A ceiling no test could wait out, and a cadence that fits inside it:
+    // reaching the confirm at all is the proof the poll ended the settle.
+    panel.set_settle(Duration::from_secs(30));
+    panel.set_settle_poll(Duration::from_millis(50), Duration::from_secs(5));
+
+    let started = Instant::now();
+    assert!(panel.start_update(&mut processes));
+    let done = pump(&mut panel, &mut processes, 15, |panel| {
+        panel.action() == OtaAction::Done
+    });
+    assert!(
+        done,
+        "the poll ends the settle instead of waiting the ceiling out"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(30),
+        "and it did so early: {:?}",
+        started.elapsed()
+    );
+
+    // The transcript says why it stopped waiting --- a settle that simply
+    // ended and one the board ended are not the same event.
+    assert!(
+        panel
+            .output
+            .iter()
+            .any(|line| line.contains("the swap landed")),
+        "the early exit is reported: {:?}",
+        panel.output
+    );
+
+    // The board saw the polls, and the cycle still ran `Verify` for its
+    // verdict: a poll answers when to ask, never what the answer was.
+    let log = fixture_log(address);
+    let reset = log.lines().position(|line| line == "os reset").unwrap();
+    let after: Vec<&str> = log.lines().skip(reset + 1).collect();
+    assert!(
+        after
+            .iter()
+            .filter(|line| **line == "image state-read")
+            .count()
+            >= 2,
+        "the poll read, and so did the verify it started: {after:?}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_dir_all(format!("/tmp/chiptui-fake-smpmgr-{address}"));
+}
+
+/// And the poll cannot end it early on its own say-so: only slot 0 holding
+/// the *armed* hash does.
+///
+/// A board whose bootloader never swaps answers every poll --- with the old
+/// hash. That is the same "keep waiting" as no answer at all (a reset that
+/// has not landed yet reads identically), so the ceiling still governs and
+/// `Verify` still gives the verdict. Ending on reachability instead would
+/// have reported this board's failure as a success.
+#[test]
+fn a_board_that_never_swaps_waits_the_ceiling_out() {
+    let address = "10.99.0.10";
+    let _ = std::fs::remove_dir_all(format!("/tmp/chiptui-fake-smpmgr-{address}"));
+    let (mut panel, mut processes, root) = ready_panel("settlenoswap", "smpmgr-no-swap", address);
+    panel.set_settle(Duration::from_secs(3));
+    panel.set_settle_poll(Duration::from_millis(50), Duration::from_secs(1));
+
+    assert!(panel.start_update(&mut processes));
+    let settling = pump(&mut panel, &mut processes, 15, |panel| {
+        panel.settling_remaining().is_some()
+    });
+    assert!(settling, "the cycle reaches the post-reset settle");
+    let ceiling = Instant::now() + panel.settling_remaining().unwrap();
+
+    let failed = pump(&mut panel, &mut processes, 15, |panel| {
+        matches!(panel.update_phase, Phase::Stopped(_))
+    });
+    assert!(failed, "the verify still fails the cycle");
+    assert!(
+        Instant::now() >= ceiling,
+        "and only after the whole ceiling: an answering board is not a swapped one"
+    );
+    assert!(
+        !panel.awaiting_confirm(),
+        "never parked in front of Confirm"
+    );
     let _ = std::fs::remove_dir_all(&root);
     let _ = std::fs::remove_dir_all(format!("/tmp/chiptui-fake-smpmgr-{address}"));
 }

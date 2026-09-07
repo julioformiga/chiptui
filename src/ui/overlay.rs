@@ -1288,7 +1288,7 @@ fn draw_ota_confirm(
                 target: format!("{board} at {address}"),
                 consequence: if fresh {
                     format!(
-                        "Replaces the running firmware; the swap takes ~{}s after the reset.",
+                        "Replaces the running firmware; the reset's swap takes up to {}s.",
                         OtaStage::Reset.settle().as_secs()
                     )
                 } else {

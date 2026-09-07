@@ -123,7 +123,12 @@ pub(super) fn draw(
         y = row(frame, inner, y, prepare_line(panel, index, *step, palette));
     }
     y = row(frame, inner, y, Line::from(""));
-    y = row(frame, inner, y, heading("Update", "", palette));
+    y = row(
+        frame,
+        inner,
+        y,
+        heading("Update", update_hint(panel), palette),
+    );
     for (index, stage) in panel.stage_list().iter().enumerate() {
         y = row(
             frame,
@@ -357,6 +362,18 @@ fn prepare_hint(panel: &OtaPanel) -> String {
     }
 }
 
+/// The auto-confirm toggle's hint --- `prepare_hint`'s rule, naming the
+/// direction `c` would move it rather than the state it is in. What is at
+/// stake is whether the update can still be reverted by a reset, so the
+/// word is the *effect*, never "auto_confirm on/off".
+fn update_hint(panel: &OtaPanel) -> String {
+    if panel.auto_confirm() {
+        "c halts before Confirm".to_string()
+    } else {
+        "c confirms automatically".to_string()
+    }
+}
+
 fn output_hint(panel: &OtaPanel) -> String {
     if panel.output_scroll > 0 {
         format!("↑{}  j/k scroll", panel.output_scroll)
@@ -485,7 +502,8 @@ fn action_icon_color(action: OtaAction, palette: Palette) -> Color {
         | OtaAction::RetryPrepare
         | OtaAction::Rebuild
         | OtaAction::Update
-        | OtaAction::RetryUpdate => palette.accent,
+        | OtaAction::RetryUpdate
+        | OtaAction::ResumeVerify => palette.accent,
     }
 }
 
@@ -574,8 +592,13 @@ fn state_line(panel: &OtaPanel, palette: Palette) -> Line<'static> {
     }
     if let Some(remaining) = panel.settling_remaining() {
         return Line::from(Span::styled(
+            // The number is the *ceiling*, not a countdown to something
+            // that will happen at zero: the runner is asking the board
+            // meanwhile and leaves the moment it answers. "at most" is
+            // what keeps a board that comes back at 58s from reading as a
+            // stalled one.
             format!(
-                "resetting --- the bootloader's swap takes a moment · {}s left",
+                "resetting --- waiting for the swap to land · at most {}s more",
                 remaining.as_secs()
             ),
             Style::new().fg(palette.fg),
@@ -632,6 +655,7 @@ fn state_line(panel: &OtaPanel, palette: Palette) -> Line<'static> {
         OtaAction::Stop
         | OtaAction::RetryPrepare
         | OtaAction::RetryUpdate
+        | OtaAction::ResumeVerify
         | OtaAction::RetryConfirm
         | OtaAction::ConfirmImage => String::new(),
     };

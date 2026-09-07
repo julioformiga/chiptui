@@ -915,21 +915,49 @@ notes until a full cycle against real hardware had the board answering again at 
 on an update that had worked. A swap moves both images, so the figure scales with image size
 and the constant carries headroom over the measurement rather than matching it --- a
 too-long settle costs a countdown on a board already back, a too-short one misreports a
-success as a failure. `read_answer` reads slot 1's hash for `ReadState` and
+success as a failure. So it is a **ceiling, not a schedule**: the runner *polls through it*
+(`SETTLE_POLL_INTERVAL`, 3 s, measured from an attempt's end), running the driver's own
+`Verify` read early and leaving the settle the moment slot 0 answers the hash the cycle
+armed --- which is what keeps the headroom from being spent on every board that does not
+need it (~58 s instead of 90 s on the reference board). **Only that hash ends it**: a board
+still swapping answers nothing and one whose reset has not landed yet answers the *old*
+hash, both "keep waiting" --- which is why the poll needs no floor under it and why it is
+this read rather than the cheaper `os echo` (reachability would end the settle on a board
+that had not reset yet, and `Verify` would then fail an update that was about to work). A
+poll is not a stage: it never touches `stages`, its output is kept out of the transcript
+(`settle_poll_output`, so an unanswered read mid-swap reports nothing and no stray `$ `
+header reaches `tail_text`), it never starts an attempt that could outlive the ceiling, and
+one still in flight when the ceiling expires is cancelled first with `Verify` starting off
+*its* `Finished` --- a serial transport's port is single-occupancy. `read_answer` reads slot
+1's hash for `ReadState` and
 **slot 0's for `Verify`**: the image keeps its hash across the swap, so the verify half
 compares against the hash `MarkPending` armed, and a `Verify` reporting the old one is a
-named failure rather than a silent pass. **The runner halts in front of `Confirm`**: a
-verified swap leaves the image unconfirmed, the button becomes `OtaAction::ConfirmImage` and
-the state line says in `palette.warning` that the next reset reverts. Auto-confirming would
-spend the safety net the mechanism exists to provide --- and so, less obviously, did
-*closing the window*: `Esc` used to drop `App::ota` and `OtaPanel::new` starts
+named failure rather than a silent pass. **A verified swap confirms itself**
+(`[ota] auto_confirm`, the default): the board swapped, came back and answered with the hash
+the cycle armed, which is every check the tool can make, so the runner finishes the job
+rather than parking on a question whose answer is already known --- and the `Confirm` stage
+is started *by name* there, since `next_stage` deliberately cannot reach it. What that
+spends is the revert: an unconfirmed image is backed out by any reset, a confirmed one is
+permanent, and an image that boots and answers `smpmgr` can still be broken in ways neither
+notices. So the halt is one keypress away and persisted like every other `[ota]` answer:
+`c` on the modal toggles it (the `Update` heading's hint names the direction, `prepare_hint`'s
+rule; the state line and the button say `ConfirmImage` with the revert in `palette.warning`
+when it is off), and `auto_confirm = false` in a hand-written section is the same answer ---
+read in both spellings, an unrecognised value refusing the whole section rather than
+defaulting a setting whose default makes an image permanent. **A resumption asks nothing
+when nothing is left to write** (`OtaPanel::resume_writes`, `OtaAction::ResumeVerify`): a
+cycle stopped in its settle, or one whose `Verify` failed, has already pushed, marked and
+swapped, so the button reads `Verify` and pressing it runs the read --- the shared confirm
+quoting `image state-read` under "Push this image over the air?" named an act that was
+over. Closing the window, less obviously, also used to spend the safety net: `Esc` used to
+drop `App::ota` and `OtaPanel::new` starts
 `awaiting_confirm: false`, so reopening offered to update a board whose running image would
 revert. The overlay closes, the panel **stays**; `open_ota` reuses one that still `serves`
 the same root/board/build directory, refreshing only the synchronous facts (slots, image) ---
 never the requirement probe, whose subprocess would read a dim `Blocked` over the very halt
 the reopen exists to show (`r` is the key that asks again). A retry names *what* it retries
 (`RetryPrepare`/`RetryUpdate`/`RetryConfirm`, each carrying its question through
-`OtaAction::confirm`): one shared `Retry` labelled itself `"Update"` while routing to
+`OtaAction::confirm`, and `ResumeVerify` carrying none): one shared `Retry` labelled itself `"Update"` while routing to
 whichever question had failed, so a failed confirm showed a button whose word contradicted
 its effect. `Blocked` names which of its three preconditions is holding the button down, and
 the A/B slot check is a *row* (`slot0/slot1`, the `SlotCheck` three states) --- it gated the

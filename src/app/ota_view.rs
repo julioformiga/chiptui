@@ -140,6 +140,16 @@ impl App {
                     .unwrap_or(0);
                 self.overlay = Some(Overlay::OtaTransport { selected });
             }
+            // The other half of the transport's precedent: an answer that
+            // decides what the runner does, persisted the moment it is
+            // given. It is a *safety* setting, so the hint beside the
+            // Update heading names the direction `c` would move it.
+            KeyCode::Char('c') if !panel.is_busy() => {
+                let auto = panel.auto_confirm();
+                if let Err(err) = panel.set_auto_confirm(!auto) {
+                    self.logs.error(format!("OTA: {err}"));
+                }
+            }
             // One decision, shared with the renderer: the button says what
             // it does because both read `OtaPanel::action`.
             KeyCode::Enter => match panel.action() {
@@ -168,6 +178,12 @@ impl App {
                 OtaAction::Done => {
                     panel.end_cycle();
                     self.overlay = None;
+                }
+                // The one resumption that asks nothing: everything the
+                // cycle writes has been written, and what is left is the
+                // read that judges it (`OtaPanel::resume_writes`).
+                OtaAction::ResumeVerify => {
+                    panel.start_update(&mut self.processes);
                 }
                 // Every question-asking action reads its question off the
                 // action itself, so the button's word and the dialog that

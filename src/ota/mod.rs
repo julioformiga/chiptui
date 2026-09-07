@@ -167,13 +167,39 @@ impl Transport {
 /// carrying only an address is a complete answer --- the common case, since
 /// the mechanism and the transport are what a Zephyr project almost always
 /// wants and the address is the one fact ChipTUI cannot know.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OtaConfig {
     pub method: OtaMethod,
     pub transport: Transport,
     /// Where the board is, meaning whatever [`Transport::address_label`]
     /// says. `None` until someone answers.
     pub address: Option<String>,
+    /// Whether a verified swap is made permanent without a second question.
+    ///
+    /// `true` by default: the cycle's own confirm is what authorized the
+    /// update, and a board that has swapped, come back and answered with
+    /// the hash the cycle armed has passed every check the tool can make
+    /// --- so the runner finishes the job rather than parking on a question
+    /// whose answer is already known.
+    ///
+    /// **What that spends is the revert.** An unconfirmed image is backed
+    /// out by any reset; a confirmed one is permanent, and an image that
+    /// boots and answers `smpmgr` can still be broken in ways neither
+    /// notices. `auto_confirm = false` in `[ota]` restores the halt, the
+    /// button becoming [`update::OtaAction::ConfirmImage`] until the user
+    /// says so.
+    pub auto_confirm: bool,
+}
+
+impl Default for OtaConfig {
+    fn default() -> Self {
+        Self {
+            method: OtaMethod::default(),
+            transport: Transport::default(),
+            address: None,
+            auto_confirm: true,
+        }
+    }
 }
 
 /// One step of an update cycle.
@@ -236,6 +262,16 @@ impl OtaStage {
         matches!(self, Self::MarkPending | Self::Reset | Self::Confirm)
     }
 
+    /// Whether the stage puts bytes on the board at all: the destructive
+    /// three plus [`Self::Upload`], which is not destructive (it writes the
+    /// *inactive* slot) but is still megabytes over the wire and never
+    /// something to start unasked. The reads are what is left, and a run
+    /// with only those ahead of it is what
+    /// [`update::OtaPanel::resume_writes`] answers `false` for.
+    pub const fn writes(self) -> bool {
+        self.is_destructive() || matches!(self, Self::Upload)
+    }
+
     /// Not one blanket timeout: an upload is ~30 s over UDP and a bad link
     /// stretches that into minutes, while a state read answers in a
     /// heartbeat or not at all.
@@ -264,7 +300,11 @@ impl OtaStage {
     /// (`OtaPanel::settling_remaining` renders it) on a board that is
     /// already back. Undershooting costs a false failure on a successful
     /// update, which is the worse of the two --- and the only one that
-    /// misreports what happened.
+    /// misreports what happened. So this is a **ceiling**, not a schedule:
+    /// the runner polls the board through it
+    /// (`update::SETTLE_POLL_INTERVAL`) and moves on the moment slot 0
+    /// reports the image the cycle armed, which is what keeps the headroom
+    /// from being spent on every board that does not need it.
     pub const fn settle(self) -> Duration {
         match self {
             Self::Reset => Duration::from_secs(90),

@@ -156,12 +156,24 @@ pub fn parse_ota(text: &str) -> Option<OtaConfig> {
         Some(id) => Transport::from_id(id)?,
         None => Transport::default(),
     };
+    // Unknown values read as `None` for the whole section, the same rule
+    // the mechanism and the transport follow: accepting a misspelled
+    // `auto_confirm = fasle` as its default would tell the user their
+    // answer was taken and then do the opposite of it --- and here the
+    // opposite is a permanent image.
+    let auto_confirm = match lookup("auto_confirm") {
+        Some("true") => true,
+        Some("false") => false,
+        Some(_) => return None,
+        None => OtaConfig::default().auto_confirm,
+    };
     Some(OtaConfig {
         method,
         transport,
         address: lookup("address")
             .filter(|address| !address.is_empty())
             .map(str::to_string),
+        auto_confirm,
     })
 }
 
@@ -232,6 +244,15 @@ pub fn set_key(path: &Path, section: &str, key: &str, value: &str) -> io::Result
 pub fn save_ota(path: &Path, config: &OtaConfig) -> io::Result<()> {
     set_key(path, OTA_SECTION, "method", config.method.id())?;
     set_key(path, OTA_SECTION, "transport", config.transport.id())?;
+    // Written even at its default, unlike the address: it is a bool, so it
+    // always has an answer, and a key the user can see is the whole point
+    // of a setting that decides whether an update can still be reverted.
+    set_key(
+        path,
+        OTA_SECTION,
+        "auto_confirm",
+        if config.auto_confirm { "true" } else { "false" },
+    )?;
     if let Some(address) = &config.address {
         set_key(path, OTA_SECTION, "address", address)?;
     }
@@ -357,6 +378,7 @@ something = \"a newer chiptui wrote this\"
             method: OtaMethod::Mcumgr,
             transport: Transport::Serial,
             address: Some("/dev/ttyACM0".to_string()),
+            auto_confirm: false,
         };
         save_ota(&path, &config).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
@@ -433,6 +455,38 @@ something = \"a newer chiptui wrote this\"
         assert_eq!(config.method, OtaMethod::Mcumgr);
         assert_eq!(config.transport, Transport::Udp);
         assert_eq!(config.address.as_deref(), Some("192.168.1.42"));
+    }
+
+    #[test]
+    fn auto_confirm_defaults_to_on_and_is_read_in_both_spellings() {
+        // Absent: a verified swap confirms itself, which is the default the
+        // whole update flow is written around.
+        assert!(
+            parse_ota("[ota]\naddress = \"192.168.1.42\"\n")
+                .unwrap()
+                .auto_confirm
+        );
+        // Written by `save_ota` (quoted, like every key this writer emits)
+        // and hand-written as a TOML bool: both are the same answer.
+        assert!(
+            !parse_ota("[ota]\nauto_confirm = \"false\"\n")
+                .unwrap()
+                .auto_confirm
+        );
+        assert!(
+            !parse_ota("[ota]\nauto_confirm = false\n")
+                .unwrap()
+                .auto_confirm
+        );
+        assert!(
+            parse_ota("[ota]\nauto_confirm = true\n")
+                .unwrap()
+                .auto_confirm
+        );
+        // And a value neither: refused whole, the rule an unknown mechanism
+        // follows. Reading `fasle` as the default would report the answer
+        // as taken and then make the image permanent anyway.
+        assert_eq!(parse_ota("[ota]\nauto_confirm = \"fasle\"\n"), None);
     }
 
     #[test]

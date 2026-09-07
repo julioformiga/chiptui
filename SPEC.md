@@ -1138,9 +1138,10 @@ its own `chiptui.toml`:
 
 ``` toml
 [ota]
-method    = "mcumgr"        # the mechanism
-transport = "udp"           # udp | serial | ble
-address   = "192.168.1.42"  # whatever the transport addresses
+method       = "mcumgr"        # the mechanism
+transport    = "udp"           # udp | serial | ble
+address      = "192.168.1.42"  # whatever the transport addresses
+auto_confirm = true            # default: a verified swap is made permanent
 ```
 
 Only `address` has no default: the mechanism and transport are what a
@@ -1157,12 +1158,25 @@ flag would be a second truth, and the first one to drift; it is the rule
 The update itself is a *sequence*, not a command: upload the signed image,
 read the staged slot's hash, mark it pending, reset, verify what came back,
 confirm. The mechanism owns that list --- the runner walks the driver's own
-stages and never a hard-coded one --- and the last of them is deliberately
-left unpressed. **A verified swap halts, unconfirmed.** Until the confirm
-runs, the next reset reverts to the image that was there, which is the
-safety net the whole mechanism exists to provide; making it permanent is a
-separate answer to a separate question. A tool that ran on ahead would have
-spent that safety net on the user's behalf.
+stages and never a hard-coded one.
+
+**A verified swap is confirmed.** The board took the image, swapped, came
+back and answered with the hash the update armed --- every check the tool
+can make has passed, so the sequence finishes rather than stopping in front
+of its own last step to ask a question whose answer it already has. Until
+the confirm runs the next reset reverts to the image that was there, and
+that is a real safety net: an image can boot, answer, and still be broken.
+So it is the project's answer, not the tool's --- `auto_confirm = false`
+restores the halt, and the modal toggles it with a key. What must never
+happen is either behaviour being silent: the halted state says in the
+warning colour that the next reset reverts, and the automatic one names
+itself in the transcript as it confirms.
+
+A resumption asks only about what it will *write*. Everything up to the
+swap has happened by the time the post-reset read is all that is left, so
+resuming there runs it --- a destructive confirm quoting a state read names
+an act that is already over, and teaches the user to answer without
+reading.
 
 > **Status**: implemented for Zephyr, end to end, behind
 > `Capability::OtaPrepare`/`OtaUpdate` --- one modal, reached through the
@@ -1171,11 +1185,12 @@ spent that safety net on the user's behalf.
 > writing firmware look unrelated and left the pane pointing at neither),
 > whose single button is
 > one decision (`OtaAction`: prepare, rebuild, set the address, update, the
-> three retries, confirm) read by the renderer and the key handler alike ---
+> three retries, the read-only resume, confirm) read by the renderer and
+> the key handler alike ---
 > a retry names *what* it retries, since one shared variant labelled itself
 > "Update" while asking whichever question had failed. Beside the button,
-> `t` answers the transport and `p` probes the board alone (`os echo` is a
-> read, and the address is typed by hand). The
+> `t` answers the transport, `c` the auto-confirm, and `p` probes the board
+> alone (`os echo` is a read, and the address is typed by hand). The
 > vocabulary and the project configuration are `src/ota/mod.rs` +
 > `project::config::parse_ota`/`save_ota`; the mechanism is one driver
 > behind a registry (`src/ota/mcumgr.rs` --- every `smpmgr` invocation
@@ -1191,8 +1206,11 @@ spent that safety net on the user's behalf.
 > build's own devicetree (`report::partitions::FlashLayout`) and reports
 > "not checked" for a project never built rather than asserting slots it
 > cannot see. The cycle is `src/ota/update.rs` (per-stage timeouts, the
-> bootloader's swap modelled as a settle after the reset --- 90 s, measured
-> against real hardware, not the 45 s of the hand-run notes), the UI
+> bootloader's swap modelled as a settle after the reset --- a *ceiling* of
+> 90 s, measured against real hardware and not the 45 s of the hand-run
+> notes, which the runner polls through with the driver's own post-swap
+> read and leaves the moment the board reports the armed image, since the
+> real figure scales with the image's size), the UI
 > `src/ui/ota.rs` + `src/app/ota_view.rs`. The build and flash halves an
 > image set needs are the `--sysbuild` build line and the two-image flash
 > above. `smpmgr` is detected and reported, never installed --- a missing

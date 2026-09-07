@@ -433,6 +433,59 @@ fn the_update_confirm_quotes_the_literal_smpmgr_line() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// Resuming into a read asks nothing.
+///
+/// The destructive question was answered when the cycle started, and by
+/// the time only `Verify` is left the image has been pushed, marked and
+/// swapped --- so a dialog headed "Push this image over the air?" over a
+/// quoted `image state-read` names an act that is already over. The button
+/// says `Verify` and pressing it verifies.
+#[test]
+fn resuming_into_the_verify_read_asks_no_question() {
+    let (mut app, root) = ota_app("resumeverify", "smpmgr-no-swap");
+    open_and_probe(&mut app);
+    prepare_through_modal(&mut app);
+    build_signed_image(&root);
+    recheck(&mut app);
+    app.handle(key(KeyCode::Enter));
+    let addr = address("resumeverify");
+    for ch in addr.chars() {
+        app.handle(key(KeyCode::Char(ch)));
+    }
+    app.handle(key(KeyCode::Enter));
+    app.ota
+        .as_mut()
+        .unwrap()
+        .set_settle(std::time::Duration::ZERO);
+
+    // A board whose bootloader never swaps: the cycle runs to `Verify` and
+    // fails there, with everything it writes already written.
+    app.handle(key(KeyCode::Enter));
+    app.handle(key(KeyCode::Char('y')));
+    let failed = pump_until(
+        &mut app,
+        |app| {
+            app.ota.as_ref().is_some_and(|panel| {
+                panel.action() == chiptui::ota::update::OtaAction::ResumeVerify
+            })
+        },
+        15,
+    );
+    assert!(failed, "the verify fails and the button names the read");
+    let frame = render(&mut app, 100, 36);
+    assert!(frame.contains("▶  Verify"), "the button's word:\n{frame}");
+
+    // Pressing it runs the read: no dialog in between.
+    app.handle(key(KeyCode::Enter));
+    assert!(
+        matches!(app.overlay, Some(Overlay::Ota)),
+        "no confirm over a state read: {:?}",
+        app.overlay
+    );
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_dir_all(format!("/tmp/chiptui-fake-smpmgr-{addr}"));
+}
+
 #[test]
 fn the_cycle_halts_unconfirmed_and_confirms_on_a_separate_yes() {
     let (mut app, root) = ota_app("halt", "smpmgr");
@@ -451,6 +504,29 @@ fn the_cycle_halts_unconfirmed_and_confirms_on_a_separate_yes() {
         .as_mut()
         .unwrap()
         .set_settle(std::time::Duration::ZERO);
+    // `c` is the halt: with the default a verified swap confirms itself,
+    // and this test is about the other answer --- driven through the key
+    // the modal offers, so the toggle, its persistence and the halt it
+    // produces are one path.
+    assert!(
+        app.ota.as_ref().unwrap().auto_confirm(),
+        "the default confirms"
+    );
+    let frame = render(&mut app, 100, 36);
+    assert!(
+        frame.contains("c halts before Confirm"),
+        "the default state offers the halt:\n{frame}"
+    );
+    app.handle(key(KeyCode::Char('c')));
+    assert!(
+        !app.ota.as_ref().unwrap().auto_confirm(),
+        "`c` keeps the revert"
+    );
+    let frame = render(&mut app, 100, 36);
+    assert!(
+        frame.contains("c confirms automatically"),
+        "the hint names the direction `c` would move it:\n{frame}"
+    );
 
     // Update -> confirm dialog -> yes: the cycle runs.
     app.handle(key(KeyCode::Enter));

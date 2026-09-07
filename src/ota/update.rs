@@ -35,6 +35,30 @@ use super::{OtaConfig, OtaContext, OtaMethodDriver, OtaStage, registry};
 /// what it is headroom *for* is the tail that explains a failure.
 const OUTPUT_CAPACITY: usize = 2_000;
 
+/// How often the post-`Reset` settle asks the board whether the swap has
+/// landed.
+///
+/// [`OtaStage::settle`] is a *ceiling*, not a schedule: it carries headroom
+/// over a measurement that scales with the image's size, so on the board it
+/// was measured against it overshoots by half a minute of counting down at
+/// a device that is already back. The poll is what spends that headroom
+/// only when a board really needs it --- it runs the driver's own `Verify`
+/// read early and ends the settle the moment slot 0 answers the hash the
+/// cycle armed.
+///
+/// **Only that hash ends it.** A board still swapping answers nothing, and
+/// one whose reset has not landed yet still answers the *old* hash --- both
+/// are "keep waiting", which is what makes the poll safe with no floor
+/// under it: the answer it looks for cannot exist before the swap does.
+/// Reachability alone would not be safe, and is why the poll is this read
+/// rather than the cheaper `os echo` the `Probe` stage runs.
+const SETTLE_POLL_INTERVAL: Duration = Duration::from_secs(3);
+
+/// How long one poll may take before it is given up on. A board mid-swap
+/// answers nothing at all, so every attempt but the last ends this way ---
+/// which is also why the interval is measured from an attempt's *end*.
+const SETTLE_POLL_TIMEOUT: Duration = Duration::from_secs(8);
+
 /// What the panel's one action button *is*, right now.
 ///
 /// The button's label, whether it is enabled, and what pressing it does are
@@ -69,6 +93,11 @@ pub enum OtaAction {
     /// A cycle stage failed (or a settle was cut short); pressing re-asks
     /// the update question and resumes from that stage.
     RetryUpdate,
+    /// A resumption with nothing left to write: only the post-swap read.
+    /// Pressing runs it, and asks nothing --- the destructive question was
+    /// answered when the cycle started, and re-asking "push this image over
+    /// the air?" in front of a state read named an act that was over.
+    ResumeVerify,
     /// The `Confirm` stage itself failed; pressing re-asks the confirm.
     ///
     /// This variant exists because one shared `Retry` labelled itself
@@ -91,6 +120,9 @@ impl OtaAction {
         match self {
             Self::Stop => "Stop",
             Self::Blocked | Self::Update | Self::RetryUpdate => "Update",
+            // Its own word, for the same reason `RetryConfirm` has one: the
+            // button that runs a state read must not say "Update".
+            Self::ResumeVerify => "Verify",
             Self::SetAddress => "Set the address",
             Self::Prepare | Self::RetryPrepare => "Prepare",
             // The words the state line above it already uses for the fix.
@@ -111,7 +143,8 @@ impl OtaAction {
             | Self::RetryPrepare
             | Self::Rebuild
             | Self::Update
-            | Self::RetryUpdate => icons.play(),
+            | Self::RetryUpdate
+            | Self::ResumeVerify => icons.play(),
             Self::ConfirmImage | Self::RetryConfirm | Self::Done => icons.check(),
         }
     }
@@ -189,9 +222,29 @@ pub struct OtaPanel {
     /// checks the swap against it.
     slot_hash: Option<String>,
     running: Option<Run>,
-    /// The post-`Reset` dead time's end. The bootloader's swap is ~45 s of
-    /// a board that answers nothing, and no command covers it.
+    /// The post-`Reset` dead time's ceiling: the bootloader's swap is a
+    /// minute or so of a board that answers nothing, and no command covers
+    /// it. What usually ends it first is the poll below.
     settling_until: Option<Instant>,
+    /// When the settle started, for the line that reports how long the
+    /// board actually took.
+    settle_started: Option<Instant>,
+    /// The poll asking whether the swap has landed, while one is in flight.
+    /// Deliberately *not* a [`Run`]: it is not a stage, its output never
+    /// reaches the transcript, and finishing it advances nothing by itself.
+    settle_poll: Option<ProcessId>,
+    /// When the next poll is due --- one interval after the previous
+    /// attempt ended.
+    settle_poll_due: Option<Instant>,
+    /// The in-flight poll's output, kept apart from [`Self::output`] so a
+    /// read nobody asked to see cannot land in the transcript --- nor,
+    /// through its `$ ` header, become what [`Self::tail_text`] hands the
+    /// next stage's answer parser.
+    settle_poll_output: Vec<String>,
+    /// The ceiling expired with a poll still in flight: the next stage
+    /// starts when that process is gone, not before, so a serial
+    /// transport's port is free when `Verify` opens it.
+    settle_over: bool,
     /// `Verify` passed: parked in front of `Confirm` until the user says so.
     awaiting_confirm: bool,
     /// Where the update cycle stands, for the state line.
@@ -204,9 +257,13 @@ pub struct OtaPanel {
     /// The client program --- the test seam.
     tool: String,
     /// Overrides the post-`Reset` settle, the seam a test drives: a real
-    /// swap is ~45 s of a board answering nothing, and no test should wait
-    /// it out.
+    /// swap is a minute of a board answering nothing, and no test should
+    /// wait it out.
     settle_override: Option<Duration>,
+    /// The poll's cadence and per-attempt timeout, [`SETTLE_POLL_INTERVAL`]
+    /// and [`SETTLE_POLL_TIMEOUT`] unless a test shortens them.
+    settle_poll_interval: Duration,
+    settle_poll_timeout: Duration,
 }
 
 impl OtaPanel {
@@ -232,6 +289,11 @@ impl OtaPanel {
             slot_hash: None,
             running: None,
             settling_until: None,
+            settle_started: None,
+            settle_poll: None,
+            settle_poll_due: None,
+            settle_poll_output: Vec::new(),
+            settle_over: false,
             awaiting_confirm: false,
             update_phase: Phase::Idle,
             output: VecDeque::new(),
@@ -239,6 +301,8 @@ impl OtaPanel {
             progress: None,
             tool: super::mcumgr::PROGRAM.to_string(),
             settle_override: None,
+            settle_poll_interval: SETTLE_POLL_INTERVAL,
+            settle_poll_timeout: SETTLE_POLL_TIMEOUT,
         })
     }
 
@@ -259,12 +323,7 @@ impl OtaPanel {
         if self.is_busy() {
             return false;
         }
-        let Some(index) = self
-            .driver
-            .stages()
-            .iter()
-            .position(|stage| *stage == OtaStage::Probe)
-        else {
+        let Some(index) = self.stage_index(OtaStage::Probe) else {
             return false;
         };
         // A probe is a question about the board, not a resumption of the
@@ -285,6 +344,21 @@ impl OtaPanel {
         config::save_ota(&self.prepare.root.join(config::FILE_NAME), &config)?;
         self.prepare.set_config(config);
         Ok(())
+    }
+
+    /// Answers the auto-confirm question, persisted the way the transport
+    /// is --- so a project that wants the revert kept says so once.
+    pub fn set_auto_confirm(&mut self, auto_confirm: bool) -> std::io::Result<()> {
+        let mut config = self.config().clone();
+        config.auto_confirm = auto_confirm;
+        config::save_ota(&self.prepare.root.join(config::FILE_NAME), &config)?;
+        self.prepare.set_config(config);
+        Ok(())
+    }
+
+    /// Whether a verified swap will be made permanent without asking.
+    pub fn auto_confirm(&self) -> bool {
+        self.config().auto_confirm
     }
 
     /// Points the client at a specific program --- the seam that keeps
@@ -318,6 +392,10 @@ impl OtaPanel {
         self.awaiting_confirm = false;
         self.slot_hash = None;
         self.progress = None;
+        self.settle_started = None;
+        self.settle_poll_due = None;
+        self.settle_poll_output.clear();
+        self.settle_over = false;
         // The output stays: it is the transcript of what happened, and the
         // next cycle appends to it the way every other run does.
     }
@@ -339,6 +417,15 @@ impl OtaPanel {
     /// the bootloader's, and a test cannot spend it.
     pub fn set_settle(&mut self, settle: Duration) {
         self.settle_override = Some(settle);
+    }
+
+    /// Shortens the settle's poll --- [`Self::set_settle`]'s other half:
+    /// the cadence is seconds and the ceiling a test drives is
+    /// milliseconds, so without this the poll would never get an attempt in
+    /// before the deadline it exists to beat.
+    pub fn set_settle_poll(&mut self, interval: Duration, timeout: Duration) {
+        self.settle_poll_interval = interval;
+        self.settle_poll_timeout = timeout;
     }
 
     /// Starts (or re-probes) the requirement queries --- the panel's only
@@ -374,7 +461,10 @@ impl OtaPanel {
     }
 
     pub fn is_busy(&self) -> bool {
-        self.running.is_some() || self.settling_until.is_some()
+        // `settle_poll` is in there for the gap the ceiling opens: the
+        // settle is over, its last poll is still being killed, and the
+        // button must not read `Update` for those milliseconds.
+        self.running.is_some() || self.settling_until.is_some() || self.settle_poll.is_some()
     }
 
     /// The running stage, for the state line.
@@ -429,15 +519,21 @@ impl OtaPanel {
         if let Some(index) = self.failed_stage() {
             return if self.driver.stages()[index] == OtaStage::Confirm {
                 OtaAction::RetryConfirm
-            } else {
+            } else if self.resume_writes() {
                 OtaAction::RetryUpdate
+            } else {
+                OtaAction::ResumeVerify
             };
         }
         // A settle the user cut short leaves the cycle mid-flight with no
         // failed stage: resuming is still the question, and `next_stage`
         // answers where.
         if matches!(self.update_phase, Phase::Stopped(_)) {
-            return OtaAction::RetryUpdate;
+            return if self.resume_writes() {
+                OtaAction::RetryUpdate
+            } else {
+                OtaAction::ResumeVerify
+            };
         }
         if self.awaiting_confirm {
             return OtaAction::ConfirmImage;
@@ -455,6 +551,14 @@ impl OtaPanel {
             return OtaAction::SetAddress;
         }
         OtaAction::Update
+    }
+
+    /// Where a stage sits in the driver's list, when it declares one.
+    fn stage_index(&self, stage: OtaStage) -> Option<usize> {
+        self.driver
+            .stages()
+            .iter()
+            .position(|entry| *entry == stage)
     }
 
     fn failed_stage(&self) -> Option<usize> {
@@ -478,6 +582,27 @@ impl OtaPanel {
                     )
             })
             .map(|(index, _)| index)
+    }
+
+    /// Whether resuming would put bytes on the board --- which is what the
+    /// resume question is *for*.
+    ///
+    /// A run with only reads left (the `Verify` after a settle the user cut
+    /// short, or after one that failed) asks nothing: the cycle was
+    /// authorized when it started, the write it authorized has happened,
+    /// and a dialog quoting `image state-read` under "Push this image over
+    /// the air?" described an act that was already over. `Confirm` is not
+    /// counted --- it is never resumed into, and when
+    /// [`OtaConfig::auto_confirm`] chains into it, that setting is the
+    /// answer to its question.
+    pub fn resume_writes(&self) -> bool {
+        let Some(index) = self.next_stage() else {
+            return false;
+        };
+        self.driver.stages()[index..]
+            .iter()
+            .take_while(|stage| **stage != OtaStage::Confirm)
+            .any(|stage| stage.writes())
     }
 
     /// The command a stage would run right now, for its row to quote --- or
@@ -563,12 +688,7 @@ impl OtaPanel {
         if self.is_busy() {
             return false;
         }
-        let Some(index) = self
-            .driver
-            .stages()
-            .iter()
-            .position(|stage| *stage == OtaStage::Confirm)
-        else {
+        let Some(index) = self.stage_index(OtaStage::Confirm) else {
             return false;
         };
         self.update_phase = Phase::Running;
@@ -582,7 +702,15 @@ impl OtaPanel {
             processes.cancel(run.id);
             return true;
         }
-        if self.settling_until.take().is_some() {
+        let was_settling = self.settling_until.take().is_some();
+        if was_settling || self.settle_poll.is_some() {
+            // The poll goes with the wait it belongs to; its `Finished`
+            // then advances nothing, because `settle_poll` is already None.
+            if let Some(id) = self.settle_poll.take() {
+                processes.cancel(id);
+            }
+            self.settle_poll_due = None;
+            self.settle_over = false;
             // The swap itself cannot be cancelled --- what stops is the
             // wait. The next `Update` resumes at `Verify`, which is the
             // honest next question either way.
@@ -601,17 +729,130 @@ impl OtaPanel {
         false
     }
 
-    /// Drives the settle: the dead time after `Reset` ends on the tick, and
-    /// the next stage starts. Nothing else here is tick-driven.
+    /// Drives the settle: the dead time after `Reset` ends when the board
+    /// reports the swap landed, and at the ceiling either way. Nothing else
+    /// here is tick-driven.
     pub fn tick(&mut self, processes: &mut ProcessManager) {
         self.refresh_image();
         let Some(deadline) = self.settling_until else {
             return;
         };
         if Instant::now() < deadline {
+            self.maybe_poll_settle(processes);
             return;
         }
         self.settling_until = None;
+        if let Some(id) = self.settle_poll {
+            // A poll outliving the ceiling still holds the transport, and
+            // on a serial one that is the port `Verify` is about to open.
+            // Its `Finished` is what starts the stage.
+            self.settle_over = true;
+            processes.cancel(id);
+            return;
+        }
+        self.advance_after_settle(processes);
+    }
+
+    /// Asks the board whether the swap has landed --- when one is due, and
+    /// only while the answer could still arrive before the ceiling does.
+    fn maybe_poll_settle(&mut self, processes: &mut ProcessManager) {
+        if self.settle_poll.is_some() {
+            return;
+        }
+        // With no armed hash there is nothing an early answer could be
+        // checked against, and "the board is reachable" is not the question
+        // --- a board whose reset has not landed yet is reachable too. So
+        // such a cycle simply waits the ceiling out, as every cycle did.
+        if self.slot_hash.is_none() {
+            return;
+        }
+        let (Some(due), Some(remaining)) = (self.settle_poll_due, self.settling_remaining()) else {
+            return;
+        };
+        // Never start an attempt that could outlive the ceiling: the wait
+        // it would make `Verify` serve is the very thing this is here to
+        // shorten.
+        if Instant::now() < due || remaining <= self.settle_poll_timeout {
+            return;
+        }
+        let Some(command) = self.settle_poll_command() else {
+            return;
+        };
+        self.settle_poll_output.clear();
+        self.settle_poll = Some(processes.spawn(command, self.settle_poll_timeout));
+    }
+
+    /// The read a poll runs: the driver's own `Verify` command, built from
+    /// the same context a stage's is. A driver that declares no `Verify`
+    /// stage --- or refuses to build the command --- is simply never
+    /// polled, and its settle stays the ceiling.
+    fn settle_poll_command(&self) -> Option<crate::process::Command> {
+        let index = self.stage_index(OtaStage::Verify)?;
+        self.stage_command(index).ok()
+    }
+
+    /// A settle poll's process event, and whether it *was* one.
+    ///
+    /// A poll is not a stage: none of the stage machinery may see it, and
+    /// its output stays out of the transcript --- an unanswered read from a
+    /// board mid-swap is the expected case, not something to report.
+    fn on_poll_event(&mut self, event: &ProcessEvent, processes: &mut ProcessManager) -> bool {
+        let Some(poll) = self.settle_poll else {
+            return false;
+        };
+        match event {
+            ProcessEvent::Line { id, text, .. } | ProcessEvent::Output { id, text }
+                if *id == poll =>
+            {
+                self.settle_poll_output.push(text.clone());
+                true
+            }
+            ProcessEvent::Finished { id, outcome, .. } if *id == poll => {
+                self.settle_poll = None;
+                self.settle_poll_due = Some(Instant::now() + self.settle_poll_interval);
+                if self.settle_over {
+                    // The ceiling expired while this attempt was in flight;
+                    // the port is free now.
+                    self.settle_over = false;
+                    self.advance_after_settle(processes);
+                } else if self.settling_until.is_some()
+                    && matches!(outcome, Outcome::Success)
+                    && self.poll_answered_the_swap()
+                {
+                    let waited = self
+                        .settle_started
+                        .map_or(0, |start| start.elapsed().as_secs());
+                    self.push_output(format!(
+                        "the board answered after {waited}s --- the swap landed; verifying"
+                    ));
+                    self.advance_after_settle(processes);
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether the poll found slot 0 already running the image the cycle
+    /// armed --- the one answer that ends the settle early. Slot 0 holding
+    /// the *old* hash is a board that has not swapped yet, which is the
+    /// same "keep waiting" as no answer at all: judging that is `Verify`'s
+    /// job, once the board has had its whole ceiling.
+    fn poll_answered_the_swap(&self) -> bool {
+        let Some(armed) = self.slot_hash.as_deref() else {
+            return false;
+        };
+        let output = self.settle_poll_output.join("\n");
+        self.driver
+            .read_answer(OtaStage::Verify, &output)
+            .as_deref()
+            == Some(armed)
+    }
+
+    /// Leaves the settle and starts what follows it (`Verify`).
+    fn advance_after_settle(&mut self, processes: &mut ProcessManager) {
+        self.settling_until = None;
+        self.settle_poll_due = None;
         if let Some(index) = self.next_stage() {
             self.start_stage(index, processes, true);
         }
@@ -626,6 +867,9 @@ impl OtaPanel {
     ) -> OtaUpdate {
         let mut update = OtaUpdate::default();
         self.prepare.on_process(event);
+        if self.on_poll_event(event, processes) {
+            return update;
+        }
         match event {
             ProcessEvent::Line { id, text, .. } | ProcessEvent::Output { id, text } => {
                 if self.is_stage(*id) {
@@ -712,9 +956,26 @@ impl OtaPanel {
                     return;
                 }
                 if stage == OtaStage::Verify {
-                    // The halt the whole design bends toward: the swap
-                    // landed, and making it permanent is a separate,
-                    // later, user decision.
+                    if self.config().auto_confirm {
+                        // The board swapped, came back and answered with
+                        // the hash the cycle armed: every check the tool
+                        // can make has passed, so the cycle finishes
+                        // itself. `Confirm` is not in `next_stage`'s reach
+                        // --- deliberately, since this is the only place
+                        // that chains into it --- so it is started by name.
+                        self.push_output(
+                            "verified --- confirming automatically ([ota] auto_confirm)"
+                                .to_string(),
+                        );
+                        if let Some(index) = self.stage_index(OtaStage::Confirm) {
+                            self.start_stage(index, processes, true);
+                            return;
+                        }
+                    }
+                    // `auto_confirm = false`: the swap landed, and this
+                    // project keeps making it permanent a separate, later,
+                    // user decision --- which is what keeps the revert
+                    // alive until then.
                     self.awaiting_confirm = true;
                     update.halted_unconfirmed = true;
                     update.notice = Some(
@@ -732,10 +993,16 @@ impl OtaPanel {
                 }
                 if stage.settle() > Duration::ZERO {
                     let settle = self.settle_override.unwrap_or_else(|| stage.settle());
-                    self.settling_until = Some(Instant::now() + settle);
+                    let now = Instant::now();
+                    self.settling_until = Some(now + settle);
+                    self.settle_started = Some(now);
+                    self.settle_poll_due = Some(now + self.settle_poll_interval);
+                    self.settle_over = false;
+                    self.settle_poll_output.clear();
                     self.push_output(format!(
-                        "the board is resetting; the bootloader's swap takes ~{}s",
-                        stage.settle().as_secs()
+                        "the board is resetting; the swap takes up to {}s --- \
+                         waiting only until the board reports it landed",
+                        settle.as_secs()
                     ));
                     return;
                 }
