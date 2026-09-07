@@ -287,7 +287,9 @@ fn version_token(rest: &[u8]) -> Option<String> {
 fn zephyr_partition_label(data: &[u8]) -> bool {
     let table = &data[TABLE_OFFSET_IN_WINDOW.min(data.len())..];
     table
-        .chunks_exact(ENTRY_SIZE)
+        .as_chunks::<ENTRY_SIZE>()
+        .0
+        .iter()
         .take_while(|entry| entry[0] == ENTRY_MAGIC)
         .any(|entry| {
             let label = &entry[LABEL_OFFSET..LABEL_OFFSET + LABEL_LEN];

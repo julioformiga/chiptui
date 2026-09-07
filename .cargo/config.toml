@@ -1,0 +1,23 @@
+# Rust makes `rust-lld` the default linker on x86_64-unknown-linux-gnu (since
+# 1.90), and on this toolchain it cannot link this crate at all. A clean build
+# fails deterministically with nonsense relocation types --- `unknown relocation
+# (8388610) against symbol`, then `.eh_frame: relocation is not in any piece`
+# --- while the GNU linker links the identical object tree without complaint.
+# The failure hides behind an existing `target/`, whose older objects still
+# link, which is why it surfaces as a `cargo clean` that never builds again
+# rather than as a build that never worked. It is also what the `[profile.dev]`
+# note below the dependencies calls "the linker dies on 32-bit relocations with
+# a rotating failing target": that was read as a debuginfo-size problem and is
+# really this one.
+#
+# So the linker is named rather than defaulted. `bfd` is the slowest of the
+# three, which costs nothing measurable here --- linking is ~0.25s per binary,
+# against 45s for a clean build --- and it is the one verified to work on this
+# machine. `mold` or the system `lld` would be faster still; neither is
+# installed, so neither is claimed.
+#
+# The key is target-scoped, so it applies to no other host. A machine whose
+# `rust-lld` works loses a little link speed and nothing else; remove the
+# section (or move it to `~/.cargo/config.toml`) if that trade is wrong there.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-fuse-ld=bfd"]

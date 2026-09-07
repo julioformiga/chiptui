@@ -64,8 +64,48 @@ reqwest = { version = "0.13", default-features = false, features = [
 ] }
 scraper = "0.27"
 html2text = "0.17"
-image = "0.25"
-ratatui-image = { version = "11", features = ["crossterm"] }
+# `default-features = false` drops two halves of `image`'s `default`, neither
+# of which this crate can reach. `avif` is `dep:ravif` --- the AV1 *encoder*
+# (`rav1e`, `av-scenechange`, `rayon`: 55 crates), and ChipTUI only ever
+# decodes. AVIF *decoding* is the separate `avif-native` feature (`dav1d`, a
+# system library), off then and off now, so nothing that worked stops working.
+# `rayon` is parallel decode, which a single board photo on its own background
+# thread does not need. `exr` goes for a third reason, measured rather than
+# structural: OpenEXR is a film-compositing HDR format the Zephyr docs will
+# never serve, and it is the most expensive of the optional formats by a wide
+# margin --- 13.4s of the clean build's 310s of CPU, across six crates (`exr`,
+# `pulp`, `half`, `lebe`, `bit_field`, `num-complex`). Every other default
+# format stays: `load_from_memory`
+# sniffs the bytes at runtime, so what is compiled in *is* what can be read,
+# and a format the docs adopt later would fail silently as "no picture in the
+# docs" rather than loudly.
+image = { version = "0.25", default-features = false, features = [
+  "bmp",
+  "dds",
+  "ff",
+  "gif",
+  "hdr",
+  "ico",
+  "jpeg",
+  "png",
+  "pnm",
+  "qoi",
+  "tga",
+  "tiff",
+  "webp",
+] }
+# Its own `default` carries `image-defaults = ["image/default"]`, which Cargo
+# would unify straight back into the `avif` dropped above --- so the defaults
+# come off here too, and the two the app actually uses are named. `chafa-dyn`
+# is deliberately kept: it is what `Picker::halfblocks()` (main.rs's fallback
+# when `from_query_stdio` finds no kitty/sixel/iTerm protocol, and
+# `BoardDocs`' own default) renders through, and without it the board picture
+# drops to primitive halfblocks. It costs no crates --- only a `pkg-config`
+# build dependency on libchafa >= 1.8.0, which must be installed to build.
+ratatui-image = { version = "11", default-features = false, features = [
+  "crossterm",
+  "chafa-dyn",
+] }
 # The Terminal tab is a real terminal emulator, not a line-oriented console:
 # the user's own shell (zsh + powerlevel10k here) redraws its prompt with
 # cursor motion, paints it in 256 colours and switches to the alternate
@@ -109,6 +149,13 @@ panic = "abort"
 # `target/` around 3 GB.
 [profile.dev]
 debug = "line-tables-only"
+
+# A dependency's debuginfo is never what a backtrace from this crate needs, and
+# it is the bulk of what `target/` grows into. Dropping it keeps the crate's own
+# line tables (the setting above) while sparing every dependency the cost of
+# emitting, writing and linking symbols nothing here reads.
+[profile.dev.package."*"]
+debug = 0
 
 [lints.clippy]
 all = { level = "deny", priority = -1 }
