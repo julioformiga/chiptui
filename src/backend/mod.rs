@@ -577,8 +577,15 @@ pub trait Backend {
     /// command (no terminal hand-off) and deliberately ungated --- a missing
     /// build directory is `west`'s own error to explain. Returns `None`
     /// when the backend has no such tool.
-    fn dashboard_command(&self, build_dir: &str) -> Option<crate::process::Command> {
-        let _ = build_dir;
+    ///
+    /// `domain` names the sub-image of a multi-image build the report is
+    /// about, `None` for a build that produced one image.
+    fn dashboard_command(
+        &self,
+        build_dir: &str,
+        domain: Option<&str>,
+    ) -> Option<crate::process::Command> {
+        let _ = (build_dir, domain);
         None
     }
 

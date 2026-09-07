@@ -1102,7 +1102,12 @@ impl BuildPanel {
         &self,
         backend: &dyn crate::backend::Backend,
     ) -> Option<crate::process::Command> {
-        let command = backend.dashboard_command(&self.build_dir)?;
+        // The same image the in-terminal dashboard reads its artifacts from,
+        // resolved by the one definition that knows how: a sysbuild build
+        // has no `dashboard` target at its top level, only inside the
+        // application domain.
+        let paths = crate::backend::zephyr::report::ReportPaths::new(&self.root, &self.build_dir);
+        let command = backend.dashboard_command(&self.build_dir, paths.domain.as_deref())?;
         Some(self.decorated(backend, command.current_dir(&self.root)))
     }
 

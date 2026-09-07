@@ -116,12 +116,6 @@ pub fn menuconfig(dir: &str) -> Command {
         .arg("menuconfig")
 }
 
-/// `west build -t dashboard` --- the Zephyr 4.4 build dashboard: one HTML
-/// report consolidating the ram/rom reports, the Kconfig symbols, the
-/// initialization levels and the device tree, which the target itself
-/// opens in the browser. Like every other `-t` target it needs a
-/// configured build directory; `west` explains what is missing when there
-/// is none, which is why nothing upstream gates on the board answer.
 /// `scripts/footprint/size_report` --- the per-symbol memory tree the
 /// dashboard's Memory tab reads.
 ///
@@ -144,7 +138,7 @@ pub fn menuconfig(dir: &str) -> Command {
 ///   the JSON path never uses it. Omitting it is an argparse error, not a
 ///   default.
 ///
-/// The output directory is `<build>/dashboard/` --- where Zephyr's own
+/// The output directory is `<image>/dashboard/` --- where Zephyr's own
 /// `dashboard` target writes the same three files, so a run here spares the
 /// HTML report one and the other way round. It has to *exist*: the script
 /// opens each `--json` path with a plain `open(..., "w")` and creates no
@@ -182,10 +176,30 @@ pub fn size_report(
         .arg("all")
 }
 
-pub fn dashboard(dir: &str) -> Command {
-    build_dir(Command::new(PROGRAM).arg("build"), dir)
-        .arg("-t")
-        .arg("dashboard")
+/// `west build -t dashboard` --- the Zephyr 4.4 build dashboard: one HTML
+/// report consolidating the ram/rom reports, the Kconfig symbols, the
+/// initialization levels and the device tree, which the target itself
+/// opens in the browser. Like every other `-t` target it needs a
+/// configured build directory; `west` explains what is missing when there
+/// is none, which is why nothing upstream gates on the board answer.
+///
+/// `--domain` is not optional decoration on a sysbuild build. Without it
+/// `west` runs the target against the *top* build directory (its own
+/// comment: "we just build top build dir as that will build all domains"),
+/// and sysbuild's top level has no `dashboard` target to run --- it
+/// forwards `menuconfig`, `guiconfig` and `hardenconfig` to the
+/// application image, but not this one, so the run dies on an unknown
+/// target. The name comes from `domains.yaml`'s `default`
+/// ([`super::report::ReportPaths::domain`]), which is also the image whose
+/// artifacts the in-terminal dashboard reads --- so the two reports
+/// describe the same build.
+pub fn dashboard(dir: &str, domain: Option<&str>) -> Command {
+    let command = build_dir(Command::new(PROGRAM).arg("build"), dir);
+    let command = match domain {
+        Some(domain) => command.arg("--domain").arg(domain),
+        None => command,
+    };
+    command.arg("-t").arg("dashboard")
 }
 
 /// `west update` --- syncs every project in the manifest (`west.yml`) into
@@ -485,12 +499,26 @@ mod tests {
     #[test]
     fn dashboard_is_a_build_target_like_the_others() {
         assert_eq!(
-            dashboard(BUILD_DIR_DEFAULT).to_string(),
+            dashboard(BUILD_DIR_DEFAULT, None).to_string(),
             "west build -t dashboard"
         );
         assert_eq!(
-            dashboard("build-release").to_string(),
+            dashboard("build-release", None).to_string(),
             "west build -d build-release -t dashboard"
+        );
+    }
+
+    #[test]
+    fn a_sysbuild_dashboard_names_the_application_domain() {
+        // Sysbuild's top level has no `dashboard` target to forward to, so
+        // an undomained run dies on an unknown target.
+        assert_eq!(
+            dashboard(BUILD_DIR_DEFAULT, Some("blinky")).to_string(),
+            "west build --domain blinky -t dashboard"
+        );
+        assert_eq!(
+            dashboard("build-release", Some("blinky")).to_string(),
+            "west build -d build-release --domain blinky -t dashboard"
         );
     }
 

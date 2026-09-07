@@ -970,7 +970,21 @@ this reason: it is a chip tool, not a MicroPython one, and the Zephyr flash path
 The **build dashboard** (`Overlay::BuildDashboard`, `src/build_dashboard.rs`,
 `src/ui/build_dashboard.rs`, `src/app/build_dashboard_view.rs`) is `west build -t
 dashboard`'s HTML report read in the terminal --- and it reads it from the build
-directory's *own artifacts*, never from the generated HTML. That is possible because
+directory's *own artifacts*, never from the generated HTML. **Which** directory is
+`report::ReportPaths`' one job, and a sysbuild build directory holds none of them: its
+own `zephyr/` carries a `kconfig/` directory and nothing else, while the ELF,
+statistics, devicetree and Kconfig trace all live one level down, in the image
+`domains.yaml` names as `default` (the same file the flash plan reads, for the same
+reason). So the domain is resolved once, in `ReportPaths::new`, and every path derives
+from it --- reading the top level reported `no zephyr.elf --- build the project first`
+on a project that had just been built, and served sysbuild's own `build_info.yml`
+(whose application source-dir is `zephyr/share/sysbuild`) under the project's name on
+the Summary tab. `<image>/dashboard/` follows for the same reason: the `dashboard`
+target is defined by the *application* image's CMake, so its `CMAKE_BINARY_DIR` is that
+directory and not the top level --- which is also why `▦ Dashboard (HTML)` passes
+`--domain` there (`west` runs an undomained `-t` against the top build dir, and
+sysbuild's top level forwards `menuconfig`/`guiconfig` to the image but has no
+`dashboard` target at all, so the run died on an unknown target). That is possible because
 almost everything that page shows is already text or JSON that the build wrote
 (`src/backend/zephyr/report/`, one module per artifact, every parser a pure `&str →
 value` verified against a real ESP32-C3/LVGL build): `build_info.yml` (a hand-rolled

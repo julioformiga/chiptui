@@ -68,51 +68,82 @@ pub mod partitions;
 /// Where each artifact lives, given a project root and a build directory.
 ///
 /// One definition rather than a `join` at every call site: the two
-/// dashboards must look in the same places, and `<build>/dashboard/` in
+/// dashboards must look in the same places, and `<image>/dashboard/` in
 /// particular is not obvious --- it is where Zephyr's own `dashboard` target
 /// writes its reports, and reusing it is what lets the TUI and the HTML
 /// report share a `size_report` run that costs a minute.
+///
+/// **A sysbuild build directory holds none of these files itself.** Its own
+/// `zephyr/` carries a `kconfig/` directory and nothing else; the
+/// application's ELF, statistics, devicetree and Kconfig trace all live one
+/// level down, in the domain [`super::domains`] names as `default` --- which
+/// is also where the `dashboard` target's `CMAKE_BINARY_DIR` points, since
+/// that target is defined by the *application* image's CMake and not by
+/// sysbuild's top level. So the domain is resolved once, here, and every
+/// path derives from it: reading the top level instead reported `no
+/// zephyr.elf --- build the project first` on a freshly built project, and
+/// served sysbuild's own `build_info.yml` (whose application source-dir is
+/// `zephyr/share/sysbuild`) under the project's name on the Summary tab.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReportPaths {
-    /// `<root>/<build_dir>`.
+    /// `<root>/<build_dir>` --- the directory `west build -d` names.
     pub build: PathBuf,
-    /// `<build>/dashboard` --- shared with `west build -t dashboard`.
+    /// Where the application image's own artifacts live: `build` itself for
+    /// a plain build, `<build>/<default domain>` for a sysbuild one.
+    pub image: PathBuf,
+    /// `<image>/dashboard` --- shared with `west build -t dashboard`.
     pub output: PathBuf,
+    /// The sysbuild domain [`Self::image`] belongs to, `None` for a plain
+    /// build. Carried so the HTML dashboard's `--domain` names the same
+    /// image this report reads --- sysbuild's top level forwards
+    /// `menuconfig` and `guiconfig` to it, but has no `dashboard` target at
+    /// all, so an undomained run dies on an unknown target.
+    pub domain: Option<String>,
 }
 
 impl ReportPaths {
     pub fn new(root: &Path, build_dir: &str) -> Self {
         let build = root.join(build_dir);
-        let output = build.join("dashboard");
-        Self { build, output }
+        let domain = super::domains::Domains::read(&build).map(|domains| domains.default);
+        let image = match &domain {
+            Some(name) => build.join(name),
+            None => build.clone(),
+        };
+        let output = image.join("dashboard");
+        Self {
+            build,
+            image,
+            output,
+            domain,
+        }
     }
 
     pub fn build_info(&self) -> PathBuf {
-        self.build.join("build_info.yml")
+        self.image.join("build_info.yml")
     }
 
     pub fn elf(&self) -> PathBuf {
-        self.build.join("zephyr").join("zephyr.elf")
+        self.image.join("zephyr").join("zephyr.elf")
     }
 
     pub fn bin(&self) -> PathBuf {
-        self.build.join("zephyr").join("zephyr.bin")
+        self.image.join("zephyr").join("zephyr.bin")
     }
 
     pub fn stat(&self) -> PathBuf {
-        self.build.join("zephyr").join("zephyr.stat")
+        self.image.join("zephyr").join("zephyr.stat")
     }
 
     pub fn config_trace(&self) -> PathBuf {
-        self.build.join("zephyr").join(".config-trace.json")
+        self.image.join("zephyr").join(".config-trace.json")
     }
 
     pub fn config(&self) -> PathBuf {
-        self.build.join("zephyr").join(".config")
+        self.image.join("zephyr").join(".config")
     }
 
     pub fn devicetree(&self) -> PathBuf {
-        self.build.join("zephyr").join("zephyr.dts")
+        self.image.join("zephyr").join("zephyr.dts")
     }
 
     /// One of `all`, `ram` or `rom`.
@@ -123,7 +154,7 @@ impl ReportPaths {
     /// The C compiler description CMake writes, whose directory is named
     /// after the CMake version --- so it is found rather than composed.
     pub fn cmake_compiler(&self) -> Option<PathBuf> {
-        let entries = std::fs::read_dir(self.build.join("CMakeFiles")).ok()?;
+        let entries = std::fs::read_dir(self.image.join("CMakeFiles")).ok()?;
         entries.flatten().find_map(|entry| {
             let candidate = entry.path().join("CMakeCCompiler.cmake");
             candidate.is_file().then_some(candidate)
@@ -216,5 +247,74 @@ mod tests {
     fn the_unit_switches_exactly_at_the_boundary() {
         assert_eq!(display_size(1024 * 1024 - 1), "1024 KB");
         assert_eq!(display_size(1024 * 1024), "1 MB");
+    }
+
+    fn temp_dir(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "chiptui-report-paths-{label}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A plain `west build` writes no `domains.yaml`, and every artifact
+    /// sits directly under the build directory it named.
+    #[test]
+    fn a_plain_build_reports_on_the_build_directory_itself() {
+        let root = temp_dir("plain");
+        std::fs::create_dir_all(root.join("build")).unwrap();
+        let paths = ReportPaths::new(&root, "build");
+        assert_eq!(paths.domain, None);
+        assert_eq!(paths.image, root.join("build"));
+        assert_eq!(paths.elf(), root.join("build/zephyr/zephyr.elf"));
+        assert_eq!(paths.build_info(), root.join("build/build_info.yml"));
+        assert_eq!(paths.output, root.join("build/dashboard"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A sysbuild build directory holds none of them: its own `zephyr/`
+    /// carries a `kconfig/` directory and nothing else, and reading it
+    /// answered `no zephyr.elf --- build the project first` on a project
+    /// that had just been built. `domains.yaml`'s `default` names the
+    /// image, exactly as it does for the flash plan.
+    #[test]
+    fn a_sysbuild_build_reports_on_its_application_domain() {
+        let root = temp_dir("sysbuild");
+        std::fs::create_dir_all(root.join("build/blinky/zephyr")).unwrap();
+        std::fs::write(
+            root.join("build/domains.yaml"),
+            concat!(
+                "default: blinky\n",
+                "build_dir: /elsewhere/build\n",
+                "domains:\n",
+                "  - name: blinky\n",
+                "    build_dir: /elsewhere/build/blinky\n",
+                "flash_order:\n",
+                "  - mcuboot\n",
+                "  - blinky\n",
+            ),
+        )
+        .unwrap();
+        let paths = ReportPaths::new(&root, "build");
+        assert_eq!(paths.domain.as_deref(), Some("blinky"));
+        assert_eq!(paths.build, root.join("build"));
+        assert_eq!(paths.image, root.join("build/blinky"));
+        assert_eq!(paths.elf(), root.join("build/blinky/zephyr/zephyr.elf"));
+        assert_eq!(paths.stat(), root.join("build/blinky/zephyr/zephyr.stat"));
+        assert_eq!(
+            paths.devicetree(),
+            root.join("build/blinky/zephyr/zephyr.dts")
+        );
+        // Sysbuild writes a `build_info.yml` of its own at the top level,
+        // whose application source-dir is `zephyr/share/sysbuild` --- the
+        // Summary tab wants the image's, not that one.
+        assert_eq!(paths.build_info(), root.join("build/blinky/build_info.yml"));
+        // `CMAKE_BINARY_DIR` for the `dashboard` target is the image's
+        // directory, so both dashboards write and read the same reports.
+        assert_eq!(paths.output, root.join("build/blinky/dashboard"));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
