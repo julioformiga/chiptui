@@ -7,10 +7,10 @@
 //! handful of `Layout` solves --- cheap enough to run per frame and per
 //! gesture, and free of cached state that a resize would stale.
 
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Flex, Layout, Rect};
 
 use crate::app::{App, FileAction, Overlay, ThemeChoice};
-use crate::backend::{BackendKind, Capability};
+use crate::backend::Capability;
 use crate::browser::SyncPlan;
 use crate::flash::FlashAction;
 
@@ -295,6 +295,103 @@ pub(crate) fn wide_modal(area: Rect) -> Rect {
     )
 }
 
+/// The card strip's shape: two backend cards, and how wide each is.
+///
+/// A card holds a mark, a name and one line saying what the backend is, so
+/// it is four rows with its border --- the same height the `ui::button`
+/// stack gives a labelled row with a detail under it, and for the same
+/// reason. The width is fixed rather than a share of the frame: the cards
+/// are a choice between two known things, and stretching them to a wide
+/// terminal would put half a metre of empty box around three words.
+pub(crate) const CARD_WIDTH: u16 = 34;
+pub(crate) const CARD_HEIGHT: u16 = 4;
+pub(crate) const CARD_GAP: u16 = 2;
+
+/// Where the project configuration screen's parts sit inside `area`.
+///
+/// One definition, consumed by `ui::project_config`'s drawing *and* by
+/// `app::mouse`'s hit-testing --- the contract `layout::packages` and
+/// `layout::docs_picker` already carry, and the one whose absence let an
+/// empty device picker draw a box the click handler sized differently.
+pub(crate) struct ProjectConfigAreas {
+    /// The modal itself (border included) --- the `Clear` rect.
+    pub(crate) popup: Rect,
+    /// The file path and the state line under it.
+    pub(crate) header: Rect,
+    /// One rect per backend card, in `BackendKind::ALL` order.
+    pub(crate) cards: Vec<Rect>,
+    /// The empty row under the card strip, where the strip's own hint
+    /// ("pick one") sits centred when nothing is chosen yet.
+    pub(crate) hint: Rect,
+    /// The row list.
+    pub(crate) list: Rect,
+    /// The details column beside it.
+    pub(crate) details: Rect,
+    /// The pending count and the key grammar.
+    pub(crate) footer: Rect,
+}
+
+/// The columns the list keeps; everything past them is the details column,
+/// so widening the terminal widens only the explanation. The width carries
+/// the state mark, a prose label and room for a pending row's `old → new`
+/// transition --- at 46 the transition had to amputate both halves.
+pub(crate) const CONFIG_LIST_WIDTH: u16 = 52;
+
+pub(crate) fn project_config(area: Rect) -> ProjectConfigAreas {
+    let popup = wide_modal(area);
+    let inner = Rect {
+        x: popup.x + 1,
+        y: popup.y + 1,
+        width: popup.width.saturating_sub(2),
+        height: popup.height.saturating_sub(2),
+    };
+    let [header, _, cards, hint, body, footer] = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Length(1),
+        Constraint::Length(CARD_HEIGHT),
+        Constraint::Length(1),
+        Constraint::Min(3),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
+
+    // The strip is centred rather than left-anchored: an off-centre pair
+    // of cards reads as broken layout, not as a choice. A terminal too
+    // narrow for the whole strip keeps the left edge and clips the right.
+    let count = crate::backend::BackendKind::ALL.len() as u16;
+    let strip = count * CARD_WIDTH + count.saturating_sub(1) * CARD_GAP;
+    let start = cards.x + cards.width.saturating_sub(strip) / 2;
+    let right = cards.x + cards.width;
+    let cards = crate::backend::BackendKind::ALL
+        .iter()
+        .enumerate()
+        .map(|(index, _)| {
+            let x = start + index as u16 * (CARD_WIDTH + CARD_GAP);
+            Rect {
+                x,
+                y: cards.y,
+                width: CARD_WIDTH.min(right.saturating_sub(x)),
+                height: cards.height,
+            }
+        })
+        .filter(|rect| rect.width > 0)
+        .collect();
+
+    let list_width = CONFIG_LIST_WIDTH.min(body.width);
+    let [list, details] =
+        Layout::horizontal([Constraint::Length(list_width), Constraint::Min(0)]).areas(body);
+
+    ProjectConfigAreas {
+        popup,
+        header,
+        cards,
+        hint,
+        list,
+        details,
+        footer,
+    }
+}
+
 /// Where the package manager's panes sit inside `area`.
 ///
 /// The docs pickers' modal geometry ([`docs_picker`]) without the preview
@@ -453,6 +550,20 @@ pub(crate) fn overlay_popup(app: &App, overlay: &Overlay, frame: Rect) -> Rect {
         | Overlay::ConfirmInstallHere { .. }
         | Overlay::ConfirmRemovePackage { .. }
         | Overlay::ConfirmOta { .. } => (DESTRUCTIVE_WIDTH, 9),
+        // Sized to the review it lists, like the apply dialog: the lines
+        // at stake are the dialog, not an ornament on it. The extra rows
+        // are the lead, the blank lines around the listing, the trailing
+        // sentence, the buttons and the two rules.
+        Overlay::ConfirmDiscardConfig { .. } => (
+            DESTRUCTIVE_WIDTH,
+            (app.config_review_lines().len() as u16 + 9).min(frame.height.saturating_sub(2)),
+        ),
+        // Sized to the review it shows, like the sync preview: the lines
+        // about to be written are the dialog, not an ornament on it.
+        Overlay::ConfirmApplyConfig { .. } => (
+            DESTRUCTIVE_WIDTH,
+            (app.config_review_lines().len() as u16 + 7).min(frame.height.saturating_sub(2)),
+        ),
         Overlay::ConfirmRestartDevice { .. } => (54, 8),
         Overlay::ConfirmSwitchProject { .. } | Overlay::ConfirmQuit { .. } => (62, 9),
         Overlay::ConfirmEraseForMicroPython { .. } => (65, 9),
@@ -488,7 +599,6 @@ pub(crate) fn overlay_popup(app: &App, overlay: &Overlay, frame: Rect) -> Rect {
             }
         }
         Overlay::ThemePicker { .. } => (44, ThemeChoice::all().len() as u16 + 2),
-        Overlay::ProjectSetup { .. } => (60, BackendKind::ALL.len() as u16 + 4),
         Overlay::RestoreDeviceScript { .. } => (64, RESTORE_CHOICES as u16 + 4),
         Overlay::FileActions {
             side,
@@ -552,10 +662,49 @@ pub(crate) fn overlay_popup(app: &App, overlay: &Overlay, frame: Rect) -> Rect {
         Overlay::BoardPicker { .. } | Overlay::ShieldPicker { .. } => {
             return docs_picker(frame).popup;
         }
+        // The `wide_modal` family: the installer's and the OTA panel's own
+        // width, which is what keeps the left border off the second cell of
+        // a two-cell glyph in the pane behind it.
+        Overlay::ProjectConfig => return project_config(frame).popup,
         Overlay::ZephyrInstall => return super::install_area(frame),
         Overlay::Ota => return super::ota_area(frame),
     };
     super::centered(frame, width, height)
+}
+
+/// The row of buttons a multi-choice dialog draws at the bottom of
+/// `popup`: one bordered box per label (two columns of padding inside
+/// each side), two columns apart, centred as a group.
+///
+/// The one definition both halves consume --- `ui::overlay`'s renderer
+/// draws these rects and `app::mouse`'s hit-testing walks them, the
+/// contract this whole module exists for.
+pub(crate) fn dialog_button_row(popup: Rect, labels: &[&str]) -> Vec<Rect> {
+    let inner = Rect {
+        x: popup.x + 1,
+        y: popup.y + 1,
+        width: popup.width.saturating_sub(2),
+        height: popup.height.saturating_sub(2),
+    };
+    let [_, buttons] = Layout::vertical([
+        Constraint::Length(popup.height.saturating_sub(5)),
+        Constraint::Length(3),
+    ])
+    .areas(inner);
+    let mut constraints: Vec<Constraint> = Vec::new();
+    for (index, label) in labels.iter().enumerate() {
+        if index > 0 {
+            constraints.push(Constraint::Length(2));
+        }
+        constraints.push(Constraint::Length(label.chars().count() as u16 + 4));
+    }
+    Layout::horizontal(constraints)
+        .flex(Flex::Center)
+        .split(buttons)
+        .iter()
+        .step_by(2)
+        .copied()
+        .collect()
 }
 
 /// [`Overlay::RestoreDeviceScript`]'s three choices --- reset, restart

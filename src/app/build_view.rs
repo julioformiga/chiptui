@@ -3,12 +3,13 @@
 //! (`SPEC.md` §15 --- destructive actions ask first, showing the literal
 //! command). Split out of `app.rs` alongside the other one-subsystem files.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
 use crate::backend::BuildKind;
-use crate::build::{BuildAction, BuildPanel};
+use crate::build::{BoardChoice, BuildAction, BuildPanel};
+use crate::project::config;
 
 use super::{App, DocsFocus, Focus, LogTab, MonitorSource, Overlay};
 
@@ -149,6 +150,33 @@ impl App {
         let Some(panel) = &self.build else {
             return;
         };
+        // The destination rule for a target answer: a project that carries
+        // a `chiptui.toml` gets the pick written *there* --- that is the
+        // level that wins on the next open (`BoardOrigin::ProjectFile`)
+        // --- and the registry copy below is written either way, the
+        // machine's own memory of the same answer. Writing only the
+        // registry under a present file would leave the pick silently
+        // undone on the next open.
+        let file = panel.root.join(config::FILE_NAME);
+        if file.exists() {
+            let board = panel.board_name().map(str::to_string);
+            let shield = panel.shield_name().map(str::to_string);
+            let write = |key: &str, value: Option<&String>| match value {
+                Some(value) => config::set_key(&file, config::ZEPHYR_SECTION, key, value),
+                None => config::clear_key(&file, config::ZEPHYR_SECTION, key),
+            };
+            if let Err(err) =
+                write("board", board.as_ref()).and_then(|()| write("shield", shield.as_ref()))
+            {
+                self.logs.warn(format!(
+                    "could not save the target in {}: {err}",
+                    file.display()
+                ));
+            }
+        }
+        let Some(panel) = &self.build else {
+            return;
+        };
         let Some(kind) = self.manager.selected_kind() else {
             return;
         };
@@ -181,6 +209,43 @@ impl App {
                 &self.config_dir,
                 &self.home_dir,
             ));
+    }
+
+    /// The project's persisted board and shield answers, in rank order.
+    ///
+    /// The registry entry answers first --- the board pickers' persisted
+    /// half, this machine's memory of the project --- and the project's own
+    /// `chiptui.toml` overrides it, for the reason detection's `Config`
+    /// source outranks its `Registered` one: the file travels with the
+    /// project and can be committed, while the registry cannot leave this
+    /// machine. One definition, because both places a build panel is seeded
+    /// (a fresh panel, and a project switch) have to agree.
+    pub(super) fn target_answers(&self, root: &Path) -> (Option<BoardChoice>, Option<String>) {
+        let mut board = None;
+        let mut shield = None;
+        // The registry half is keyed by the project itself --- the entry
+        // belongs to the directory `west` runs in.
+        if let Some(entry) = self.manager.known_projects().entry_for(root) {
+            board = entry.board.clone().map(|name| BoardChoice {
+                name,
+                origin: crate::build::BoardOrigin::Config,
+            });
+            shield = entry.shield.clone();
+        }
+        // The file half by the project's own `chiptui.toml` (`[zephyr]`).
+        if let Ok(text) = std::fs::read_to_string(root.join(crate::project::config::FILE_NAME)) {
+            let settings = crate::settings::ZephyrSettings::parse(&text);
+            if let Some(name) = settings.board {
+                board = Some(BoardChoice {
+                    name,
+                    origin: crate::build::BoardOrigin::ProjectFile,
+                });
+            }
+            if let Some(name) = settings.shield {
+                shield = Some(name);
+            }
+        }
+        (board, shield)
     }
 
     /// Opens the build question: on the board, or on the host simulator?
@@ -367,7 +432,7 @@ impl App {
             .manager
             .capabilities()
             .contains(crate::backend::Capability::ProjectSelect)
-            || crate::backend::zephyr::projects::is_buildable(&panel.root)
+            || panel.has_application()
         {
             return true;
         }
@@ -380,7 +445,7 @@ impl App {
             _ => "this command",
         };
         self.logs.warn(format!(
-            "{what}: {} is not a Zephyr application (no CMakeLists.txt) — pick a project first",
+            "{what}: {} has no Zephyr application (no CMakeLists.txt, none resolved inside) — pick a project first",
             panel.root.display()
         ));
         self.open_project_flow();
@@ -433,8 +498,15 @@ impl App {
             }
             _ => Vec::new(),
         };
-        let variants =
-            crate::backend::zephyr::variants::variants(&panel.root, &declared, &catalogue);
+        // The `boards/` fragments belong to the *application* (an app's
+        // own target fragments live beside its sources), while the build
+        // directories belong to the repository root.
+        let variants = crate::backend::zephyr::variants::variants(
+            &panel.root,
+            panel.app_dir.as_deref(),
+            &declared,
+            &catalogue,
+        );
         let saved = self
             .manager
             .known_projects()
@@ -459,9 +531,25 @@ impl App {
     }
 
     /// Opens whichever picker the project question needs next: the projects
-    /// folder when none is configured, the project list when one is.
+    /// folder when none is configured, the project list when one is. The
+    /// entry resolution outranks both --- a ChipTUI started *in* a
+    /// repository whose application sits one level down is asked about that
+    /// repository's own application, not sent to a folder of unrelated
+    /// projects. A root whose application is already resolved (declared in
+    /// its `chiptui.toml`, or confirmed this session) never reaches here
+    /// through the gate.
     pub(super) fn open_project_flow(&mut self) {
-        if self
+        let root = self.build.as_ref().map_or_else(
+            || {
+                self.manager
+                    .root()
+                    .map_or_else(|| self.manager.start_dir().to_path_buf(), Path::to_path_buf)
+            },
+            |panel| panel.root.clone(),
+        );
+        if let Some(child) = crate::backend::zephyr::projects::entry_child(&root) {
+            self.open_entry_project_picker(&root, &child);
+        } else if self
             .workspace
             .as_ref()
             .is_some_and(|panel| panel.projects.is_some())
@@ -474,36 +562,109 @@ impl App {
         }
     }
 
+    /// The folder whose subdirectories the project picker lists: the entry
+    /// flow's directory when the picker carries one, the configured
+    /// projects folder otherwise (`None` when there is nothing to list).
+    pub fn project_picker_dir(&self, dir: Option<&Path>) -> Option<PathBuf> {
+        dir.map(Path::to_path_buf).or_else(|| {
+            self.workspace
+                .as_ref()
+                .and_then(|panel| panel.projects.clone())
+        })
+    }
+
     /// Opens the project picker over the configured projects folder. The
     /// rows (and each one's build-element mark) are read at draw time like
     /// every other overlay's derived state.
     pub(super) fn open_project_picker(&mut self) {
         self.overlay = Some(Overlay::ProjectPicker {
             mpy: false,
+            dir: None,
             selected: 0,
             error: None,
         });
+    }
+
+    /// Opens the project picker over the directory ChipTUI was entered in,
+    /// with the cursor already on the application that directory resolves
+    /// to ([`crate::backend::zephyr::projects::entry_child`]): the
+    /// repository-root layout asks its question with the answer one `Enter`
+    /// away, instead of pointing at a configured folder of unrelated
+    /// projects. The rows still list every subdirectory --- the inventory
+    /// stays honest; only the cursor is placed.
+    pub(super) fn open_entry_project_picker(&mut self, dir: &Path, child: &Path) {
+        let selected = crate::backend::zephyr::projects::project_rows(dir)
+            .0
+            .iter()
+            .position(|row| row.path == child)
+            .unwrap_or(0);
+        self.overlay = Some(Overlay::ProjectPicker {
+            mpy: false,
+            dir: Some(dir.to_path_buf()),
+            selected,
+            error: None,
+        });
+    }
+
+    /// The startup half of the entry resolution: for a backend that asks
+    /// the project question, a working directory that is not itself an
+    /// application but holds exactly one asks it *now*, preselected --- the
+    /// user entered from this folder precisely because the project is in
+    /// it. A root whose `chiptui.toml` declares its application does not
+    /// ask (the file answered); an application root, zero or several
+    /// applications, or another overlay already asking its question opens
+    /// nothing --- the build gate asks later if it ever matters.
+    pub fn maybe_open_entry_project(&mut self) {
+        if self.overlay.is_some()
+            || !self
+                .manager
+                .capabilities()
+                .contains(crate::backend::Capability::ProjectSelect)
+        {
+            return;
+        }
+        let root = self
+            .manager
+            .root()
+            .map_or_else(|| self.manager.start_dir().to_path_buf(), Path::to_path_buf);
+        if self
+            .build
+            .as_ref()
+            .is_some_and(|panel| panel.app_dir.is_some())
+            || crate::backend::zephyr::projects::declared_app(&root).is_some()
+        {
+            return;
+        }
+        if let Some(child) = crate::backend::zephyr::projects::entry_child(&root) {
+            self.open_entry_project_picker(&root, &child);
+        }
     }
 
     /// Applies the project chosen in the picker: session-only, re-rooting
     /// every build command (`west` runs there; nothing is written --- the
     /// folder is the persisted half of the answer, the project is not).
     /// Accepting a directory without build elements keeps the picker open
-    /// with the reason: the verification is the point.
-    pub(super) fn apply_project_picker(&mut self, selected: usize) {
-        let Some(dir) = self
-            .workspace
-            .as_ref()
-            .and_then(|panel| panel.projects.clone())
-        else {
+    /// with the reason: the verification is the point. `picker_dir` is the
+    /// directory the picker listed (the entry flow's own when `Some`) and
+    /// survives every rebuild, so a refused row retries against the same
+    /// listing it was refused from.
+    ///
+    /// The entry flow is the exception that does not re-root: a picker
+    /// listing the *project root itself* (the repository whose application
+    /// sits one level down) answers which subdirectory is the application,
+    /// and the root stays the project --- `west build` runs there with the
+    /// chosen directory as its source argument.
+    pub(super) fn apply_project_picker(&mut self, selected: usize, picker_dir: Option<PathBuf>) {
+        let Some(list_dir) = self.project_picker_dir(picker_dir.as_deref()) else {
             self.open_project_flow();
             return;
         };
-        let (rows, read_error) = crate::backend::zephyr::projects::project_rows(&dir);
+        let (rows, read_error) = crate::backend::zephyr::projects::project_rows(&list_dir);
         let Some(row) = rows.get(selected) else {
             let reason = read_error.unwrap_or_else(|| "nothing to pick".to_string());
             self.overlay = Some(Overlay::ProjectPicker {
                 mpy: false,
+                dir: picker_dir,
                 selected,
                 error: Some(reason),
             });
@@ -512,6 +673,7 @@ impl App {
         if !row.buildable {
             self.overlay = Some(Overlay::ProjectPicker {
                 mpy: false,
+                dir: picker_dir,
                 selected,
                 error: Some(format!(
                     "{} has no CMakeLists.txt — west build cannot run there",
@@ -520,7 +682,23 @@ impl App {
             });
             return;
         }
-        if self.build.is_none() {
+        let Some(panel) = &self.build else {
+            return;
+        };
+        if picker_dir.as_deref() == Some(panel.root.as_path()) {
+            // The entry flow: the row names the repository's application,
+            // nothing re-roots.
+            let app = row.path.clone();
+            let root = panel.root.clone();
+            if let Some(panel) = &mut self.build {
+                panel.set_app_dir(Some(app.clone()));
+            }
+            self.logs.info(format!(
+                "application set to {} for this session — the project stays {} (nothing written)",
+                app.display(),
+                root.display()
+            ));
+            self.overlay = None;
             return;
         }
         self.set_project_root(row.path.clone());
@@ -541,22 +719,30 @@ impl App {
     pub(super) fn set_project_root(&mut self, dir: PathBuf) {
         if let Some(panel) = &mut self.build {
             panel.set_project(dir.clone());
+            // The application the entered project builds: its own root when
+            // it is the app, a directory inside it when it is a repository
+            // whose app sits one level down (declared in its `chiptui.toml`
+            // or the single buildable child --- `resolve_app`). A pick was
+            // accepted, so the resolution needs no second question.
+            panel.set_app_dir(match crate::backend::zephyr::projects::resolve_app(&dir) {
+                Some(crate::backend::zephyr::projects::AppSource::Dir(app)) => Some(app),
+                _ => None,
+            });
         }
         // The board roots belong to the *project*, so they are re-derived
         // with it: a switch from a plain application to one carrying its
         // own board module changes what `west boards` can even see.
         self.refresh_board_roots();
         self.refresh_variants();
-        if let Some(entry) = self.manager.known_projects().entry_for(&dir) {
-            let board = entry.board.clone();
-            let shield = entry.shield.clone();
-            if let Some(panel) = &mut self.build {
-                if let Some(board) = board {
-                    panel.set_config_board(board);
-                }
-                if let Some(shield) = shield {
-                    panel.set_shield(Some(shield));
-                }
+        // The project's answers reload from the file that travels with it:
+        // its own `chiptui.toml` (`[zephyr]`).
+        let (board, shield) = self.target_answers(&dir);
+        if let Some(panel) = &mut self.build {
+            if let Some(board) = board {
+                panel.board = Some(board);
+            }
+            if let Some(shield) = shield {
+                panel.set_shield(Some(shield));
             }
         }
         if let Some(workspace) = &mut self.workspace {

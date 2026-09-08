@@ -647,7 +647,7 @@ impl App {
                 let firmware_dir = root.join("firmware");
                 // Lazily created here rather than only via `ensure_micropython_layout`
                 // so opening Flash still works for a project that never went
-                // through the empty-project prompt (e.g. an existing MicroPython
+                // through the configuration screen (e.g. an existing MicroPython
                 // project detected automatically, `SPEC.md` §7).
                 if let Err(err) = std::fs::create_dir_all(&firmware_dir) {
                     self.logs.warn(format!(

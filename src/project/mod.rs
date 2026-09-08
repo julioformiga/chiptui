@@ -141,7 +141,7 @@ impl ProjectManager {
 
     /// Directory the empty-project scaffold operates on: the detected root,
     /// or [`ProjectManager::start_dir`] before detection has produced one
-    /// --- the empty-project prompt this backs can fire before a root is
+    /// --- the configuration screen this backs can fire before a root is
     /// known.
     pub fn scaffold_dir(&self) -> &Path {
         self.root().unwrap_or(self.start_dir.as_path())

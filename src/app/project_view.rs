@@ -6,7 +6,7 @@
 //! pick that re-roots the file browser's local pane. Split out of `app.rs`
 //! alongside the other one-subsystem files.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
@@ -168,7 +168,9 @@ impl App {
             return;
         }
         self.mpy_projects_loaded = true;
-        if let Some(raw) = crate::settings::mpy_projects_raw(&self.config_dir) {
+        self.mpy_projects = None;
+        self.mpy_projects_invalid = None;
+        if let Some(raw) = self.mpy_projects_setting() {
             let dir = crate::settings::expand_home(&raw, &self.home_dir);
             if dir.is_dir() {
                 self.mpy_projects = Some(dir);
@@ -181,6 +183,36 @@ impl App {
                 self.mpy_projects_invalid = Some(message);
             }
         }
+    }
+
+    /// `[micropython] projects`, the project's own answer first.
+    ///
+    /// The same two-level rule `[zephyr]` follows: a project that declares
+    /// the key in its `chiptui.toml` outranks the machine-wide answer,
+    /// because the file travels with the project and the user config is
+    /// only this machine's memory of it.
+    pub(super) fn mpy_projects_setting(&self) -> Option<String> {
+        let root = self
+            .manager
+            .root()
+            .map_or_else(|| self.manager.start_dir().to_path_buf(), Path::to_path_buf);
+        let project = std::fs::read_to_string(root.join(crate::project::config::FILE_NAME))
+            .ok()
+            .and_then(|text| {
+                crate::project::config::key_value(
+                    &text,
+                    crate::project::config::MICROPYTHON_SECTION,
+                    "projects",
+                )
+            });
+        project.or_else(|| crate::settings::mpy_projects_raw(&self.config_dir))
+    }
+
+    /// Re-runs that resolution after something wrote the key --- the
+    /// configuration screen's apply, which can change either level.
+    pub(super) fn reload_mpy_projects(&mut self) {
+        self.mpy_projects_loaded = false;
+        self.ensure_mpy_projects();
     }
 
     /// The projects-folder flavor of the directory picker for MicroPython:
@@ -236,6 +268,7 @@ impl App {
     pub(super) fn open_mpy_project_picker(&mut self) {
         self.overlay = Some(Overlay::ProjectPicker {
             mpy: true,
+            dir: None,
             selected: 0,
             error: None,
         });
@@ -254,6 +287,7 @@ impl App {
             let reason = read_error.unwrap_or_else(|| "nothing to pick".to_string());
             self.overlay = Some(Overlay::ProjectPicker {
                 mpy: true,
+                dir: None,
                 selected,
                 error: Some(reason),
             });
@@ -430,48 +464,12 @@ impl App {
         self.clamp_focus();
     }
 
-    /// Opens [`Overlay::ProjectSetup`] when detection has nothing to go on:
-    /// `Unknown` or `Ambiguous`, with no session override and no scaffold
-    /// file already deciding it (`SPEC.md` §7's empty-project prompt).
-    ///
-    /// Deliberately **not** called from inside [`App::detect`] itself.
-    /// `detect()`/`bootstrap()` are called directly by many existing tests
-    /// that assert on `overlay`/send key events right afterwards (every
-    /// `tests/flash_view.rs` case via its `app_with_flash` helper, which
-    /// starts from a bare temp directory). Auto-opening a modal from inside
-    /// `detect()` would silently redirect their next key press into
-    /// `on_overlay_key`. Instead only the two real "detection just ran and
-    /// the user might act on it" call sites opt in explicitly: the binary's
-    /// startup sequence, and the `r` re-detect key.
-    pub fn maybe_open_project_setup(&mut self) {
-        if self.overlay.is_some() {
-            return;
-        }
-        let Some(detection) = self.manager.detection() else {
-            return;
-        };
-        if self.manager.override_kind().is_some()
-            || matches!(
-                detection.source,
-                DetectionSource::Config | DetectionSource::Registered
-            )
-        {
-            return;
-        }
-        if matches!(
-            detection.outcome,
-            DetectionOutcome::Unknown | DetectionOutcome::Ambiguous(_)
-        ) {
-            self.overlay = Some(Overlay::ProjectSetup { selected: 0 });
-        }
-    }
-
     /// Records the open project in the user config's registry (`SPEC.md`
     /// §7), stamping it as the most recently opened.
     ///
     /// This is the single place a project becomes "known": every way of
     /// arriving at a dashboard --- a `chiptui.toml` in the tree, evidence
-    /// alone, the empty-project prompt, a project just created on the home
+    /// alone, the configuration screen, a project just created on the home
     /// screen --- passes through here, which is what keeps the home screen's
     /// list complete without any of them writing into the project directory.
     /// A directory whose backend is still unknown is not recorded; there
@@ -595,9 +593,10 @@ impl App {
     }
 
     /// The project half of the panel's checklist: whether the current root
-    /// is a buildable application. Backends without
-    /// [`Capability::ProjectSelect`] have no such question --- the root is
-    /// theirs by definition.
+    /// can be built in --- it holds a Zephyr application itself, or one is
+    /// resolved inside it (`[zephyr] app`, or the confirmed single child).
+    /// Backends without [`Capability::ProjectSelect`] have no such question
+    /// --- the root is theirs by definition.
     pub fn project_gate_ok(&self) -> bool {
         let Some(panel) = &self.build else {
             return true;
@@ -606,6 +605,6 @@ impl App {
             .manager
             .capabilities()
             .contains(Capability::ProjectSelect)
-            || crate::backend::zephyr::projects::is_buildable(&panel.root)
+            || panel.has_application()
     }
 }

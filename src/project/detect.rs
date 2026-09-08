@@ -252,7 +252,7 @@ pub fn detect_from_known(
         }
 
         // Same standing, one level less specific: the registry is where the
-        // empty-project prompt and the project creator record their answer
+        // configuration screen and the project creator record their answer
         // now that neither writes into the project directory.
         if let Some(kind) = known.backend_for(dir) {
             return Ok(Detection {

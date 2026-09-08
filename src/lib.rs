@@ -29,6 +29,7 @@ pub mod ota;
 pub mod process;
 pub mod progress;
 pub mod project;
+pub mod project_config;
 pub mod settings;
 pub mod startup;
 pub mod stepper;

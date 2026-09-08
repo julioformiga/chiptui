@@ -14,7 +14,7 @@ use chiptui::event::AppEvent;
 use ratatui::crossterm::event::KeyCode;
 
 mod common;
-use common::{enter_project_pane, fake, key, log_mentions, render};
+use common::{enter_project_pane, fake, key, log_mentions, pump_until, render};
 
 /// The temp root `bare_app` will use for `tag` (the same formula, so a
 /// test can pre-compute paths inside it).
@@ -155,14 +155,26 @@ fn with_a_folder_configured_the_gate_opens_the_project_picker_instead() {
 }
 
 #[test]
-fn a_directory_without_build_elements_cannot_be_accepted() {
+fn a_directory_without_build_elements_is_not_listed_and_the_emptiness_warns() {
     let (mut app, root) = bare_app("reject", Some(&root_for("reject").join("apps")));
     app_dir(&root.join("apps"), "notes", false);
 
     press_project_row(&mut app); // the folder is configured: the project picker
     assert!(matches!(app.overlay, Some(Overlay::ProjectPicker { .. })));
 
-    app.handle(key(KeyCode::Enter)); // the only row: notes (not buildable)
+    // The picker warns in its own footer: folders exist, none is a project.
+    let frame = render(&mut app, 100, 32);
+    assert!(
+        frame.contains("no Zephyr application"),
+        "the warning must render in the picker:\n{frame}"
+    );
+    assert!(
+        !frame.contains("notes"),
+        "a folder with no application is not a row:\n{frame}"
+    );
+
+    // Enter on the empty list keeps the picker open with the reason.
+    app.handle(key(KeyCode::Enter));
     let Some(Overlay::ProjectPicker {
         error: Some(reason),
         ..
@@ -413,11 +425,14 @@ fn the_project_picker_reaches_an_application_inside_a_board_module() {
     let names: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
     assert_eq!(
         names,
-        vec!["blinky", "t-display/app"],
-        "the module root is replaced by the application it holds"
+        vec!["blinky", "t-display"],
+        "one application inside: the repository itself is the row, not parent/child"
     );
     assert!(rows.iter().all(|row| row.buildable));
-    assert_eq!(rows[1].path, repo.join("app"));
+    assert_eq!(
+        rows[1].path, repo,
+        "accepting it keeps the repository as the project"
+    );
 
     // And the gate agrees: the module root is not a place a build runs.
     assert!(!chiptui::backend::zephyr::projects::is_buildable(&repo));
@@ -427,4 +442,298 @@ fn the_project_picker_reaches_an_application_inside_a_board_module() {
 
     let _ = std::fs::remove_dir_all(&root);
     let _ = app.build.take();
+}
+
+/// A Zephyr session started *in* the repository: the start directory is a
+/// board module (comment-only `CMakeLists.txt`, a `boards/` tree) and the
+/// application sits one level down in `app/`. `toml` seeds the repository's
+/// own `chiptui.toml` when given.
+fn repo_app(tag: &str, toml: Option<&str>) -> (App, std::path::PathBuf) {
+    let root = root_for(tag);
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("home")).unwrap();
+    std::fs::create_dir_all(root.join("dev")).unwrap();
+    std::fs::create_dir_all(root.join("boards/lilygo")).unwrap();
+    std::fs::write(
+        root.join("CMakeLists.txt"),
+        "# The module contributes a board only. No source files are added.
+",
+    )
+    .unwrap();
+    app_dir(&root, "app", true);
+    if let Some(body) = toml {
+        std::fs::write(root.join("chiptui.toml"), body).unwrap();
+    }
+    let mut app = App::new(&root);
+    app.set_serial_dir(root.join("dev"));
+    app.set_home_dir(root.join("home"));
+    app.bootstrap();
+    app.manager.set_override(Some(BackendKind::Zephyr));
+    app.maybe_scan_devices();
+    (app, root)
+}
+
+/// Walks to the Board picker's row and picks the `nrf52840dk` target the
+/// fake `west` lists, driving the real picker path (the background fetch,
+/// the filter, the Enter) so the persist side runs as the app runs it.
+fn pick_nrf_board(app: &mut App) {
+    app.build.as_mut().unwrap().set_tool_path(fake("west"));
+    enter_project_pane(app);
+    for _ in 0..3 {
+        app.handle(key(KeyCode::Down));
+    }
+    app.handle(key(KeyCode::Enter));
+    assert!(matches!(app.overlay, Some(Overlay::BoardPicker { .. })));
+    let loaded = pump_until(
+        app,
+        |app| {
+            matches!(
+                app.build.as_ref().unwrap().boards.state,
+                chiptui::build::ListState::Loaded(_)
+            )
+        },
+        10,
+    );
+    assert!(loaded, "the fake west boards never finished");
+    for ch in ['n', 'r', 'f'] {
+        app.handle(key(KeyCode::Char(ch)));
+    }
+    app.handle(key(KeyCode::Enter));
+    assert_eq!(
+        app.build.as_ref().unwrap().board_name(),
+        Some("nrf52840dk/nrf52840"),
+        "the filtered row's pick must land"
+    );
+}
+
+/// Entering ChipTUI from a repository whose application sits one level down
+/// asks the project question with the answer one `Enter` away: the picker
+/// lists the *entered* directory (not the configured projects folder), the
+/// cursor already on the only application in it. Accepting sets the
+/// application directory --- the repository stays the project, so its
+/// `build/` directories and its `chiptui.toml` stay where they are.
+#[test]
+fn entering_a_module_repo_asks_for_its_only_application_preselected() {
+    let (mut app, root) = repo_app("entry-ask", None);
+    app.maybe_open_entry_project();
+
+    // The row says why it is there: the build entry point the folder holds.
+    let frame = render(&mut app, 100, 32);
+    assert!(
+        frame.contains("app") && frame.contains("✓ CMakeLists.txt"),
+        "the listed row names its evidence:\n{frame}"
+    );
+
+    let Some(Overlay::ProjectPicker {
+        mpy: false,
+        dir: Some(listed),
+        selected,
+        error: None,
+    }) = app.overlay.take()
+    else {
+        panic!("the entry question must open, got {:?}", app.overlay);
+    };
+    assert_eq!(listed, root, "the picker lists the directory entered from");
+    let (rows, _) = chiptui::backend::zephyr::projects::project_rows(&root);
+    assert_eq!(
+        rows[selected].path,
+        root.join("app"),
+        "the cursor starts on the application"
+    );
+
+    // One Enter applies it as the *application*: the root stays the project.
+    app.overlay = Some(Overlay::ProjectPicker {
+        mpy: false,
+        dir: Some(listed),
+        selected,
+        error: None,
+    });
+    app.handle(key(KeyCode::Enter));
+    let panel = app.build.as_ref().unwrap();
+    assert_eq!(panel.root, root, "the repository stays the project root");
+    assert_eq!(panel.app_dir.as_deref(), Some(root.join("app").as_path()));
+    assert_eq!(
+        panel.project_origin,
+        chiptui::build::ProjectOrigin::WorkingDir
+    );
+    assert!(app.project_gate_ok(), "the gate passes with an application");
+    assert!(log_mentions(&app, "application set to"));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// With the application confirmed, the build command runs in the root and
+/// names the application directory as west's source argument --- the exact
+/// shape a hand-run `west build app` has from that repository.
+#[test]
+fn the_build_runs_in_the_root_with_the_app_as_its_source() {
+    let (mut app, root) = repo_app("entry-command", None);
+    app.maybe_open_entry_project();
+    app.handle(key(KeyCode::Enter));
+
+    let backend = app.manager.backend().unwrap();
+    let command = app
+        .build
+        .as_ref()
+        .unwrap()
+        .command(chiptui::backend::BuildKind::Build, backend)
+        .expect("the gate passed, the command must compose");
+    let text = command.to_string();
+    assert!(
+        text.trim_end().ends_with(" app"),
+        "the application rides as west's source argument: {text}"
+    );
+    assert_eq!(
+        command.cwd(),
+        Some(&root),
+        "west runs in the repository, where build/ lives"
+    );
+    // The reports and menuconfig run against the build directory alone ---
+    // no source argument on a `-t` invocation.
+    let menuconfig = app
+        .build
+        .as_ref()
+        .unwrap()
+        .menuconfig_command(backend)
+        .expect("menuconfig composes");
+    assert!(!menuconfig.to_string().contains(" app "));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A repository that declares its application in its own `chiptui.toml`
+/// (`[zephyr] app`) never asks: the file answered, and the pin beside it
+/// rides along as always.
+#[test]
+fn a_declared_application_never_asks_and_resolves_silently() {
+    let toml = "project_type = \"zephyr\"\n\n[zephyr]\napp = \"app\"\nboard = \"xiao_esp32c3\"\n";
+    let (mut app, root) = repo_app("entry-declared", Some(toml));
+
+    app.maybe_open_entry_project();
+    assert!(
+        app.overlay.is_none(),
+        "the file answered; there is no question to ask"
+    );
+    let panel = app.build.as_ref().unwrap();
+    assert_eq!(panel.root, root);
+    assert_eq!(panel.app_dir.as_deref(), Some(root.join("app").as_path()));
+    assert_eq!(
+        panel.board_name(),
+        Some("xiao_esp32c3"),
+        "the pin is read from the repository's own chiptui.toml"
+    );
+    assert_eq!(
+        panel.board.as_ref().unwrap().origin,
+        chiptui::build::BoardOrigin::ProjectFile
+    );
+    assert!(log_mentions(&app, "application from chiptui.toml"));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A declared key that no longer names an application is named in the log
+/// and replaced by nothing --- an explicit answer that stopped holding is a
+/// fact to report, never a guess to fall back from.
+#[test]
+fn a_declared_application_that_no_longer_builds_is_named_not_replaced() {
+    let toml = "project_type = \"zephyr\"\n\n[zephyr]\napp = \"gone\"\n";
+    let (mut app, root) = repo_app("entry-broken", Some(toml));
+
+    app.maybe_open_entry_project();
+    assert!(
+        app.overlay.is_none(),
+        "the declared answer outranks the discovery, even broken"
+    );
+    let panel = app.build.as_ref().unwrap();
+    assert_eq!(panel.app_dir, None, "nothing is resolved around it");
+    assert!(
+        !app.project_gate_ok(),
+        "a broken declaration does not open the gate"
+    );
+    assert!(
+        log_mentions(&app, "[zephyr] app"),
+        "the log names the broken key"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Uniqueness is the bar: two applications in the entered directory are a
+/// choice, and a choice is never resolved silently --- nothing opens at
+/// startup, and the gate asks the configured-folder question instead of
+/// guessing between the two.
+#[test]
+fn two_applications_in_the_entry_dir_are_a_choice_not_a_question() {
+    let (mut app, root) = repo_app("entry-two", None);
+    app_dir(&root, "sample", true);
+
+    app.maybe_open_entry_project();
+    assert!(
+        app.overlay.is_none(),
+        "nothing may be resolved when there is a choice to make"
+    );
+
+    press_project_row(&mut app);
+    assert!(
+        matches!(
+            app.overlay,
+            Some(Overlay::DirPicker {
+                purpose: chiptui::workspace::DirPurpose::Projects,
+                ..
+            })
+        ),
+        "the folder question, not a guessed listing: {:?}",
+        app.overlay
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// The target pick's destination rule against a repository project: a
+/// present `chiptui.toml` at the root receives the board/shield answer
+/// beside the registry entry for that same root --- the two halves of the
+/// answer keyed by the one project.
+#[test]
+fn the_target_pick_writes_the_repositorys_own_chiptui_and_the_registry() {
+    let (mut app, root) = repo_app("entry-toml", Some("project_type = \"zephyr\"\n"));
+    app.maybe_open_entry_project();
+    app.handle(key(KeyCode::Enter)); // the preselected application
+
+    pick_nrf_board(&mut app);
+
+    let written = std::fs::read_to_string(root.join("chiptui.toml")).unwrap();
+    assert!(
+        written.contains("board = \"nrf52840dk/nrf52840\""),
+        "the pick is written to the repository's file:\n{written}"
+    );
+    assert!(
+        written.contains("project_type = \"zephyr\""),
+        "the file's other answers survive the write:\n{written}"
+    );
+    let entry = app
+        .manager
+        .known_projects()
+        .entry_for(&root)
+        .expect("the registry carries the answer for the repository root");
+    assert_eq!(entry.board.as_deref(), Some("nrf52840dk/nrf52840"));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Without a `chiptui.toml` the same pick lands only in the user config's
+/// registry --- the machine's memory of the project --- and no file is
+/// invented to receive it.
+#[test]
+fn without_a_chiptui_the_entry_pick_stays_in_the_user_config() {
+    let (mut app, root) = repo_app("entry-no-toml", None);
+    app.maybe_open_entry_project();
+    app.handle(key(KeyCode::Enter));
+
+    pick_nrf_board(&mut app);
+
+    assert!(
+        !root.join("chiptui.toml").exists(),
+        "a pick must not invent a project file"
+    );
+    let entry = app
+        .manager
+        .known_projects()
+        .entry_for(&root)
+        .expect("the registry carries the answer alone");
+    assert_eq!(entry.board.as_deref(), Some("nrf52840dk/nrf52840"));
+    let _ = std::fs::remove_dir_all(&root);
 }

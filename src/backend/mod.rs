@@ -410,6 +410,12 @@ pub struct BuildContext<'a> {
     /// `board` and `shield` this is a configuration-time answer, so it
     /// rides only on a configuration.
     pub sysbuild: bool,
+    /// The application's source directory, when the project root is not
+    /// itself the application (a repository whose root is a board module
+    /// and whose app sits one level down): `west build`'s positional
+    /// source-directory argument, relative to the root. `None` for every
+    /// project whose root is the application.
+    pub source_dir: Option<&'a str>,
 }
 
 /// The facts a flash command needs beyond the build directory.

@@ -860,18 +860,20 @@ fn entering_a_micropython_backend_starts_on_the_actions_tab() {
     assert!(app.device_actions_tab_active());
     assert!(app.flash.is_some(), "the tab has a panel to draw");
 
-    // The prompt's answer lands there too: the app had no backend before
-    // it, so there is no focus worth keeping.
+    // The configuration screen's answer lands there too: the app had no
+    // backend before it, so there is no focus worth keeping.
     let project = Project::new("prompt-actions-tab");
     let mut app = hermetic_app(&project.root);
     app.bootstrap();
-    app.maybe_open_project_setup();
+    app.maybe_open_project_config();
     assert_eq!(
         app.overlay,
-        Some(Overlay::ProjectSetup { selected: 0 }),
-        "the empty directory prompts for its backend"
+        Some(Overlay::ProjectConfig),
+        "the empty directory asks for its backend"
     );
-    app.handle(key(KeyCode::Enter)); // MicroPython is the first option
+    app.handle(key(KeyCode::Right)); // MicroPython, the first card
+    app.handle(common::ctrl('s'));
+    app.handle(key(KeyCode::Char('y')));
     assert_eq!(app.focus, Focus::FilesDevice);
     assert!(app.device_actions_tab_active());
 }

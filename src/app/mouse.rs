@@ -29,7 +29,6 @@ use crate::app::{
     App, DevicePaneTab, DocsFocus, FileAction, Focus, LogTab, Overlay, ProjectRow, ThemeChoice,
     View,
 };
-use crate::backend::BackendKind;
 use crate::browser::{PaneState, Side};
 use crate::build::BuildAction;
 use crate::device::DevicePath;
@@ -655,7 +654,8 @@ impl App {
             // sit outside this arm, which left the package manager's removal
             // dialog answering a click beside the box (cancel) but not one
             // on `Yes`.
-            | Overlay::ConfirmRemovePackage { .. } => {
+            | Overlay::ConfirmRemovePackage { .. }
+            | Overlay::ConfirmApplyConfig { .. } => {
                 let Some((no, yes)) = confirm_buttons(rect) else {
                     return;
                 };
@@ -663,6 +663,27 @@ impl App {
                     self.overlay_key(KeyCode::Char('n'));
                 } else if contains(yes, point) {
                     self.overlay_key(KeyCode::Char('y'));
+                }
+            }
+
+            // The discard dialog's three buttons, each mapped to the key
+            // that means it, so the keyboard's own gates own every effect
+            // (the family rule above, with one box more than Yes/No).
+            Overlay::ConfirmDiscardConfig { .. } => {
+                for (index, button) in
+                    layout::dialog_button_row(rect, &crate::ui::DISCARD_CHOICES)
+                        .iter()
+                        .enumerate()
+                {
+                    if contains(*button, point) {
+                        let key = match index {
+                            0 => 'n',
+                            1 => 'a',
+                            _ => 'y',
+                        };
+                        self.overlay_key(KeyCode::Char(key));
+                        break;
+                    }
                 }
             }
 
@@ -762,19 +783,7 @@ impl App {
                     self.set_dashboard_selection(index);
                 }
             }
-            Overlay::ProjectSetup { selected } => {
-                let len = BackendKind::ALL.len();
-                if let Some(index) = list_row(
-                    point,
-                    rect,
-                    *selected,
-                    len,
-                    2,
-                    0,
-                ) {
-                    self.set_overlay_selected(index);
-                }
-            }
+            Overlay::ProjectConfig => self.click_project_config(point),
             Overlay::RestoreDeviceScript { selected, .. } => {
                 // Three constant choices under a two-row message.
                 if let Some(index) =
@@ -823,14 +832,17 @@ impl App {
                     self.set_overlay_selected(index);
                 }
             }
-            Overlay::ProjectPicker { mpy, selected, .. } => {
+            Overlay::ProjectPicker {
+                mpy,
+                dir,
+                selected,
+                ..
+            } => {
                 let mpy = *mpy;
                 let dir = if mpy {
                     self.mpy_projects.clone()
                 } else {
-                    self.workspace
-                        .as_ref()
-                        .and_then(|panel| panel.projects.clone())
+                    self.project_picker_dir(dir.as_deref())
                 };
                 let len = dir
                     .map(|dir| picker_project_rows(&dir, mpy))
@@ -1087,6 +1099,20 @@ impl App {
                 }
                 return;
             }
+            // The configuration window, same split: the wheel steps the
+            // list's rows under the pointer and scrolls the details pane
+            // over its own.
+            Some(Overlay::ProjectConfig) => {
+                let areas = layout::project_config(frame);
+                if let Some(panel) = &mut self.project_config {
+                    if contains(areas.details, point) {
+                        panel.scroll_details(direction);
+                    } else if contains(areas.list, point) {
+                        panel.step(direction);
+                    }
+                }
+                return;
+            }
             _ => return,
         };
         let areas = layout::docs_picker(frame);
@@ -1207,6 +1233,53 @@ impl App {
         self.on_flash_key(key);
     }
 
+    /// The configuration screen's own hit-testing, over the same
+    /// `layout::project_config` the renderer draws from.
+    ///
+    /// A card is a button: clicking one chooses that backend, the way a
+    /// stacked menu's row presses through `Enter`. A list row only selects
+    /// --- the picker grammar every overlay list follows --- because the
+    /// answer beside it needs a second gesture anyway (an edit, a cycle),
+    /// and a click that both moved the cursor and changed a value would be
+    /// the one gesture in the window with no way to take it back.
+    fn click_project_config(&mut self, point: (u16, u16)) {
+        let Some(frame) = self.frame_area else {
+            return;
+        };
+        let areas = crate::ui::layout::project_config(frame);
+        for (index, rect) in areas.cards.iter().enumerate() {
+            if contains(*rect, point)
+                && let Some(kind) = crate::backend::BackendKind::ALL.get(index).copied()
+            {
+                self.choose_config_backend(kind);
+                return;
+            }
+        }
+        // A click hands the pane it landed on the keyboard (the docs
+        // pickers' rule): the details pane scrolls with it, the list
+        // walks rows.
+        if contains(areas.details, point) {
+            if let Some(panel) = &mut self.project_config {
+                panel.set_details_focus(crate::app::DocsFocus::Details);
+            }
+            return;
+        }
+        let Some(panel) = self.project_config.as_mut() else {
+            return;
+        };
+        // The list draws with a fresh `ListState` every frame, so ratatui's
+        // minimal-scroll offset is a pure function of the cursor and the
+        // height --- which is exactly what `bare_list_row` reproduces.
+        let selected = match panel.cursor() {
+            crate::project_config::Cursor::Row(index) => index,
+            crate::project_config::Cursor::Cards => 0,
+        };
+        if let Some(index) = bare_list_row(point, areas.list, selected, panel.rows().len(), 0) {
+            panel.set_details_focus(crate::app::DocsFocus::List);
+            self.project_config_select(index);
+        }
+    }
+
     /// Writes `index` into whichever `selected` field the open overlay
     /// carries --- every picker variant names it the same way.
     fn set_overlay_selected(&mut self, index: usize) {
@@ -1214,7 +1287,6 @@ impl App {
             Overlay::DevicePicker { selected, .. }
             | Overlay::ThemePicker { selected, .. }
             | Overlay::FirmwarePicker { selected, .. }
-            | Overlay::ProjectSetup { selected, .. }
             | Overlay::RestoreDeviceScript { selected, .. }
             | Overlay::FileActions { selected, .. }
             | Overlay::DirPicker { selected, .. }

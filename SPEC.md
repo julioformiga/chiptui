@@ -226,19 +226,30 @@ backend.
 ### Where a session starts
 
 ChipTUI is project-aware, so the working directory decides the opening
-screen. In order:
+screen --- and a readable directory always opens the dashboard, whatever
+detection made of it:
 
 1.  a directory (or an ancestor) whose backend is known --- named by the
     project registry (§13), by a project-local `chiptui.toml`, or by the
-    evidence itself --- opens the dashboard directly;
-2.  an *ambiguous* directory opens the dashboard too, so the prompt that
-    resolves it appears where the user already is;
-3.  an empty directory opens the dashboard so it can be scaffolded (below);
-4.  anything else --- a directory with contents and no project in it or
-    above it, `$HOME` being the usual case --- opens the **home screen**.
+    evidence itself --- opens straight into its project;
+2.  an *ambiguous* one opens too, so the question that resolves it appears
+    where the user already is;
+3.  an empty one opens so it can be scaffolded (below);
+4.  and so does a directory full of files that names no project, `$HOME`
+    being the usual case --- with the **project configuration screen**
+    (below) over it, which is the question that case has.
 
-The home screen is the project list: create a new project, or search and
-open a recorded one. It is backed entirely by the registry, shows each
+That last case used to route to the home screen instead, which answered
+"this directory is not a project I recognize" with a list of *other*
+projects and no way to say otherwise. The directory that made it untenable
+is a real one: a Zephyr repository whose root is an out-of-tree board
+module, with the application one directory down. Nothing at the root calls
+`find_package(Zephyr)`, so it scores 0.25 against a 0.35 floor --- a real
+project, opened in its own root, that the tool could only decline to open.
+
+The home screen is now what the configuration screen is *left* for: leaving
+it with the directory still unnamed goes there. It stays the project list:
+create a new project, or search and open a recorded one. It is backed entirely by the registry, shows each
 project's backend, name and path, filters live as the user types, and can
 forget an entry (the directory itself is never touched). It is also reachable
 from the dashboard, so projects can be switched without restarting; anything
@@ -246,28 +257,70 @@ still running is named in a confirmation first, since leaving cancels it.
 
 Creating a project asks for the folder it goes into, then the project's
 name; the new directory is empty, so the flow continues into the
-empty-project prompt below.
+configuration screen below.
 
-### Empty or unrecognized projects
+### The project configuration screen
 
-When detection concludes `Unknown` or `Ambiguous`, no project-local
-configuration file (below) is present and the registry does not name the
-directory, the UI should ask which project type this directory is, offering
-the currently supported backends (today: MicroPython, Zephyr). This is not
-the same answer as the project-local `chiptui.toml` override below: it
-fires automatically once, right after detection, instead of waiting for a
-file the user has to write. (Re-running detection --- the Log pane's `r` ---
-offers it again.)
+`chiptui.toml` (§13) is the project's own answer: the one that travels with
+it and can be committed. The screen that edits it is a modal reachable at
+any time with `ctrl+,` --- or a bare `,`, since a comma carries no control
+byte and a terminal without the Kitty keyboard protocol sends nothing at all
+for the chord.
 
-Once the user answers, two things happen, neither needing its own
-confirmation --- both are part of answering the prompt (§3: explicit, never
-inferred):
+It opens **by itself** when detection concludes `Unknown` or `Ambiguous`, no
+project-local file is present and the registry does not name the directory
+(re-running detection --- the Log pane's `r` --- opens it again). Then it is
+the empty-project question, and it opens on the one thing it has to ask.
 
--   the answer is recorded in the **user** configuration's project registry
-    (§13), so the directory is recognized automatically on every later run
-    and the home screen lists it;
--   the backend's starting layout is written into the directory, so the
-    project is usable immediately. Nothing already there is overwritten.
+**The backend is chosen, not typed.** A pair of cards leads the window, one
+per backend, each carrying that backend's own mark and its own colour ---
+the vocabulary the project list already uses to tell the two kinds apart ---
+and a line saying what it is. Picking one reveals the sections that backend
+owns, immediately and before anything is written, so the choice can be read
+in its consequences rather than taken on faith.
+
+Under the cards the answers are grouped. **General** holds what is true
+whatever the backend is: the project's name, the folder it lives in, and how
+ChipTUI itself looks --- theme, icons, mouse. Each of the others is a
+backend's own: `[zephyr]`'s environment and target keys, `[micropython]`'s
+projects folder, `[ota]`'s transport and address. Rows are labelled with
+what the answer *does* ("Auto-confirm image"), not the key's spelling ---
+the literal key lives in the details pane and in the lines each will write,
+so the reader learns the file's vocabulary without having to decode the
+list. `[[variant]]` is shown as a count and not edited --- an array of
+tables is a shape the surgical writer cannot express (§13). A key the file
+leaves empty shows what answers it instead and where that came from (the
+user config, the registry, the build directory, detection), because a key
+absent from the file is not an unanswered question --- it is one answered
+somewhere less specific.
+
+**The window is one transaction.** Answers are collected, not written: the
+footer counts them, each shows the line it will write, and nothing reaches
+either file until the user applies. Applying opens the one confirmation ---
+a review listing every line about to be written, the starting layout it
+would create, and the files each lands in. Leaving with answers outstanding
+asks first, listing the very lines at stake and offering the three honest
+ways out: keep editing (the default, which loses nothing), apply and close,
+or discard and close. Switching backends drops that backend's own
+unapplied answers and says how many, since a pending change the window
+cannot show is one the review cannot be trusted to cover.
+
+Two rows are the deliberate exception, and they are exceptions because their
+value *is* the appearance: the theme and the icon set preview live while
+they are being chosen. They preview by being read off the window rather than
+by changing the session, so leaving restores them with nothing to undo.
+Persisting still waits for the apply, like everything else.
+
+Applying a backend answer does three things, all part of the one
+confirmation (§3: explicit, never inferred):
+
+-   `project_type` is written to the project's `chiptui.toml`;
+-   the answer is also recorded in the **user** configuration's project
+    registry (§13), so the home screen lists the project;
+-   the backend's starting layout is written into the directory **only when
+    it was empty**. That is what the scaffold is for --- `mkdir x && cd x &&
+    chiptui` --- and a directory that already holds a project is not missing
+    a `CMakeLists.txt`. Nothing already there is overwritten either way.
 
 MicroPython starts with `src/` for the sources kept in sync with the device
 (§9's filesystem browser opens on this directory), `firmware/` for firmware
@@ -320,12 +373,15 @@ project_type = "zephyr"
 The file is named `chiptui.toml` and lives at the project root. ChipTUI
 reads it and lets it win over everything else --- it is the most specific
 answer there is, it travels with the project, and it can be committed so a
-team shares it. ChipTUI does not write `project_type` itself: the persisted
-counterpart of the automatic prompt is the registry entry (§13), and the
-file is the one manual override --- there is no dashboard action that swaps
-the backend of a session anymore; a session that started on the wrong
-backend switches projects (`shift+p`) instead. Declaring the backend is the
-user's decision, made by putting it there.
+team shares it.
+
+Declaring the backend stays the user's decision; what changed is that they
+no longer have to leave ChipTUI to make it. `project_type` is written by the
+configuration screen above --- an explicit, user-initiated action, exactly
+the kind the rule two sections up admits --- and by nothing else. Detection
+still writes nothing anywhere near this file: what ChipTUI works out on its
+own goes to the registry (§13). Hand-editing the file remains equivalent and
+is what a team member cloning the repository gets.
 
 ## 8. Device Management
 
@@ -412,7 +468,7 @@ The local side of the dual-pane browser (§11) opens on the project's `src/`
 directory rather than the project root, so what it shows is exactly what a
 future upload would send to the device --- `firmware/` and any project
 tooling files stay out of the way. A project without a `src/` (one that
-predates it, or was never routed through the empty-project prompt above)
+predates it, or was never routed through the configuration screen above)
 falls back to the project root.
 
 The UI should present a remote filesystem explorer:
@@ -782,25 +838,53 @@ one is being built is never guessed:
     directory picker, validated by existence only) answers it and saves
     the pick the same way;
 2.  the **project** is an immediate subdirectory of that folder, chosen in
-    the project picker, which lists every subdirectory and marks whether
-    it holds build elements (a `CMakeLists.txt` --- `west build`'s one
-    hard requirement). A directory without them cannot be accepted: the
-    picker stays open and says why. The choice is session-only; nothing
-    is written. The header's `project` field follows it: it names the
-    picked folder, and stays empty until a project is chosen (a launch
-    directory that already is one fills it by itself);
-3.  before any project command (build, clean, rebuild, menuconfig,
-    flash, dashboard) runs, its working directory must hold those build elements.
-    The launch directory passes the gate by itself when it is a project;
-    otherwise the command is refused with the reason and the pickers
-    above open --- folder first, then project. The accepted project
-    re-roots every command and resets the per-project facts (build
-    directory, cached board, saved board/shield, last report); a
-    hand-picked board survives the re-root, and the new project's own
-    saved answers (below) are re-applied. The lifecycle buttons stay
-    dimmed in the project panel until both answers exist --- the questions
-    themselves are asked in row 1's Project pane checklist, below
-    `Projects base`.
+    the project picker, which lists the subdirectories a build can run
+    in, each naming the build entry point that makes it a choice
+    (`CMakeLists.txt`, or `app/CMakeLists.txt` for a repository whose
+    single application sits one level down)
+    --- nothing else is listed; when no subdirectory qualifies, the picker
+    says so instead of implying an empty folder (each needs a
+    `CMakeLists.txt` --- `west build`'s one hard requirement). The choice
+    is session-only; nothing is written. The header's `project` field
+    follows it: it names the picked folder, and stays empty until a
+    project is chosen (a launch directory that already is one fills it by
+    itself);
+3.  the **launch directory itself** resolves before any of that: a
+    directory that is not an application but holds exactly one
+    application as a direct subdirectory (the repository whose root is
+    an out-of-tree board module, the application one level down in
+    `app/` --- any name, provided the child is the only one) is the
+    **root-as-project** case. Nothing re-roots: the project stays the
+    repository, and the application becomes `west build`'s source-directory
+    argument (`west build -b … app`), so the repository's `build/`
+    directories, its `chiptui.toml` and its board fragments stay where the
+    repository keeps them. The application may be declared outright
+    (`[zephyr] app = "app"` in the project's `chiptui.toml`; a declaration
+    that no longer names an application is named in the log, never
+    silently replaced by the discovery) or confirmed once per session in
+    the project picker, opened over the launch directory's own
+    subdirectories with that application already selected --- one `Enter`
+    short of applied. Two applications are a choice, and a choice is the
+    picker's to present (`parent/child` rows, each a project of its own),
+    never a resolution to make silently. A repository with one application
+    appears as a single acceptable row in the projects-folder picker too;
+4.  before any project command (build, clean, rebuild, menuconfig,
+    flash, dashboard) runs, its working directory must hold those build elements
+    --- or have one resolved inside it. The launch directory passes the
+    gate by itself when it is a project (or resolves through the rule
+    above); otherwise the command is refused with the reason and the
+    pickers above open --- the launch directory's own listing first (the
+    same rule), folder second, then project. The accepted project re-roots
+    every command and resets the per-project facts (build directory,
+    cached board, saved board/shield, last report); a hand-picked board
+    survives the re-root, and the new project's own saved answers (below)
+    are re-applied. The lifecycle buttons stay dimmed in the project panel
+    until both answers exist --- the questions themselves are asked in
+    row 1's Project pane checklist, below `Projects base`.
+
+For a root-as-project repository, the `chiptui.toml` that answers is the
+repository's own (the root is the project); an application folder's own
+`chiptui.toml`, if any, is not read.
 
 The optional keys, shared by both config levels:
 
@@ -810,6 +894,8 @@ workspace = "~/zephyrproject"
 projects = "~/zephyrapps"
 # sdk = "~/zephyr-sdk-0.17.1"   # written by the installer when it installs one
 # west = "/custom/venv/bin/west"
+# app = "app"   # chiptui.toml only: the application directory when the
+#               # repository root is a board module (west build's source dir)
 ```
 
 ### Operations
@@ -857,8 +943,12 @@ The board selection should not silently modify project configuration.
 > `Board` action opens a filterable picker over a background `west boards`
 > fetch. A pick is saved in the project's registry entry (§13) and
 > reloaded on every later open, outranking the cache; the panel header
-> says which origin the answer has. Nothing is written into the project
-> directory.
+> says which origin the answer has. The pick is also written into a
+> `chiptui.toml` that is already present --- the level that outranks the
+> registry, so the next open does not silently undo it (the project's own
+> file, or the repository root's for a project resolved one level down);
+> with no such file the registry is the only destination, and no file is
+> invented to receive the answer.
 
 ### Shield selection
 
@@ -1248,8 +1338,9 @@ The application should use a contextual dashboard.
 
 ### Home screen
 
-Shown when the working directory names no project (§7), and reachable from
-the dashboard to switch projects. One centered panel: a create row, a search
+Reachable from the dashboard to switch projects, and where the project
+configuration screen is left when the working directory still names no
+project (§7). One centered panel: a create row, a search
 field that filters as it is typed, and the recorded projects under it, each
 row `<icon> <backend>  <name>  <path>`. A row is tinted with its backend's
 color --- deepened, not reversed, under the cursor --- so the kinds separate
@@ -1258,6 +1349,41 @@ at a glance without a legend.
 `↑/↓` moves, `enter` opens, `del` forgets an entry (never the directory),
 `esc` clears the search and then leaves. Every printable key goes to the
 search field, which is why the commands are the non-printing ones.
+
+### Project configuration screen
+
+The `chiptui.toml` editor (§7), reachable at any time with `ctrl+,` --- or a
+bare `,` where the terminal cannot send the chord --- and opened by itself
+over a directory that names no project.
+
+A card strip leads it, one card per backend, centred, and under it two
+columns: the answers on the left, grouped into General and the chosen
+backend's own sections (each heading a divider carrying how many of its
+rows have an answer), and a bordered Details pane on the right --- what the
+selected row is for, the key's literal spelling, what it can be, which
+level of the configuration stack answers it now (`chiptui.toml`, then the
+user config, then the defaults, stated once under the strip), and the
+literal line an unapplied answer will write. Each answer row carries a
+state mark (pending, in the file, answered by a less specific level,
+unanswered) and a pending one shows the `old → new` transition rather than
+the new value alone. The Details pane lists every option of a choice row ---
+the whole theme catalogue included --- and scrolls when its content is taller
+than the pane (`tab` hands it the keyboard; the arrows and `pgup`/`pgdn`
+then scroll it, as do the wheel and a click over it). The chosen card is
+filled with its backend's tint, and
+the same tint continues as a whisper behind the sections that backend
+governs, with a `▎` edge in the backend's accent --- so the choice and the
+answers it controls read as one subject.
+
+`↑/↓` moves (headings are skipped) and reaches the cards above the first
+row; `←/→` picks a card there and changes a fixed-set value on a row;
+`enter` accepts a card and moves into its settings, or opens a free-text row
+as an input; `del` clears a key, which removes its line rather than blanking
+it. `tab` swaps which column the arrows drive. `ctrl+s` applies, `esc`
+leaves. While a row is being typed into, every
+printable key belongs to it, `del` empties the field and `esc` cancels the
+edit rather than the window --- so no action lives on a plain letter, the
+rule the package manager already follows.
 
 ### Dashboard layout
 
@@ -1542,9 +1668,25 @@ primarily for:
 -   board;
 -   `[[variant]]` blocks, the project's build variants (§10; read only);
 -   `[ota]`, the over-the-air mechanism, transport and device address
-    (§10) --- written by the preparation action, and the only section
-    ChipTUI writes today;
+    (§10) --- written by the preparation action;
 -   project-specific tool options.
+
+What ChipTUI writes here today is `project_type`, the `[zephyr]` keys, the
+`[ota]` ones and `[micropython] projects` --- every scalar the file carries.
+Two things it does not: `[[variant]]`, whose array-of-tables shape needs a
+writer that does not exist, and anything it worked out on its own, which
+goes to the registry above.
+
+Three keys are the project's own answer to a question the user config also
+answers, and outrank it for the reason `project_type` outranks detection:
+`[zephyr] board`, `[zephyr] shield` and `[micropython] projects`. A board
+picked over a project that pins one is written back into the file, not into
+the registry, or the next open would silently undo the pick.
+
+The configuration screen (§7) is the one place that writes the `[ui]` keys
+of the *user* config as well. Keeping the two levels separate is about the
+files, not about the screen: each row says which file its answer lands in,
+and the review before applying names them again.
 
 A write here carries the same guarantee as one into the user config, and by
 sharing its implementation rather than repeating it: `settings::upsert_key`

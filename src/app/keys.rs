@@ -251,6 +251,19 @@ impl App {
                 self.cycle_icon_set();
                 return;
             }
+            // The project configuration screen, in two spellings of one
+            // shortcut. `ctrl+,` is the universal "preferences" chord and
+            // the one to reach for --- but a comma carries no control byte,
+            // so a terminal without the Kitty keyboard protocol delivers
+            // nothing at all for it (the trap `ctrl+i` above documents). A
+            // bare comma is free everywhere on the dashboard --- no pane
+            // reads it, and no dashboard surface takes free text --- so it
+            // is the same key, spelled for the terminals that cannot send
+            // the other one.
+            KeyCode::Char(',') => {
+                self.open_project_config(false);
+                return;
+            }
             KeyCode::Char('x') => {
                 self.open_flash();
                 return;
@@ -385,7 +398,7 @@ impl App {
             KeyCode::Char('r') => {
                 self.logs.info("re-running project detection");
                 self.detect();
-                self.maybe_open_project_setup();
+                self.maybe_open_project_config();
             }
             KeyCode::Up | KeyCode::Char('k') => self.move_cursor(-1),
             KeyCode::Down | KeyCode::Char('j') => self.move_cursor(1),

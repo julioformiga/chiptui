@@ -1342,19 +1342,101 @@ fn overlays_draw_above_the_dashboard() {
         "help body missing:\n{help}"
     );
 
-    app.overlay = Some(Overlay::ProjectSetup { selected: 0 });
-    let setup = render(&mut app, 100, 32);
+    app.open_project_config(false);
+    let setup = render(&mut app, 100, 34);
     assert!(
-        setup.contains("New project"),
-        "project setup overlay missing:\n{setup}"
+        setup.contains("Project configuration"),
+        "the configuration window missing:\n{setup}"
     );
     assert!(
-        setup.contains("MicroPython") && setup.contains("Zephyr"),
-        "project setup options missing:\n{setup}"
+        setup.contains("chiptui.toml") && setup.contains("new file"),
+        "the window names the file it edits, and says there is none yet:\n{setup}"
     );
+    for expected in [
+        "MicroPython",
+        "Zephyr",
+        "General",
+        "Workspace path",
+        "Auto-confirm image",
+    ] {
+        assert!(
+            setup.contains(expected),
+            "the cards and the sections they reveal are missing {expected}:\n{setup}"
+        );
+    }
     assert!(
-        !setup.contains("Automatic"),
-        "detection already failed to conclude one, so there is nothing to fall back to:\n{setup}"
+        setup.contains("No changes yet"),
+        "the footer counts the transaction:\n{setup}"
+    );
+}
+
+/// The window's two colour claims, which the text dump cannot show: the
+/// chosen backend's card is filled with that backend's own tint, and the
+/// same tint continues --- as a whisper --- behind the sections it governs,
+/// while General stays on the theme's own background.
+#[test]
+fn the_chosen_backend_tints_its_card_and_the_sections_it_governs() {
+    let mut app = app_with_backend(BackendKind::Zephyr);
+    app.open_project_config(false);
+
+    let mut terminal = Terminal::new(TestBackend::new(100, 34)).expect("test terminal");
+    terminal
+        .draw(|frame| chiptui::ui::draw(frame, &mut app))
+        .expect("draw succeeds");
+    let frame = terminal.backend().to_string();
+    let buffer = terminal.backend().buffer().clone();
+    let palette = app.theme_palette();
+    let tint = chiptui::backend::BackendKind::Zephyr.palette(palette).tint;
+
+    let row_of = |needle: &str| {
+        frame
+            .lines()
+            .position(|line| line.contains(needle))
+            .unwrap_or_else(|| panic!("{needle} is not drawn:\n{frame}")) as u16
+    };
+    // Inside the Zephyr card. Found by its summary line rather than by its
+    // name, which the dashboard header behind the modal also carries ---
+    // and by column rather than absolutely, since the strip is centred.
+    let card_row = row_of("an image built with west");
+    let card_col = frame
+        .lines()
+        .nth(card_row as usize)
+        .and_then(|line| line.find("an image built with west"))
+        .expect("the summary's column") as u16;
+    let inside = buffer.cell((card_col, card_row)).expect("inside the card");
+    assert_eq!(
+        inside.bg, tint,
+        "the chosen card carries its backend's tint, not the theme's ground:\n{frame}"
+    );
+
+    // The wash behind the rows the choice governs, and its absence above.
+    let workspace = buffer
+        .cell((4, row_of("Workspace path ")))
+        .expect("a Zephyr row");
+    let general = buffer
+        .cell((4, row_of("Mouse support ")))
+        .expect("a General row");
+    assert_ne!(
+        workspace.bg, general.bg,
+        "the backend's sections are washed and General is not:\n{frame}"
+    );
+    assert_eq!(
+        general.bg,
+        ratatui::style::Color::Reset,
+        "General is not painted at all --- it keeps the terminal's own ground:\n{frame}"
+    );
+    // A whisper, not a highlight: at most a couple of channel steps.
+    let close = |a: u8, b: u8| a.abs_diff(b) <= 8;
+    let (ratatui::style::Color::Rgb(wr, wg, wb), ratatui::style::Color::Rgb(br, bg_, bb)) =
+        (workspace.bg, palette.bg)
+    else {
+        panic!("the theme draws in rgb");
+    };
+    assert!(
+        close(wr, br) && close(wg, bg_) && close(wb, bb),
+        "the section wash must stay a whisper: {:?} against {:?}",
+        workspace.bg,
+        palette.bg
     );
 }
 

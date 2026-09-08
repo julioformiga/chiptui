@@ -286,13 +286,40 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
         }
         Overlay::ProjectPicker {
             mpy,
+            dir,
             selected,
             error,
-        } => draw_project_picker(frame, popup, app, mpy, selected, error.as_deref(), palette),
+        } => {
+            // The entry flow lists the directory ChipTUI was entered in;
+            // every other opening lists its configured folder.
+            let listed = if mpy {
+                app.mpy_projects.clone()
+            } else {
+                app.project_picker_dir(dir.as_deref())
+            };
+            draw_project_picker(
+                frame,
+                popup,
+                mpy,
+                listed.as_deref(),
+                selected,
+                error.as_deref(),
+                palette,
+            )
+        }
         Overlay::FirmwarePicker { selected } => {
             draw_firmware_picker(frame, popup, app, selected, palette)
         }
-        Overlay::ProjectSetup { selected } => draw_project_setup(frame, popup, selected, palette),
+        // Full-frame, so it takes the frame rather than the popup --- it
+        // recomputes its own geometry from `layout::project_config`, the
+        // definition `overlay_popup` above delegates to.
+        Overlay::ProjectConfig => super::project_config::draw(frame, area, app, palette),
+        Overlay::ConfirmApplyConfig { confirm } => {
+            draw_confirm_apply_config(frame, popup, app, confirm, palette)
+        }
+        Overlay::ConfirmDiscardConfig { selected } => {
+            draw_confirm_discard_config(frame, popup, app, selected, palette)
+        }
         Overlay::ConfirmDownloadOverwrite { url, dest, confirm } => {
             draw_confirm_download_overwrite(frame, popup, &url, &dest, confirm, palette)
         }
@@ -936,9 +963,19 @@ fn draw_file_viewer(frame: &mut Frame, popup: Rect, app: &mut App, palette: Pale
 /// A *path* too long for one dialog line, cut from the left: the tail (the
 /// project, the build directory, the file) is what identifies it, not the
 /// `/home/...` prefix the environment puts in front.
-fn shorten_tail(text: &str, max_chars: usize) -> String {
+pub(super) fn shorten_tail(text: &str, max_chars: usize) -> String {
     let length = text.chars().count();
-    if length <= max_chars {
+    // A budget of zero columns has nothing to shorten *into*, so it answers
+    // an empty string --- never the `max_chars - 1` subtraction, which
+    // underflows on a `usize`. Zero is reachable: the project configuration
+    // screen's details pane computes its value budget as
+    // `saturating_sub(22)`, which is zero on a terminal narrower than its
+    // list column plus that margin, and a resize to one of them took the
+    // whole process down (exit 101, the panic message swallowed by the
+    // alternate screen).
+    if max_chars == 0 {
+        String::new()
+    } else if length <= max_chars {
         text.to_string()
     } else {
         format!(
@@ -1260,6 +1297,7 @@ fn draw_ota_confirm(
                 build_dir_exists: false,
                 build_dir: panel.build_dir().unwrap_or("build"),
                 sysbuild: true,
+                source_dir: None,
             })
             .to_string(),
         },
@@ -1626,45 +1664,140 @@ fn package_details(
     }
 }
 
-/// Empty or unrecognized project (`SPEC.md` §7): asks which backend this
-/// directory is, offering no "Automatic" row since detection already failed
-/// to conclude one.
-fn draw_project_setup(frame: &mut Frame, popup: Rect, selected: usize, palette: Palette) {
-    let items: Vec<ListItem> = BackendKind::ALL
-        .iter()
-        .map(|kind| {
-            ListItem::new(Line::from(Span::styled(
-                format!(" {} ", kind.display_name()),
-                Style::new().fg(palette.fg),
-            )))
+/// The configuration screen's review: every line the transaction is about
+/// to write, quoted in the file's own syntax, under the files they land in.
+///
+/// Modelled on [`draw_sync_preview`] rather than on the destructive family:
+/// what makes this safe to answer is the *list*, not a warning. `Yes` is the
+/// default here for the same reason --- the user assembled these answers on
+/// purpose and this dialog is where they check them, not where they are
+/// talked out of them.
+fn draw_confirm_apply_config(
+    frame: &mut Frame,
+    popup: Rect,
+    app: &App,
+    confirm: bool,
+    palette: Palette,
+) {
+    let mut lines: Vec<Line<'static>> = app
+        .config_review_lines()
+        .into_iter()
+        .map(|line| {
+            let style = if line.starts_with(' ') {
+                Style::new().fg(palette.fg)
+            } else {
+                muted_style(palette)
+            };
+            // Left-aligned per line, which overrides the shared dialog's
+            // centring: this is a *listing* of what will be written, and a
+            // centred block of `key = "value"` lines reads as decoration
+            // rather than as the file they are about to become.
+            Line::from(Span::styled(line, style)).left_aligned()
         })
         .collect();
-    let block = modal("New project", palette);
-    let inner = block.inner(popup);
-    let [message, list] = Layout::vertical([
-        Constraint::Length(2),
-        Constraint::Min(BackendKind::ALL.len() as u16),
-    ])
-    .areas(inner);
+    let targets = app.config_targets();
+    if !targets.is_empty() {
+        lines.push(Line::from(""));
+        for target in targets {
+            lines.push(
+                Line::from(Span::styled(
+                    shorten_tail(&target, DESTRUCTIVE_BUDGET),
+                    muted_style(palette),
+                ))
+                .left_aligned(),
+            );
+        }
+    }
+    draw_confirm_dialog(
+        frame,
+        popup,
+        "Apply these changes?",
+        lines,
+        confirm,
+        palette,
+    );
+}
 
+/// The discard dialog's buttons, in drawn order: the choice that loses
+/// nothing first and selected by default, the destructive one last (the
+/// §15 grammar). The one array the renderer draws, the key handler walks
+/// and the mouse hit-tests, so the three can never disagree.
+pub(crate) const DISCARD_CHOICES: [&str; 3] =
+    ["Keep editing", "Apply and close", "Discard and close"];
+
+/// Leaving the configuration screen with answers still unapplied.
+///
+/// The listing is the same review the apply dialog shows
+/// (`App::config_review_lines`): "loses them" means nothing until *they*
+/// are on the screen. Three buttons, because "write them, then leave" is
+/// what most `Esc` presses with edits outstanding actually mean.
+fn draw_confirm_discard_config(
+    frame: &mut Frame,
+    popup: Rect,
+    app: &App,
+    selected: usize,
+    palette: Palette,
+) {
+    let count = app
+        .project_config
+        .as_ref()
+        .map_or(0, crate::project_config::ProjectConfigPanel::change_count);
+    let mut lines = vec![
+        Line::from(Span::styled(
+            format!(
+                "{count} {} not been written yet.",
+                if count == 1 {
+                    "change has"
+                } else {
+                    "changes have"
+                }
+            ),
+            Style::new().fg(palette.warning).bold(),
+        ))
+        .left_aligned(),
+        Line::from(""),
+    ];
+    lines.extend(app.config_review_lines().into_iter().map(|line| {
+        let style = if line.starts_with(' ') {
+            Style::new().fg(palette.fg)
+        } else {
+            muted_style(palette)
+        };
+        // Left-aligned per line, the apply review's own rule: this is a
+        // listing of the lines at stake, not a decoration.
+        Line::from(Span::styled(line, style)).left_aligned()
+    }));
+    lines.push(Line::from(""));
+    lines.push(
+        Line::from(Span::styled(
+            "Applying writes them to disk; discarding loses them.",
+            muted_style(palette),
+        ))
+        .left_aligned(),
+    );
+
+    let block = modal("Leave without applying?", palette);
+    let inner = block.inner(popup);
     frame.render_widget(Clear, popup);
     frame.render_widget(block, popup);
+    let [message_area, _] = Layout::vertical([
+        Constraint::Length(popup.height.saturating_sub(5)),
+        Constraint::Length(3),
+    ])
+    .areas(inner);
     frame.render_widget(
-        Paragraph::new(
-            "No known project type here --- pick one; ChipTUI will remember this folder."
-                .to_string()
-                .fg(palette.muted),
-        )
-        .wrap(ratatui::widgets::Wrap { trim: false }),
-        message,
+        Paragraph::new(lines)
+            .alignment(Alignment::Center)
+            .wrap(ratatui::widgets::Wrap { trim: false }),
+        message_area,
     );
-
-    let mut state = ListState::default().with_selected(Some(selected));
-    frame.render_stateful_widget(
-        List::new(items).highlight_style(selection_style(palette)),
-        list,
-        &mut state,
-    );
+    for (index, (rect, label)) in super::layout::dialog_button_row(popup, &DISCARD_CHOICES)
+        .into_iter()
+        .zip(DISCARD_CHOICES.iter())
+        .enumerate()
+    {
+        draw_dialog_button(frame, rect, label, index == selected, palette);
+    }
 }
 
 /// A destructive esptool action awaiting explicit confirmation (`SPEC.md`
@@ -1999,11 +2132,14 @@ fn draw_dir_picker(
 /// promises, visible before Enter is ever pressed (`SPEC.md` §14). For
 /// MicroPython every subdirectory simply is a project (no build step), so
 /// nothing is marked and nothing is refused.
+/// `dir` is the folder whose subdirectories the rows list, already
+/// resolved by the caller: the entry flow's directory when the picker
+/// carries one, the configured projects folder otherwise.
 fn draw_project_picker(
     frame: &mut Frame,
     popup: Rect,
-    app: &App,
     mpy: bool,
+    dir: Option<&std::path::Path>,
     selected: usize,
     error: Option<&str>,
     palette: Palette,
@@ -2020,13 +2156,6 @@ fn draw_project_picker(
     ])
     .areas(inner);
 
-    let dir = if mpy {
-        app.mpy_projects.clone()
-    } else {
-        app.workspace
-            .as_ref()
-            .and_then(|panel| panel.projects.clone())
-    };
     let Some(dir) = dir else {
         frame.render_widget(
             Paragraph::new("no projects folder configured".fg(palette.warning)),
@@ -2044,7 +2173,7 @@ fn draw_project_picker(
     );
 
     let (items, read_error): (Vec<ListItem>, Option<String>) = if mpy {
-        let (rows, read_error) = crate::backend::micropython::projects::project_rows(&dir);
+        let (rows, read_error) = crate::backend::micropython::projects::project_rows(dir);
         let items = rows
             .iter()
             .map(|row| {
@@ -2056,25 +2185,23 @@ fn draw_project_picker(
             .collect();
         (items, read_error)
     } else {
-        let (rows, read_error) = crate::backend::zephyr::projects::project_rows(&dir);
+        // Every row is an application (or a repository with exactly one
+        // inside): nothing dimmed is listed. The mark beside each name says
+        // *why* the row is there --- the build entry point it holds, and
+        // where it is (`app/CMakeLists.txt` for a module repository).
+        let (rows, read_error) = crate::backend::zephyr::projects::project_rows(dir);
         let items = rows
             .iter()
             .map(|row| {
-                if row.buildable {
-                    ListItem::new(Line::from(vec![
-                        Span::raw("  "),
-                        row.name.clone().fg(palette.fg).bold(),
-                        Span::raw("  "),
-                        Span::styled("✓ CMakeLists.txt", Style::new().fg(palette.success)),
-                    ]))
-                } else {
-                    ListItem::new(Line::from(vec![
-                        Span::raw("  "),
-                        Span::styled(row.name.clone(), Style::new().fg(palette.fg)),
-                        Span::raw("  "),
-                        Span::styled("no CMakeLists.txt", muted_style(palette)),
-                    ]))
-                }
+                ListItem::new(Line::from(vec![
+                    Span::raw("  "),
+                    row.name.clone().fg(palette.fg).bold(),
+                    Span::raw("  "),
+                    Span::styled(
+                        format!("✓ {}", row.evidence),
+                        Style::new().fg(palette.success),
+                    ),
+                ]))
             })
             .collect();
         (items, read_error)
@@ -2244,6 +2371,12 @@ fn draw_board_picker(
             crate::build::BoardOrigin::Config => {
                 format!(
                     "Board ({}, saved for this project) — pick to change",
+                    choice.name
+                )
+            }
+            crate::build::BoardOrigin::ProjectFile => {
+                format!(
+                    "Board ({}, from chiptui.toml) — pick to change",
                     choice.name
                 )
             }

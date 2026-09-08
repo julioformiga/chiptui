@@ -108,9 +108,20 @@ pub type Catalogue<'a> = &'a [String];
 /// is the most specific answer there is, and merging it with guesses would
 /// make it impossible to *remove* a variant. Otherwise the two conventional
 /// sources are merged (see [`discover`]).
-pub fn variants(root: &Path, declared: &[Variant], catalogue: Catalogue<'_>) -> Vec<Variant> {
+///
+/// `app` is the application directory when the project root is not itself
+/// the application (the module-repository layout): the `boards/` fragments
+/// are read there, beside the application's sources, while the build
+/// directories stay at the root. `None` for every project whose root is the
+/// application.
+pub fn variants(
+    root: &Path,
+    app: Option<&Path>,
+    declared: &[Variant],
+    catalogue: Catalogue<'_>,
+) -> Vec<Variant> {
     if declared.is_empty() {
-        discover(root, catalogue)
+        discover(root, app, catalogue)
     } else {
         declared.to_vec()
     }
@@ -122,13 +133,16 @@ pub fn variants(root: &Path, declared: &[Variant], catalogue: Catalogue<'_>) -> 
 /// 1. **the build directories it already has.** `<dir>/CMakeCache.txt`
 ///    names the exact board string and shield that configuration used, so a
 ///    project that has ever been built answers this question itself, with
-///    no catalogue and no guessing.
+///    no catalogue and no guessing. They live at the project root --- where
+///    `west build` runs.
 /// 2. **`boards/<stem>.conf|.overlay`.** Zephyr picks these up by name:
 ///    the stem is the board target with `/` written as `_`. Recovering the
 ///    target from the stem needs the catalogue, because `_` is also a legal
 ///    character *inside* a board name (`native_sim_native_64` is
 ///    `native_sim/native/64`, not `native/sim/native/64`), so the stem is
-///    matched against real targets rather than split on a rule.
+///    matched against real targets rather than split on a rule. They live
+///    with the *application* (`app`), whose own target fragments sit beside
+///    its sources.
 ///
 /// A target found in both keeps the build directory it really has. One
 /// found only under `boards/` gets a derived directory, which is where it
@@ -137,7 +151,7 @@ pub fn variants(root: &Path, declared: &[Variant], catalogue: Catalogue<'_>) -> 
 /// Returns an empty list when neither source says anything --- a project
 /// with one board and one `build/` has no variants to choose between, and
 /// inventing a list of one would add a question where there is none.
-pub fn discover(root: &Path, catalogue: Catalogue<'_>) -> Vec<Variant> {
+pub fn discover(root: &Path, app: Option<&Path>, catalogue: Catalogue<'_>) -> Vec<Variant> {
     let mut found: Vec<Variant> = Vec::new();
 
     for build_dir in build_dirs(root) {
@@ -160,7 +174,7 @@ pub fn discover(root: &Path, catalogue: Catalogue<'_>) -> Vec<Variant> {
         });
     }
 
-    for target in fragment_targets(root, catalogue) {
+    for target in fragment_targets(app.unwrap_or(root), catalogue) {
         if found.iter().any(|v| {
             v.board
                 .as_deref()
@@ -571,7 +585,7 @@ mod tests {
         );
         built(&root, "build_sim", "native_sim/native/64", None);
 
-        let found = discover(&root, &catalogue());
+        let found = discover(&root, None, &catalogue());
         assert_eq!(found.len(), 2);
         assert_eq!(found[0].name, "xiao_esp32c3");
         assert_eq!(found[0].build_dir, "build");
@@ -595,7 +609,7 @@ mod tests {
         fragment(&root, "native_sim_native_64");
         fragment(&root, "not_a_board_at_all");
 
-        let found = discover(&root, &catalogue());
+        let found = discover(&root, None, &catalogue());
         let targets: Vec<&str> = found.iter().filter_map(|v| v.board.as_deref()).collect();
         assert_eq!(
             targets,
@@ -618,7 +632,7 @@ mod tests {
         fragment(&root, "xiao_esp32c3_esp32c3");
         fragment(&root, "native_sim_native_64");
 
-        let found = discover(&root, &catalogue());
+        let found = discover(&root, None, &catalogue());
         assert_eq!(found.len(), 2, "the built target is not listed twice");
         assert_eq!(found[0].build_dir, "build");
         assert_eq!(found[1].build_dir, "build-sim");
@@ -643,7 +657,7 @@ mod tests {
         fragment(&root, "xiao_esp32c3");
         fragment(&root, "native_sim_native_64");
 
-        let found = discover(&root, &catalogue());
+        let found = discover(&root, None, &catalogue());
         assert_eq!(found.len(), 2, "{found:#?}");
         assert_eq!(found[0].board.as_deref(), Some("xiao_esp32c3"));
         assert_eq!(found[1].board.as_deref(), Some("native_sim/native/64"));
@@ -663,8 +677,8 @@ mod tests {
     fn a_single_target_is_no_variant_list() {
         let root = fixture("single");
         built(&root, "build", "xiao_esp32c3", None);
-        assert!(discover(&root, &catalogue()).is_empty());
-        assert!(discover(&root, &[]).is_empty());
+        assert!(discover(&root, None, &catalogue()).is_empty());
+        assert!(discover(&root, None, &[]).is_empty());
     }
 
     /// A declared list wins outright: merging would make a variant
@@ -681,9 +695,9 @@ mod tests {
             build_dir: "build".into(),
             origin: VariantOrigin::Declared,
         }];
-        assert_eq!(variants(&root, &declared, &catalogue()), declared);
+        assert_eq!(variants(&root, None, &declared, &catalogue()), declared);
         // With none declared, discovery answers.
-        assert_eq!(variants(&root, &[], &catalogue()).len(), 2);
+        assert_eq!(variants(&root, None, &[], &catalogue()).len(), 2);
     }
 
     #[test]

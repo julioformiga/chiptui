@@ -907,7 +907,7 @@ fn a_second_scan_request_does_not_rescan_an_existing_browser() {
 }
 
 #[test]
-fn answering_the_project_setup_prompt_for_a_filesystem_backend_scans_for_a_device() {
+fn applying_a_filesystem_backend_in_the_config_screen_scans_for_a_device() {
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     let root = std::env::temp_dir().join(format!("chiptui-files-setup-{}", std::process::id()));
@@ -924,11 +924,16 @@ fn answering_the_project_setup_prompt_for_a_filesystem_backend_scans_for_a_devic
         "an unrecognized project has no filesystem to scan for yet"
     );
 
-    // The prompt opens on the unknown project; MicroPython is its first
-    // row, so Enter answers it outright.
+    // The configuration window opens on the backend cards; MicroPython is
+    // the first of them, and applying is what makes the answer real.
     let key = |code| AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE));
-    app.maybe_open_project_setup();
-    app.handle(key(KeyCode::Enter));
+    app.maybe_open_project_config();
+    app.handle(key(KeyCode::Right)); // MicroPython
+    app.handle(AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('s'),
+        KeyModifiers::CONTROL,
+    )));
+    app.handle(key(KeyCode::Char('y')));
 
     assert_eq!(app.manager.override_kind(), Some(BackendKind::MicroPython));
     assert!(

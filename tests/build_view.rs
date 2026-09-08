@@ -12,7 +12,7 @@ use chiptui::build::BuildAction;
 use ratatui::crossterm::event::KeyCode;
 
 mod common;
-use common::{enter_project_pane, fake, key, pump_until, render};
+use common::{ctrl, enter_project_pane, fake, key, pump_until, render};
 
 /// A Zephyr app in a temp directory: a real project layout so the panel has
 /// a root, with a CMakeCache claiming a board when the test wants one.
@@ -613,13 +613,21 @@ fn switching_to_micropython_hides_the_panel_and_reclamps_focus() {
     let (mut app, _root) = zephyr_app("switch", None);
     app.focus = Focus::Build;
 
-    // The real path: the empty-project prompt's answer applies the backend
-    // and places focus (MicroPython is the prompt's first row). The answer
-    // is the backend's first entry, so it lands on the device pane's
-    // Project actions tab --- a pane that exists --- rather than merely
-    // clamping off the build panel that is gone.
-    app.overlay = Some(Overlay::ProjectSetup { selected: 0 });
-    app.handle(key(KeyCode::Enter));
+    // The real path: the configuration screen's card strip picks the
+    // backend and applying places focus. The answer is the backend's first
+    // entry, so it lands on the device pane's Project actions tab --- a
+    // pane that exists --- rather than merely clamping off the build panel
+    // that is gone. Applying reviews first, so the `y` is part of the path.
+    app.open_project_config(false);
+    app.handle(key(KeyCode::Home));
+    app.handle(key(KeyCode::Left)); // MicroPython, the card before Zephyr
+    app.handle(ctrl('s'));
+    assert!(
+        matches!(app.overlay, Some(Overlay::ConfirmApplyConfig { .. })),
+        "the transaction is reviewed before it lands: {:?}",
+        app.overlay
+    );
+    app.handle(key(KeyCode::Char('y')));
 
     assert_eq!(app.manager.selected_kind(), Some(BackendKind::MicroPython));
     assert!(!app.build_pane_visible());

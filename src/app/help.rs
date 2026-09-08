@@ -12,7 +12,7 @@
 //! screen (see [`View`]) and narrows under a filter that is live from the
 //! first keystroke --- genuinely the board picker's grammar now, which the
 //! window used to claim while hiding its search behind `/`: the dashboard
-//! alone lists thirty-nine rows, so search is the way through them.
+//! alone lists forty rows, so search is the way through them.
 //!
 //! The descriptions are part of the data, not the rendering: each is
 //! summarized to fit its row on one line at the width the table needs (the
@@ -314,7 +314,7 @@ const DASHBOARD_NAVIGATION: [HelpBinding; 11] = [
     ),
 ];
 
-const DASHBOARD_COMMANDS: [HelpBinding; 28] = [
+const DASHBOARD_COMMANDS: [HelpBinding; 29] = [
     action(
         "r",
         "re-detect, reload, or rename (file list)",
@@ -372,6 +372,17 @@ const DASHBOARD_COMMANDS: [HelpBinding; 28] = [
         "ctrl+i",
         "cycle icons (unicode/nerd/none)",
         KeyCode::Char('i'),
+        &[],
+    ),
+    // Two spellings of one shortcut, and the entry says so: `ctrl+,`
+    // reaches the app only where the Kitty keyboard protocol answered ---
+    // a comma carries no control byte, so a legacy terminal sends nothing
+    // at all for the chord. The bare comma is the same key everywhere else.
+    // Help-only: the screen is opened deliberately, not in passing.
+    action(
+        "ctrl+, / ,",
+        "edit this project's chiptui.toml",
+        KeyCode::Char(','),
         &[],
     ),
     // Reaches row 3 from any of its three tabs, and even through the
@@ -747,7 +758,7 @@ mod tests {
 
     /// The dashboard's row count is quoted in two doc comments (this
     /// module's header and `Overlay::Help`'s) as the reason the window
-    /// needs a search at all. They disagreed --- "thirty-nine" here,
+    /// needs a search at all. They disagreed --- "forty" here,
     /// "twenty-eight" there --- because nothing checked either. This does.
     #[test]
     fn the_declared_dashboard_row_count_is_the_real_one() {
@@ -756,8 +767,8 @@ mod tests {
             .map(|&section| bindings(View::Dashboard, section).len())
             .sum::<usize>();
         assert_eq!(
-            rows, 39,
-            "the docs say thirty-nine dashboard rows; update both of them \
+            rows, 40,
+            "the docs say forty dashboard rows; update both of them \
              (src/app/help.rs's header and Overlay::Help's) with this number"
         );
     }
@@ -1352,10 +1363,18 @@ impl App {
             Some(
                 Overlay::ConfirmInstallHere { .. }
                 | Overlay::ConfirmRemovePackage { .. }
+                | Overlay::ConfirmApplyConfig { .. }
+                | Overlay::ConfirmDiscardConfig { .. }
                 | Overlay::ConfirmOta { .. },
             ) => {
                 vec![("y/n", "quick reply")]
             }
+            // The window's own footer already names its row grammar, which
+            // changes with the selected row; this one names only what that
+            // line cannot --- `tab` swaps which column the arrows drive,
+            // and a text row takes free text, so `?` types
+            // rather than opening the help.
+            Some(Overlay::ProjectConfig) => vec![("tab", "the details pane"), ("F1", "help")],
             Some(Overlay::OtaAddress { .. }) => vec![("enter", "save address")],
             Some(Overlay::SdkToolchains { .. }) => vec![("space", "toggle")],
             Some(Overlay::FileViewer) => vec![("e", "edit with $EDITOR")],
@@ -1404,7 +1423,6 @@ impl App {
                 Overlay::DevicePicker { .. }
                 | Overlay::ThemePicker { .. }
                 | Overlay::FirmwarePicker { .. }
-                | Overlay::ProjectSetup { .. }
                 | Overlay::FileActions { .. }
                 | Overlay::RestoreDeviceScript { .. }
                 | Overlay::FlashMethod { .. }

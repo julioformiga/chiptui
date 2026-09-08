@@ -178,7 +178,7 @@ fn project_loop(
     // evidence --- this is the one place the project is recorded as opened,
     // so the home screen's list and its ordering stay complete.
     app.record_open_project();
-    app.maybe_open_project_setup();
+    app.maybe_open_project_config();
     app.maybe_scan_devices();
     app.place_startup_focus();
     // The Zephyr flow's first question: when no config names the
@@ -186,6 +186,11 @@ fn project_loop(
     // pane alone would leave the answer one keypress away instead of in
     // the user's face.
     app.maybe_open_workspace_picker();
+    // The project question's entry form: started in a repository whose
+    // application sits one level down, the picker opens on that
+    // application already selected --- entering from the project folder is
+    // itself the answer, one `Enter` short of applied.
+    app.maybe_open_entry_project();
 
     event_loop(&mut app, guard, events)?;
     Ok(app.take_switch_request())

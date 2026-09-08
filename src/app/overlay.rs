@@ -7,7 +7,6 @@ use std::path::PathBuf;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
-use crate::backend::BackendKind;
 use crate::backend::zephyr::flash_method::FlashMethod;
 use crate::browser::Side;
 use crate::build::BuildAction;
@@ -299,33 +298,58 @@ impl App {
                     _ => {}
                 }
             }
-            Overlay::ProjectSetup { selected } => {
-                let count = BackendKind::ALL.len();
+            Overlay::ProjectConfig => self.on_project_config_key(key),
+            // Both hand the window back on either answer: the slot is one
+            // deep, so a dialog that covered it has to put it back itself.
+            Overlay::ConfirmApplyConfig { confirm } => {
+                self.dispatch_confirm(
+                    key.code,
+                    confirm,
+                    |app, confirm| {
+                        app.overlay = Some(Overlay::ConfirmApplyConfig { confirm });
+                    },
+                    App::apply_project_config,
+                    |app| app.overlay = Some(Overlay::ProjectConfig),
+                );
+            }
+            // Three choices, not Yes/No: the arrows walk the buttons and
+            // the letters answer by muscle memory --- `n` keeps editing
+            // (the old decline), `y` discards (the old accept), `a` takes
+            // the third way the two-button shape never had. Every effect
+            // runs with the overlay already cleared, the dispatch_confirm
+            // rule, since applying checks `overlay.is_none()` to decide
+            // whether to hand the window back.
+            Overlay::ConfirmDiscardConfig { selected } => {
+                const COUNT: usize = crate::ui::DISCARD_CHOICES.len();
                 match key.code {
-                    // No `q`/esc-cancels-quietly here: leaving this open
-                    // means the project stays unrecognized, which is exactly
-                    // what re-running detection will ask about again --- so
-                    // the log says so. Dismissing used to leave a dashboard
-                    // with no backend, no rows and no action, and nothing
-                    // anywhere naming the key that asks again.
-                    KeyCode::Esc | KeyCode::Char('q') => {
+                    KeyCode::Left | KeyCode::BackTab | KeyCode::Char('h') => {
+                        self.overlay = Some(Overlay::ConfirmDiscardConfig {
+                            selected: (selected + COUNT - 1) % COUNT,
+                        });
+                    }
+                    KeyCode::Right | KeyCode::Tab | KeyCode::Char('l') => {
+                        self.overlay = Some(Overlay::ConfirmDiscardConfig {
+                            selected: (selected + 1) % COUNT,
+                        });
+                    }
+                    KeyCode::Char('n' | 'q') | KeyCode::Esc => {
+                        self.overlay = Some(Overlay::ProjectConfig);
+                    }
+                    KeyCode::Char('a') => {
                         self.overlay = None;
-                        self.logs
-                            .info("no project type chosen — press r to be asked again");
+                        self.apply_and_close_project_config();
                     }
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        self.overlay = Some(Overlay::ProjectSetup {
-                            selected: (selected + count - 1) % count,
-                        });
-                    }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        self.overlay = Some(Overlay::ProjectSetup {
-                            selected: (selected + 1) % count,
-                        });
+                    KeyCode::Char('y') => {
+                        self.overlay = None;
+                        self.discard_project_config();
                     }
                     KeyCode::Enter => {
                         self.overlay = None;
-                        self.apply_project_setup(selected);
+                        match selected {
+                            0 => self.overlay = Some(Overlay::ProjectConfig),
+                            1 => self.apply_and_close_project_config(),
+                            _ => self.discard_project_config(),
+                        }
                     }
                     _ => {}
                 }
@@ -597,14 +621,17 @@ impl App {
             } => self.on_dir_picker_key(key, purpose, path, selected, error),
             Overlay::ProjectPicker {
                 mpy,
+                dir,
                 selected,
                 error,
             } => {
                 // Same grammar as the other pickers: arrows walk the rows,
                 // Enter accepts, Esc leaves. Navigation clears a previous
                 // error --- it described a row that is no longer selected.
-                // The rows themselves come from whichever projects folder
-                // the flavor reads (Zephyr's marked, MicroPython's plain).
+                // The rows themselves come from whichever folder the flavor
+                // reads: the entry flow's directory when the picker carries
+                // one, the configured projects folder otherwise (Zephyr's
+                // rows marked, MicroPython's plain).
                 let count = if mpy {
                     self.mpy_projects
                         .as_ref()
@@ -615,16 +642,15 @@ impl App {
                         })
                         .unwrap_or(0)
                 } else {
-                    self.workspace
-                        .as_ref()
-                        .and_then(|panel| panel.projects.as_ref())
-                        .map(|dir| crate::backend::zephyr::projects::project_rows(dir).0.len())
+                    self.project_picker_dir(dir.as_deref())
+                        .map(|dir| crate::backend::zephyr::projects::project_rows(&dir).0.len())
                         .unwrap_or(0)
                 }
                 .max(1);
                 let rebuild = |app: &mut Self, selected: usize, error: Option<String>| {
                     app.overlay = Some(Overlay::ProjectPicker {
                         mpy,
+                        dir: dir.clone(),
                         selected,
                         error,
                     });
@@ -640,7 +666,7 @@ impl App {
                     KeyCode::Home => rebuild(self, 0, None),
                     KeyCode::End => rebuild(self, count - 1, None),
                     KeyCode::Enter if mpy => self.apply_mpy_project_picker(selected),
-                    KeyCode::Enter => self.apply_project_picker(selected),
+                    KeyCode::Enter => self.apply_project_picker(selected, dir.clone()),
                     _ => rebuild(self, selected, error),
                 }
             }
@@ -1136,7 +1162,6 @@ fn is_help_reachable_overlay(overlay: &Overlay) -> bool {
         | Overlay::DevicePicker { .. }
         | Overlay::ThemePicker { .. }
         | Overlay::FirmwarePicker { .. }
-        | Overlay::ProjectSetup { .. }
         | Overlay::FileActions { .. }
         | Overlay::RestoreDeviceScript { .. }
         | Overlay::ZephyrActions { .. }
@@ -1145,6 +1170,7 @@ fn is_help_reachable_overlay(overlay: &Overlay) -> bool {
         | Overlay::BoardPicker { .. }
         | Overlay::ShieldPicker { .. }
         | Overlay::Packages
+        | Overlay::ProjectConfig
         | Overlay::BuildDashboard => true,
         // The help itself, the confirms (whose footer is `y/n` and whose
         // one job is to be answered), and the windows that carry their own
@@ -1163,6 +1189,8 @@ fn is_help_reachable_overlay(overlay: &Overlay) -> bool {
         | Overlay::ConfirmQuit { .. }
         | Overlay::ConfirmInstallHere { .. }
         | Overlay::ConfirmRemovePackage { .. }
+        | Overlay::ConfirmApplyConfig { .. }
+        | Overlay::ConfirmDiscardConfig { .. }
         | Overlay::SyncPreview { .. }
         | Overlay::SdkToolchains { .. }
         | Overlay::ZephyrInstall
@@ -1187,6 +1215,7 @@ fn is_text_entry_overlay(overlay: &Overlay) -> bool {
         | Overlay::BoardPicker { .. }
         | Overlay::ShieldPicker { .. }
         | Overlay::Packages
+        | Overlay::ProjectConfig
         | Overlay::BuildDashboard => true,
         Overlay::DirPicker { .. }
         | Overlay::ProjectPicker { .. }
@@ -1195,7 +1224,6 @@ fn is_text_entry_overlay(overlay: &Overlay) -> bool {
         | Overlay::DevicePicker { .. }
         | Overlay::ThemePicker { .. }
         | Overlay::FirmwarePicker { .. }
-        | Overlay::ProjectSetup { .. }
         | Overlay::FileActions { .. }
         | Overlay::RestoreDeviceScript { .. }
         | Overlay::ZephyrActions { .. }
@@ -1213,6 +1241,8 @@ fn is_text_entry_overlay(overlay: &Overlay) -> bool {
         | Overlay::ConfirmQuit { .. }
         | Overlay::ConfirmInstallHere { .. }
         | Overlay::ConfirmRemovePackage { .. }
+        | Overlay::ConfirmApplyConfig { .. }
+        | Overlay::ConfirmDiscardConfig { .. }
         | Overlay::SyncPreview { .. }
         | Overlay::SdkToolchains { .. }
         | Overlay::ZephyrInstall
@@ -1232,7 +1262,7 @@ pub enum Overlay {
     /// closes. `filter` is live from the first keystroke, the grammar the
     /// board picker and the package manager use --- so `j`/`k` are filter
     /// text here, not movement --- and it narrows both divisions at once:
-    /// the dashboard alone lists thirty-nine rows, so search is the way
+    /// the dashboard alone lists forty rows, so search is the way
     /// through them.
     Help { filter: String, selected: usize },
     /// Serial device selection (`SPEC.md` §8: never guess which board).
@@ -1251,10 +1281,36 @@ pub enum Overlay {
     /// Firmware file selection when more than one `.bin`/`.elf` was found in
     /// `firmware/`.
     FirmwarePicker { selected: usize },
-    /// Empty or unrecognized project: asks which backend this directory is
-    /// (`SPEC.md` §7). It fires automatically (detection could not conclude
-    /// a backend) and persists the choice to `chiptui.toml`.
-    ProjectSetup { selected: usize },
+    /// The project configuration screen: `chiptui.toml`, edited in place
+    /// (`SPEC.md` §7, §13).
+    ///
+    /// Carries nothing --- every field lives on [`App::project_config`], so
+    /// the backend-change confirm, which *replaces* this overlay (the slot
+    /// being one deep), can hand the window back exactly as it was.
+    ///
+    /// It opens by itself when the directory names no project, which is the
+    /// empty-project prompt's old job, and answers with the file rather than
+    /// only with this machine's registry.
+    ProjectConfig,
+    /// The configuration screen's one confirmation: the review of every
+    /// line about to be written, the starting layout it would create, and
+    /// the files each lands in. Nothing the window collected has reached
+    /// disk before this is answered --- which is what makes the whole
+    /// screen a transaction rather than a series of writes.
+    ///
+    /// `Yes` is the default here, unlike the destructive confirms: this
+    /// dialog reviews work the user just did on purpose, and its own list
+    /// is what makes it safe to say yes to.
+    ConfirmApplyConfig { confirm: bool },
+    /// Leaving the configuration screen with answers still unapplied.
+    ///
+    /// Three buttons where the confirms have two (`crate::ui::DISCARD_CHOICES`,
+    /// which `selected` indexes): keep editing --- the default, which loses
+    /// nothing --- apply and close, or discard and close. The Yes/No shape
+    /// said *how many* changes were at stake but never which, and the
+    /// answer most people reaching for `Esc` with edits outstanding mean
+    /// --- "write them, then leave" --- had no button at all.
+    ConfirmDiscardConfig { selected: usize },
     /// A firmware download would overwrite a file already in `firmware/`;
     /// needs explicit confirmation before running (`SPEC.md` §15 applied to
     /// a filesystem write rather than a device operation).
@@ -1329,8 +1385,17 @@ pub enum Overlay {
     /// `true`) every subdirectory is a project (no build step), so nothing
     /// is marked and nothing is refused. The choice itself is session-only
     /// (`SPEC.md` §10) either way.
+    ///
+    /// `dir` names a different folder to list: the configured projects
+    /// folder when `None`, or --- the entry flow --- the directory ChipTUI
+    /// was entered in, whose subdirectories hold the repository's single
+    /// application one level down. Such a picker opens *preselected* on that
+    /// application, and its accept points the project's `chiptui.toml` at
+    /// the entry directory rather than the picked child (the file travels
+    /// with the repository, `BuildPanel::config_root`).
     ProjectPicker {
         mpy: bool,
+        dir: Option<std::path::PathBuf>,
         selected: usize,
         error: Option<String>,
     },

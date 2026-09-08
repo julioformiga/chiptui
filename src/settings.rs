@@ -40,6 +40,15 @@ pub struct ZephyrSettings {
     /// relative path is resolved against the workspace, and a bare program
     /// name is a deliberate `PATH` lookup.
     pub west: Option<String>,
+    /// The board this project builds for, and the shield on it.
+    ///
+    /// Read from a *project's* `chiptui.toml` only. The struct is shared by
+    /// both config levels, but these two are answers about one project: a
+    /// board written machine-wide would claim every project builds for it.
+    /// `App::zephyr_settings` is what keeps the asymmetry --- the user-level
+    /// parse still fills them, and nothing reads them from there.
+    pub board: Option<String>,
+    pub shield: Option<String>,
 }
 
 impl ZephyrSettings {
@@ -49,6 +58,8 @@ impl ZephyrSettings {
             && self.projects.is_none()
             && self.sdk.is_none()
             && self.west.is_none()
+            && self.board.is_none()
+            && self.shield.is_none()
     }
 
     /// Extracts the `[zephyr]` section from `text`, ignoring comments, other
@@ -80,6 +91,8 @@ impl ZephyrSettings {
                 "projects" => &mut settings.projects,
                 "sdk" => &mut settings.sdk,
                 "west" => &mut settings.west,
+                "board" => &mut settings.board,
+                "shield" => &mut settings.shield,
                 _ => continue,
             };
             if !value.is_empty() {
@@ -500,9 +513,11 @@ pub fn icons(config_dir: &Path) -> Option<String> {
 /// keeps the terminal's own click-drag selection and scrollback working,
 /// which `SPEC.md` §11 prefers (keyboard is primary; mouse is optional).
 /// User-config-only, the same operator preference `[ui] theme` is. Unlike
-/// the theme there is deliberately no runtime toggle: enabling capture
-/// mid-session would strand the terminal state that `terminal::init`
-/// set up, and nothing in the UI writes this key.
+/// the theme there is deliberately no runtime *toggle*: enabling capture
+/// mid-session would strand the terminal state that `terminal::init` set
+/// up. The configuration screen (`SPEC.md` §7) writes the key --- which is
+/// a different act, and why its row says the answer takes effect the next
+/// time ChipTUI starts.
 pub fn mouse(config_dir: &Path) -> bool {
     std::fs::read_to_string(user_config_path(config_dir))
         .ok()
@@ -679,18 +694,12 @@ fn render_projects(other: &str, entries: &[ProjectEntry]) -> String {
 /// versus append-a-section --- and two copies of it would drift into two
 /// different definitions of "preserve".
 pub(crate) fn upsert_key(text: &str, section: &str, key: &str, value: &str) -> String {
-    let header_name = |line: &str| {
-        line.split('#')
-            .next()
-            .unwrap_or("")
-            .trim()
-            .strip_prefix('[')
-            .and_then(|l| l.strip_suffix(']'))
-            .map(|name| name.trim().trim_matches(['[', ']']).trim().to_string())
-    };
-
     let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
-    let mut in_section = false;
+    // An empty `section` names the region *before* the first header --- the
+    // top level, where `project_type` lives. It is a real place in the file
+    // and not the absence of one, so it starts inside rather than outside;
+    // the first header of any name ends it.
+    let mut in_section = section.is_empty();
     let mut replaced = false;
     for line in &mut lines {
         if let Some(name) = header_name(line) {
@@ -710,20 +719,98 @@ pub(crate) fn upsert_key(text: &str, section: &str, key: &str, value: &str) -> S
         }
     }
     if !replaced {
-        let header = lines
-            .iter()
-            .position(|line| header_name(line).is_some_and(|name| name == section));
-        match header {
-            Some(index) => lines.insert(index + 1, format!("{key} = \"{value}\"")),
-            None => {
-                lines.push(String::new());
-                lines.push(format!("[{section}]"));
-                lines.push(format!("{key} = \"{value}\""));
+        let entry = format!("{key} = \"{value}\"");
+        if section.is_empty() {
+            // Before the first header, so the key lands in the region it
+            // belongs to --- and *after* whatever leads the file, so a
+            // licence or explanatory comment keeps the top.
+            match lines.iter().position(|line| header_name(line).is_some()) {
+                Some(index) => {
+                    // A blank line between the top-level keys and the first
+                    // section, the way the file would be written by hand.
+                    // This file is committed and read in diffs; a key
+                    // welded to the `[section]` under it is not what a
+                    // person would have typed.
+                    lines.insert(index, entry);
+                    lines.insert(index + 1, String::new());
+                }
+                None => lines.push(entry),
+            }
+        } else {
+            let header = lines
+                .iter()
+                .position(|line| header_name(line).is_some_and(|name| name == section));
+            match header {
+                Some(index) => lines.insert(index + 1, entry),
+                None => {
+                    // The blank line separates the new section from what
+                    // came before it --- and there is nothing to separate
+                    // it from in an empty file, where it would just be a
+                    // leading blank line nobody wrote.
+                    if lines.iter().any(|line| !line.trim().is_empty()) {
+                        lines.push(String::new());
+                    }
+                    lines.push(format!("[{section}]"));
+                    lines.push(entry);
+                }
             }
         }
     }
     let mut out = lines.join("\n");
     if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out
+}
+
+/// The section name a header line declares, or `None` for anything else.
+///
+/// `[[project]]` reads as `project`, so an array-of-tables block is a
+/// section boundary like any other --- which is what keeps a `board` inside
+/// one from being mistaken for the `[zephyr]` one.
+fn header_name(line: &str) -> Option<String> {
+    line.split('#')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .strip_prefix('[')
+        .and_then(|l| l.strip_suffix(']'))
+        .map(|name| name.trim().trim_matches(['[', ']']).trim().to_string())
+}
+
+/// Removes one `[section] key` from `text`, leaving every other byte alone.
+///
+/// The counterpart of [`upsert_key`] and its exact mirror: the same section
+/// tracking (an empty `section` meaning the top level), the same
+/// comment-stripped `=` split, the first match only. A key that is not there
+/// is not an error --- the answer to "make sure this key is absent" is the
+/// text unchanged.
+///
+/// Only the key's own line goes. An emptied section header stays, because
+/// removing it would also remove whatever comment the user wrote under it.
+pub(crate) fn remove_key(text: &str, section: &str, key: &str) -> String {
+    let mut in_section = section.is_empty();
+    let mut removed = false;
+    let mut out: Vec<String> = Vec::new();
+    for line in text.lines() {
+        if let Some(name) = header_name(line) {
+            in_section = name == section;
+            out.push(line.to_string());
+            continue;
+        }
+        if !removed && in_section {
+            let stripped = line.split('#').next().unwrap_or("").trim();
+            if let Some((found, _)) = stripped.split_once('=')
+                && found.trim() == key
+            {
+                removed = true;
+                continue;
+            }
+        }
+        out.push(line.to_string());
+    }
+    let mut out = out.join("\n");
+    if !out.is_empty() && !out.ends_with('\n') {
         out.push('\n');
     }
     out
@@ -1190,5 +1277,83 @@ mod tests {
         let raw = mpy_projects_raw(&dir);
         assert_eq!(raw.as_deref(), Some("/opt/mpy-apps"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_top_level_key_lands_above_the_first_section() {
+        let text = "# hand-written header\n\n[zephyr]\nworkspace = \"/ws\"\n";
+        let out = upsert_key(text, "", "project_type", "zephyr");
+        assert_eq!(
+            out,
+            "# hand-written header\n\nproject_type = \"zephyr\"\n\n[zephyr]\nworkspace = \"/ws\"\n",
+            "the comment keeps the top, and a blank line separates the key \
+             from the section under it the way a person would type it:\n{out}"
+        );
+    }
+
+    #[test]
+    fn a_top_level_key_replaces_itself_and_never_writes_an_empty_header() {
+        let out = upsert_key(
+            "project_type = \"micropython\"\n",
+            "",
+            "project_type",
+            "zephyr",
+        );
+        assert_eq!(
+            out, "project_type = \"zephyr\"\n",
+            "replaced in place:\n{out}"
+        );
+
+        let out = upsert_key("", "", "project_type", "zephyr");
+        assert_eq!(out, "project_type = \"zephyr\"\n", "no [] header:\n{out}");
+        // And an empty file gains no leading blank line when the first
+        // thing written to it is a section, either.
+        let out = upsert_key("", "zephyr", "workspace", "/ws");
+        assert_eq!(
+            out, "[zephyr]\nworkspace = \"/ws\"\n",
+            "nothing to separate the section from:\n{out}"
+        );
+        assert!(
+            !out.contains("[]"),
+            "an empty section header was written:\n{out}"
+        );
+    }
+
+    #[test]
+    fn a_top_level_key_is_not_confused_with_one_inside_a_section() {
+        let text = "[ota]\nproject_type = \"micropython\"\n";
+        let out = upsert_key(text, "", "project_type", "zephyr");
+        assert_eq!(
+            out, "project_type = \"zephyr\"\n\n[ota]\nproject_type = \"micropython\"\n",
+            "the key inside [ota] is left alone:\n{out}"
+        );
+    }
+
+    #[test]
+    fn removing_a_key_touches_nothing_else() {
+        let text = "# lead\nproject_type = \"zephyr\"\n\n[zephyr]\n# why\nworkspace = \"/ws\"\nboard = \"nrf52840dk\"\n\n[[variant]]\nboard = \"native_sim\"\n";
+        let out = remove_key(text, "zephyr", "board");
+        assert_eq!(
+            out,
+            "# lead\nproject_type = \"zephyr\"\n\n[zephyr]\n# why\nworkspace = \"/ws\"\n\n[[variant]]\nboard = \"native_sim\"\n",
+            "only the [zephyr] board line goes:\n{out}"
+        );
+
+        let out = remove_key(text, "", "project_type");
+        assert!(
+            !out.contains("project_type"),
+            "the top-level key goes:\n{out}"
+        );
+        assert!(
+            out.contains("board = \"nrf52840dk\""),
+            "the rest stays:\n{out}"
+        );
+    }
+
+    #[test]
+    fn removing_a_key_that_is_absent_changes_nothing() {
+        let text = "[zephyr]\nworkspace = \"/ws\"\n";
+        assert_eq!(remove_key(text, "zephyr", "board"), text);
+        assert_eq!(remove_key(text, "ota", "address"), text);
     }
 }

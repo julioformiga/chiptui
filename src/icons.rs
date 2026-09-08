@@ -76,6 +76,18 @@ impl IconSet {
         }
     }
 
+    /// The `[ui] icons` spelling this set is stored as --- the inverse of
+    /// [`Self::from_slug`], shared by the `ctrl+i` cycle and the
+    /// configuration screen so the two cannot write different words for the
+    /// same rendering.
+    pub const fn slug(self) -> &'static str {
+        match self {
+            Self::Unicode => "unicode",
+            Self::Nerd => "nerd",
+            Self::None => "none",
+        }
+    }
+
     /// Whether the *decorative* glyphs outside the button stacks --- the
     /// file browser's kind emojis (`📁`/`🐍`/…), the home screen's backend
     /// marks (`🐍`/`🔷`) --- draw at all. Every set but `None` keeps them:

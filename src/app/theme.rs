@@ -123,11 +123,7 @@ impl App {
             crate::icons::IconSet::None => crate::icons::IconSet::Unicode,
         };
         self.icons = next;
-        let name = match next {
-            crate::icons::IconSet::Unicode => "unicode",
-            crate::icons::IconSet::Nerd => "nerd",
-            crate::icons::IconSet::None => "none",
-        };
+        let name = next.slug();
         let config = self.user_config_path();
         match crate::settings::save_icons(&config, name) {
             Ok(()) => self
@@ -144,6 +140,20 @@ impl App {
     /// [`Self::set_icon_set`] is the test seam; `ctrl+i`
     /// ([`Self::cycle_icon_set`]) is the runtime switch.
     pub fn icon_set(&self) -> crate::icons::IconSet {
+        // The configuration screen previews its unapplied answer live, for
+        // the reason the theme picker does: the value *is* the appearance,
+        // and a rendering you cannot see until you commit is not a choice.
+        // It previews by being read from here rather than by changing the
+        // session, so discarding restores it for free --- nothing was ever
+        // committed to preview.
+        if matches!(self.overlay, Some(Overlay::ProjectConfig))
+            && let Some(icons) = self
+                .project_config
+                .as_ref()
+                .and_then(crate::project_config::ProjectConfigPanel::previewed_icons)
+        {
+            return icons;
+        }
         self.icons
     }
 
@@ -163,6 +173,20 @@ impl App {
                 .copied()
                 .map(|choice| choice.resolve(self.manager.selected_kind()))
                 .unwrap_or_else(|| self.theme()),
+            // The configuration screen previews both halves of its answer:
+            // the theme row, and --- since `Auto` follows the backend --- the
+            // backend card the user is hovering, so picking a card repaints
+            // the window in the colours that choice would bring.
+            Some(Overlay::ProjectConfig) => {
+                let panel = self.project_config.as_ref();
+                let backend = panel
+                    .and_then(crate::project_config::ProjectConfigPanel::chosen)
+                    .or_else(|| self.manager.selected_kind());
+                panel
+                    .and_then(crate::project_config::ProjectConfigPanel::previewed_theme)
+                    .unwrap_or(self.theme)
+                    .resolve(backend)
+            }
             _ => self.theme(),
         }
     }

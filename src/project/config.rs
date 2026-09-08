@@ -1,11 +1,14 @@
-//! Project-local scaffold file: `chiptui.toml`.
+//! Project-local configuration file: `chiptui.toml`.
 //!
-//! `SPEC.md` §7: once the user answers the empty-project prompt, the choice
-//! is persisted here so the directory is recognized automatically on every
-//! later run. The format is a single key, so this is a hand-rolled tolerant
-//! parser rather than a `toml` dependency --- the same bias the rest of the
-//! codebase has for small, focused parsers (`esptool::parse`,
-//! `micropython::parse`) over pulling in a crate for one field.
+//! `SPEC.md` §7, §13: the project's own answers, the ones that travel with
+//! it and can be committed. ChipTUI reads them and outranks everything else
+//! with them; it writes only what an explicit action of the user's answered
+//! --- the over-the-air preparation's `[ota]`, and every key the project
+//! configuration screen edits. A passive act still writes nothing.
+//!
+//! Hand-rolled tolerant parsers rather than a `toml` dependency --- the same
+//! bias the rest of the codebase has for small, focused parsers
+//! (`esptool::parse`, `micropython::parse`) over pulling in a crate.
 
 use std::io;
 use std::path::Path;
@@ -33,8 +36,9 @@ pub const FILE_NAME: &str = "chiptui.toml";
 /// same tolerance every other hand-rolled parser here has, since a file a
 /// newer ChipTUI wrote must not break an older one.
 ///
-/// ChipTUI never writes this file (`SPEC.md` §7): it is here because the
-/// user put it here, typically to commit it so the team shares the
+/// ChipTUI never writes *these blocks* (`SPEC.md` §13): an array of tables
+/// is a shape [`set_key`] cannot express, so they are here because the user
+/// put them here, typically to commit them so the team shares the
 /// variants. A project that declares none has them discovered instead
 /// ([`crate::backend::zephyr::variants::discover`]).
 pub fn parse_variants(text: &str) -> Vec<Variant> {
@@ -129,6 +133,16 @@ pub fn parse(text: &str) -> Option<BackendKind> {
 /// The section a project's over-the-air answers live in.
 pub const OTA_SECTION: &str = "ota";
 
+/// The section a project's Zephyr environment answers live in --- the same
+/// shape as the user config's, which is why one
+/// [`crate::settings::ZephyrSettings`] parses both.
+pub const ZEPHYR_SECTION: &str = "zephyr";
+
+/// The section a project's MicroPython answers live in, on the same terms:
+/// the user config has carried `[micropython] projects` from the start, and
+/// a project that wants its own answer writes the identical key here.
+pub const MICROPYTHON_SECTION: &str = "micropython";
+
 /// Reads `[ota]` out of `text`.
 ///
 /// Section-aware, unlike [`parse`]. `project_type` is a top-level key with
@@ -177,6 +191,39 @@ pub fn parse_ota(text: &str) -> Option<OtaConfig> {
     })
 }
 
+/// One key's value, from any section --- an empty `section` naming the
+/// file's top level, the region before the first header.
+///
+/// Where [`parse`] and [`parse_ota`] answer "what has this project decided",
+/// this answers "what does this line of the file say", which is the question
+/// an editor of the file asks: a key that is absent, a key that is present
+/// and empty and a key holding a value it cannot interpret are three
+/// different states, and the screen shows all three rather than collapsing
+/// them into a default.
+pub fn key_value(text: &str, section: &str, key: &str) -> Option<String> {
+    let mut inside = section.is_empty();
+    for line in text.lines() {
+        let line = line.split('#').next().unwrap_or("").trim();
+        if line.is_empty() {
+            continue;
+        }
+        if line.starts_with('[') {
+            // `[[variant]]` closes the top level like any other header.
+            inside = line == format!("[{section}]");
+            continue;
+        }
+        if !inside {
+            continue;
+        }
+        if let Some((found, value)) = line.split_once('=')
+            && found.trim() == key
+        {
+            return Some(unquote(value.trim()));
+        }
+    }
+    None
+}
+
 /// The `key = value` pairs of one section, in source order. `None` when the
 /// section is absent --- which is a different answer from "present and
 /// empty", and the caller distinguishes them.
@@ -222,6 +269,42 @@ pub fn set_key(path: &Path, section: &str, key: &str, value: &str) -> io::Result
     let text = std::fs::read_to_string(path).unwrap_or_default();
     let updated = crate::settings::upsert_key(&text, section, key, value);
     crate::settings::write_config(path, &updated)
+}
+
+/// Removes one `[section] key`, leaving every other byte of the file alone.
+///
+/// The mirror of [`set_key`], and the answer to "the user cleared this row":
+/// an absent key is how the file says *no answer here*, which is a different
+/// statement from an empty string --- the parsers already treat the two
+/// differently, so clearing has to remove the line rather than blank it.
+///
+/// A file that does not exist has no key to remove, so nothing is written:
+/// clearing must not be the act that creates the file.
+pub fn clear_key(path: &Path, section: &str, key: &str) -> io::Result<()> {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Ok(());
+    };
+    let updated = crate::settings::remove_key(&text, section, key);
+    if updated == text {
+        return Ok(());
+    }
+    crate::settings::write_config(path, &updated)
+}
+
+/// Writes the top-level `project_type`, the manual override [`parse`] reads.
+///
+/// `SPEC.md` §7: this is the *explicit* answer --- the user naming the
+/// backend in the project configuration screen --- and it is written where
+/// they can see, commit and share it. Detection's own conclusions still go
+/// nowhere near this file; they live in the user config's registry.
+pub fn set_project_type(path: &Path, kind: BackendKind) -> io::Result<()> {
+    set_key(path, "", "project_type", kind.id())
+}
+
+/// Removes the top-level `project_type`, handing the directory back to
+/// detection and the registry.
+pub fn clear_project_type(path: &Path) -> io::Result<()> {
+    clear_key(path, "", "project_type")
 }
 
 /// Writes a project's `[ota]` answers.

@@ -1,5 +1,5 @@
 //! Device discovery and selection: scanning for a board, the device picker,
-//! and applying the empty-project prompt's backend choice --- the moments
+//! and applying the configuration screen's backend choice --- the moments
 //! that can make a device or a filesystem-capable backend newly available.
 //! Split out of `app.rs` since these are the
 //! handful of places that decide *which* device/backend `App` is talking to,
@@ -7,13 +7,13 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::backend::{BackendKind, Capability};
+use crate::backend::Capability;
 use crate::browser::Browser;
 use crate::device::{DiscoveryState, ScriptState};
 use crate::firmware_id::{FirmwareVerdict, FlashFirmware};
 
 use super::flash_view::{FirmwareCheck, FirmwareHold, IdentifyAuth};
-use super::{App, DevicePaneTab, Focus, LogTab, MonitorSource, Overlay};
+use super::{App, Focus, LogTab, MonitorSource, Overlay};
 
 /// The facts [`crate::backend::MonitorContext`] needs, owned rather than
 /// borrowed so [`App::monitor_facts`]'s caller can hold on to them across
@@ -229,18 +229,38 @@ impl App {
             .root()
             .map_or_else(|| self.manager.start_dir().to_path_buf(), Path::to_path_buf);
         let mut panel = crate::build::BuildPanel::new(root.clone(), self.logs.offset());
-        // The registry entry's board/shield answers --- the pickers'
-        // persisted half --- outrank the build cache on every open, so a
-        // project comes back with the target it was last built for. Still
-        // nothing inside the project directory: the registry is the only
-        // place a session answer is written to (`SPEC.md` §13).
-        if let Some(entry) = self.manager.known_projects().entry_for(&root) {
-            if let Some(board) = &entry.board {
-                panel.set_config_board(board.clone());
+        // A root that is not itself an application may still declare one:
+        // `[zephyr] app` in the project's `chiptui.toml` names the directory
+        // `west build` configures while the repository stays the project.
+        // An explicit key that no longer holds is named, never silently
+        // replaced by the discovery --- and a root without the key asks at
+        // startup instead (`maybe_open_entry_project`).
+        if let Some(app) = crate::backend::zephyr::projects::declared_app(&root) {
+            if crate::backend::zephyr::projects::is_buildable(&app) {
+                self.logs.info(format!(
+                    "application from chiptui.toml: {} (the project stays {})",
+                    app.display(),
+                    root.display()
+                ));
+                panel.set_app_dir(Some(app));
+            } else {
+                self.logs.warn(format!(
+                    "chiptui.toml's [zephyr] app does not name a Zephyr application ({}): \
+                     no CMakeLists.txt with find_package(Zephyr)",
+                    app.display()
+                ));
             }
-            if let Some(shield) = &entry.shield {
-                panel.set_shield(Some(shield.clone()));
-            }
+        }
+        // The project's persisted board/shield answers --- the registry
+        // entry, overridden by the project's own `chiptui.toml` --- outrank
+        // the build cache on every open, so a project comes back with the
+        // target it was last built for.
+        let (board, shield) = self.target_answers(&root);
+        if let Some(board) = board {
+            panel.board = Some(board);
+        }
+        if let Some(shield) = shield {
+            panel.set_shield(Some(shield));
         }
         self.build = Some(panel);
         self.refresh_board_roots();
@@ -691,59 +711,6 @@ impl App {
         self.dispatch_browser(|browser, processes, port| {
             browser.load_device(processes, port, true)
         });
-    }
-
-    /// Applies the empty-project prompt's answer (`SPEC.md` §7): an
-    /// in-session override, the backend's
-    /// own starting layout written into the directory, and the answer itself
-    /// recorded in the user config so the directory needs no prompt on later
-    /// runs --- and so the home screen lists it.
-    pub(super) fn apply_project_setup(&mut self, selected: usize) {
-        let Some(kind) = BackendKind::ALL.get(selected).copied() else {
-            return;
-        };
-        self.manager.set_override(Some(kind));
-        // The pane the old backend showed is not this backend's pane: the
-        // actions tab belongs to the device pane that may not even exist
-        // yet, so the tab starts over with it.
-        self.device_pane_tab = DevicePaneTab::Files;
-        match self.manager.create_scaffold(kind) {
-            Ok(created) if created.written.is_empty() => {
-                self.logs.success(format!("{kind} selected"));
-            }
-            Ok(created) => {
-                let names: Vec<String> = created
-                    .written
-                    .iter()
-                    .map(|path| path.display().to_string())
-                    .collect();
-                self.logs
-                    .success(format!("{kind} selected --- created {}", names.join(", ")));
-            }
-            Err(err) => self.logs.warn(format!(
-                "{kind} selected, but the project layout could not be created: {err}"
-            )),
-        }
-        self.record_open_project();
-        self.ensure_workspace_panel();
-        self.report_tools();
-        self.maybe_scan_devices();
-        // The prompt's answer is this backend's first entry: place focus
-        // the way the startup route does (the actions tab for a strip
-        // backend, the workspace pane for a build one) instead of merely
-        // clamping --- the user has not navigated anywhere yet to keep.
-        self.place_startup_focus();
-        // And then the environment's own first question, which until now
-        // the from-zero path never got asked at all. `main.rs` calls this
-        // right after `maybe_open_project_setup`, where it does nothing
-        // twice over: the prompt's overlay is open, and there is no
-        // workspace panel yet to be unresolved. So starting inside an
-        // existing Zephyr app asked "Where is the Zephyr installation?"
-        // immediately, while `mkdir x && cd x && chiptui` --- the path a
-        // new user actually takes --- landed on four unanswered rows and
-        // no prompt. `ensure_workspace_panel` above is what makes the
-        // question answerable here.
-        self.maybe_open_workspace_picker();
     }
 
     /// The facts [`crate::backend::MonitorContext`] needs, gathered once and

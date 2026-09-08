@@ -154,6 +154,27 @@ pub enum BoardOrigin {
     /// belongs to the *project*: a project switch re-derives it instead of
     /// carrying it across.
     Config,
+    /// Read from the project's own `chiptui.toml` (`[zephyr] board`).
+    ///
+    /// The highest of the four, for the reason detection's `Config` source
+    /// outranks its `Registered` one: the file travels with the project and
+    /// can be committed, while the registry is only this machine's memory
+    /// of it. A pick made over one of these is written back into the file
+    /// rather than into the registry, or the next open would silently undo
+    /// it (`App::persist_target`).
+    ProjectFile,
+}
+
+impl BoardOrigin {
+    /// The one-word hint beside the answer.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Cache => "from build/",
+            Self::Picked => "picked",
+            Self::Config => "saved",
+            Self::ProjectFile => "chiptui.toml",
+        }
+    }
 }
 
 /// Where the panel's working directory came from: inherited from the
@@ -423,6 +444,14 @@ pub struct BuildPanel {
     /// Where `root` came from (the header's hint, and the reason a pick
     /// survives a re-detect).
     pub project_origin: ProjectOrigin,
+    /// The application directory when the project root is not itself the
+    /// application: a repository whose root is an out-of-tree board module
+    /// and whose application sits one level down (`app/` by convention).
+    /// `west build` runs in `root` with this directory as its
+    /// source-directory argument, so the repository's `build/` directories
+    /// stay where the repository keeps them. `None` when the root is
+    /// itself the application --- every project before this field existed.
+    pub app_dir: Option<PathBuf>,
     pub cursor: usize,
     pub last: Option<BuildReport>,
     pub output: VecDeque<String>,
@@ -503,6 +532,7 @@ impl BuildPanel {
             board,
             shield: None,
             project_origin: ProjectOrigin::default(),
+            app_dir: None,
             cursor: 0,
             last: None,
             output: VecDeque::new(),
@@ -760,6 +790,10 @@ impl BuildPanel {
     pub fn set_project(&mut self, dir: impl Into<PathBuf>) {
         self.root = dir.into();
         self.project_origin = ProjectOrigin::Picked;
+        // The application directory belongs to the project being left; the
+        // caller re-resolves it for the one being entered
+        // (`App::set_project_root`).
+        self.app_dir = None;
         self.build_dir = DEFAULT_BUILD_DIR.to_string();
         if self
             .board
@@ -781,6 +815,43 @@ impl BuildPanel {
         self.variant = None;
         self.last = None;
         self.cursor = 0;
+    }
+
+    /// Sets the project's application directory --- the root-as-project
+    /// model's one fact, `west build`'s source-directory argument. Arrives
+    /// from the project's `chiptui.toml` when it declares one, from a
+    /// confirmed resolution, or from an accepted picker row.
+    pub fn set_app_dir(&mut self, app: Option<PathBuf>) {
+        self.app_dir = app;
+    }
+
+    /// Whether a build can run in this project: the root holds a Zephyr
+    /// application itself, or one is resolved inside it. One definition for
+    /// the gate, the checklist row and the action enabling alike.
+    pub fn has_application(&self) -> bool {
+        self.app_dir.is_some() || crate::backend::zephyr::projects::is_buildable(&self.root)
+    }
+
+    /// The directory the application's own files live in: the application
+    /// directory when one is resolved, the project root otherwise. Facts
+    /// that belong to the *application* rather than the repository's build
+    /// layout --- `sysbuild.conf`, the `boards/` fragments --- are read
+    /// here.
+    pub fn application_root(&self) -> &Path {
+        self.app_dir.as_deref().unwrap_or(&self.root)
+    }
+
+    /// The application directory as `west build`'s source-directory
+    /// argument: relative to the root when it is inside it (the spelling a
+    /// hand-run command uses, and what the confirm dialogs quote), absolute
+    /// if it is not.
+    fn source_arg(&self) -> Option<String> {
+        self.app_dir.as_ref().map(|app| {
+            app.strip_prefix(&self.root).map_or_else(
+                |_| app.display().to_string(),
+                |rel| rel.display().to_string(),
+            )
+        })
     }
 
     pub fn is_busy(&self) -> bool {
@@ -843,6 +914,15 @@ impl BuildPanel {
         self.board = Some(BoardChoice {
             name: name.into(),
             origin: BoardOrigin::Config,
+        });
+    }
+
+    /// Applies the board the project's own `chiptui.toml` declares, which
+    /// outranks the registry entry and the cache alike.
+    pub fn set_project_file_board(&mut self, name: impl Into<String>) {
+        self.board = Some(BoardChoice {
+            name: name.into(),
+            origin: BoardOrigin::ProjectFile,
         });
     }
 
@@ -983,6 +1063,7 @@ impl BuildPanel {
                 build_dir_exists: self.has_build_dir(),
                 build_dir: &self.build_dir,
                 sysbuild: self.sysbuild(),
+                source_dir: self.source_arg().as_deref(),
             },
         )?;
         Some(self.decorated(backend, command.current_dir(&self.root)))
@@ -1135,7 +1216,7 @@ impl BuildPanel {
     /// was configured still has a non-sysbuild directory until it is
     /// reconfigured.
     pub fn sysbuild(&self) -> bool {
-        self.root.join(SYSBUILD_CONF).is_file()
+        self.application_root().join(SYSBUILD_CONF).is_file()
     }
 
     /// Starts `command` as this panel's running process. `what` labels it in

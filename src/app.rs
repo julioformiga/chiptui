@@ -53,6 +53,7 @@ pub mod overlay;
 pub use overlay::Overlay;
 pub mod packages;
 pub mod probe;
+pub mod project_config_view;
 pub mod project_view;
 pub mod terminal;
 pub mod theme;
@@ -288,6 +289,10 @@ pub struct App {
     /// the renderer the same way: page-scrolling the details moves by the
     /// rows that were actually drawn.
     pub docs_viewport: usize,
+    /// Height of the configuration window's details pane, published by the
+    /// renderer for the same reason: paging it (`PgUp`/`PgDn`) moves by the
+    /// rows that were actually drawn.
+    pub config_details_viewport: usize,
     /// Where the board/shield pickers' west list is scrolled to. The list
     /// renders from the offset the previous frame settled on (ratatui
     /// adjusts it minimally to keep the selection visible) and publishes the
@@ -353,6 +358,11 @@ pub struct App {
     /// The `smpmgr` program override, for tests (recorded here because the
     /// panel is created when the modal opens).
     ota_tool_path: Option<String>,
+    /// The project configuration screen (`Overlay::ProjectConfig`): the
+    /// `chiptui.toml` editor. Kept off the overlay so the backend-change
+    /// confirm can replace the window and hand it back unchanged --- the
+    /// one-deep-slot discipline `Packages` and `Ota` follow.
+    pub project_config: Option<crate::project_config::ProjectConfigPanel>,
     /// Whether the open `Overlay::Confirm` is the installer's. The shared
     /// confirm is otherwise the flash panel's, which reads its action from
     /// `FlashPanel::pending`.
@@ -622,6 +632,7 @@ impl App {
             log_viewport: 1,
             frame_area: None,
             docs_viewport: 1,
+            config_details_viewport: 1,
             docs_list_offset: 0,
             build_dashboard: crate::build_dashboard::DashboardState::default(),
             dashboard_list_offset: 0,
@@ -640,6 +651,7 @@ impl App {
             ota: None,
             ota_viewport: 0,
             ota_tool_path: None,
+            project_config: None,
             install_confirm_pending: false,
             project_cursor: 0,
             board_segment: true,
@@ -1683,8 +1695,9 @@ mod tests {
         assert_eq!(app.focus, Focus::Logs);
 
         // A backend switch away from MicroPython while its device column is
-        // focused: answering the empty-project prompt (`apply_project_setup`)
-        // is the real path that re-clamps.
+        // focused: answering the project configuration screen's
+        // `project_type` row (`apply_project_type`) is the real path that
+        // re-clamps.
         let home = std::env::temp_dir().join(format!("chiptui-clamp-home-{}", std::process::id()));
         let root = std::env::temp_dir().join(format!("chiptui-clamp-root-{}", std::process::id()));
         std::fs::create_dir_all(&home).unwrap();
@@ -1697,11 +1710,7 @@ mod tests {
         switch.manager.set_override(Some(BackendKind::MicroPython));
         switch.maybe_scan_devices();
         switch.focus = Focus::FilesDevice;
-        let zephyr = BackendKind::ALL
-            .iter()
-            .position(|kind| *kind == BackendKind::Zephyr)
-            .unwrap();
-        switch.apply_project_setup(zephyr);
+        switch.apply_project_type(Some(BackendKind::Zephyr), false);
         assert_eq!(switch.manager.selected_kind(), Some(BackendKind::Zephyr));
         // Nothing about this fresh project's environment is answered, so
         // focus lands on the pane that asks --- which is deliberately off
@@ -2080,7 +2089,7 @@ mod tests {
         let mut app = app();
         assert!(app.shortcuts().iter().any(|(key, _)| *key == "?"));
 
-        app.overlay = Some(Overlay::ProjectSetup { selected: 0 });
+        app.overlay = Some(Overlay::DevicePicker { selected: 0 });
         let keys: Vec<&str> = app.shortcuts().iter().map(|(key, _)| *key).collect();
         assert!(
             !keys.contains(&"r"),
@@ -2111,13 +2120,13 @@ mod tests {
             },
             Overlay::ProjectPicker {
                 mpy: false,
+                dir: None,
                 selected: 0,
                 error: None,
             },
             Overlay::DevicePicker { selected: 0 },
             Overlay::ThemePicker { selected: 0 },
             Overlay::FirmwarePicker { selected: 0 },
-            Overlay::ProjectSetup { selected: 0 },
             Overlay::FileActions {
                 side: Side::Local,
                 name: "file.py".into(),

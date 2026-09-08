@@ -136,13 +136,20 @@ fn project_row_line(
         }
         ProjectRow::ProjectPath => {
             let project_ok = app.project_gate_ok();
-            let answer = project_ok.then(|| {
-                format!(
-                    "{} · {}",
-                    tilde_path(&app.build.as_ref().unwrap().root, app.home_dir()),
-                    app.build.as_ref().unwrap().project_origin.label()
-                )
-            });
+            // Read *through* the panel rather than unwrapping it: the gate
+            // answers `true` when there is none (nothing to refuse yet),
+            // and row 1 is drawn from the first frame --- before
+            // `maybe_scan_devices` has created one.
+            let answer = project_ok
+                .then_some(app.build.as_ref())
+                .flatten()
+                .map(|panel| {
+                    format!(
+                        "{} · {}",
+                        tilde_path(&panel.root, app.home_dir()),
+                        panel.project_origin.label()
+                    )
+                });
             super::workspace::checklist_row(
                 project_ok,
                 false,
@@ -417,11 +424,7 @@ fn board_shield_row(app: &App, width: u16, palette: Palette, selected: bool) -> 
         ),
     ];
     if let Some(choice) = app.build.as_ref().and_then(|panel| panel.board.as_ref()) {
-        let origin = match choice.origin {
-            crate::build::BoardOrigin::Picked => "picked",
-            crate::build::BoardOrigin::Config => "saved",
-            crate::build::BoardOrigin::Cache => "from build/",
-        };
+        let origin = choice.origin.label();
         // The origin rides along only when the *whole* line fits --- both
         // segments included, never at their expense.
         let used: usize = spans.iter().map(|span| span.width()).sum();

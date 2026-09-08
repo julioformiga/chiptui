@@ -140,7 +140,7 @@ impl App {
                 {
                     let root = panel.root.display().to_string();
                     self.logs.warn(format!(
-                        "{root} is not a Zephyr application (no CMakeLists.txt) — pick a project first"
+                        "{root} has no Zephyr application (no CMakeLists.txt, none resolved inside) — pick a project first"
                     ));
                 }
                 self.open_project_flow();
@@ -351,6 +351,12 @@ impl App {
                 }
                 self.overlay = None;
                 self.refresh_workspace_resolution();
+                // The entry question may be the next one queued: a session
+                // started in a repository whose application sits one level
+                // down asks it once the installation answer lands, instead
+                // of waiting for the first build press. No-op whenever the
+                // entry directory resolves to nothing.
+                self.maybe_open_entry_project();
             }
             // The refusal and the way forward arrive together now: the
             // offer states the reason and, declined, puts the picker back
@@ -382,7 +388,11 @@ impl App {
                 }
                 self.overlay = None;
                 self.refresh_workspace_resolution();
-                self.open_project_picker();
+                // The flow, not the picker directly: a session started in a
+                // repository with its own application one level down is
+                // asked about *that* one, not sent straight to the folder
+                // it just configured.
+                self.open_project_flow();
             }
             ProjectsResolution::Invalid(message) => {
                 self.overlay = Some(Overlay::DirPicker {

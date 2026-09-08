@@ -9,7 +9,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::backend::BackendRegistry;
-use crate::project::{DetectionOutcome, detect_from_known};
+use crate::project::detect_from_known;
 use crate::settings::ProjectRegistry;
 
 /// Which screen the session opens on.
@@ -25,34 +25,40 @@ pub enum Route {
 
 /// Decides the opening screen for `start`.
 ///
-/// In order: a directory detection can name a backend for is opened, whether
-/// the answer came from the project's `chiptui.toml`, from the registry, or
-/// from the evidence itself; an *ambiguous* directory is opened too, so the
-/// prompt that resolves it appears where the user already is; an empty
-/// directory is opened so it can be scaffolded; anything else --- a
-/// directory with contents and no project in it or above it, `$HOME` being
-/// the usual one --- goes to the home screen.
+/// A readable directory is **always** opened now, whatever detection made of
+/// it: a project it can name outright, an ambiguous one, an empty one, and a
+/// directory full of files it recognizes nothing in. The question the last
+/// case used to have no answer for --- "this *is* a project, it just does
+/// not look like one" --- is now a screen rather than a dead end, and the
+/// screen is the dashboard's `Overlay::ProjectConfig` (`App::
+/// maybe_open_project_config`), which writes the project's own
+/// `chiptui.toml`. Leaving it unanswered is what goes to the home screen,
+/// from inside the session, so the list is a way *out* of the question
+/// rather than the only answer to it.
 ///
-/// A `start` that cannot be read is not a project either, so it routes to
-/// the home screen rather than failing the run: the user can pick a project
-/// from there.
+/// The case that forced this: a Zephyr repository whose root is an
+/// out-of-tree board *module* --- the application one directory down --- has
+/// no `find_package(Zephyr)` at the top to score, so it reaches 0.25 against
+/// a 0.35 floor and reads as `Unknown`. It was a real project, opened in its
+/// own root, that the app could only answer with a list of other projects.
+///
+/// A `start` that cannot be read is the one thing left that is not a
+/// project, so it routes to the home screen rather than failing the run.
 pub fn route(start: &Path, backends: &BackendRegistry, known: &ProjectRegistry) -> Route {
-    let Ok(detection) = detect_from_known(backends, start, known) else {
-        return Route::Home;
-    };
-    match detection.outcome {
-        DetectionOutcome::Detected(_) | DetectionOutcome::Ambiguous(_) => {
-            Route::Open(start.to_path_buf())
-        }
-        DetectionOutcome::Unknown if is_empty_dir(start) => Route::Open(start.to_path_buf()),
-        DetectionOutcome::Unknown => Route::Home,
+    match detect_from_known(backends, start, known) {
+        Ok(_) => Route::Open(start.to_path_buf()),
+        Err(_) => Route::Home,
     }
 }
 
 /// Whether `dir` holds nothing the user put there. Hidden entries do not
 /// count: a freshly `git init`-ed directory is still an empty project, and
 /// so is one carrying an editor's dotfile.
-fn is_empty_dir(dir: &Path) -> bool {
+///
+/// Shared with `App::apply_project_type`, which scaffolds a backend's
+/// starting layout only into such a directory: writing `CMakeLists.txt` into
+/// a repository that already holds one is not what the scaffold is for.
+pub(crate) fn is_empty_dir(dir: &Path) -> bool {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return false;
     };
@@ -95,6 +101,18 @@ mod tests {
         ProjectRegistry::parse(&text)
     }
 
+    /// The one directory that is still not a project: one that cannot be
+    /// read at all. There is nothing for the configuration screen to write
+    /// into, so the session falls back to the list.
+    #[test]
+    fn an_unreadable_directory_goes_home() {
+        let dir = temp_dir("gone");
+        let missing = dir.join("not-here");
+        let route = route_for(&missing, &ProjectRegistry::default());
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(route, Route::Home);
+    }
+
     #[test]
     fn an_empty_directory_opens_so_it_can_be_scaffolded() {
         let dir = temp_dir("empty");
@@ -108,13 +126,26 @@ mod tests {
         );
     }
 
+    /// The regression this routing exists for: a Zephyr repository whose
+    /// root is an out-of-tree board module, the application one level down.
+    /// Nothing at the top calls `find_package(Zephyr)`, so it scores 0.25
+    /// against a 0.35 floor and reads as `Unknown` --- and it used to be
+    /// answered with the home screen's list of *other* projects.
     #[test]
-    fn a_directory_with_contents_and_no_project_goes_home() {
+    fn a_directory_with_contents_and_no_project_still_opens() {
         let dir = temp_dir("busy");
-        std::fs::write(dir.join("notes.txt"), "hi").unwrap();
+        std::fs::create_dir_all(dir.join("boards")).unwrap();
+        std::fs::create_dir_all(dir.join("zephyr")).unwrap();
+        std::fs::write(dir.join("CMakeLists.txt"), "# a module hook only\n").unwrap();
+        std::fs::write(dir.join("Kconfig"), "").unwrap();
+        std::fs::write(dir.join("zephyr/module.yml"), "name: board\n").unwrap();
         let route = route_for(&dir, &ProjectRegistry::default());
         let _ = std::fs::remove_dir_all(&dir);
-        assert_eq!(route, Route::Home);
+        assert_eq!(
+            route,
+            Route::Open(dir),
+            "the configuration screen answers this, not the project list"
+        );
     }
 
     #[test]
@@ -130,7 +161,11 @@ mod tests {
         let registered = route_for(&dir, &known);
         let _ = std::fs::remove_dir_all(&dir);
 
-        assert_eq!(unknown, Route::Home, "unrecorded, it is just a directory");
+        assert_eq!(
+            unknown,
+            Route::Open(dir.clone()),
+            "unrecorded it still opens --- the screen that names it is inside"
+        );
         assert_eq!(registered, Route::Open(dir));
     }
 

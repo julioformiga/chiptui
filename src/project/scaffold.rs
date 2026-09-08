@@ -1,6 +1,6 @@
 //! What a brand-new project starts with.
 //!
-//! `SPEC.md` §7: answering the empty-project prompt is what makes an empty
+//! `SPEC.md` §7: answering the configuration screen is what makes an empty
 //! directory usable, so the answer has to leave behind something the backend
 //! can actually operate on --- a MicroPython project with the two
 //! directories the file browser and the firmware downloader expect, a Zephyr

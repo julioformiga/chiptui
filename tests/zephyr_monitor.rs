@@ -17,7 +17,7 @@ use chiptui::workspace::WorkspacePanel;
 use ratatui::crossterm::event::KeyCode;
 
 mod common;
-use common::{fake, key, pump_until, render};
+use common::{ctrl, fake, key, pump_until, render};
 
 /// A Zephyr app whose `/dev` is a fixture directory the test fills.
 fn zephyr_app(tag: &str) -> (App, std::path::PathBuf) {
@@ -285,7 +285,7 @@ fn last_log(app: &App) -> String {
 }
 
 #[test]
-fn project_setup_does_not_clobber_the_device_picker_it_opens() {
+fn applying_the_config_does_not_clobber_the_device_picker_it_opens() {
     let root = std::env::temp_dir().join(format!("chiptui-zmon-setup-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(root.join("dev")).unwrap();
@@ -298,17 +298,19 @@ fn project_setup_does_not_clobber_the_device_picker_it_opens() {
     app.set_home_dir(root.join("home"));
     app.bootstrap();
     app.set_serial_dir(root.join("dev"));
-    app.maybe_open_project_setup();
-    assert!(matches!(app.overlay, Some(Overlay::ProjectSetup { .. })));
+    app.maybe_open_project_config();
+    assert!(matches!(app.overlay, Some(Overlay::ProjectConfig)));
 
-    // MicroPython, Zephyr --- one Down press reaches Zephyr.
-    app.handle(key(KeyCode::Down));
-    app.handle(key(KeyCode::Enter));
+    // `←` from an unanswered strip lands on Zephyr, the last card; the
+    // answer only becomes real when the transaction is applied.
+    app.handle(key(KeyCode::Left));
+    app.handle(ctrl('s'));
+    app.handle(key(KeyCode::Char('y')));
 
     assert!(
         matches!(app.overlay, Some(Overlay::DevicePicker { .. })),
-        "the device picker opened by picking Zephyr must survive the \
-         project-setup overlay's own Enter handler, got {:?}",
+        "the device picker the apply itself opened must survive it --- the \
+         window comes back only when nothing else claimed the slot, got {:?}",
         app.overlay
     );
 

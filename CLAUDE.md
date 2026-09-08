@@ -5,23 +5,130 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Repository state
 
 A session now has **two screens** (`src/main.rs` alternates them, one `TerminalGuard` for both).
-`startup::route` decides which, before the terminal is taken over: a directory whose backend is
-known (registry → `chiptui.toml` → evidence, nearest ancestor first) or ambiguous opens the
-dashboard; an *empty* one opens it too, so `Overlay::ProjectSetup` can scaffold it; anything else
-(a directory with contents and no project — `$HOME`, `~/Downloads`) opens the **home screen**
-(`src/home.rs`, `src/ui/home.rs`): create row, live search field, then the recorded projects,
-each row tinted with `BackendKind::palette(theme)` — the backend's semantic color (`success`/
-`info`) blended toward the theme's own background, so the tint follows the active theme —
-deepened under the cursor, never reversed — a painted row cannot also be inverted). Creating a
-project is folder picker (the workspace pane's
+`startup::route` opens the dashboard for **every readable directory** now — a backend it knows
+(registry → `chiptui.toml` → evidence, nearest ancestor first), an ambiguous one, an empty one,
+and a directory full of files it recognizes nothing in; only a `start` it cannot read routes to
+the **home screen**. What the last case gets is `Overlay::ProjectConfig` over the dashboard
+(`App::maybe_open_project_config`, called from `main.rs` and from the `r` re-detect key, never
+from `detect()` itself — the reason the old prompt was not either: tests send keys straight after
+`bootstrap()`). The directory that forced this is a real one: a Zephyr repo whose root is an
+out-of-tree board *module* with the application one level down scores 0.25 against a 0.35 floor
+(no root `find_package(Zephyr)`), so the tool could only answer a real project with a list of
+other projects. Leaving that window unanswered is what goes home now
+(`App::close_project_config`, the `close_installer` one-way-out rule, which also carries the
+`maybe_open_workspace_picker` chain — but only for a window that opened *itself*, since throwing
+a directory picker over a screen the user just dismissed answers nothing they asked).
+
+The **home screen** (`src/home.rs`, `src/ui/home.rs`) is unchanged otherwise: create row, live
+search field, then the recorded projects, each row tinted with `BackendKind::palette(theme)` —
+the backend's semantic color (`success`/`info`) blended toward the theme's own background, so the
+tint follows the active theme — deepened under the cursor, never reversed — a painted row cannot
+also be inverted). Creating a project is folder picker (the workspace pane's
 `dir_rows`, starting at `[projects] last_parent`) → name → an empty directory that routes straight
-back into the backend prompt. `del` forgets a registry entry, never the directory. `shift+P` on
+back into the configuration screen. `del` forgets a registry entry, never the directory. `shift+P` on
 the dashboard returns to the list (`App::request_home_screen` → `Overlay::ConfirmSwitchProject`
 when commands are running → `switch_requested`, read by `main.rs`, which drops the `App` and with
-it every child process). Answering the backend prompt writes the backend's own starting layout
-(`Backend::scaffold` → `project::scaffold::create`, never overwriting) and records the project;
-it no longer creates a `chiptui.toml` to record detection (an explicit
-action may write one surgically --- see the OTA section).
+it every child process).
+
+The **project configuration screen** (`src/project_config.rs`, `src/ui/project_config.rs`,
+`src/app/project_config_view.rs`) is the `chiptui.toml` editor, and it replaced the
+empty-project prompt outright. `ctrl+,` opens it any time — **and a bare `,`**, the same key
+spelled for terminals that cannot send the chord: a comma carries no control byte, so without the
+Kitty protocol `ctrl+,` delivers nothing at all (the `ctrl+i` trap, but with no legacy fallback of
+its own). It is a *unit* variant over `App::project_config`, because both of its dialogs replace
+it and the slot is one deep.
+
+Its shape is one idea: **the window is the file, rendered**. Whoever opens it commits the file
+and reads the diff later, so the row labels are prose phrases that say what an answer *does*
+(`auto_confirm` reads "Auto-confirm image") and the key's literal spelling lives where the file
+is the subject: the details pane's key line and will-write line, and the apply review. The
+right column --- width the old single list wasted --- is a bordered **Details** pane of labelled
+blocks in a fixed order (label + key, hint, Options, Current, Will write): **Current** lists the
+configuration stack's levels for that row, most specific first, with `▸` on the level whose
+answer is in effect (what the file says, and when it says nothing, what answers instead and from
+where: `App::project_config_fallback`), and **Will write** carries the literal line an unapplied
+answer will write. The row under the card strip states the precedence once: `chiptui.toml > user
+config > defaults`. An absent key is a question answered somewhere less specific, not an open
+one, and that contrast is the whole teaching. The Options block lists every choice, the themes'
+thirty-odd included: the pane scrolls (the docs pickers' `Tab` grammar --- `ProjectConfigPanel::
+details_focus`/`details_scroll`; arrows scroll, `PgUp`/`PgDn` page by `App::config_details_viewport`
+published by the renderer, the wheel scrolls under the pointer, a click hands the pane the keyboard,
+and a row move restarts the document from its top), the border takes the focus accent, and a hint
+rides the bottom rule when there is more to read. The scroll offset clamps against an exact line
+count because every line is pre-wrapped or shortened (`overlay::wrap_words`/`shorten_tail`) rather
+than left to `Paragraph::wrap` --- ratatui 0.30's `line_count` is unstable-private, so the pane
+owns its own measurement the same way the pickers own theirs.
+
+**The backend is a pair of cards, not a value** (`ui::project_config::draw_cards`): each carries
+its backend's mark under the home screen's exact rule (two-cell emoji under plain Unicode, a
+single-width Nerd mark under `nerd`, nothing under `none`, centred through `ui::icon_column`) and
+its own semantic colour via `BackendKind::palette`. The strip itself is centred (an off-centre
+pair reads as broken layout, not as a choice) with its hint centred in the row under it. The
+chosen card is filled with that tint (`tint_selected` while the cursor is on the strip), and the
+same tint continues as a *whisper* behind the sections that backend governs — `blend(accent, bg,
+1, 64)`, the focus-wash denominator, not the home row's 3/16 — plus a `▎` edge in the backend's
+accent on each governed row's leftmost cell (the tint alone was too subtle to say "this block
+belongs to the card you picked"), while General stays on the terminal's own ground and unmarked.
+The section headings are dividers, not captions: a rule across the column and an answered count
+(`3/6`) at its right end.
+
+**The whole window is one transaction.** Answers are collected as `Pending` edits, the footer
+counts them, and nothing reaches either file until `ctrl+s` opens `Overlay::ConfirmApplyConfig`
+— the one confirmation, a review listing every line about to be written (`App::
+config_review_lines`), the starting layout it would create (`config_scaffold`) and the files
+each lands in (`config_targets`), left-aligned per `Line` over the shared centred dialog because
+it is a *listing*, not a warning. `Esc` with edits outstanding raises
+`Overlay::ConfirmDiscardConfig` --- three buttons, not Yes/No, because the two-button shape said
+*how many* changes were at stake but never which, and "write them, then leave" had no button at
+all: the dialog lists the same review lines and offers **Keep editing** (the default, loses
+nothing), **Apply and close** (`App::apply_and_close_project_config` --- a failed write hands the
+window back with the error rather than closing past it) and **Discard and close** (`y` keeps its
+old muscle-memory meaning, `n` declines, `a` applies; `ui::layout::dialog_button_row` is the one
+definition the renderer draws and the mouse hit-tests). Both other answers hand the window back.
+An answer typed back to what the file already says stops being a change
+(`ProjectConfigPanel::record`), so the review never carries a line that writes nothing.
+Switching cards drops that backend's own unapplied answers and says how many (`Notice::Lost`);
+General's survive, since they are nobody's backend.
+
+Each list row also wears its standing on its sleeve: a fixed state column before the label
+(`●` pending, `✓` in the file, `←` answered by a less specific level, `·` unanswered anywhere) ---
+the four colour-coded states asked the reader to memorise a palette --- and a pending row shows
+the transition `old → new` rather than the new value alone, which never said what it replaced.
+
+Two rows are the deliberate exception and are exceptions because their value *is* the
+appearance: **theme and icons preview live**. They preview by being read off the panel —
+`App::previewed_theme` and `App::icon_set` grew a `ProjectConfig` arm — rather than by mutating
+the session, so leaving restores them with nothing to undo, and `Auto` resolves against the
+*chosen* card so picking one repaints the window in the colours that choice would bring.
+
+Rows are capability-driven (`ProjectConfigPanel::rebuild` takes the **chosen** backend's
+capabilities, asked of the registry rather than of the session — the sections have to appear
+before anything is applied): `General` always, `[zephyr]` under `WorkspaceSync`,
+`[micropython]` under `ProjectSelect + Filesystem`, `[ota]` under `OtaPrepare`. `[[variant]]` is
+a count and not editable, since `set_key` cannot write an array of tables. `General` spans both
+config levels — the project's name (the registry) and `[ui] theme`/`icons`/`mouse` (the user
+config) — and every row names its destination, which is what keeps "user configuration separate
+from project configuration" a statement about the *files* rather than about the screen.
+No action lives on a printable character (the `Packages` rule): `↑/↓` walk and reach the cards
+above the first row, `←/→` pick a card or change a fixed-set value, `Enter` accepts a card and
+moves into its settings or opens a text row as an input, `Del` clears a key — removing the line,
+not blanking it, since absent and empty are different statements to every parser here — and
+inside an edit `Del` empties the field (the field opens seeded, so replacing a long path would
+otherwise mean holding backspace through the old one).
+
+Two writers were missing and are now shared: `settings::upsert_key` handles the **top level**
+(`section == ""`, the region before the first header — it used to append a literal `[]`), and
+`settings::remove_key` is its mirror. Both keep the file looking hand-written: a blank line
+between the top-level keys and the first section, and none leading an empty file.
+`App::apply_project_type` writes `project_type`, records the registry entry, and scaffolds
+`Backend::scaffold` → `project::scaffold::create` **only into a directory that was empty** —
+and `was_empty` is the *caller's*, asked before the transaction's first byte lands, because
+`chiptui.toml` is not a hidden entry and writing it is what would end the emptiness the scaffold
+is gated on (the bug twice: once for the key, once for the whole transaction).
+`[zephyr] board`/`shield` and `[micropython] projects` are read from the project file too and
+outrank the user-level answer (`BoardOrigin::ProjectFile` over `Config`, `App::target_answers`
+for the first pair, `App::mpy_projects_setting` for the last); a board picked over a project that
+pins one is written back *there* (`App::persist_target`), or the next open would silently undo it.
 
 Phase 1 of `SPEC.md` §17 is done (core, TUI, detection, backend registry, capabilities), plus the
 process manager and the first real device operation: a dual-pane local/device **file browser** for
@@ -745,9 +852,47 @@ Nothing is injected into `west build`: what makes such a board buildable is the 
 `SPEC.md` §8 forbids. That layout also puts the application one level below the repository root,
 so `projects::is_buildable` now *reads* the `CMakeLists.txt` for `find_package(Zephyr` (a module
 hook is a comment-only file that passed a mere `is_file()` check while `west build` refused it)
-and `projects::project_rows` looks one level deeper through a non-application directory, listing
-its buildable children as `parent/child`. The little YAML the manifests and `build_info.yml`
+and `projects::project_rows` looks one level deeper through a non-application directory: one
+buildable child makes the repository the row, several become `parent/child` rows. The picker
+lists *only* what can run --- a folder with no application under it is not a row, and an empty
+listing with folders present is a message ("every folder lacks a CMakeLists.txt…"), while a
+folder with no subdirectories keeps the picker's own empty line. Each row carries its
+`evidence` (the build entry point it holds, relative to the row: `CMakeLists.txt`, or
+`app/CMakeLists.txt` for a module repository, whose own `CMakeLists.txt` is a hook and would
+make the mark a lie). The little YAML the manifests and `build_info.yml`
 share is one reader now, `src/backend/zephyr/yaml.rs`.
+
+**Entering from that repository is the root-as-project model**: `projects::resolve_app` answers
+where a project root's *application* lives — `AppSource::Root` when the root is buildable,
+otherwise the directory declared by `[zephyr] app` in the root's `chiptui.toml` (`declared_app`,
+outranking the discovery; a declaration that no longer builds answers `None` and is named in the
+log, never silently replaced), otherwise the single buildable direct subdirectory
+(`entry_child` — uniqueness is the bar; two applications are the picker's to present as
+`parent/child` rows, each a project of its own). The root *stays the project*:
+`BuildPanel::app_dir` is west's source-directory argument, nothing re-roots, and the repository's
+`build/` directories, its `chiptui.toml` and its board fragments stay where the repository keeps
+them. `BuildContext::source_dir` carries the argument (relative to the root, positional and
+last) on `west build`'s configure forms only — `build`/`rebuild`, never the `-t` runs
+(`commands::source_arg`; the build directory an existing `-t` run targets already names itself).
+`sysbuild.conf` and the `boards/` fragments are read from `BuildPanel::application_root()` (the
+app dir when one is resolved — `variants()` takes it as its second argument for the fragment half
+while the build-dir half stays at the root). The application arrives three ways:
+`[zephyr] app` declared (set silently at panel creation, `ensure_build_panel`, because the file
+answered — the startup question skips a declared root even a broken one), the confirmed
+resolution (`App::maybe_open_entry_project` at startup — chained after the workspace picker
+accepts, after `close_project_config`, and from `main.rs` — and `open_project_flow` at the
+gate/`Project path` row, which opens `Overlay::ProjectPicker { dir: Some(entry) }` over the
+entered directory's own rows with the cursor on that application), and an accepted picker row.
+`apply_project_picker` distinguishes the flows by `picker_dir == panel.root`: the entry listing
+*sets the application* (`set_app_dir`, no re-root); every other listing re-roots
+(`set_project_root`, which resolves the app for the entered project — a repo row accepted from
+the projects-folder picker lands root + app together, which is why `project_rows` lists a
+one-application repository as a single acceptable row instead of `parent/child`). The gate is
+one definition now — `BuildPanel::has_application` (root buildable or app resolved) — used by
+`require_buildable_project`, `project_gate_ok` and the workspace row's warning. The project's
+`chiptui.toml` is the root's own file (there is no second one: an app folder's `chiptui.toml` is
+not read), so `persist_target`'s destination rule is unchanged — a present file receives the
+board/shield pick beside the always-written registry copy, and no file is ever invented.
 
 Both pickers are
 full-frame modals (`src/ui/overlay.rs`'s shared `draw_docs_picker`): the window fills the frame

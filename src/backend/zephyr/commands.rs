@@ -51,7 +51,7 @@ pub fn build(ctx: &BuildContext<'_>) -> Command {
         command = shield_args(command, ctx.shield);
         command = sysbuild_args(command, ctx.sysbuild);
     }
-    command
+    source_arg(command, ctx.source_dir)
 }
 
 /// `west build -t clean` --- removes build artifacts through CMake's `clean`
@@ -75,7 +75,22 @@ pub fn rebuild(ctx: &BuildContext<'_>) -> Command {
         command = command.arg("-b").arg(board);
     }
     command = shield_args(command, ctx.shield);
-    sysbuild_args(command, ctx.sysbuild)
+    command = sysbuild_args(command, ctx.sysbuild);
+    source_arg(command, ctx.source_dir)
+}
+
+/// Appends the application's source directory when the project root is
+/// not itself the application: `west build`'s positional argument, so the
+/// command runs in the root (where the repository keeps its `build/`)
+/// while configuring the application one level down. Deliberately not
+/// attached to the `-t` invocations (`clean`, `menuconfig`, the reports):
+/// those run against an existing build directory, which the root already
+/// names.
+fn source_arg(command: Command, source: Option<&str>) -> Command {
+    match source {
+        Some(source) => command.arg(source),
+        None => command,
+    }
 }
 
 /// Appends `--sysbuild` when the project builds one.
@@ -322,7 +337,39 @@ mod tests {
             build_dir_exists,
             build_dir,
             sysbuild: false,
+            source_dir: None,
         }
+    }
+
+    /// A project whose root is a board module and whose application sits
+    /// one level down: `west build` runs in the root and names the
+    /// application as its source directory, on first configurations and
+    /// pristine rebuilds alike --- never on the `-t` invocations, which an
+    /// existing build directory already answers.
+    #[test]
+    fn the_source_directory_rides_the_configure_builds_as_a_positional() {
+        let context = BuildContext {
+            board: Some("ttgo_t_display_s3/esp32s3/procpu"),
+            ..ctx(None, None, false, "build")
+        };
+        let mut with_source = context;
+        with_source.source_dir = Some("app");
+        assert_eq!(
+            build(&with_source).to_string(),
+            "west build -b ttgo_t_display_s3/esp32s3/procpu app"
+        );
+        assert_eq!(
+            rebuild(&with_source).to_string(),
+            "west build --pristine=always -b ttgo_t_display_s3/esp32s3/procpu app"
+        );
+        // Without one, the command is exactly what it always was.
+        assert_eq!(
+            build(&context).to_string(),
+            "west build -b ttgo_t_display_s3/esp32s3/procpu"
+        );
+        // The `-t` runs take no source: the build directory names itself.
+        assert_eq!(menuconfig("build").to_string(), "west build -t menuconfig");
+        assert_eq!(clean("build").to_string(), "west build -t clean");
     }
 
     /// The three flag forms that are load-bearing, pinned against the call
