@@ -75,9 +75,16 @@ pub enum OtaAction {
     /// A blocking requirement is unanswered (the `smpmgr` probe, the slot
     /// precondition). Drawn dim --- the checklist above is the reason.
     Blocked,
-    /// Everything is there but the device's address. Pressing opens the
-    /// address entry.
+    /// Everything is there but the device's address. Pressing reads it
+    /// off the board's own boot output the first time
+    /// ([`crate::app::App::start_address_capture`]) and opens the address
+    /// entry when that cannot answer.
     SetAddress,
+    /// The cycle's own `Probe` stage failed: the board did not answer at
+    /// the recorded address. Pressing reads the address again rather than
+    /// asking the same dead one a second time --- a DHCP lease moving is
+    /// the likeliest reason a probe that used to work stops.
+    RecaptureAddress,
     /// The project is not instrumented; pressing asks, then prepares it.
     Prepare,
     /// Instrumented, but the build directory holds no signed image.
@@ -124,6 +131,7 @@ impl OtaAction {
             // button that runs a state read must not say "Update".
             Self::ResumeVerify => "Verify",
             Self::SetAddress => "Set the address",
+            Self::RecaptureAddress => "Recapture address",
             Self::Prepare | Self::RetryPrepare => "Prepare",
             // The words the state line above it already uses for the fix.
             Self::Rebuild => "Rebuild (pristine)",
@@ -139,6 +147,7 @@ impl OtaAction {
             Self::Stop => icons.stop(),
             Self::Blocked
             | Self::SetAddress
+            | Self::RecaptureAddress
             | Self::Prepare
             | Self::RetryPrepare
             | Self::Rebuild
@@ -273,12 +282,13 @@ impl OtaPanel {
     /// closed rather than recovering.
     pub fn new(
         root: impl Into<PathBuf>,
+        app_root: Option<PathBuf>,
         board: impl Into<String>,
         build_dir: Option<String>,
         config: OtaConfig,
     ) -> Option<Self> {
         let driver = registry::driver_for(config.method)?;
-        let prepare = Prepare::new(root, board, build_dir.clone(), config);
+        let prepare = Prepare::new(root, app_root, board, build_dir.clone(), config);
         let image = resolve_image(&prepare.root, build_dir.as_deref());
         Some(Self {
             prepare,
@@ -310,8 +320,15 @@ impl OtaPanel {
     /// directory --- the question [`crate::app::App::open_ota`] asks before
     /// it builds a new one, so reopening the modal does not discard a
     /// cycle's state (an unconfirmed image above all).
-    pub fn serves(&self, root: &Path, board: &str, build_dir: Option<&str>) -> bool {
+    pub fn serves(
+        &self,
+        root: &Path,
+        app_root: Option<&Path>,
+        board: &str,
+        build_dir: Option<&str>,
+    ) -> bool {
         self.prepare.root == root
+            && self.prepare.app_root() == app_root.unwrap_or(root)
             && self.prepare.board() == board
             && self.build_dir.as_deref() == build_dir
     }
@@ -517,7 +534,12 @@ impl OtaPanel {
         // question, and labelling it "Update" said one thing while pressing
         // it did another.
         if let Some(index) = self.failed_stage() {
-            return if self.driver.stages()[index] == OtaStage::Confirm {
+            return if self.driver.stages()[index] == OtaStage::Probe {
+                // The probe is the one stage whose failure has a likelier
+                // cause than "try again": the address it asked is a DHCP
+                // lease, and leases move.
+                OtaAction::RecaptureAddress
+            } else if self.driver.stages()[index] == OtaStage::Confirm {
                 OtaAction::RetryConfirm
             } else if self.resume_writes() {
                 OtaAction::RetryUpdate
@@ -657,6 +679,15 @@ impl OtaPanel {
         config.address = Some(address);
         config::save_ota(&self.prepare.root.join(config::FILE_NAME), &config)?;
         self.prepare.set_config(config);
+        // A `Probe` that failed did so against the *previous* address, so
+        // a new answer retires it. Leaving it would keep the button
+        // reading `Recapture address` immediately after a capture that
+        // succeeded --- the one moment it must not.
+        if let Some(index) = self.stage_index(OtaStage::Probe)
+            && matches!(self.stages[index], StepState::Failed(_))
+        {
+            self.stages[index] = StepState::Pending;
+        }
         Ok(())
     }
 

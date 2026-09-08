@@ -577,6 +577,31 @@ impl App {
                 crate::settings::mpy_projects_raw(&self.config_dir)?,
                 "user config",
             )),
+            // Not a less-specific *level*, but the same statement the
+            // stack makes everywhere else: the key is absent and something
+            // else is answering. Here it is the discovery, and naming it
+            // is what says the answer would move the day the repository
+            // grows a second application.
+            ProjectConfigRow::ZephyrApp => {
+                let root = self.project_config_root();
+                match crate::backend::zephyr::projects::resolve_app(&root)? {
+                    crate::backend::zephyr::projects::AppSource::Root => {
+                        Some(("the project folder itself".to_string(), "resolved"))
+                    }
+                    crate::backend::zephyr::projects::AppSource::Dir(app) => Some((
+                        app.strip_prefix(&root)
+                            .unwrap_or(&app)
+                            .display()
+                            .to_string(),
+                        "resolved: the only application inside",
+                    )),
+                }
+            }
+            ProjectConfigRow::ZephyrBuildArgs => {
+                let panel = self.build.as_ref()?;
+                let derived = panel.cmake_args();
+                (!derived.is_empty()).then(|| (derived.join(" "), "the project's board module"))
+            }
             ProjectConfigRow::ZephyrBoard | ProjectConfigRow::ZephyrShield => {
                 let panel = self.build.as_ref()?;
                 let choice = panel.board.as_ref()?;

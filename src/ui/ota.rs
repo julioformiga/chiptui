@@ -354,12 +354,22 @@ fn transport_line(panel: &OtaPanel, palette: Palette) -> Line<'static> {
     )
 }
 
+/// The prepare heading's hint: both opt-in blocks, each naming the
+/// direction its key would move it rather than the state it is in --- the
+/// same rule [`update_hint`] follows, and the reason the two toggles read
+/// as offers instead of as status.
 fn prepare_hint(panel: &OtaPanel) -> String {
-    if panel.prepare.netshell() {
-        "s removes the net shell".to_string()
+    let netshell = if panel.prepare.netshell() {
+        "s removes the net shell"
     } else {
-        "s adds the net shell".to_string()
-    }
+        "s adds the net shell"
+    };
+    let address = if panel.prepare.address_log() {
+        "l removes the address log"
+    } else {
+        "l adds the address log"
+    };
+    format!("{netshell} · {address}")
 }
 
 /// The auto-confirm toggle's hint --- `prepare_hint`'s rule, naming the
@@ -498,6 +508,7 @@ fn action_icon_color(action: OtaAction, palette: Palette) -> Color {
         OtaAction::ConfirmImage | OtaAction::RetryConfirm | OtaAction::Done => palette.success,
         OtaAction::Blocked
         | OtaAction::SetAddress
+        | OtaAction::RecaptureAddress
         | OtaAction::Prepare
         | OtaAction::RetryPrepare
         | OtaAction::Rebuild
@@ -647,6 +658,12 @@ fn state_line(panel: &OtaPanel, palette: Palette) -> Line<'static> {
             None => "no build directory --- Rebuild (pristine) writes the image".to_string(),
         },
         OtaAction::SetAddress => "the board's address is unanswered".to_string(),
+        // The probe failed, and the state line is where the *likely cause*
+        // belongs: the button beside it already says what pressing does.
+        OtaAction::RecaptureAddress => match panel.config().address.as_deref() {
+            Some(address) => format!("no answer at {address} --- the lease may have moved"),
+            None => "no answer --- the address is unanswered".to_string(),
+        },
         // "the board answers" was a claim nothing had checked: `Probe` is
         // the first stage of the cycle, not something already run. `p` is
         // the key that actually asks.

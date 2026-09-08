@@ -163,7 +163,7 @@ impl Backend for ZephyrBackend {
     ) -> Option<crate::process::Command> {
         Some(match kind {
             BuildKind::Build => commands::build(ctx),
-            BuildKind::Clean => commands::clean(ctx.build_dir),
+            BuildKind::Clean => commands::clean(ctx.build_dir, ctx.source_dir),
             BuildKind::Rebuild => commands::rebuild(ctx),
         })
     }
@@ -197,16 +197,21 @@ impl Backend for ZephyrBackend {
         )
     }
 
-    fn menuconfig_command(&self, build_dir: &str) -> Option<crate::process::Command> {
-        Some(commands::menuconfig(build_dir))
+    fn menuconfig_command(
+        &self,
+        build_dir: &str,
+        source_dir: Option<&str>,
+    ) -> Option<crate::process::Command> {
+        Some(commands::menuconfig(build_dir, source_dir))
     }
 
     fn dashboard_command(
         &self,
         build_dir: &str,
         domain: Option<&str>,
+        source_dir: Option<&str>,
     ) -> Option<crate::process::Command> {
-        Some(commands::dashboard(build_dir, domain))
+        Some(commands::dashboard(build_dir, domain, source_dir))
     }
 
     fn workspace_update_command(&self) -> Option<crate::process::Command> {

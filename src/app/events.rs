@@ -204,6 +204,29 @@ impl App {
                 self.finish_version_capture();
                 return;
             }
+            // The live address capture (PTY), the OTA modal's own: same
+            // shape as the banner capture above, a different reader.
+            crate::process::ProcessEvent::Output { id, text }
+                if self
+                    .address_capture
+                    .as_ref()
+                    .is_some_and(|capture| capture.process == *id) =>
+            {
+                self.on_address_capture_output(text);
+                return;
+            }
+            crate::process::ProcessEvent::Finished {
+                id,
+                outcome: _,
+                duration: _,
+            } if self
+                .address_capture
+                .as_ref()
+                .is_some_and(|capture| capture.process == *id) =>
+            {
+                self.finish_address_capture();
+                return;
+            }
             crate::process::ProcessEvent::Line {
                 id,
                 stream: _,

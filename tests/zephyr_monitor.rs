@@ -180,7 +180,15 @@ fn resolve_workspace_with_fake_west(app: &mut App, root: &std::path::Path) {
 /// Answers the board question the platform monitor needs and creates the
 /// configured build directory it reads the runner configuration from.
 fn answer_board(app: &mut App, root: &std::path::Path, board: &str) {
-    std::fs::create_dir_all(root.join("build")).unwrap();
+    // *Configured*, not merely present: the panel's `has_build_dir` reads
+    // the cached board, because a `build/` a run never finished carries no
+    // runner configuration for the monitor to read either.
+    std::fs::create_dir_all(root.join("build/zephyr")).unwrap();
+    std::fs::write(
+        root.join("build/zephyr/CMakeCache.txt"),
+        format!("CACHED_BOARD:STRING={board}\n"),
+    )
+    .unwrap();
     app.build.as_mut().unwrap().set_picked(board);
 }
 

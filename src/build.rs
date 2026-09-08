@@ -480,12 +480,15 @@ pub struct BuildPanel {
     /// ([`crate::backend::zephyr::variants::board_roots`]). Empty for a
     /// project that defines no board of its own.
     ///
-    /// They reach `west boards`/`west shields` only. Nothing is injected
-    /// into `west build`: what makes an out-of-tree board *buildable* is
-    /// the application's own `CMakeLists.txt` pulling the module in
-    /// (`ZEPHYR_EXTRA_MODULES`), and inventing a `-DBOARD_ROOT` here would
-    /// be the guess `SPEC.md` §8 forbids.
+    /// They reach the list commands and, through [`Self::cmake_args`], a
+    /// configuration's `-DBOARD_ROOT` --- see there for why the build
+    /// needs telling as well.
     pub board_roots: Vec<PathBuf>,
+    /// Extra CMake arguments the project's own `chiptui.toml` declares
+    /// (`[zephyr] build_args`), already split into words. They ride every
+    /// configuration, *after* the roots this panel derives, so a
+    /// hand-written `-DBOARD_ROOT` overrides the derived one.
+    pub build_args: Vec<String>,
     /// The `west boards` fetch, for the board picker.
     pub boards: ListFetch<Board>,
     /// The `west shields` fetch, for the shield picker.
@@ -540,6 +543,7 @@ impl BuildPanel {
             variant: None,
             remembered_simulator: false,
             board_roots: Vec::new(),
+            build_args: Vec::new(),
             boards: ListFetch::default(),
             shields: ListFetch::default(),
             offset,
@@ -563,6 +567,52 @@ impl BuildPanel {
         self.board_roots = roots;
         self.boards.invalidate();
         self.shields.invalidate();
+    }
+
+    /// Sets the project's declared build arguments (see
+    /// [`Self::build_args`]).
+    pub fn set_build_args(&mut self, args: Vec<String>) {
+        self.build_args = args;
+    }
+
+    /// The extra arguments a *configuration* carries past `--`
+    /// ([`crate::backend::BuildContext::cmake_args`]): one `-DBOARD_ROOT`
+    /// per module-contributed board root, then the project's own
+    /// [`Self::build_args`].
+    ///
+    /// The roots are not decoration. An out-of-tree board reaches a plain
+    /// `west build` through the application's own `CMakeLists.txt`
+    /// (`ZEPHYR_EXTRA_MODULES`), which is why nothing used to be injected
+    /// here. Under **sysbuild** that stops being true: the top-level CMake
+    /// source is `$ZEPHYR_BASE/share/sysbuild`, not the application, so the
+    /// module is loaded long after `boards.cmake` has already refused the
+    /// board --- `No board named 'ttgo_t_display_s3' found`, from a project
+    /// whose `zephyr/module.yml` declares exactly where its boards live.
+    /// Passing that declared location on is not the guess `SPEC.md` §8
+    /// forbids: the value is read from the project's own manifest, by the
+    /// same [`crate::backend::zephyr::variants::board_roots`] that already
+    /// answers `west boards`, and a project that declares none gets no
+    /// flag at all.
+    ///
+    /// Several roots ride **one** flag, `;`-separated: `BOARD_ROOT` is a
+    /// CMake *list* (`boards.cmake` walks it with `foreach`), so a second
+    /// `-DBOARD_ROOT=` would not add a root but replace the first. The
+    /// commands never go through a shell, so the separator needs no
+    /// quoting. And the project's own arguments come last, because CMake
+    /// keeps the final `-D` for a key --- which is what lets a
+    /// hand-written answer win.
+    pub fn cmake_args(&self) -> Vec<String> {
+        let mut args = Vec::new();
+        if !self.board_roots.is_empty() {
+            let roots: Vec<String> = self
+                .board_roots
+                .iter()
+                .map(|root| root.display().to_string())
+                .collect();
+            args.push(format!("-DBOARD_ROOT={}", roots.join(";")));
+        }
+        args.extend(self.build_args.iter().cloned());
+        args
     }
 
     /// Replaces the variant list, keeping the selection *by name* when the
@@ -1064,6 +1114,7 @@ impl BuildPanel {
                 build_dir: &self.build_dir,
                 sysbuild: self.sysbuild(),
                 source_dir: self.source_arg().as_deref(),
+                cmake_args: &self.cmake_args(),
             },
         )?;
         Some(self.decorated(backend, command.current_dir(&self.root)))
@@ -1133,7 +1184,7 @@ impl BuildPanel {
         &self,
         backend: &dyn crate::backend::Backend,
     ) -> Option<crate::process::Command> {
-        let command = backend.menuconfig_command(&self.build_dir)?;
+        let command = backend.menuconfig_command(&self.build_dir, self.source_arg().as_deref())?;
         Some(self.decorated(backend, command.current_dir(&self.root)))
     }
 
@@ -1188,15 +1239,27 @@ impl BuildPanel {
         // has no `dashboard` target at its top level, only inside the
         // application domain.
         let paths = crate::backend::zephyr::report::ReportPaths::new(&self.root, &self.build_dir);
-        let command = backend.dashboard_command(&self.build_dir, paths.domain.as_deref())?;
+        let command = backend.dashboard_command(
+            &self.build_dir,
+            paths.domain.as_deref(),
+            self.source_arg().as_deref(),
+        )?;
         Some(self.decorated(backend, command.current_dir(&self.root)))
     }
 
-    /// Whether the lifecycle's build directory exists (configured by a
-    /// previous build). The monitor asks the same fact: the platform
-    /// monitor reads the build's runner configuration.
+    /// Whether the lifecycle's build directory holds a *configuration* a
+    /// build can continue from. The monitor asks the same fact: the
+    /// platform monitor reads the build's runner configuration.
+    ///
+    /// The bar is the cached board, not the directory existing. A `build/`
+    /// can be there without ever having been configured --- an interrupted
+    /// run, or west falling back to the wrong source directory --- and
+    /// reading its mere presence as "already configured" is what drops
+    /// `-b`, `--shield` and `--sysbuild` from the very command that would
+    /// have configured it, leaving `west` to report `BOARD is unknown`
+    /// about a project whose board was answered long ago.
     pub fn has_build_dir(&self) -> bool {
-        self.root.join(&self.build_dir).is_dir()
+        cached_target(&self.root, &self.build_dir).is_some()
     }
 
     /// Whether this project builds with sysbuild --- the bootloader built

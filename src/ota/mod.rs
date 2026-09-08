@@ -12,6 +12,7 @@
 //! commands live beside it ([`mcumgr`]), and the flows that run them arrive
 //! later.
 
+pub mod address;
 pub mod mcumgr;
 pub mod prepare;
 pub mod registry;

@@ -416,6 +416,17 @@ pub struct BuildContext<'a> {
     /// source-directory argument, relative to the root. `None` for every
     /// project whose root is the application.
     pub source_dir: Option<&'a str>,
+    /// Extra arguments for the build system's own configuration step,
+    /// already in the order they must reach it: what the *project's layout*
+    /// requires first ([`crate::build::BuildPanel::cmake_args`] derives
+    /// `-DBOARD_ROOT` from the module manifests it found), then whatever
+    /// the project's `chiptui.toml` declares, so a hand-written answer
+    /// overrides the derived one --- CMake keeps the last `-D` for a key.
+    ///
+    /// A configuration-time answer like `board`, `shield` and `sysbuild`,
+    /// and it rides with them: passing it to an incremental build would
+    /// force a reconfiguration of a directory that already decided.
+    pub cmake_args: &'a [String],
 }
 
 /// The facts a flash command needs beyond the build directory.
@@ -570,8 +581,15 @@ pub trait Backend {
     /// build directory (`west build -t menuconfig`). The caller runs it with
     /// the terminal suspended, not through the piped process manager.
     /// Returns `None` when the backend has no such tool.
-    fn menuconfig_command(&self, build_dir: &str) -> Option<crate::process::Command> {
-        let _ = build_dir;
+    ///
+    /// `source_dir` is [`BuildContext::source_dir`], for the same reason
+    /// every other invocation carries it --- see there.
+    fn menuconfig_command(
+        &self,
+        build_dir: &str,
+        source_dir: Option<&str>,
+    ) -> Option<crate::process::Command> {
+        let _ = (build_dir, source_dir);
         None
     }
 
@@ -585,13 +603,15 @@ pub trait Backend {
     /// when the backend has no such tool.
     ///
     /// `domain` names the sub-image of a multi-image build the report is
-    /// about, `None` for a build that produced one image.
+    /// about, `None` for a build that produced one image; `source_dir` is
+    /// [`BuildContext::source_dir`].
     fn dashboard_command(
         &self,
         build_dir: &str,
         domain: Option<&str>,
+        source_dir: Option<&str>,
     ) -> Option<crate::process::Command> {
-        let _ = (build_dir, domain);
+        let _ = (build_dir, domain, source_dir);
         None
     }
 

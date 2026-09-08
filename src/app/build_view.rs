@@ -452,6 +452,56 @@ impl App {
         false
     }
 
+    /// Records the resolved application in the project's own
+    /// `chiptui.toml` (`[zephyr] app`, relative to the root).
+    ///
+    /// This is the one fact about the layout that discovery answers only
+    /// *by accident*: `resolve_app` falls back to the single buildable
+    /// child, so a repository that later grows a `samples/` or a second
+    /// application stops resolving and starts asking again --- about a
+    /// question the user already answered here. Writing it is not the
+    /// passive act `SPEC.md` §13 forbids: the user picked the row, and this
+    /// is the file that travels with the project, so whoever clones it
+    /// builds the same application without being asked at all.
+    ///
+    /// A write that fails is reported and nothing else: the session already
+    /// holds the answer, so the build works either way.
+    fn persist_app_dir(&mut self, root: &Path, app: &Path) {
+        let rel = app.strip_prefix(root).unwrap_or(app).display().to_string();
+        let path = root.join(crate::project::config::FILE_NAME);
+        match crate::project::config::set_key(
+            &path,
+            crate::project::config::ZEPHYR_SECTION,
+            "app",
+            &rel,
+        ) {
+            Ok(()) => self.logs.info(format!(
+                "application set to {rel} — the project stays {} ([zephyr] app in {})",
+                root.display(),
+                crate::project::config::FILE_NAME
+            )),
+            Err(err) => self.logs.warn(format!(
+                "application set to {rel} for this session — {} could not be written: {err}",
+                path.display()
+            )),
+        }
+    }
+
+    /// Re-reads the project's declared build arguments (`[zephyr]
+    /// build_args`) into the panel. Called wherever the board roots are:
+    /// both are facts of the *project*, read from files that travel with
+    /// it, and a project switch must not leave the previous one's answer
+    /// riding the next build.
+    pub fn refresh_build_args(&mut self) {
+        let Some(panel) = &self.build else {
+            return;
+        };
+        let args = crate::backend::zephyr::projects::declared_build_args(&panel.root);
+        if let Some(panel) = &mut self.build {
+            panel.set_build_args(args);
+        }
+    }
+
     /// Re-derives the extra board search roots for the build panel's
     /// current project and pushes them in.
     ///
@@ -693,11 +743,7 @@ impl App {
             if let Some(panel) = &mut self.build {
                 panel.set_app_dir(Some(app.clone()));
             }
-            self.logs.info(format!(
-                "application set to {} for this session — the project stays {} (nothing written)",
-                app.display(),
-                root.display()
-            ));
+            self.persist_app_dir(&root, &app);
             self.overlay = None;
             return;
         }
@@ -733,6 +779,7 @@ impl App {
         // with it: a switch from a plain application to one carrying its
         // own board module changes what `west boards` can even see.
         self.refresh_board_roots();
+        self.refresh_build_args();
         self.refresh_variants();
         // The project's answers reload from the file that travels with it:
         // its own `chiptui.toml` (`[zephyr]`).

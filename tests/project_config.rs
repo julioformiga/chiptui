@@ -865,8 +865,8 @@ fn sections_draw_a_rule_a_count_and_the_backends_edge() {
     );
     let zephyr = heading("Zephyr");
     assert!(
-        zephyr.contains("1/6"),
-        "one of the six Zephyr rows is answered:\n{zephyr}"
+        zephyr.contains("1/8"),
+        "one of the eight Zephyr rows is answered:\n{zephyr}"
     );
 
     let governed = frame

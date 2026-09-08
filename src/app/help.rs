@@ -1352,8 +1352,10 @@ impl App {
                     vec![
                         ("r", "re-check"),
                         ("s", "net shell"),
+                        ("l", "address log"),
                         ("t", "transport"),
                         ("p", "probe"),
+                        ("a", "read address"),
                     ]
                 }
             }

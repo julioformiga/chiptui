@@ -78,8 +78,46 @@ CONFIG_NET_SHELL=y
 ";
 
 /// The net shell's price, shown on its row so the toggle is an informed
-/// decision.
+/// decision. The figure assumes a project that already has a shell: one
+/// without `CONFIG_SHELL` pays for that subsystem too, which is most of
+/// why [`ADDRESS_LOG_BODY`] exists beside it.
 pub const NETSHELL_COST: &str = "+96 KB flash, +3 KB RAM --- gives 'net ipv4' on the shell";
+
+/// The address log, as its own guarded block (`ota-address-log`): the
+/// cheap half of the same question the net shell answers --- *how does
+/// the board tell you where to push an update*.
+///
+/// Zephyr already prints it, twice over, and both lines are read by
+/// [`crate::ota::address::from_console`]: `net_dhcpv4` names the lease it
+/// received, and `net_config` names the address the interface was given,
+/// which covers a **static** one too. Neither is printed unless its
+/// module's log level reaches INF, and the per-module levels are gated on
+/// `NET_LOG` (`module-dep` in
+/// `subsys/net/Kconfig.template.log_config.net`) --- so `NET_LOG` comes
+/// along, and with it the rest of the networking stack at this project's
+/// own `LOG_DEFAULT_LEVEL`. That, not the two lines, is where the cost
+/// is, and it is why this is an opt-in block rather than part of the core
+/// one.
+const ADDRESS_LOG_BODY: &str = "\
+# How the board tells you where to push an update: at these levels Zephyr
+# prints the address it was leased ('net_dhcpv4: Received:') or given
+# ('net_config: IPv4 address:') on the console at every boot, and the OTA
+# modal's address capture reboots the board and reads it off the monitor.
+# NET_LOG is what gates the per-module levels, so the rest of the
+# networking stack comes along at this project's own LOG_DEFAULT_LEVEL ---
+# which is where the cost below is, rather than in the two lines.
+CONFIG_NET_LOG=y
+CONFIG_NET_DHCPV4_LOG_LEVEL_INF=y
+CONFIG_NET_CONFIG_LOG_LEVEL_INF=y
+";
+
+/// The address log's price, on its row for the same reason the net
+/// shell's is on that one. Measured, not estimated: an ESP32-S3 build of
+/// the reference project (Wi-Fi, LVGL, MQTT, HTTP) went from 981,948 to
+/// 993,600 bytes of `text` with this block and nothing else changed, and
+/// `bss` fell by 128.
+pub const ADDRESS_LOG_COST: &str =
+    "+11 KB flash, no RAM --- the board prints its address at every boot";
 
 /// The Kconfig fragment body for the OTA block: the core every transport
 /// needs, then the transport's own symbols, then --- for UDP --- the
@@ -103,6 +141,17 @@ CONFIG_MCUMGR_GRP_OS=y
 CONFIG_MCUMGR_GRP_OS_MCUMGR_PARAMS=y
 CONFIG_REBOOT=y
 CONFIG_IMG_MANAGER=y
+# IMG_MANAGER is a choice, and the mcuboot implementation behind it
+# (MCUBOOT_IMG_MANAGER) `depends on FLASH_MAP`, which in turn needs a flash
+# driver. Without these two the choice resolves to nothing, nothing selects
+# MCUBOOT_BOOTUTIL_LIB, and yet `subsys/dfu/img_util` links
+# `-lMCUBOOT_BOOTUTIL` *unconditionally* --- so a real board compiles a
+# thousand objects and dies at the link on `cannot find -lMCUBOOT_BOOTUTIL`,
+# naming a library whose absence the .config explains nowhere. Not an
+# architecture choice like the transport below: writing an uploaded image
+# into slot1 is what a flash map is for.
+CONFIG_FLASH=y
+CONFIG_FLASH_MAP=y
 # Erase slot1 sector by sector as the upload advances; erasing a whole slot
 # up front stalls the application for seconds.
 CONFIG_IMG_ERASE_PROGRESSIVELY=y
@@ -303,7 +352,16 @@ impl TransportCheck {
     /// two shapes the build has --- the same classic/sysbuild-domain walk
     /// [`SlotCheck::of`] does, and for the same reason: the application
     /// domain is the one whose configuration carries the transport.
-    pub fn of(root: &Path, build_dir: Option<&str>, transport: Transport, fragment: &Path) -> Self {
+    /// `root` carries the build directory; `app_root` carries the
+    /// `boards/` fragment, which for a repository whose application sits
+    /// one level down is not the same place.
+    pub fn of(
+        root: &Path,
+        app_root: &Path,
+        build_dir: Option<&str>,
+        transport: Transport,
+        fragment: &Path,
+    ) -> Self {
         let Some(build_dir) = build_dir else {
             return Self::NotChecked;
         };
@@ -334,7 +392,7 @@ impl TransportCheck {
         // written after the build ran, means it could not --- and reporting
         // a dropped symbol there would accuse the user of an unmet
         // dependency for the ordinary case of not having rebuilt.
-        let fragment = root.join(fragment);
+        let fragment = app_root.join(fragment);
         if !fragment.exists() || is_stale(&path, &fragment) {
             return Self::Stale(path);
         }
@@ -453,6 +511,9 @@ pub enum Step {
     /// The opt-in net shell block. [`StepState::Skipped`] by default; the
     /// panel's toggle is the only way in, and its cost rides the row.
     NetShell,
+    /// The opt-in address log block --- the cheap way for the board to
+    /// name its own address, on the same terms as [`Self::NetShell`].
+    AddressLog,
     /// `[ota]` in the project's `chiptui.toml` matches the answers.
     RecordConfig,
 }
@@ -465,6 +526,7 @@ impl Step {
         Step::Version,
         Step::BoardConfig,
         Step::NetShell,
+        Step::AddressLog,
         Step::RecordConfig,
     ];
 
@@ -474,20 +536,48 @@ impl Step {
             Self::Version => "VERSION",
             Self::BoardConfig => "board Kconfig fragment",
             Self::NetShell => "net shell",
+            Self::AddressLog => "address log",
             Self::RecordConfig => "chiptui.toml [ota]",
         }
     }
 
-    /// The tag its guarded block carries, for the two that write one.
+    /// The tag its guarded block carries, for the three that write one.
     pub const fn tag(self) -> &'static str {
         match self {
             Self::NetShell => "ota-netshell",
+            Self::AddressLog => "ota-address-log",
             _ => "ota",
         }
     }
 
+    /// Whether the step is one the user opts into: written when asked for,
+    /// removed when asked against, and [`StepState::Skipped`] while
+    /// neither. Both optional steps write into the board fragment, and
+    /// both answer the same question --- how the board names its own
+    /// address --- at very different prices.
     pub const fn optional(self) -> bool {
-        matches!(self, Self::NetShell)
+        matches!(self, Self::NetShell | Self::AddressLog)
+    }
+
+    /// The body an optional step's block carries. `None` for the steps
+    /// that are not optional, whose content is not one constant
+    /// ([`kconfig_body`] varies with the transport).
+    const fn optional_body(self) -> Option<&'static str> {
+        match self {
+            Self::NetShell => Some(NETSHELL_BODY),
+            Self::AddressLog => Some(ADDRESS_LOG_BODY),
+            _ => None,
+        }
+    }
+
+    /// What the block costs, for its row --- an opt-in with an unstated
+    /// price is not a decision the reader can make.
+    pub const fn cost(self) -> Option<&'static str> {
+        match self {
+            Self::NetShell => Some(NETSHELL_COST),
+            Self::AddressLog => Some(ADDRESS_LOG_COST),
+            _ => None,
+        }
     }
 }
 
@@ -507,6 +597,18 @@ pub struct PrepareUpdate {
 /// writes and the answers they need.
 pub struct Prepare {
     pub root: PathBuf,
+    /// Where the *application's* own files live: the root, unless the
+    /// project is a repository whose application sits one level down
+    /// ([`crate::build::BuildPanel::application_root`]).
+    ///
+    /// Three of the five writes belong here rather than at the root ---
+    /// `sysbuild.conf`, `VERSION` and the `boards/` fragment are read by
+    /// Zephyr out of the source directory `west build` is pointed at, so a
+    /// copy at the repository root above it is a file nothing ever opens.
+    /// `chiptui.toml` stays at the root: it is the *project's* file, and
+    /// there is only one (`projects::declared_app` reads no second one
+    /// inside the app).
+    app_root: PathBuf,
     board: String,
     build_dir: Option<String>,
     config: OtaConfig,
@@ -519,8 +621,13 @@ pub struct Prepare {
     pub requirements: Vec<RequirementState>,
     pub phase: Phase,
     pub output: VecDeque<String>,
-    /// Whether the user opted into the net shell block.
-    netshell: bool,
+    /// Whether the user opted into each optional block, in
+    /// [`Step::ALL`]'s order for the steps [`Step::optional`] answers
+    /// true for. One array rather than a field per block: the second
+    /// opt-in arrived and every piece of machinery around the first ---
+    /// the state, the toggle, the write, the resume read --- had been
+    /// written for exactly one.
+    opt_in: Vec<bool>,
     /// The `smpmgr` program --- the test seam, pointed at a fixture.
     tool: String,
 }
@@ -531,12 +638,15 @@ impl Prepare {
     /// to do, and an interrupted run shows where it stopped.
     pub fn new(
         root: impl Into<PathBuf>,
+        app_root: Option<PathBuf>,
         board: impl Into<String>,
         build_dir: Option<String>,
         config: OtaConfig,
     ) -> Self {
+        let root = root.into();
         let mut panel = Self {
-            root: root.into(),
+            app_root: app_root.unwrap_or_else(|| root.clone()),
+            root,
             board: board.into(),
             build_dir,
             config,
@@ -550,7 +660,7 @@ impl Prepare {
                 .collect(),
             phase: Phase::Idle,
             output: VecDeque::new(),
-            netshell: false,
+            opt_in: Step::ALL.iter().map(|_| false).collect(),
             tool: super::mcumgr::PROGRAM.to_string(),
         };
         panel.slots = SlotCheck::of(&panel.root, panel.build_dir.as_deref());
@@ -561,7 +671,11 @@ impl Prepare {
         // while `s` --- guarded on the step being `Done` --- did nothing at
         // all. Every other step's state comes from the filesystem; so does
         // this answer now.
-        panel.netshell = panel.netshell_block_present();
+        for (index, step) in Step::ALL.iter().enumerate() {
+            if step.optional() {
+                panel.opt_in[index] = panel.block_present(*step);
+            }
+        }
         panel.steps = Step::ALL
             .iter()
             .map(|step| {
@@ -613,8 +727,8 @@ impl Prepare {
             if matches!(self.steps[index], StepState::Failed(_)) {
                 continue;
             }
-            self.steps[index] = if *step == Step::NetShell {
-                self.netshell_state()
+            self.steps[index] = if step.optional() {
+                self.optional_state(*step)
             } else if self.step_done(*step) {
                 StepState::Done
             } else {
@@ -639,18 +753,36 @@ impl Prepare {
             Step::BoardConfig => {
                 format!("managed block 'ota' in {}", self.fragment_path().display())
             }
-            Step::NetShell => format!(
-                "managed block 'ota-netshell' in {} --- {}",
+            Step::NetShell | Step::AddressLog => format!(
+                "managed block '{}' in {} --- {}",
+                step.tag(),
                 self.fragment_path().display(),
-                NETSHELL_COST
+                step.cost().unwrap_or_default()
             ),
             Step::RecordConfig => format!("[ota] in {}", config::FILE_NAME),
         }
     }
 
+    /// Whether an optional block is opted into. `false` for a step that
+    /// is not one --- there is nothing to opt into.
+    pub fn opted_in(&self, step: Step) -> bool {
+        Step::ALL
+            .iter()
+            .position(|candidate| *candidate == step)
+            .and_then(|index| self.opt_in.get(index).copied())
+            .unwrap_or(false)
+    }
+
     /// Whether the net shell block is opted into.
     pub fn netshell(&self) -> bool {
-        self.netshell
+        self.opted_in(Step::NetShell)
+    }
+
+    /// Whether the address log block is opted into --- what makes the
+    /// board name its own address at boot, and so what makes
+    /// [`crate::app::App::start_address_capture`] able to find one.
+    pub fn address_log(&self) -> bool {
+        self.opted_in(Step::AddressLog)
     }
 
     /// Whether every requirement is answered.
@@ -680,34 +812,49 @@ impl Prepare {
             .map(|(index, _)| index)
     }
 
-    /// What the net shell step reads, given the answer and what is on disk:
+    /// What an optional step reads, given the answer and what is on disk:
     /// written and current is `Done`; opted in without the block, or opted
     /// out with one still there, is work (`Pending`); opted out with
     /// nothing there is `Skipped`.
-    fn netshell_state(&self) -> StepState {
-        if self.step_done(Step::NetShell) {
+    fn optional_state(&self, step: Step) -> StepState {
+        if self.step_done(step) {
             StepState::Done
-        } else if self.netshell || self.netshell_block_present() {
+        } else if self.opted_in(step) || self.block_present(step) {
             StepState::Pending
         } else {
             StepState::Skipped
         }
     }
 
-    /// Toggles the net shell block: opting in writes it, opting out takes
-    /// it back out. Both run under the prepare's own confirm --- `s`
-    /// records the answer, the button performs it.
+    /// Toggles the net shell block --- [`Self::toggle_optional`] for the
+    /// key that has always spelled it.
     pub fn toggle_netshell(&mut self) {
-        let Some(index) = Step::ALL.iter().position(|step| *step == Step::NetShell) else {
+        self.toggle_optional(Step::NetShell);
+    }
+
+    /// Toggles an optional block: opting in writes it, opting out takes
+    /// it back out. Both run under the prepare's own confirm --- the key
+    /// records the answer, the button performs it.
+    pub fn toggle_optional(&mut self, step: Step) {
+        let Some(index) = Step::ALL.iter().position(|candidate| *candidate == step) else {
             return;
         };
-        self.netshell = !self.netshell;
+        if !step.optional() {
+            return;
+        }
+        self.opt_in[index] = !self.opt_in[index];
         // The toggle used to give up whenever the step read `Done`, which
         // is exactly the state a project that already has the block is in
         // --- so the key did nothing while the heading kept offering to add
         // what was already there. It records the answer; the state below
         // says what is left to do about it.
-        self.steps[index] = self.netshell_state();
+        self.steps[index] = self.optional_state(step);
+    }
+
+    /// Where the application's own files are written (see
+    /// [`Self::app_root`] the field).
+    pub fn app_root(&self) -> &Path {
+        &self.app_root
     }
 
     /// Re-reads the transport precondition, against whichever fragment
@@ -715,6 +862,7 @@ impl Prepare {
     fn transport_check(&self) -> TransportCheck {
         TransportCheck::of(
             &self.root,
+            &self.app_root,
             self.build_dir.as_deref(),
             self.config.transport,
             &self.fragment_path(),
@@ -845,7 +993,7 @@ impl Prepare {
                 })
                 .map(|applied| format!("write sysbuild.conf --- {}", describe(applied))),
             Step::Version => {
-                let path = self.root.join("VERSION");
+                let path = self.app_root.join("VERSION");
                 match std::fs::read_to_string(&path) {
                     Ok(text) if version_parses(&text) => {
                         Ok("VERSION --- already there and parses".to_string())
@@ -882,23 +1030,25 @@ impl Prepare {
             // rather than a key that silently does nothing. It runs under
             // the prepare's own confirm --- `s` records the answer, the
             // button performs it, because `s` must not write.
-            Step::NetShell if self.netshell => self
+            Step::NetShell | Step::AddressLog if self.opted_in(step) => self
                 .apply(scaffold::GuardedBlock {
                     path: self.fragment_path(),
                     tag: step.tag(),
-                    body: NETSHELL_BODY.to_string(),
+                    body: step.optional_body().unwrap_or_default().to_string(),
                 })
                 .map(|applied| {
                     format!(
-                        "write {} --- {}",
+                        "write {} --- {} {}",
                         self.fragment_path().display(),
+                        step.label(),
                         describe(applied)
                     )
                 }),
-            Step::NetShell => self.remove(step.tag()).map(|_| {
+            Step::NetShell | Step::AddressLog => self.remove(step.tag()).map(|_| {
                 format!(
-                    "write {} --- net shell block removed",
-                    self.fragment_path().display()
+                    "write {} --- {} block removed",
+                    self.fragment_path().display(),
+                    step.label()
                 )
             }),
             Step::RecordConfig => {
@@ -915,24 +1065,26 @@ impl Prepare {
     }
 
     /// The fragment this project's board answers to (relative to the
-    /// root): the existing file in either spelling, else where a new one
-    /// goes.
+    /// *application* root): the existing file in either spelling, else
+    /// where a new one goes.
     fn fragment_path(&self) -> PathBuf {
-        variants::fragment_path(&self.root, &self.board)
+        variants::fragment_path(&self.app_root, &self.board)
             .unwrap_or_else(|| variants::fragment_path_for(&self.board))
     }
 
-    /// Whether the fragment currently carries the net shell block.
-    fn netshell_block_present(&self) -> bool {
-        std::fs::read_to_string(self.root.join(self.fragment_path()))
-            .is_ok_and(|text| matches!(scaffold::find_tag(&text, Step::NetShell.tag()), Ok(true)))
+    /// Whether the fragment currently carries `step`'s block, whatever
+    /// its body --- "is this already written" as distinct from "is it
+    /// written *and* current" ([`Self::step_done`]).
+    fn block_present(&self, step: Step) -> bool {
+        std::fs::read_to_string(self.app_root.join(self.fragment_path()))
+            .is_ok_and(|text| matches!(scaffold::find_tag(&text, step.tag()), Ok(true)))
     }
 
     /// Takes a guarded block back out of the fragment, leaving every byte
     /// outside its markers as it was.
     fn remove(&self, tag: &str) -> Result<(), String> {
         let path = self.fragment_path();
-        let full = self.root.join(&path);
+        let full = self.app_root.join(&path);
         let Ok(text) = std::fs::read_to_string(&full) else {
             // Nothing there is nothing to remove.
             return Ok(());
@@ -947,7 +1099,7 @@ impl Prepare {
     }
 
     fn apply(&self, block: scaffold::GuardedBlock) -> Result<scaffold::Applied, String> {
-        scaffold::apply_block(&self.root, &block)
+        scaffold::apply_block(&self.app_root, &block)
             .map_err(|err| format!("cannot write {}: {err}", block.path.display()))
     }
 
@@ -956,11 +1108,11 @@ impl Prepare {
     /// run.
     fn step_done(&self, step: Step) -> bool {
         match step {
-            Step::Sysbuild => std::fs::read_to_string(self.root.join("sysbuild.conf"))
+            Step::Sysbuild => std::fs::read_to_string(self.app_root.join("sysbuild.conf"))
                 .is_ok_and(|text| has_symbol(&text, "SB_CONFIG_BOOTLOADER_MCUBOOT")),
-            Step::Version => std::fs::read_to_string(self.root.join("VERSION"))
+            Step::Version => std::fs::read_to_string(self.app_root.join("VERSION"))
                 .is_ok_and(|text| version_parses(&text)),
-            Step::BoardConfig => std::fs::read_to_string(self.root.join(self.fragment_path()))
+            Step::BoardConfig => std::fs::read_to_string(self.app_root.join(self.fragment_path()))
                 .is_ok_and(|text| {
                     scaffold::block_matches(&text, step.tag(), &kconfig_body(self.config.transport))
                 }),
@@ -968,10 +1120,17 @@ impl Prepare {
             // not a completion --- it is either nothing to do (the step
             // reads `Skipped`) or a removal still owed (`Pending`), and
             // `toggle_netshell` is what tells those apart.
-            Step::NetShell => {
-                self.netshell
-                    && std::fs::read_to_string(self.root.join(self.fragment_path()))
-                        .is_ok_and(|text| scaffold::block_matches(&text, step.tag(), NETSHELL_BODY))
+            Step::NetShell | Step::AddressLog => {
+                self.opted_in(step)
+                    && std::fs::read_to_string(self.app_root.join(self.fragment_path())).is_ok_and(
+                        |text| {
+                            scaffold::block_matches(
+                                &text,
+                                step.tag(),
+                                step.optional_body().unwrap_or_default(),
+                            )
+                        },
+                    )
             }
             Step::RecordConfig => std::fs::read_to_string(self.root.join(config::FILE_NAME))
                 .ok()

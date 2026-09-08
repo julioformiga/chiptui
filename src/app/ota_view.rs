@@ -33,6 +33,11 @@ impl App {
             return;
         };
         let root = build.root.clone();
+        // `sysbuild.conf`, `VERSION` and the `boards/` fragment are the
+        // *application's* files --- Zephyr reads them out of the source
+        // directory `west build` is pointed at. The build directory below
+        // stays the root's.
+        let app_root = build.app_dir.clone();
         // The *board's* build directory, never the last build's: a host
         // build produces an executable and no bootloader swaps one, which
         // is `BuildPanel::flash_build_dir`'s whole reason and applies here
@@ -54,11 +59,9 @@ impl App {
         // unconfirmed: the next reset reverts", pressed `Esc` and came
         // back was shown a panel offering to update again, with nothing
         // anywhere saying the running image was still unconfirmed.
-        if self
-            .ota
-            .as_ref()
-            .is_some_and(|panel| panel.serves(&root, &board, build_dir.as_deref()))
-        {
+        if self.ota.as_ref().is_some_and(|panel| {
+            panel.serves(&root, app_root.as_deref(), &board, build_dir.as_deref())
+        }) {
             if let Some(panel) = &mut self.ota {
                 // Only the cheap synchronous facts: a build may well have
                 // landed while the modal was closed. The requirement probe
@@ -77,7 +80,7 @@ impl App {
             .ok()
             .and_then(|text| config::parse_ota(&text))
             .unwrap_or_default();
-        let Some(mut panel) = OtaPanel::new(&root, board, build_dir, config) else {
+        let Some(mut panel) = OtaPanel::new(&root, app_root, board, build_dir, config) else {
             self.logs
                 .error("OTA: the configured method has no driver registered");
             return;
@@ -86,10 +89,38 @@ impl App {
             panel.set_tool(tool);
         }
         panel.probe_requirements(&mut self.processes);
+        // A fresh panel is a fresh project/board/build directory, so the
+        // automatic capture is owed again.
+        self.address_capture_tried = false;
         self.logs
             .info(format!("OTA: {}", panel.prepare.root.display()));
         self.ota = Some(panel);
         self.overlay = Some(Overlay::Ota);
+    }
+
+    /// The address question, asked of the board first and of the user
+    /// second: starts the live capture, and opens the text entry when it
+    /// cannot run (no resolved workspace, a board with no platform
+    /// monitor, a spawn that failed).
+    ///
+    /// The fall-through is the whole reason this is one function and not
+    /// two keys: a capture that cannot start must not leave the modal
+    /// having done nothing, and a project whose Kconfig has no address
+    /// log yet is exactly that case --- so typing it stays one keypress
+    /// away rather than being replaced.
+    pub(super) fn capture_or_ask_address(&mut self) {
+        if !self.address_capture_tried {
+            self.address_capture_tried = true;
+            if self.start_address_capture() {
+                return;
+            }
+        }
+        let input = self
+            .ota
+            .as_ref()
+            .and_then(|panel| panel.config().address.clone())
+            .unwrap_or_default();
+        self.overlay = Some(Overlay::OtaAddress { input });
     }
 
     /// Points the OTA client at a specific program, for tests (the seam
@@ -116,6 +147,22 @@ impl App {
             KeyCode::PageUp => panel.scroll_output(viewport as isize, viewport),
             KeyCode::PageDown => panel.scroll_output(-(viewport as isize), viewport),
             KeyCode::Char('s') if !panel.is_busy() => panel.prepare.toggle_netshell(),
+            // The net shell's cheap sibling: both answer "how does the
+            // board name its own address", and both are opt-in blocks
+            // whose cost rides their row.
+            KeyCode::Char('l') if !panel.is_busy() => {
+                panel
+                    .prepare
+                    .toggle_optional(crate::ota::prepare::Step::AddressLog);
+            }
+            // Reading the address again, at any time. The automatic one
+            // runs once, when the address is first needed; after that a
+            // DHCP lease that moved is the user's to notice, and this is
+            // the key that acts on it.
+            KeyCode::Char('a') if !panel.is_busy() => {
+                self.address_capture_tried = false;
+                self.capture_or_ask_address();
+            }
             KeyCode::Char('r') if !panel.is_busy() => {
                 panel.prepare.recheck_slots();
                 panel.refresh_image();
@@ -156,9 +203,13 @@ impl App {
                 OtaAction::Stop => {
                     panel.stop(&mut self.processes);
                 }
-                OtaAction::SetAddress => {
-                    let input = panel.config().address.clone().unwrap_or_default();
-                    self.overlay = Some(Overlay::OtaAddress { input });
+                // The board says this at every boot, so the first press
+                // asks *it* rather than the user --- and falls through to
+                // the text entry when the capture cannot run or finds
+                // nothing, which is every project whose Kconfig does not
+                // carry the address log yet.
+                OtaAction::SetAddress | OtaAction::RecaptureAddress => {
+                    self.capture_or_ask_address();
                 }
                 // The image the modal needs is the pristine sysbuild
                 // build's, which belongs to the *build* panel's one process

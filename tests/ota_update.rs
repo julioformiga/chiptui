@@ -43,7 +43,7 @@ fn ready_panel(tag: &str, tool: &str, address: &str) -> (OtaPanel, ProcessManage
         address: Some(address.to_string()),
         ..OtaConfig::default()
     };
-    let mut panel = OtaPanel::new(&root, BOARD, Some("build".to_string()), config).unwrap();
+    let mut panel = OtaPanel::new(&root, None, BOARD, Some("build".to_string()), config).unwrap();
     panel.set_tool(fake(tool));
     panel.set_settle(Duration::ZERO);
     // The prepare runs for real; its probe is satisfied directly (the

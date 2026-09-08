@@ -2320,8 +2320,14 @@ fn an_out_of_tree_board_reaches_the_picker_through_its_module() {
         "both of its qualifiers are targets of their own:\n{frame}"
     );
 
-    // Picking it reaches the build command as `-b`, with no board-root
-    // flag of any kind: the app's CMakeLists pulls the module in.
+    // Picking it reaches the build command as `-b`, and the root the
+    // module declared rides along as a CMake argument past `--`. The app's
+    // own `CMakeLists.txt` pulling the module in
+    // (`ZEPHYR_EXTRA_MODULES`) is enough for a plain build and *not*
+    // enough for a sysbuild one, whose top-level CMake source is
+    // `share/sysbuild` --- there `boards.cmake` refuses the board long
+    // before the application is looked at. The flag is not invented: its
+    // value is what this project's own `zephyr/module.yml` declares.
     app.handle(key(KeyCode::Enter));
     let backend = app.manager.backend().unwrap();
     let build = app
@@ -2331,11 +2337,15 @@ fn an_out_of_tree_board_reaches_the_picker_through_its_module() {
         .command(BuildKind::Build, backend)
         .unwrap()
         .to_string();
+    let root = app.build.as_ref().unwrap().board_roots[0]
+        .display()
+        .to_string();
     assert!(
-        build.ends_with("west build -b ttgo_t_display_s3/esp32s3/procpu"),
+        build.ends_with(&format!(
+            "west build -b ttgo_t_display_s3/esp32s3/procpu -- -DBOARD_ROOT={root}"
+        )),
         "{build}"
     );
-    assert!(!build.contains("BOARD_ROOT"), "{build}");
 }
 
 /// The action stack never changes shape, whatever the last build targeted:

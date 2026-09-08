@@ -1276,17 +1276,25 @@ fn draw_ota_confirm(
         Kind::Prepare => Destructive {
             title: "Prepare this project for OTA?".to_string(),
             target: format!("{project} · {board}"),
-            // The net shell is an opt-in block with a real cost, so the
-            // sentence has to name it when it is going to be written ---
-            // §15's consequence is what it *will* write, not a fixed list.
-            consequence: if panel.prepare.netshell() {
-                format!(
-                    "writes sysbuild.conf, VERSION, the boards/ fragment and chiptui.toml, \
-                     plus the net shell block ({}).",
-                    crate::ota::prepare::NETSHELL_COST
-                )
-            } else {
-                "writes sysbuild.conf, VERSION, the boards/ fragment and chiptui.toml.".to_string()
+            // Each opt-in block has a real cost, so the sentence names
+            // the ones that are going to be written --- §15's consequence
+            // is what it *will* write, not a fixed list.
+            consequence: {
+                let mut text =
+                    "writes sysbuild.conf, VERSION, the boards/ fragment and chiptui.toml"
+                        .to_string();
+                for step in crate::ota::prepare::Step::ALL
+                    .iter()
+                    .filter(|step| step.optional() && panel.prepare.opted_in(**step))
+                {
+                    text.push_str(&format!(
+                        ", plus the {} block ({})",
+                        step.label(),
+                        step.cost().unwrap_or_default()
+                    ));
+                }
+                text.push('.');
+                text
             },
             // The build the prepare implies: with `sysbuild.conf` written,
             // the next configuration build is the sysbuild one. Built
@@ -1298,6 +1306,7 @@ fn draw_ota_confirm(
                 build_dir: panel.build_dir().unwrap_or("build"),
                 sysbuild: true,
                 source_dir: None,
+                cmake_args: &[],
             })
             .to_string(),
         },

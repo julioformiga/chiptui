@@ -105,7 +105,13 @@ Rows are capability-driven (`ProjectConfigPanel::rebuild` takes the **chosen** b
 capabilities, asked of the registry rather than of the session — the sections have to appear
 before anything is applied): `General` always, `[zephyr]` under `WorkspaceSync`,
 `[micropython]` under `ProjectSelect + Filesystem`, `[ota]` under `OtaPrepare`. `[[variant]]` is
-a count and not editable, since `set_key` cannot write an array of tables. `General` spans both
+a count and not editable, since `set_key` cannot write an array of tables. The `[zephyr]` half
+also carries the two keys about the project's own *shape*: `app` (the application `west build`
+is pointed at --- whose unanswered row names the discovery that answers instead, "the only
+application inside", so the reader sees the answer that would move the day a second one
+appears) and `build_args` (what every configuration passes after `--`; unanswered, it shows the
+`-DBOARD_ROOT` the project's board module already contributes, which is the same
+what-answers-instead statement the rest of the stack makes). `General` spans both
 config levels — the project's name (the registry) and `[ui] theme`/`icons`/`mouse` (the user
 config) — and every row names its destination, which is what keeps "user configuration separate
 from project configuration" a statement about the *files* rather than about the screen.
@@ -846,10 +852,16 @@ console shell gets no stdin; a PTY is the follow-up, not a silent claim.
 An **out-of-tree board** reaches the picker through its module: `variants::board_roots` walks up
 from the project (stopping at the projects folder) for a `zephyr/module.yml` declaring
 `build.settings.board_root` — nesting that is load-bearing, since west ignores a top-level
-`settings:` without error — and passes each root to the *list* commands as `--board-root`.
-Nothing is injected into `west build`: what makes such a board buildable is the application's own
-`CMakeLists.txt` (`ZEPHYR_EXTRA_MODULES`), and inventing a `-DBOARD_ROOT` would be the guess
-`SPEC.md` §8 forbids. That layout also puts the application one level below the repository root,
+`settings:` without error — and passes each root to the *list* commands as `--board-root`, **and
+to every configuration as `-DBOARD_ROOT`** (`BuildPanel::cmake_args`). That second half used to
+be deliberately absent, on the grounds that the application's own `CMakeLists.txt` pulls the
+module in (`ZEPHYR_EXTRA_MODULES`) so the build needs no telling. That holds for a plain build
+and collapses under **sysbuild**, whose top-level CMake source is `$ZEPHYR_BASE/share/sysbuild`:
+`boards.cmake` runs there, long before any application is looked at, and answers `No board named
+'ttgo_t_display_s3' found` for a project whose own `zephyr/module.yml` says exactly where its
+boards live. Passing that declared location on is not the guess `SPEC.md` §8 forbids — the value
+is read from the project's own manifest, and a project declaring none gets no flag. That layout
+also puts the application one level below the repository root,
 so `projects::is_buildable` now *reads* the `CMakeLists.txt` for `find_package(Zephyr` (a module
 hook is a comment-only file that passed a mere `is_file()` check while `west build` refused it)
 and `projects::project_rows` looks one level deeper through a non-application directory: one
@@ -872,8 +884,23 @@ log, never silently replaced), otherwise the single buildable direct subdirector
 `BuildPanel::app_dir` is west's source-directory argument, nothing re-roots, and the repository's
 `build/` directories, its `chiptui.toml` and its board fragments stay where the repository keeps
 them. `BuildContext::source_dir` carries the argument (relative to the root, positional and
-last) on `west build`'s configure forms only — `build`/`rebuild`, never the `-t` runs
-(`commands::source_arg`; the build directory an existing `-t` run targets already names itself).
+last) on **every** form, configure and `-t` alike (`commands::source_arg`, whose `target_run`
+is the shape `clean`/`menuconfig`/`dashboard` share). The `-t` runs used to be left without it,
+since they target a build directory that already names its application — true only while that
+directory *exists*. Without one, west falls back to the working directory as the source
+(`build.py::_find_source_dir`), which here is the module's comment-only `CMakeLists.txt`: a
+first `Clean` configured *that* as a plain CMake project and left a `build/` whose cache names
+the wrong source, after which every real build died on CMake's own `does not match the source
+used to generate cache`. `has_build_dir` was the same mistake read from the other side — it
+answered `is_dir()`, so a directory a run never finished counted as configured and the very
+command that would have configured it lost `-b`, `--shield` and `--sysbuild`; the bar is the
+cached board now (`cached_target`), which is also what the platform monitor needs.
+Past the source argument comes `--` and `BuildContext::cmake_args` — the derived `-DBOARD_ROOT`s
+then the project's own `[zephyr] build_args` (`projects::declared_build_args`, one free-text
+line split on whitespace, editable in the configuration screen), the project's second so a
+hand-written `-DBOARD_ROOT` wins the way CMake resolves a repeated `-D`. Like `-b`, they ride a
+*configuration* only: an incremental build reconfigures nothing, and an empty list never leaves
+a bare `--` behind.
 `sysbuild.conf` and the `boards/` fragments are read from `BuildPanel::application_root()` (the
 app dir when one is resolved — `variants()` takes it as its second argument for the fragment half
 while the build-dir half stays at the root). The application arrives three ways:
@@ -892,7 +919,12 @@ one definition now — `BuildPanel::has_application` (root buildable or app reso
 `require_buildable_project`, `project_gate_ok` and the workspace row's warning. The project's
 `chiptui.toml` is the root's own file (there is no second one: an app folder's `chiptui.toml` is
 not read), so `persist_target`'s destination rule is unchanged — a present file receives the
-board/shield pick beside the always-written registry copy, and no file is ever invented.
+board/shield pick beside the always-written registry copy, and no file is ever invented. The
+*application* answer is the exception that writes one (`App::persist_app_dir`): it has no
+registry half to fall back on, and the discovery that would otherwise answer it stops answering
+the day the repository grows a second buildable directory — so an accepted entry row records
+`[zephyr] app` in the project's own file, creating it if that is what it takes, and whoever
+clones the repository is never asked at all.
 
 Both pickers are
 full-frame modals (`src/ui/overlay.rs`'s shared `draw_docs_picker`): the window fills the frame
@@ -1031,7 +1063,12 @@ installed; `pipx install smpmgr` is the hint and a missing one blocks). It write
 `sysbuild.conf`, `VERSION` (only when absent --- one that exists but fails
 `cmake/modules/version.cmake`'s own four-field 0--255 contract is a named refusal, never an
 overwrite), the Kconfig block into `boards/<target>.conf` (never `prj.conf`: a hardware
-symbol there breaks the simulator build) and `[ota]` into `chiptui.toml`. The Kconfig and
+symbol there breaks the simulator build) and `[ota]` into `chiptui.toml`. The first three go
+to `Prepare::app_root` (`BuildPanel::app_dir`, the root when there is none) and the last to
+the root: Zephyr reads those three out of the source directory `west build` is pointed at, so
+for a repository whose application sits one level down a copy at the root is a file nothing
+opens, while `chiptui.toml` is the *project's* file and there is only one of those. The
+Kconfig and
 sysbuild writes go through `scaffold`'s **guarded block** --- the primitive `scaffold::create`
 lacks, since a fragment the project already has must be *extended*: a managed region between
 `# >>> chiptui:ota` markers, everything outside byte-identical, an unclosed or duplicated

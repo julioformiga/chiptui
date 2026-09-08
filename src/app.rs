@@ -32,6 +32,7 @@ use crate::logs::LogStore;
 use crate::process::{ProcessId, ProcessManager};
 use crate::project::ProjectManager;
 
+pub mod address_capture;
 pub mod build_dashboard_view;
 pub mod build_view;
 pub mod devices;
@@ -524,6 +525,16 @@ pub struct App {
     /// a flash-byte window for a versionless verdict, see [`version_capture`].
     /// `None` whenever no capture is in flight.
     version_capture: Option<version_capture::FirmwareVersionCapture>,
+    /// The in-flight live address capture, if any --- the OTA modal's
+    /// answer to "where do I push this" ([`address_capture`]).
+    address_capture: Option<address_capture::AddressCapture>,
+    /// Whether a capture has already been tried for the open OTA panel.
+    /// The automatic one runs *once*: a board whose Kconfig carries no
+    /// address log says nothing, and spending the capture's whole ceiling
+    /// again on every press would put a minute between the user and the
+    /// text field they actually need. The `a` key ignores this --- asking
+    /// again is exactly what it is for.
+    address_capture_tried: bool,
     /// The port the current (or last) live version capture covered; tried
     /// once per selection, same idiom as [`Self::probed_port`] --- a miss or
     /// a timeout falls back to the flash-byte hunt rather than retrying.
@@ -692,6 +703,8 @@ impl App {
             probe: None,
             probed_port: None,
             version_capture: None,
+            address_capture: None,
+            address_capture_tried: false,
             version_capture_port: None,
             restore_pending: false,
             serial_dir: std::path::PathBuf::from("/dev"),

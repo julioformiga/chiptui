@@ -714,26 +714,34 @@ fn the_target_pick_writes_the_repositorys_own_chiptui_and_the_registry() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// Without a `chiptui.toml` the same pick lands only in the user config's
-/// registry --- the machine's memory of the project --- and no file is
-/// invented to receive it.
+/// The application answer is the one that *creates* the file when the
+/// repository has none: unlike the board, it has no registry half to fall
+/// back on, and the discovery that would answer it instead stops answering
+/// the day the repository grows a second application. So the accepted row
+/// writes `[zephyr] app`, and the board pick that follows lands in the
+/// file that answer created --- beside its registry copy, as always.
 #[test]
-fn without_a_chiptui_the_entry_pick_stays_in_the_user_config() {
+fn the_entry_pick_records_the_application_in_the_projects_own_file() {
     let (mut app, root) = repo_app("entry-no-toml", None);
     app.maybe_open_entry_project();
     app.handle(key(KeyCode::Enter));
 
+    let written = std::fs::read_to_string(root.join("chiptui.toml"))
+        .expect("the accepted application is recorded in the project's own file");
+    assert!(written.contains("app = \"app\""), "{written}");
+
     pick_nrf_board(&mut app);
 
+    let written = std::fs::read_to_string(root.join("chiptui.toml")).unwrap();
     assert!(
-        !root.join("chiptui.toml").exists(),
-        "a pick must not invent a project file"
+        written.contains("app = \"app\"") && written.contains("board = \"nrf52840dk/nrf52840\""),
+        "the board answer joins it rather than replacing it:\n{written}"
     );
     let entry = app
         .manager
         .known_projects()
         .entry_for(&root)
-        .expect("the registry carries the answer alone");
+        .expect("the registry carries the board answer too");
     assert_eq!(entry.board.as_deref(), Some("nrf52840dk/nrf52840"));
     let _ = std::fs::remove_dir_all(&root);
 }

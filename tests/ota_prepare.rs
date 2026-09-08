@@ -38,7 +38,7 @@ fn config() -> OtaConfig {
 
 /// A panel over a fresh project with the probe pointed at the fixture.
 fn prepare(root: &Path, tag: &str) -> (Prepare, ProcessManager) {
-    let mut panel = Prepare::new(root, BOARD, None, config());
+    let mut panel = Prepare::new(root, None, BOARD, None, config());
     panel.set_tool(fake(tag));
     (panel, ProcessManager::new())
 }
@@ -93,6 +93,58 @@ fn built_with_slots(root: &Path, dts: &str) {
     std::fs::write(dir.join("zephyr.dts"), dts).unwrap();
 }
 
+/// The root-as-project layout: a repository whose root is an out-of-tree
+/// board module and whose application sits in `app/`. Three of the five
+/// writes are the *application's* --- Zephyr reads `sysbuild.conf`,
+/// `VERSION` and the `boards/` fragment out of the source directory
+/// `west build` is pointed at, so a copy at the repository root above it
+/// is a file nothing ever opens. `chiptui.toml` stays at the root, which
+/// is the project's own file and the only one there is.
+#[test]
+fn a_repository_project_writes_the_application_files_beside_the_application() {
+    let root = temp_project("app-root");
+    let app = root.join("app");
+    std::fs::create_dir_all(&app).unwrap();
+    let mut panel = Prepare::new(&root, Some(app.clone()), BOARD, None, config());
+    panel.set_tool(fake("smpmgr"));
+    let mut processes = ProcessManager::new();
+    panel.probe_requirements(&mut processes);
+    settle_probes(&mut panel, &mut processes);
+    assert!(
+        panel.start().finished,
+        "every step settles: {:?}",
+        panel.steps
+    );
+
+    for name in ["sysbuild.conf", "VERSION", "boards/xiao_esp32c3.conf"] {
+        assert!(
+            app.join(name).is_file(),
+            "{name} belongs to the application"
+        );
+        assert!(
+            !root.join(name).exists(),
+            "{name} must not be written where Zephyr never looks"
+        );
+    }
+    assert!(
+        root.join("chiptui.toml").is_file() && !app.join("chiptui.toml").exists(),
+        "the project's own file stays at the root"
+    );
+
+    // And a re-run reads its own answers back from where it put them.
+    let mut again = Prepare::new(&root, Some(app), BOARD, None, config());
+    again.set_tool(fake("smpmgr"));
+    assert!(
+        again
+            .steps
+            .iter()
+            .all(|state| *state == StepState::Done || *state == StepState::Skipped),
+        "an instrumented project opens with nothing left to do: {:?}",
+        again.steps
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 #[test]
 fn a_plain_project_is_instrumented_end_to_end() {
     let root = temp_project("plain");
@@ -124,12 +176,21 @@ fn a_plain_project_is_instrumented_end_to_end() {
     let fragment = read(&root, "boards/xiao_esp32c3.conf");
     assert!(fragment.contains("# >>> chiptui:ota"));
     assert!(fragment.contains("CONFIG_BOOTLOADER_MCUBOOT=y"));
+    // The flash map the image manager's mcuboot implementation depends on.
+    // Without it nothing selects MCUBOOT_BOOTUTIL_LIB while
+    // `subsys/dfu/img_util` links `-lMCUBOOT_BOOTUTIL` regardless, so a
+    // real board configures, compiles everything and dies at the link.
+    assert!(fragment.contains("CONFIG_IMG_MANAGER=y"));
+    assert!(fragment.contains("CONFIG_FLASH=y"));
+    assert!(fragment.contains("CONFIG_FLASH_MAP=y"));
     assert!(fragment.contains("CONFIG_MCUMGR_TRANSPORT_UDP=y"));
     assert!(fragment.contains("CONFIG_MCUMGR_TRANSPORT_UDP_IPV4=y"));
     assert!(fragment.contains("# CONFIG_NET_MAX_CONN=8"));
     assert!(!fragment.lines().any(|line| line == "CONFIG_NET_MAX_CONN=8"));
     assert!(!fragment.lines().any(|line| line == "CONFIG_NET_SHELL=y"));
     assert!(!fragment.contains("ota-netshell"));
+    // The address log is the other opt-in, off by the same default.
+    assert!(!fragment.contains("ota-address-log"));
 
     // chiptui.toml: the [ota] answers recorded.
     let toml = read(&root, "chiptui.toml");
@@ -140,7 +201,7 @@ fn a_plain_project_is_instrumented_end_to_end() {
 
     // Every required step Done, the opt-in one Skipped.
     for (index, step) in Step::ALL.iter().enumerate() {
-        let expected = if *step == Step::NetShell {
+        let expected = if step.optional() {
             StepState::Skipped
         } else {
             StepState::Done
@@ -174,7 +235,7 @@ fn a_rerun_is_a_noop_with_every_step_done() {
     let (mut again, _) = prepare(&root, "smpmgr");
     assert!(again.next_step().is_none());
     for (index, step) in Step::ALL.iter().enumerate() {
-        let expected = if *step == Step::NetShell {
+        let expected = if step.optional() {
             StepState::Skipped
         } else {
             StepState::Done
@@ -214,7 +275,7 @@ fn the_slot_precondition_blocks_only_when_the_build_says_no() {
         &DTS_WITH_SLOTS.replace("slot1_partition", "storage_partition"),
     );
     let (mut panel, mut processes) = {
-        let mut panel = Prepare::new(&root, BOARD, Some("build".to_string()), config());
+        let mut panel = Prepare::new(&root, None, BOARD, Some("build".to_string()), config());
         panel.set_tool(fake("smpmgr"));
         (panel, ProcessManager::new())
     };
@@ -232,7 +293,7 @@ fn the_slot_precondition_blocks_only_when_the_build_says_no() {
 
     // The same project with a real layout prepares fine.
     built_with_slots(&root, DTS_WITH_SLOTS);
-    let mut panel = Prepare::new(&root, BOARD, Some("build".to_string()), config());
+    let mut panel = Prepare::new(&root, None, BOARD, Some("build".to_string()), config());
     panel.requirements.iter_mut().for_each(|state| {
         state.probe = ToolProbe::Present("0.19.0".to_string());
     });
@@ -405,7 +466,7 @@ fn a_version_file_that_does_not_parse_stops_the_run_by_name() {
         "VERSION_MAJOR = 1\nVERSION_MINOR = 0\nPATCHLEVEL = 0\nVERSION_TWEAK = 0\n",
     )
     .unwrap();
-    let mut panel = Prepare::new(&root, BOARD, None, config());
+    let mut panel = Prepare::new(&root, None, BOARD, None, config());
     panel.requirements.iter_mut().for_each(|state| {
         state.probe = ToolProbe::Present("0.19.0".to_string());
     });
@@ -467,7 +528,7 @@ fn a_serial_transport_prepares_with_the_uart_symbol() {
         address: Some("/dev/ttyACM0".to_string()),
         ..OtaConfig::default()
     };
-    let mut panel = Prepare::new(&root, BOARD, None, target);
+    let mut panel = Prepare::new(&root, None, BOARD, None, target);
     panel.set_tool(fake("smpmgr"));
     panel.requirements.iter_mut().for_each(|state| {
         state.probe = ToolProbe::Present("0.19.0".to_string());
@@ -515,7 +576,7 @@ fn the_transport_check_reads_the_built_config_back() {
         "CONFIG_NET_UDP=y\nCONFIG_MCUMGR_TRANSPORT_UDP=y\n",
     )
     .unwrap();
-    let panel = Prepare::new(&root, BOARD, Some("build".to_string()), config());
+    let panel = Prepare::new(&root, None, BOARD, Some("build".to_string()), config());
     assert!(
         matches!(panel.transport, TransportCheck::Enabled(_)),
         "{:?}",
@@ -526,7 +587,7 @@ fn the_transport_check_reads_the_built_config_back() {
     // .config cannot have known about a block that does not exist, so this
     // is `Stale`, not an accusation of an unmet dependency.
     std::fs::write(dir.join(".config"), "CONFIG_NET_UDP=y\n").unwrap();
-    let panel = Prepare::new(&root, BOARD, Some("build".to_string()), config());
+    let panel = Prepare::new(&root, None, BOARD, Some("build".to_string()), config());
     assert!(
         matches!(panel.transport, TransportCheck::Stale(_)),
         "no fragment yet means the build could not have carried it: {:?}",
@@ -543,7 +604,7 @@ fn the_transport_check_reads_the_built_config_back() {
     std::thread::sleep(Duration::from_millis(20));
     std::fs::write(dir.join(".config"), "CONFIG_NET_UDP=y\n").unwrap();
 
-    let panel = Prepare::new(&root, BOARD, Some("build".to_string()), config());
+    let panel = Prepare::new(&root, None, BOARD, Some("build".to_string()), config());
     assert!(
         matches!(panel.transport, TransportCheck::Dropped(_)),
         "a current build without the symbol is the trap: {:?}",
@@ -632,7 +693,7 @@ fn the_transport_check_reads_the_application_domain_not_sysbuilds_own_config() {
     )
     .unwrap();
 
-    let panel = Prepare::new(&root, BOARD, Some("build".to_string()), config());
+    let panel = Prepare::new(&root, None, BOARD, Some("build".to_string()), config());
     match &panel.transport {
         TransportCheck::Enabled(path) => assert!(
             path.ends_with("build/app/zephyr/.config"),

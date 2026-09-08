@@ -279,6 +279,25 @@ pub fn resolve_app(root: &Path) -> Option<AppSource> {
     entry_child(root).map(AppSource::Dir)
 }
 
+/// The extra configuration arguments the project's own `chiptui.toml`
+/// declares (`[zephyr] build_args`), split on whitespace.
+///
+/// One line of free text rather than an array, because it is what a user
+/// would paste after `--` on a hand-run `west build` and the editor screen
+/// shows it back the same way. The split is the naive one: a value with a
+/// space inside quotes is not supported, and a path with a space in it has
+/// to be spelled without one --- worth stating, since the alternative is a
+/// second shell-quoting implementation in a crate that deliberately never
+/// runs a shell.
+pub fn declared_build_args(root: &Path) -> Vec<String> {
+    let Ok(text) = std::fs::read_to_string(root.join(crate::project::config::FILE_NAME)) else {
+        return Vec::new();
+    };
+    crate::project::config::key_value(&text, crate::project::config::ZEPHYR_SECTION, "build_args")
+        .map(|value| value.split_whitespace().map(str::to_string).collect())
+        .unwrap_or_default()
+}
+
 /// The application directory the project's own `chiptui.toml` declares
 /// (`[zephyr] app`, relative to the project root). None when the file or
 /// the key is absent.

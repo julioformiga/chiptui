@@ -264,6 +264,7 @@ impl App {
         }
         self.build = Some(panel);
         self.refresh_board_roots();
+        self.refresh_build_args();
         self.refresh_variants();
         // One place seeds a panel from the resolved environment --- the
         // west invocation *and* which of the two environment rows the

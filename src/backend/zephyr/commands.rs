@@ -50,17 +50,16 @@ pub fn build(ctx: &BuildContext<'_>) -> Command {
         }
         command = shield_args(command, ctx.shield);
         command = sysbuild_args(command, ctx.sysbuild);
+        command = source_arg(command, ctx.source_dir);
+        return cmake_args(command, ctx.cmake_args);
     }
     source_arg(command, ctx.source_dir)
 }
 
 /// `west build -t clean` --- removes build artifacts through CMake's `clean`
-/// target. Requires an existing configured build directory; without one,
-/// `west` itself explains what is missing.
-pub fn clean(dir: &str) -> Command {
-    build_dir(Command::new(PROGRAM).arg("build"), dir)
-        .arg("-t")
-        .arg("clean")
+/// target, over an existing configured build directory.
+pub fn clean(dir: &str, source: Option<&str>) -> Command {
+    target_run(dir, "clean", source)
 }
 
 /// `west build --pristine=always [-b BOARD] [--shield SHIELD]` --- discards
@@ -76,21 +75,58 @@ pub fn rebuild(ctx: &BuildContext<'_>) -> Command {
     }
     command = shield_args(command, ctx.shield);
     command = sysbuild_args(command, ctx.sysbuild);
-    source_arg(command, ctx.source_dir)
+    command = source_arg(command, ctx.source_dir);
+    cmake_args(command, ctx.cmake_args)
 }
 
 /// Appends the application's source directory when the project root is
 /// not itself the application: `west build`'s positional argument, so the
 /// command runs in the root (where the repository keeps its `build/`)
-/// while configuring the application one level down. Deliberately not
-/// attached to the `-t` invocations (`clean`, `menuconfig`, the reports):
-/// those run against an existing build directory, which the root already
-/// names.
+/// while configuring the application one level down.
+///
+/// It rides the `-t` invocations (`clean`, `menuconfig`, the reports) too,
+/// which used to be left without it on the grounds that they run against
+/// an existing build directory that already names its application. That
+/// holds only while the directory *exists*: without one, `west` falls back
+/// to the working directory as the source (`build.py::_find_source_dir`),
+/// which for this layout is the repository root --- the board module's
+/// comment-only `CMakeLists.txt`. Cmake configures that as a plain
+/// project and leaves a `build/` whose cache names the wrong source, after
+/// which every real build dies on CMake's own "does not match the source
+/// used to generate cache". Naming the application costs nothing when the
+/// directory is already configured (west compares it against the cache's
+/// `APP_DIR` and they agree) and is the difference between a first `Clean`
+/// being a no-op and it poisoning the project.
 fn source_arg(command: Command, source: Option<&str>) -> Command {
     match source {
         Some(source) => command.arg(source),
         None => command,
     }
+}
+
+/// `west build [-d DIR] -t TARGET [SOURCE]` --- the shape every `-t` run
+/// shares.
+fn target_run(dir: &str, target: &str, source: Option<&str>) -> Command {
+    let command = build_dir(Command::new(PROGRAM).arg("build"), dir)
+        .arg("-t")
+        .arg(target);
+    source_arg(command, source)
+}
+
+/// Appends `-- ARG...` --- the extra CMake arguments a configuration
+/// carries ([`BuildContext::cmake_args`]).
+///
+/// `--` is west's own separator between its options and the build system's
+/// (`west build ... [source_dir] -- [cmake_opt ...]`), so it goes *after*
+/// the positional source directory and is emitted only when there is
+/// something to separate: a bare trailing `--` would be noise in every
+/// confirm dialog that quotes the command.
+fn cmake_args(command: Command, args: &[String]) -> Command {
+    if args.is_empty() {
+        return command;
+    }
+    args.iter()
+        .fold(command.arg("--"), |command, arg| command.arg(arg))
 }
 
 /// Appends `--sysbuild` when the project builds one.
@@ -123,12 +159,10 @@ fn shield_args(command: Command, shield: Option<&str>) -> Command {
 /// `west build -t menuconfig` --- the interactive Kconfig editor over the
 /// configured build directory. Interactive (ncurses): it is run with the
 /// terminal suspended, like `$EDITOR`, never through the piped process
-/// manager. Requires a configured build directory; `west` explains what is
-/// missing when there is none.
-pub fn menuconfig(dir: &str) -> Command {
-    build_dir(Command::new(PROGRAM).arg("build"), dir)
-        .arg("-t")
-        .arg("menuconfig")
+/// manager. Meant for a configured build directory; without one `west`
+/// configures first and, having no `-b` here, explains what is missing.
+pub fn menuconfig(dir: &str, source: Option<&str>) -> Command {
+    target_run(dir, "menuconfig", source)
 }
 
 /// `scripts/footprint/size_report` --- the per-symbol memory tree the
@@ -194,7 +228,7 @@ pub fn size_report(
 /// `west build -t dashboard` --- the Zephyr 4.4 build dashboard: one HTML
 /// report consolidating the ram/rom reports, the Kconfig symbols, the
 /// initialization levels and the device tree, which the target itself
-/// opens in the browser. Like every other `-t` target it needs a
+/// opens in the browser. Like every other `-t` target it is meant for a
 /// configured build directory; `west` explains what is missing when there
 /// is none, which is why nothing upstream gates on the board answer.
 ///
@@ -208,13 +242,13 @@ pub fn size_report(
 /// ([`super::report::ReportPaths::domain`]), which is also the image whose
 /// artifacts the in-terminal dashboard reads --- so the two reports
 /// describe the same build.
-pub fn dashboard(dir: &str, domain: Option<&str>) -> Command {
+pub fn dashboard(dir: &str, domain: Option<&str>, source: Option<&str>) -> Command {
     let command = build_dir(Command::new(PROGRAM).arg("build"), dir);
     let command = match domain {
         Some(domain) => command.arg("--domain").arg(domain),
         None => command,
     };
-    command.arg("-t").arg("dashboard")
+    source_arg(command.arg("-t").arg("dashboard"), source)
 }
 
 /// `west update` --- syncs every project in the manifest (`west.yml`) into
@@ -338,6 +372,7 @@ mod tests {
             build_dir,
             sysbuild: false,
             source_dir: None,
+            cmake_args: &[],
         }
     }
 
@@ -367,9 +402,57 @@ mod tests {
             build(&context).to_string(),
             "west build -b ttgo_t_display_s3/esp32s3/procpu"
         );
-        // The `-t` runs take no source: the build directory names itself.
-        assert_eq!(menuconfig("build").to_string(), "west build -t menuconfig");
-        assert_eq!(clean("build").to_string(), "west build -t clean");
+        // The `-t` runs carry it too: without a build directory west would
+        // otherwise fall back to the cwd, which for this layout is the
+        // board module and not an application at all.
+        assert_eq!(
+            menuconfig("build", Some("app")).to_string(),
+            "west build -t menuconfig app"
+        );
+        assert_eq!(
+            clean("build", Some("app")).to_string(),
+            "west build -t clean app"
+        );
+        assert_eq!(
+            dashboard("build", Some("blinky"), Some("app")).to_string(),
+            "west build --domain blinky -t dashboard app"
+        );
+    }
+
+    /// The extra configuration arguments ride past `--`, after the
+    /// positional source directory, and only on a configuration.
+    #[test]
+    fn extra_cmake_arguments_ride_a_configuration_past_a_double_dash() {
+        let roots = [
+            "-DBOARD_ROOT=/repo".to_string(),
+            "-DEXTRA_CONF_FILE=debug.conf".to_string(),
+        ];
+        let mut context = ctx(
+            Some("ttgo_t_display_s3/esp32s3/procpu"),
+            None,
+            false,
+            "build",
+        );
+        context.source_dir = Some("app");
+        context.cmake_args = &roots;
+        assert_eq!(
+            build(&context).to_string(),
+            "west build -b ttgo_t_display_s3/esp32s3/procpu app -- -DBOARD_ROOT=/repo -DEXTRA_CONF_FILE=debug.conf"
+        );
+        assert_eq!(
+            rebuild(&context).to_string(),
+            "west build --pristine=always -b ttgo_t_display_s3/esp32s3/procpu app -- -DBOARD_ROOT=/repo -DEXTRA_CONF_FILE=debug.conf"
+        );
+        // An incremental build reconfigures nothing, so it carries none of
+        // it --- and an empty list never leaves a bare `--` behind.
+        context.build_dir_exists = true;
+        assert_eq!(build(&context).to_string(), "west build app");
+        context.build_dir_exists = false;
+        context.cmake_args = &[];
+        assert_eq!(
+            build(&context).to_string(),
+            "west build -b ttgo_t_display_s3/esp32s3/procpu app"
+        );
     }
 
     /// The three flag forms that are load-bearing, pinned against the call
@@ -493,7 +576,7 @@ mod tests {
             "west build -d build-nrf52840"
         );
         assert_eq!(
-            clean("build-nrf52840").to_string(),
+            clean("build-nrf52840", None).to_string(),
             "west build -d build-nrf52840 -t clean"
         );
         assert_eq!(
@@ -512,7 +595,10 @@ mod tests {
         );
         // The default stays implicit: `-d build` would be pure noise on the
         // path everyone walks.
-        assert_eq!(clean(BUILD_DIR_DEFAULT).to_string(), "west build -t clean");
+        assert_eq!(
+            clean(BUILD_DIR_DEFAULT, None).to_string(),
+            "west build -t clean"
+        );
     }
 
     #[test]
@@ -528,17 +614,20 @@ mod tests {
 
     #[test]
     fn clean_targets_the_existing_build() {
-        assert_eq!(clean(BUILD_DIR_DEFAULT).to_string(), "west build -t clean");
+        assert_eq!(
+            clean(BUILD_DIR_DEFAULT, None).to_string(),
+            "west build -t clean"
+        );
     }
 
     #[test]
     fn menuconfig_targets_the_build_directory() {
         assert_eq!(
-            menuconfig(BUILD_DIR_DEFAULT).to_string(),
+            menuconfig(BUILD_DIR_DEFAULT, None).to_string(),
             "west build -t menuconfig"
         );
         assert_eq!(
-            menuconfig("build-release").to_string(),
+            menuconfig("build-release", None).to_string(),
             "west build -d build-release -t menuconfig"
         );
     }
@@ -546,11 +635,11 @@ mod tests {
     #[test]
     fn dashboard_is_a_build_target_like_the_others() {
         assert_eq!(
-            dashboard(BUILD_DIR_DEFAULT, None).to_string(),
+            dashboard(BUILD_DIR_DEFAULT, None, None).to_string(),
             "west build -t dashboard"
         );
         assert_eq!(
-            dashboard("build-release", None).to_string(),
+            dashboard("build-release", None, None).to_string(),
             "west build -d build-release -t dashboard"
         );
     }
@@ -560,11 +649,11 @@ mod tests {
         // Sysbuild's top level has no `dashboard` target to forward to, so
         // an undomained run dies on an unknown target.
         assert_eq!(
-            dashboard(BUILD_DIR_DEFAULT, Some("blinky")).to_string(),
+            dashboard(BUILD_DIR_DEFAULT, Some("blinky"), None).to_string(),
             "west build --domain blinky -t dashboard"
         );
         assert_eq!(
-            dashboard("build-release", Some("blinky")).to_string(),
+            dashboard("build-release", Some("blinky"), None).to_string(),
             "west build -d build-release --domain blinky -t dashboard"
         );
     }

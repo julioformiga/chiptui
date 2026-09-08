@@ -99,6 +99,11 @@ pub enum ProjectConfigRow {
     ZephyrWest,
     ZephyrBoard,
     ZephyrShield,
+    /// The application `west build` is pointed at, when the project root
+    /// is a repository whose application sits one level down.
+    ZephyrApp,
+    /// Extra arguments every configuration carries past `--`.
+    ZephyrBuildArgs,
     OtaMethod,
     OtaTransport,
     OtaAddress,
@@ -137,6 +142,8 @@ impl ProjectConfigRow {
             Self::ZephyrWest => Some((config::ZEPHYR_SECTION, "west")),
             Self::ZephyrBoard => Some((config::ZEPHYR_SECTION, "board")),
             Self::ZephyrShield => Some((config::ZEPHYR_SECTION, "shield")),
+            Self::ZephyrApp => Some((config::ZEPHYR_SECTION, "app")),
+            Self::ZephyrBuildArgs => Some((config::ZEPHYR_SECTION, "build_args")),
             Self::OtaMethod => Some((config::OTA_SECTION, "method")),
             Self::OtaTransport => Some((config::OTA_SECTION, "transport")),
             Self::OtaAddress => Some((config::OTA_SECTION, "address")),
@@ -189,6 +196,8 @@ impl ProjectConfigRow {
             Self::ZephyrWest => "west program",
             Self::ZephyrBoard => "Target board",
             Self::ZephyrShield => "Shield",
+            Self::ZephyrApp => "Application folder",
+            Self::ZephyrBuildArgs => "Extra build arguments",
             Self::OtaMethod => "Mechanism",
             Self::OtaTransport => "Transport",
             Self::OtaAddress => "Board address",
@@ -254,6 +263,12 @@ impl ProjectConfigRow {
             Self::ZephyrWest => "An explicit west program, instead of the workspace venv's.",
             Self::ZephyrBoard => "The board target west build -b is given.",
             Self::ZephyrShield => "The shield on that board, passed as --shield.",
+            Self::ZephyrApp => {
+                "The folder west build configures, when it is not the project folder itself."
+            }
+            Self::ZephyrBuildArgs => {
+                "Arguments every configuration passes after --, e.g. -DEXTRA_CONF_FILE=debug.conf."
+            }
             Self::OtaMethod => "The update mechanism. mcumgr is the only one implemented.",
             Self::OtaTransport => "How smpmgr reaches the board.",
             Self::OtaAddress => "The board's address for that transport.",
@@ -421,6 +436,8 @@ impl ProjectConfigPanel {
                 ProjectConfigRow::ZephyrWest,
                 ProjectConfigRow::ZephyrBoard,
                 ProjectConfigRow::ZephyrShield,
+                ProjectConfigRow::ZephyrApp,
+                ProjectConfigRow::ZephyrBuildArgs,
             ]);
             if self.variants() > 0 {
                 rows.push(ProjectConfigRow::Variants);
