@@ -277,15 +277,18 @@ unless `mouse_enabled` (`set_mouse_enabled` is `main.rs`'s mirror of the guard),
 recomputed per gesture, and the file panes' clicks map through the scroll offset their
 previous frame settled on and published (`WorkspacePanel::files_offset`,
 `Browser::local_offset`/`device_offset` --- `drawn_list_row`; the lists seed their `ListState`
-from it, so a click on a visible row selects without re-anchoring the view), and a
-*directory's* click is its own `Enter` (`click_row`: the browser's entry menu, the Zephyr
-Files pane's descent, the `..` parent row's step back up) while a file's click only selects
---- its activation stays the double click (`maybe_double_click`); the *trailing* half of a
-habitual double click on a folder is swallowed (`take_click_guard`, same spot within the
-double-click window), since it arrives on a pane that already moved and would undo the entry
-it belongs to --- closing the menu the first half opened (the click-outside rule), or, in the
-Files pane, clicking the `..` that just took the vacated row and bouncing straight back out
---- while the overlay
+from it, so a click on a visible row selects without re-anchoring the view), where **one
+click selects and the double click activates** (`maybe_double_click`), for every row of every
+file list --- a *directory* and the `..` parent row included: the second click sends whatever
+`Enter` means in the pane that was clicked (the browser's entry menu, the Zephyr Files pane's
+descent, the parent row's step back up). A single-click descent was tried and reverted: it
+turned the habitual double click on a folder into two gestures aimed at two different
+listings, so the trailing half had to be swallowed by a guard (`click_guard`, same spot within
+the double-click window) or it would undo the entry it belonged to --- closing the menu the
+first half opened (the click-outside rule), or, in the Files pane, clicking the `..` that just
+took the vacated row and bouncing straight back out. Pairing the gesture is what removes both
+the guard and the class of bug it patched; the home screen keeps its own rule (a launcher row
+is a button, and one click opens the project). The overlay
 lists keep the fresh-`ListState` minimal-scroll reproduction (`list_row`), stacked buttons land on their label rows through `run_build_action`/
 `run_flash_pane_action`, tab strips are walked by their `Tabs` ranges
 (`log_strip_tabs`/`device_strip_tabs`), and the wheel steps the cursor-walked list under the

@@ -79,14 +79,6 @@ impl App {
 
     /// Entry point for [`crate::event::AppEvent::Mouse`].
     pub(super) fn on_mouse(&mut self, event: MouseEvent) {
-        // A click that entered a directory swallows the one right behind
-        // it on the same spot (see `click_row`): the listing under the
-        // pointer is not the one that was clicked anymore.
-        if matches!(event.kind, MouseEventKind::Down(MouseButton::Left))
-            && self.take_click_guard((event.column, event.row))
-        {
-            return;
-        }
         // The same interception order `on_key` follows: a modal overlay
         // owns the whole screen, and a gesture under it is not an answer
         // to its question.
@@ -275,9 +267,9 @@ impl App {
     /// The browser's local pane.
     fn click_local(&mut self, point: (u16, u16), rect: Rect) {
         self.focus = Focus::FilesLocal;
-        // The click's verdict is read under the borrow that sets the
-        // cursor, then played once the browser is free for the `Enter`
-        // a directory's click sends.
+        // The clicked row is read under the borrow that sets the cursor,
+        // then played once the browser is free for the `Enter` a second
+        // click sends.
         let mut clicked = None;
         if let Some(browser) = self.browser.as_mut() {
             browser.focus = Side::Local;
@@ -290,11 +282,11 @@ impl App {
                 0,
             ) {
                 browser.local_cursor = index;
-                clicked = Some((index, browser.selected_is_dir(Side::Local)));
+                clicked = Some(index);
             }
         }
-        if let Some((index, is_dir)) = clicked {
-            self.click_row(Focus::FilesLocal, point, index, is_dir);
+        if let Some(index) = clicked {
+            self.maybe_double_click(Focus::FilesLocal, index);
         }
     }
 
@@ -303,9 +295,9 @@ impl App {
     /// is a button stack and lands through [`Self::click_flash_stack`].
     fn click_device(&mut self, point: (u16, u16), rect: Rect) {
         self.focus = Focus::FilesDevice;
-        // The click's verdict is read under the borrow that sets the
-        // cursor, then played once the browser is free for the `Enter`
-        // a directory's click sends (`click_local`'s shape).
+        // The clicked row is read under the borrow that sets the cursor,
+        // then played once the browser is free for the `Enter` a second
+        // click sends (`click_local`'s shape).
         let mut clicked = None;
         if let Some(browser) = self.browser.as_mut() {
             browser.focus = Side::Device;
@@ -323,11 +315,11 @@ impl App {
                 1,
             ) {
                 browser.device_cursor = index;
-                clicked = Some((index, browser.selected_is_dir(Side::Device)));
+                clicked = Some(index);
             }
         }
-        if let Some((index, is_dir)) = clicked {
-            self.click_row(Focus::FilesDevice, point, index, is_dir);
+        if let Some(index) = clicked {
+            self.maybe_double_click(Focus::FilesDevice, index);
         }
     }
 
@@ -350,68 +342,19 @@ impl App {
         );
         self.focus = Focus::Workspace;
         if let Some(index) = hit {
-            let is_dir = {
-                let panel = self.workspace.as_mut().unwrap();
-                panel.files_cursor = index;
-                // The `..` parent row is a directory too: its one click
-                // steps back up, the same `Enter` it answers on the
-                // keyboard.
-                panel.on_parent_row() || panel.files_selected().is_some_and(|entry| entry.is_dir)
-            };
-            self.click_row(Focus::Workspace, point, index, is_dir);
+            self.workspace.as_mut().unwrap().files_cursor = index;
+            self.maybe_double_click(Focus::Workspace, index);
         }
-    }
-
-    /// A file list's click: the row is selected, and a *directory* is
-    /// entered by the same click --- `Enter`'s own meaning in the pane
-    /// that was clicked (the browser's entry menu, the Zephyr Files
-    /// pane's descent, the `..` parent row's step back up), never a
-    /// meaning of its own. A file only selects: its activation stays
-    /// the double click, so opening a menu and picking an entry cannot
-    /// collapse into one accidental press.
-    fn click_row(&mut self, pane: Focus, point: (u16, u16), index: usize, is_dir: bool) {
-        if is_dir {
-            // The pane's state changes under the `Enter` (a menu opens,
-            // the listing changes), so the double-click window is reset
-            // rather than left aimed at a row that no longer means the
-            // same thing --- and the second half of a habitual double
-            // click is swallowed outright (`take_click_guard`), since
-            // arriving on the pane's *new* state it would undo the entry
-            // it belongs to: in the browser it lands outside the menu
-            // this click just opened and closes it (the click-outside
-            // rule), in the Files pane it descends a second level the
-            // user never chose.
-            self.last_click = None;
-            self.click_guard = Some((point, std::time::Instant::now()));
-            self.on_key(ratatui::crossterm::event::KeyEvent::new(
-                KeyCode::Enter,
-                KeyModifiers::NONE,
-            ));
-            return;
-        }
-        self.maybe_double_click(pane, index);
-    }
-
-    /// Whether this click is the trailing half of a double click on a
-    /// directory, and so belongs to the row that was already entered
-    /// rather than to whatever now sits under the pointer. Reading it
-    /// clears it either way: the guard covers one click, and only the
-    /// one a double click actually is --- the *same spot*, inside the
-    /// double-click window. A click a row away is the user navigating
-    /// on, twice in a second, which is what the single-click descent
-    /// invites in the first place.
-    fn take_click_guard(&mut self, point: (u16, u16)) -> bool {
-        let Some((at_point, at)) = self.click_guard.take() else {
-            return false;
-        };
-        at_point == point && at.elapsed() < DOUBLE_CLICK
     }
 
     /// A second click on the same row soon enough is the row's `Enter`:
     /// in the browser that opens the entry's action menu, in the Zephyr
     /// Files pane it descends into the directory or opens the file in
     /// `$EDITOR` --- whatever `Enter` means in the pane that was clicked,
-    /// never a meaning of its own.
+    /// never a meaning of its own. A *directory* is no exception: one
+    /// click selects it, two enter it (the `..` parent row included), so
+    /// every row of every file list answers the one gesture and a stray
+    /// press can never move the listing under the pointer.
     fn maybe_double_click(&mut self, pane: Focus, index: usize) {
         let now = std::time::Instant::now();
         let repeat = matches!(self.last_click, Some((p, i, at))
@@ -2873,13 +2816,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// One click on a *directory* enters it: the row is selected and its
-    /// `Enter` sent in the same gesture --- the browser's entry menu
-    /// (defaulted to Open), never a meaning of the click's own. A file
-    /// keeps the select-only first click (the test above), so opening a
-    /// menu and picking an entry cannot collapse into one press.
+    /// A *directory* answers the same double click a file does: the first
+    /// click only selects it, the second sends its `Enter` --- the
+    /// browser's entry menu (defaulted to Open). One gesture for every row
+    /// of the list, so a stray press never moves the listing under the
+    /// pointer.
     #[test]
-    fn one_click_enters_a_directory_in_the_browser() {
+    fn a_double_click_enters_a_directory_in_the_browser() {
         let root = project_dir("dirclick", 1);
         std::fs::create_dir_all(root.join("adir")).unwrap();
         let mut app = app_with_backend(BackendKind::MicroPython, &root);
@@ -2890,57 +2833,32 @@ mod tests {
             .position(|l| l.contains("adir"))
             .expect("the directory's row is drawn") as u16;
         click(&mut app, 2, row);
+        let browser = app.browser.as_ref().unwrap();
+        assert_eq!(browser.local_entries[browser.local_cursor].name, "adir");
+        assert!(
+            app.overlay.is_none(),
+            "one click on a directory selects it, nothing more"
+        );
+        click(&mut app, 2, row);
         assert!(
             matches!(
                 &app.overlay,
                 Some(Overlay::FileActions { is_dir: true, name, .. })
                     if name.as_str() == "adir"
             ),
-            "one click on a directory opens its menu, like Enter"
+            "the second click opens the directory's menu, like Enter"
         );
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// The habitual double click on a folder must not undo the entry its
-    /// first half made: the second click arrives on a pane that already
-    /// moved --- in the browser it lands outside the menu just opened and
-    /// would close it, in the Files pane it would descend a level nobody
-    /// chose --- so it is swallowed. Only that one click, and only inside
-    /// the double-click window.
+    /// The Zephyr Files pane has the same double-click descent, plus the
+    /// `..` parent row a below-root listing leads with: two clicks on it
+    /// step back up, the `Enter` the row answers on the keyboard. The
+    /// parent row lands on the row the entered directory just vacated, so
+    /// only the pairing keeps a hurried second gesture from bouncing
+    /// straight back out.
     #[test]
-    fn the_second_half_of_a_double_click_on_a_directory_is_swallowed() {
-        let root = project_dir("dirdbl", 1);
-        std::fs::create_dir_all(root.join("adir")).unwrap();
-        let mut app = app_with_backend(BackendKind::MicroPython, &root);
-        app.browser = Some(Browser::new(&root));
-        let lines = render(&mut app, 100, 40);
-        let row = lines
-            .iter()
-            .position(|l| l.contains("adir"))
-            .expect("the directory's row is drawn") as u16;
-
-        click(&mut app, 2, row);
-        assert!(app.overlay.is_some(), "the first click opened the menu");
-        // The second half of the gesture, on the same spot: outside the
-        // popup, which is where the click-outside rule would close it.
-        click(&mut app, 2, row);
-        assert!(
-            matches!(&app.overlay, Some(Overlay::FileActions { name, .. }) if name == "adir"),
-            "the menu the first click opened stays open"
-        );
-
-        // The guard covers exactly one click: the next one is the user's
-        // again, and closes the menu the way any click outside it does.
-        click(&mut app, 2, row);
-        assert_eq!(app.overlay, None, "a third click is a gesture of its own");
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    /// The Zephyr Files pane has the same single-click descent, plus the
-    /// `..` parent row a below-root listing leads with: clicking it steps
-    /// back up, the `Enter` the row answers on the keyboard.
-    #[test]
-    fn one_click_enters_a_directory_and_the_parent_row_in_the_files_pane() {
+    fn a_double_click_enters_a_directory_and_the_parent_row_in_the_files_pane() {
         let root = project_dir("wsdir", 0);
         std::fs::create_dir_all(root.join("src")).unwrap();
         let mut app = app_with_backend(BackendKind::Zephyr, &root);
@@ -2951,38 +2869,36 @@ mod tests {
             .position(|l| l.contains("📁 src"))
             .expect("the directory's row is drawn") as u16;
         click(&mut app, 2, row);
-        let panel = app.workspace.as_ref().unwrap();
         assert_eq!(
-            panel.files_path,
-            root.join("src"),
-            "one click descends, like Enter"
+            app.workspace.as_ref().unwrap().files_path,
+            root,
+            "one click selects the row and stays put"
         );
+        click(&mut app, 2, row);
+        let panel = app.workspace.as_ref().unwrap();
+        assert_eq!(panel.files_path, root.join("src"), "two clicks descend");
         assert!(panel.on_parent_row());
 
-        // The `..` parent row leads the below-root listing, and it lands
-        // on the row the clicked directory just vacated --- so a habitual
-        // double click would descend and bounce straight back out. The
-        // guard swallows that trailing half (`take_click_guard`).
         let lines = render(&mut app, 100, 40);
         let parent = lines
             .iter()
             .position(|l| l.contains("📁 .."))
             .expect("the parent row leads") as u16;
         assert_eq!(parent, row, "the parent row takes the vacated row");
+        // The descent consumed its own pair, so the click behind it is a
+        // fresh single one: it selects the parent row and no more.
         click(&mut app, 2, parent);
         assert_eq!(
             app.workspace.as_ref().unwrap().files_path,
             root.join("src"),
-            "the second half of a double click does not undo the descent"
+            "a click right behind the descent does not undo it"
         );
-
-        // A deliberate click on it, though, is the way back out --- what
-        // the user's own pause between gestures makes of it, and what the
-        // guard's window expiring amounts to here.
-        app.click_guard = None;
         click(&mut app, 2, parent);
-        let panel = app.workspace.as_ref().unwrap();
-        assert_eq!(panel.files_path, root, "one click on `..` steps back up");
+        assert_eq!(
+            app.workspace.as_ref().unwrap().files_path,
+            root,
+            "two clicks on `..` step back up"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
