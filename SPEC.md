@@ -1331,6 +1331,12 @@ build/flash failure does not corrupt the terminal state.
 > discovery for a backend without `mpremote devs` is a plain USB serial
 > walk (`device::usb_serial_ports`: `/dev/ttyACM*`, `ttyUSB*`, …) feeding
 > the same selection/picker flow.
+>
+> The interactive session is rendered by a full VT100 cell grid fed with raw
+> PTY bytes, not by the line-oriented process console. Cursor movement,
+> colours, line redraw, clear-screen sequences and terminal-sized completion
+> columns therefore behave as they do in a standalone terminal; the PTY and
+> grid follow the Monitor pane's geometry and retain bounded scrollback.
 
 ## 11. UI / UX
 

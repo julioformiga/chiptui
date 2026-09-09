@@ -1,4 +1,4 @@
-//! VT-aware line console for streamed device output.
+//! VT-aware line console for semantic captures and timestamped run output.
 //!
 //! A device REPL is not line-oriented: it echoes control sequences to redraw
 //! the line being edited. MicroPython's readline answers a backspace with
@@ -7,16 +7,16 @@
 //! the escape bodies as literal `[K` garbage (`AGENTS.md` §6: interactive
 //! sessions are not ordinary line-oriented output).
 //!
-//! [`LineConsole`] interprets just enough of VT100 for the display to match
-//! what a terminal would show: cursor movement within the current line,
-//! carriage return, backspace and erase-in-line. Everything else (SGR colors,
-//! OSC titles, mode switches) is consumed silently rather than rendered,
-//! because device output here is display-only.
+//! [`LineConsole`] interprets the small subset of VT100 needed to recover
+//! readable lines: cursor movement within the current line, carriage return,
+//! backspace and erase-in-line. The interactive Monitor itself uses a full
+//! `vt100` grid; this parser remains its plain-text side capture for device
+//! heuristics and backs line-oriented run/probe output.
 //!
 //! The escape parser keeps state across chunks: a sequence split over two PTY
 //! reads is still recognized.
 
-/// A line type [`LineConsole`] can edit: plain text for the monitor,
+/// A line type [`LineConsole`] can edit: plain text for semantic captures or
 /// timestamped text for run output.
 pub trait ConsoleLine: Sized {
     /// A new empty line. Called when output starts a line, so timestamped

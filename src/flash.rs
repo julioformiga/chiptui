@@ -19,7 +19,7 @@ use crate::backend::tool_available;
 use crate::files::{self, LocalEntry};
 use crate::firmware_id::{self, FirmwareVerdict, FlashFirmware};
 use crate::logs::Level;
-use crate::process::{Outcome, ProcessEvent, ProcessId, ProcessManager, Stream};
+use crate::process::{LineEnd, Outcome, ProcessEvent, ProcessId, ProcessManager, Stream};
 
 /// esptool operations can run for minutes on a large image.
 pub const FLASH_TIMEOUT: Duration = Duration::from_secs(180);
@@ -281,6 +281,9 @@ pub struct FlashPanel {
     pub options_focus: OptionsField,
     /// Lines from the current or most recently finished run, in arrival order.
     pub output: Vec<String>,
+    /// The visible tail ended with a bare carriage return, so the next chunk
+    /// redraws that row instead of appending another one.
+    output_replaces_last: bool,
     pub state: RunState,
     /// The last finished user-started command, for the actions tab's
     /// state line (see [`FlashReport`]).
@@ -408,6 +411,7 @@ impl FlashPanel {
             options: FlashOptions::default(),
             options_focus: OptionsField::Chip,
             output: Vec::new(),
+            output_replaces_last: false,
             state: RunState::default(),
             last: None,
             pending_action: None,
@@ -962,6 +966,7 @@ impl FlashPanel {
         };
 
         let id = processes.spawn(command, FLASH_TIMEOUT);
+        self.output_replaces_last = false;
         self.in_flight = Some(RunningCommand {
             id,
             action,
@@ -993,7 +998,12 @@ impl FlashPanel {
             // Raw PTY bytes belong to the Terminal tab's emulator alone;
             // esptool runs piped.
             ProcessEvent::Output { .. } | ProcessEvent::Bytes { .. } => return update,
-            ProcessEvent::Line { id, stream, text } => {
+            ProcessEvent::Line {
+                id,
+                stream,
+                text,
+                end,
+            } => {
                 if let Some(running) = &mut self.in_flight
                     && running.id == *id
                 {
@@ -1006,7 +1016,7 @@ impl FlashPanel {
                     if let Some(progress) = crate::progress::detect(text) {
                         running.progress = Some(progress);
                     }
-                    self.output.push(text.clone());
+                    self.push_process_output(text.clone(), *end);
                 }
                 return update;
             }
@@ -1028,6 +1038,17 @@ impl FlashPanel {
         }
 
         update
+    }
+
+    fn push_process_output(&mut self, line: String, end: LineEnd) {
+        if self.output_replaces_last
+            && let Some(last) = self.output.last_mut()
+        {
+            *last = line;
+        } else {
+            self.output.push(line);
+        }
+        self.output_replaces_last = end == LineEnd::CarriageReturn;
     }
 
     fn complete(
@@ -1587,6 +1608,28 @@ mod tests {
 
     fn fake_esptool() -> String {
         format!("{}/tests/fixtures/bin/esptool", env!("CARGO_MANIFEST_DIR"))
+    }
+
+    #[test]
+    fn esptool_carriage_return_progress_redraws_one_row() {
+        let fixture = Fixture::new("progress-output");
+        let mut panel = FlashPanel::new(&fixture.root);
+
+        panel.push_process_output(
+            "Writing at 0x1000... (10 %)".to_string(),
+            LineEnd::CarriageReturn,
+        );
+        panel.push_process_output(
+            "Writing at 0x5000... (50 %)".to_string(),
+            LineEnd::CarriageReturn,
+        );
+        panel.push_process_output("Writing at 0x9000... (100 %)".to_string(), LineEnd::Newline);
+        panel.push_process_output("Wrote 16384 bytes".to_string(), LineEnd::Newline);
+
+        assert_eq!(
+            panel.output,
+            ["Writing at 0x9000... (100 %)", "Wrote 16384 bytes",]
+        );
     }
 
     fn fake_curl() -> String {

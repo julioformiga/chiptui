@@ -54,6 +54,8 @@ firmware, running script — on screen the whole time.
   sha256 (`=`), coloured unified diff, recursive transfers, `$EDITOR` handoff with re-upload.
 - 🖥 **Terminal tab** — your `$SHELL` as a login shell in a full vt100 emulator, born into the
   resolved Zephyr environment. `ctrl+]` detaches and leaves the shell running.
+- 📟 **Interactive monitor** — MicroPython REPL and supported Zephyr platform monitors run in a
+  full VT100 grid, preserving shell completion columns, colours, cursor movement and redraws.
 - 🛡 **Confirmations and cancellation** — device operations ask before interrupting a running
   script and offer to restore it, destructive actions name their target, cancelling kills the
   whole process tree.

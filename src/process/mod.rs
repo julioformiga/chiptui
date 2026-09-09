@@ -80,6 +80,16 @@ pub enum Stream {
     Stderr,
 }
 
+/// The boundary that completed a streamed process line. Display consumers
+/// need this distinction because a bare carriage return redraws the current
+/// terminal row, while newline and CRLF finalize it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineEnd {
+    CarriageReturn,
+    Newline,
+    Eof,
+}
+
 /// How a process ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
@@ -131,6 +141,7 @@ pub enum ProcessEvent {
         id: ProcessId,
         stream: Stream,
         text: String,
+        end: LineEnd,
     },
     Output {
         id: ProcessId,
@@ -639,8 +650,8 @@ impl Drop for ProcessManager {
 /// command finishes --- `read_until(b'\n', ..)` would block, buffering every
 /// update into one giant line, so the UI never sees progress and appears
 /// frozen. Treating `\r` as a line boundary too makes each update its own
-/// [`ProcessEvent::Line`], while a `\r\n` pair still collapses to one line
-/// break rather than an extra empty line.
+/// [`ProcessEvent::Line`]. The event retains which boundary arrived, while a
+/// `\r\n` pair still collapses to one newline rather than an extra empty line.
 ///
 /// Lines are decoded lossily: a filename with invalid UTF-8 should show up as
 /// replacement characters, not abort the listing.
@@ -678,16 +689,29 @@ fn pump<R: Read>(
         buffer.extend_from_slice(&available[..pos]);
         reader.consume(pos + 1);
 
-        if delimiter == b'\r'
+        let end = if delimiter == b'\r'
             && let Ok(next) = reader.fill_buf()
             && next.first() == Some(&b'\n')
         {
             reader.consume(1);
-        }
+            LineEnd::Newline
+        } else if delimiter == b'\r' {
+            LineEnd::CarriageReturn
+        } else {
+            LineEnd::Newline
+        };
 
         let text = String::from_utf8_lossy(&buffer).into_owned();
         buffer.clear();
-        if tx.send(ProcessEvent::Line { id, stream, text }).is_err() {
+        if tx
+            .send(ProcessEvent::Line {
+                id,
+                stream,
+                text,
+                end,
+            })
+            .is_err()
+        {
             break;
         }
     }
@@ -696,7 +720,12 @@ fn pump<R: Read>(
     // process exits) is still worth delivering.
     if !buffer.is_empty() {
         let text = String::from_utf8_lossy(&buffer).into_owned();
-        let _ = tx.send(ProcessEvent::Line { id, stream, text });
+        let _ = tx.send(ProcessEvent::Line {
+            id,
+            stream,
+            text,
+            end: LineEnd::Eof,
+        });
     }
     readers.fetch_sub(1, Ordering::Relaxed);
 }

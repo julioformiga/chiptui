@@ -8,7 +8,9 @@
 
 use std::time::{Duration, Instant};
 
-use chiptui::process::{Command, Outcome, ProcessEvent, ProcessId, ProcessManager, Stream};
+use chiptui::process::{
+    Command, LineEnd, Outcome, ProcessEvent, ProcessId, ProcessManager, Stream,
+};
 
 fn fixture(name: &str) -> String {
     format!("{}/tests/fixtures/bin/{name}", env!("CARGO_MANIFEST_DIR"))
@@ -97,6 +99,16 @@ fn lines(events: &[ProcessEvent], want: Stream) -> Vec<String> {
         .collect()
 }
 
+fn line_ends(events: &[ProcessEvent], want: Stream) -> Vec<LineEnd> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            ProcessEvent::Line { stream, end, .. } if *stream == want => Some(*end),
+            _ => None,
+        })
+        .collect()
+}
+
 fn outcome(events: &[ProcessEvent]) -> &Outcome {
     events
         .iter()
@@ -139,6 +151,28 @@ fn carriage_return_progress_updates_stream_as_separate_lines() {
             "Wrote 16384 bytes",
         ]
     );
+    assert_eq!(
+        line_ends(&events, Stream::Stdout),
+        [
+            LineEnd::CarriageReturn,
+            LineEnd::CarriageReturn,
+            LineEnd::Newline,
+            LineEnd::Newline,
+        ]
+    );
+}
+
+#[test]
+fn an_unterminated_last_line_is_marked_as_eof() {
+    let mut processes = ProcessManager::new();
+    let id = processes.spawn(
+        Command::new("/bin/sh").arg("-c").arg("printf final"),
+        Duration::from_secs(10),
+    );
+    let events = run_to_completion(&mut processes, id);
+
+    assert_eq!(lines(&events, Stream::Stdout), ["final"]);
+    assert_eq!(line_ends(&events, Stream::Stdout), [LineEnd::Eof]);
 }
 
 #[test]

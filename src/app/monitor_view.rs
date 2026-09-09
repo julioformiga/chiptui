@@ -93,13 +93,11 @@ impl App {
             && self.monitor_source == MonitorSource::Run
     }
 
-    /// Byte offset of the device monitor's cursor within its current (last)
-    /// line, for the renderer to draw where typed text will land. `None`
-    /// unless the session owns the keyboard ([`Self::is_monitor_active`]),
-    /// so no cursor is drawn once it exits or the user tabs away.
-    pub fn monitor_cursor(&self) -> Option<usize> {
-        self.is_monitor_active()
-            .then(|| self.monitor_console.cursor())
+    /// The device monitor's cursor in its VT grid. It is visible only while
+    /// that session owns the keyboard and the child did not hide it.
+    pub fn monitor_cursor(&self) -> Option<(u16, u16)> {
+        let screen = self.device_monitor_terminal.screen();
+        (self.is_monitor_active() && !screen.hide_cursor()).then(|| screen.cursor_position())
     }
 
     /// Switches the Monitor tab's feed and re-pins it to the new output's

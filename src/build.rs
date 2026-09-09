@@ -18,7 +18,7 @@ use time::{OffsetDateTime, UtcOffset};
 
 use crate::backend::{BuildKind, Capabilities};
 use crate::logs::Level;
-use crate::process::{Outcome, ProcessEvent, ProcessId, ProcessManager};
+use crate::process::{LineEnd, Outcome, ProcessEvent, ProcessId, ProcessManager};
 
 /// A Zephyr build from scratch is minutes, not seconds (`FLASH_TIMEOUT`'s
 /// 180s would kill a legitimate first build). Half an hour accommodates a
@@ -455,6 +455,9 @@ pub struct BuildPanel {
     pub cursor: usize,
     pub last: Option<BuildReport>,
     pub output: VecDeque<String>,
+    /// The visible tail ended with a bare carriage return, so the next chunk
+    /// redraws that row instead of appending another one.
+    output_replaces_last: bool,
     /// The project's build variants --- its parallel configurations, each a
     /// board, an optional shield and a build directory of its own. Empty
     /// for a project with a single target, which is the common case and
@@ -539,6 +542,7 @@ impl BuildPanel {
             cursor: 0,
             last: None,
             output: VecDeque::new(),
+            output_replaces_last: false,
             variants: Vec::new(),
             variant: None,
             remembered_simulator: false,
@@ -1306,6 +1310,7 @@ impl BuildPanel {
         // never-hide-what-runs, applied to the log rather than a confirm).
         self.output.clear();
         self.output.push_back(format!("$ {command}"));
+        self.output_replaces_last = false;
         let id = processes.spawn(command, BUILD_TIMEOUT);
         self.running = Some(Running {
             id,
@@ -1369,7 +1374,7 @@ impl BuildPanel {
             // Raw PTY bytes belong to the Terminal tab's emulator alone;
             // build commands are piped.
             ProcessEvent::Bytes { .. } => Vec::new(),
-            ProcessEvent::Line { id, text, .. } => {
+            ProcessEvent::Line { id, text, end, .. } => {
                 if self
                     .running
                     .as_ref()
@@ -1393,7 +1398,7 @@ impl BuildPanel {
                     {
                         running.progress = Some(progress);
                     }
-                    self.push_output(text.clone());
+                    self.push_process_output(text.clone(), *end);
                 } else {
                     self.boards.on_line(*id, text);
                     self.shields.on_line(*id, text);
@@ -1575,6 +1580,17 @@ impl BuildPanel {
         }
         self.output.push_back(line);
     }
+
+    fn push_process_output(&mut self, line: String, end: LineEnd) {
+        if self.output_replaces_last
+            && let Some(last) = self.output.back_mut()
+        {
+            *last = line;
+        } else {
+            self.push_output(line);
+        }
+        self.output_replaces_last = end == LineEnd::CarriageReturn;
+    }
 }
 
 /// Reads the board a configured build directory targets, from the
@@ -1713,6 +1729,33 @@ mod tests {
 
     fn fake(tool: &str) -> String {
         format!("{}/tests/fixtures/bin/{tool}", env!("CARGO_MANIFEST_DIR"))
+    }
+
+    #[test]
+    fn west_flash_carriage_return_progress_redraws_one_row() {
+        let dir = fixture_dir("flash-progress");
+        let mut panel = BuildPanel::new(&dir, UtcOffset::UTC);
+        panel.push_output("$ west flash".to_string());
+
+        panel.push_process_output(
+            "Writing at 0x1000... (10 %)".to_string(),
+            LineEnd::CarriageReturn,
+        );
+        panel.push_process_output(
+            "Writing at 0x5000... (50 %)".to_string(),
+            LineEnd::CarriageReturn,
+        );
+        panel.push_process_output("Writing at 0x9000... (100 %)".to_string(), LineEnd::Newline);
+        panel.push_process_output("Wrote 16384 bytes".to_string(), LineEnd::Newline);
+
+        assert_eq!(
+            panel.output,
+            [
+                "$ west flash",
+                "Writing at 0x9000... (100 %)",
+                "Wrote 16384 bytes",
+            ]
+        );
     }
 
     #[test]

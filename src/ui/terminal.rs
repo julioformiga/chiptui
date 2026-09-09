@@ -1,9 +1,9 @@
 //! Row 3's Terminal tab: the user's own shell, streamed from a PTY session
 //! (`src/app/terminal.rs` owns the session; this is only its rendering).
 //!
-//! Unlike the Monitor tab, this is not a document of lines: it is a cell
-//! grid, drawn by `tui-term` straight out of the `vt100` emulator, so the
-//! shell's own colours and attributes reach the screen. The pane's palette
+//! Like the interactive device Monitor, this is a cell grid rather than a
+//! document of lines, drawn by `tui-term` straight out of the `vt100`
+//! emulator so the shell's own colours and attributes reach the screen. The pane's palette
 //! supplies only the *default* foreground and background --- the colour of a
 //! cell the shell never styled. Overriding the rest would defeat the point.
 //!

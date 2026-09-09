@@ -355,6 +355,19 @@ fn a_running_write_flash_reports_esptools_percentage() {
         flash.state
     );
     assert!(
+        flash.output.iter().any(|line| line.contains("(100 %)")),
+        "the final progress row must remain visible: {:?}",
+        flash.output
+    );
+    assert!(
+        !flash
+            .output
+            .iter()
+            .any(|line| line.contains("(10 %)") || line.contains("(50 %)")),
+        "intermediate carriage-return updates must be overwritten: {:?}",
+        flash.output
+    );
+    assert!(
         flash.progress().is_none(),
         "progress must clear once the command is no longer running"
     );

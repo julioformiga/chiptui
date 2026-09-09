@@ -7,15 +7,13 @@
 //! waits for `m`): a shell has no prerequisite.
 //!
 //! The session follows the monitor's rules (`AGENTS.md` §6: interactive
-//! sessions are not ordinary line-oriented output) --- but not its
-//! *renderer*. The monitor's [`crate::console::LineConsole`] edits one line
-//! and drops every attribute, which is exactly right for MicroPython's
-//! readline redraw and exactly wrong for a shell: a real prompt
+//! sessions are not ordinary line-oriented output). Both sessions use the
+//! same [`TerminalSession`] renderer: a real prompt
 //! (powerlevel10k here) paints itself in 256 colours, moves the cursor up to
 //! redraw its second row, and places a right-hand segment by column; a real
 //! session switches to the alternate screen for `vim` or `less`. So this tab
-//! owns a [`TerminalSession`] --- a `vt100` cell grid fed the PTY's raw
-//! bytes --- and renders it with `tui-term`.
+//! and the device monitor each own a `vt100` cell grid fed the PTY's raw
+//! bytes and rendered with `tui-term`.
 //!
 //! While the tab is focused the shell owns the keyboard: every keystroke
 //! becomes bytes in the PTY, `ctrl+c` interrupts the shell's foreground
@@ -101,9 +99,8 @@ impl vt100::Callbacks for TerminalCallbacks {
     }
 }
 
-/// The Terminal tab's terminal: a `vt100` cell grid plus the size last
-/// pushed to it *and* to the PTY, which is what makes
-/// [`App::resize_terminal`] idempotent enough to call from every frame.
+/// A PTY-backed terminal view: a `vt100` cell grid plus the size last pushed
+/// to it and to its PTY. Both the Terminal tab and device Monitor own one.
 pub struct TerminalSession {
     parser: vt100::Parser<TerminalCallbacks>,
     size: (u16, u16),
@@ -220,6 +217,33 @@ impl TerminalSession {
 }
 
 impl App {
+    /// Feeds raw device-monitor output into its VT grid and the small textual
+    /// side capture used by the MicroPython state heuristics. Terminal query
+    /// replies go back through the same PTY that asked for them.
+    pub(super) fn feed_device_monitor(&mut self, data: &[u8]) {
+        self.device_monitor_terminal.feed(data);
+        let replies = self.device_monitor_terminal.take_replies();
+        if let Some(id) = self.device_monitor_process.filter(|_| !replies.is_empty()) {
+            self.processes.write_stdin(id, &replies);
+        }
+
+        let text = String::from_utf8_lossy(data);
+        self.monitor_console
+            .feed(&mut self.device_monitor_output, &text);
+        self.update_script_from_monitor();
+    }
+
+    /// Matches the device monitor's grid and PTY to the pane measured by the
+    /// renderer. Like [`Self::resize_terminal`], this is a per-frame no-op
+    /// unless the geometry changed.
+    pub fn resize_device_monitor(&mut self, rows: u16, cols: u16) {
+        if self.device_monitor_terminal.resize(rows, cols)
+            && let Some(id) = self.device_monitor_process
+        {
+            self.processes.resize_pty(id, rows, cols);
+        }
+    }
+
     /// Whether the Terminal tab's shell owns the keyboard: the tab is
     /// focused, the shell is alive and attached. Shared by [`App::on_key`]
     /// (bytes go into the PTY instead of dashboard navigation), the

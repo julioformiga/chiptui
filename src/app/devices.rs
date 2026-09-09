@@ -804,12 +804,20 @@ impl App {
                 self.set_monitor_source(MonitorSource::Device);
                 self.device_monitor_output.clear();
                 self.monitor_console.reset();
+                self.device_monitor_terminal.reset();
 
-                // Spawn the monitor in a PTY so it stays inside the tab
-                match self
-                    .processes
-                    .spawn_pty(command, std::time::Duration::from_secs(86400))
-                {
+                // The monitor is a real terminal: advertise only what the
+                // emulator supports and preserve raw bytes for its VT grid.
+                let command = command
+                    .env("TERM", "xterm-256color")
+                    .env("COLORTERM", "truecolor");
+                let (rows, cols) = self.device_monitor_terminal.size();
+                match self.processes.spawn_pty_raw(
+                    command,
+                    std::time::Duration::from_secs(86400),
+                    rows,
+                    cols,
+                ) {
                     // 24h timeout
                     Ok(id) => self.device_monitor_process = Some(id),
                     Err(e) => {

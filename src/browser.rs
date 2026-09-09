@@ -1293,7 +1293,9 @@ impl Browser {
             // Raw PTY bytes belong to the Terminal tab's emulator alone;
             // nothing here ever spawns raw.
             ProcessEvent::Output { .. } | ProcessEvent::Bytes { .. } => {}
-            ProcessEvent::Line { id, stream, text } => {
+            ProcessEvent::Line {
+                id, stream, text, ..
+            } => {
                 if let Some(output) = self.output.get_mut(id) {
                     let buffer = match stream {
                         Stream::Stdout => &mut output.stdout,

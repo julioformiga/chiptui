@@ -1890,8 +1890,8 @@ fn the_monitor_tab_shows_the_same_scrollbar_once_output_overflows_it() {
     );
 
     for i in 0..60 {
-        app.device_monitor_output
-            .push(format!("monitor line {i:02}"));
+        app.device_monitor_terminal
+            .write(&format!("monitor line {i:02}\r\n"));
     }
     let frame = render(&mut app, 100, 32);
     assert!(frame.contains('┃'), "missing the scrollbar thumb:\n{frame}");
@@ -1905,7 +1905,7 @@ fn the_monitor_tab_shows_the_same_scrollbar_once_output_overflows_it() {
     );
 
     // A short session loses the bar again once the buffer is empty.
-    app.device_monitor_output.clear();
+    app.device_monitor_terminal.reset();
     let cleared = render(&mut app, 100, 32);
     assert!(
         !cleared.contains('┃'),
@@ -1923,8 +1923,8 @@ fn the_monitor_tab_scrolls_back_through_its_output() {
     app.focus = Focus::Logs;
     app.log_tab = LogTab::Monitor;
     for i in 0..60 {
-        app.device_monitor_output
-            .push(format!("monitor line {i:02}"));
+        app.device_monitor_terminal
+            .write(&format!("monitor line {i:02}\r\n"));
     }
 
     let tail = render(&mut app, 100, 32);
@@ -1945,8 +1945,7 @@ fn the_monitor_tab_scrolls_back_through_its_output() {
     );
 
     // New output arriving while scrolled must not move the view.
-    app.device_monitor_output
-        .push("monitor line 60".to_string());
+    app.device_monitor_terminal.write("monitor line 60\r\n");
     let held = render(&mut app, 100, 32);
     assert!(
         held.contains("monitor line 00"),
@@ -1958,6 +1957,24 @@ fn the_monitor_tab_scrolls_back_through_its_output() {
     assert!(
         bottom.contains("monitor line 60"),
         "End must re-pin the tail:\n{bottom}"
+    );
+}
+
+#[test]
+fn a_cleared_monitor_screen_remains_a_terminal_not_a_connected_placeholder() {
+    let mut app = app_with_backend(BackendKind::MicroPython);
+    app.log_tab = LogTab::Monitor;
+    // The side capture records that terminal output has arrived even though
+    // ED 2 clears every visible cell. The renderer must keep the VT grid so
+    // its cursor and scrollback remain authoritative.
+    app.device_monitor_output.push("before clear".to_string());
+    app.device_monitor_terminal
+        .write("before clear\r\n\x1b[2J\x1b[H");
+
+    let frame = render(&mut app, 100, 32);
+    assert!(
+        !frame.contains("(connected)"),
+        "a valid empty VT screen was replaced by a placeholder:\n{frame}"
     );
 }
 

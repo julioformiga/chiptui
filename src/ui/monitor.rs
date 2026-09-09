@@ -1,20 +1,20 @@
 //! Row 3's Monitor tab: whichever live process output the user last asked
 //! for --- a running/just-finished flash (`esptool`) command, a backend
-//! build command (`west build`), or (once wired up) a live device serial
-//! session --- rendered in one place instead of a separate dialog
+//! build command (`west build`), or a live device serial session --- rendered
+//! in one place instead of a separate dialog
 //! (`SPEC.md` §11).
 //!
-//! Every console scrolls like the Log pane (`↑/↓`, `PageUp/Down`, `Home`/
-//! `End`), counted in wrapped rows. The scroll anchors to the top of the
-//! document (`App::monitor_scroll`), so live output arriving while the user
-//! is scrolled back grows the document *below* the view and never shifts it;
-//! scrolling back to the bottom resumes tail-following.
+//! Build/flash/run feeds remain line documents. The device session is a full
+//! VT100 grid, so Zephyr shell cursor movement, colours and redraws survive.
+//! Both shapes share `App::monitor_scroll`, hold a scrolled view as output
+//! arrives, and resume tail-following at the bottom.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Style, Stylize};
+use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Padding, Paragraph, Wrap};
+use tui_term::widget::PseudoTerminal;
 
 use crate::app::{App, Focus, MonitorSource, MonitorView};
 use crate::backend::Capability;
@@ -22,7 +22,8 @@ use crate::flash::{OptionsField, RunState};
 use crate::logs::wrap_rows;
 use crate::ui::flash::{field_label, field_value};
 use crate::ui::{
-    Palette, dashboard_focused, draw_scrollbar, muted_style, output_style, pane_border,
+    Palette, dashboard_behind_dialog, dashboard_focused, draw_scrollbar, muted_style, output_style,
+    pane_border,
 };
 
 /// Chip + offset, always meaningful for `WriteFlash`/`VerifyFlash` on the
@@ -82,30 +83,84 @@ fn draw_device_monitor(
     focused: bool,
     palette: Palette,
 ) {
-    if app.device_monitor_process.is_some() || !app.device_monitor_output.is_empty() {
-        let block = console_block(focused, palette);
-        let layout = console_layout(&block, area);
+    // Keep the dormant grid at the pane's real size too. `m` can spawn a
+    // chatty monitor before the next frame; sizing only after output arrived
+    // would make vt100 shrink its initial 24-row screen and discard its tail.
+    let terminal_block = console_block(focused, palette);
+    let terminal_layout = console_layout(&terminal_block, area);
+    let (_, terminal_rows, terminal_cols) = terminal_layout;
+    app.resize_device_monitor(terminal_rows as u16, terminal_cols as u16);
 
-        let mut console: Vec<Line> = app
-            .device_monitor_output
-            .iter()
-            .map(|line| Line::from(line.clone()).fg(palette.fg))
-            .collect();
+    if app.device_monitor_process.is_some()
+        || !app.device_monitor_output.is_empty()
+        || !app
+            .device_monitor_terminal
+            .screen()
+            .contents()
+            .trim()
+            .is_empty()
+    {
+        let block = terminal_block;
+        let layout = terminal_layout;
+        let (inner, viewport, width) = layout;
 
-        // While the session owns the keyboard, show where typed text will
-        // land: the current line's cursor cell, in reverse video.
-        if let Some(col) = app.monitor_cursor()
-            && let Some(text) = app.device_monitor_output.last().map(String::as_str)
-            && let Some(last) = console.last_mut()
+        if app
+            .device_monitor_terminal
+            .screen()
+            .contents()
+            .trim()
+            .is_empty()
+            && app.device_monitor_output.is_empty()
         {
-            *last = cursor_line(text, col);
+            app.monitor_view = MonitorView {
+                rows: 1,
+                viewport,
+                width,
+            };
+            frame.render_widget(
+                Paragraph::new("(connected)".fg(palette.muted))
+                    .block(block)
+                    .style(output_style(app)),
+                area,
+            );
+            return;
         }
 
-        if console.is_empty() {
-            console.push(Line::from("(connected)".fg(palette.muted)));
-        }
+        let history = app.device_monitor_terminal.scrollback_len();
+        app.monitor_view = MonitorView {
+            rows: history + viewport,
+            viewport,
+            width,
+        };
+        let max = app.monitor_view.rows.saturating_sub(viewport);
+        let first = if app.monitor_scroll.following {
+            max
+        } else {
+            app.monitor_scroll.offset.min(max)
+        };
+        app.device_monitor_terminal
+            .set_scrollback(max.saturating_sub(first));
 
-        render_console(frame, area, block, layout, &console, app, palette);
+        let cursor = tui_term::widget::Cursor::default().visibility(app.monitor_cursor().is_some());
+        frame.render_widget(
+            PseudoTerminal::new(app.device_monitor_terminal.screen())
+                .block(block)
+                .cursor(cursor),
+            area,
+        );
+        draw_scrollbar(
+            frame,
+            inner,
+            app.monitor_view.rows,
+            viewport,
+            first,
+            palette,
+        );
+        if dashboard_behind_dialog(app) {
+            frame
+                .buffer_mut()
+                .set_style(inner, Style::new().add_modifier(Modifier::DIM));
+        }
         return;
     }
 
@@ -340,33 +395,11 @@ fn window_console<'a>(
     (visible, cursor)
 }
 
-/// Rebuilds `text` with the cell at byte offset `col` in reverse video ---
-/// a stand-in terminal cursor, since the Monitor is a pane, not the real
-/// screen. The char under the cursor is highlighted; at end of line a
-/// reverse-video blank extends the line by one cell.
-pub(crate) fn cursor_line(text: &str, col: usize) -> Line<'static> {
-    // `LineConsole` keeps `col` on a char boundary and within the line;
-    // `min` only guards a first empty chunk before any text arrived.
-    let col = col.min(text.len());
-    let under = text[col..].chars().next();
-    let rest = col + under.map_or(0, |c| c.len_utf8());
-
-    Line::from(vec![
-        Span::raw(text[..col].to_string()),
-        match under {
-            Some(c) => Span::styled(c.to_string(), Style::new().reversed()),
-            None => Span::styled(" ", Style::new().reversed()),
-        },
-        Span::raw(text[rest..].to_string()),
-    ])
-}
-
 #[cfg(test)]
 mod tests {
-    use ratatui::style::Modifier;
     use ratatui::text::Line;
 
-    use super::{cursor_line, plain, window_console};
+    use super::{plain, window_console};
 
     fn lines(texts: &[&str]) -> Vec<Line<'static>> {
         texts.iter().map(|t| Line::from((*t).to_string())).collect()
@@ -432,51 +465,5 @@ mod tests {
         let (visible, total) = window_console(&[], 40, 0, 5);
         assert!(visible.is_empty());
         assert_eq!(total, 0);
-    }
-
-    #[test]
-    fn the_cell_under_the_cursor_is_reversed() {
-        let line = cursor_line("abcd", 2);
-        assert_eq!(line.spans.len(), 3);
-        assert_eq!(line.spans[0].content, "ab");
-        assert_eq!(line.spans[1].content, "c");
-        assert!(
-            line.spans[1]
-                .style
-                .add_modifier
-                .contains(Modifier::REVERSED)
-        );
-        assert_eq!(line.spans[2].content, "d");
-        // Untouched spans carry no highlight.
-        assert!(
-            !line.spans[0]
-                .style
-                .add_modifier
-                .contains(Modifier::REVERSED)
-        );
-    }
-
-    #[test]
-    fn end_of_line_shows_a_reversed_blank() {
-        let line = cursor_line("abc", 3);
-        assert_eq!(line.spans[0].content, "abc");
-        assert_eq!(line.spans[1].content, " ");
-        assert!(
-            line.spans[1]
-                .style
-                .add_modifier
-                .contains(Modifier::REVERSED)
-        );
-        assert_eq!(line.spans[2].content, "");
-    }
-
-    #[test]
-    fn multibyte_cells_highlight_whole_chars() {
-        // 'é' is two bytes; the cursor must not split it.
-        let text = "aé";
-        let line = cursor_line(text, 1);
-        assert_eq!(line.spans[0].content, "a");
-        assert_eq!(line.spans[1].content, "é");
-        assert_eq!(line.spans[2].content, "");
     }
 }

@@ -435,12 +435,13 @@ pub struct App {
     /// advertised. Answered by the command the backend actually returned,
     /// never by a second reading of which backend this is.
     device_monitor_is_platform: bool,
-    /// Accumulated lines from the PTY session.
+    /// Plain-text capture of the PTY session, retained for MicroPython
+    /// version/script heuristics. The visible monitor is the VT grid below.
     pub device_monitor_output: Vec<String>,
-    /// VT interpretation of the monitor's raw output (cursor position and
-    /// escape-sequence state) --- the REPL echoes redraw sequences that must
-    /// not reach the rendered lines as text.
+    /// Line-oriented side capture for the monitor heuristics above.
     monitor_console: LineConsole,
+    /// The device monitor's full VT100 cell grid, fed raw PTY bytes.
+    pub device_monitor_terminal: terminal::TerminalSession,
 
     /// The Terminal tab's shell session, spawned in a PTY like the device
     /// monitor (`src/app/terminal.rs`).
@@ -684,6 +685,7 @@ impl App {
             device_monitor_is_platform: false,
             device_monitor_output: Vec::new(),
             monitor_console: LineConsole::new(),
+            device_monitor_terminal: terminal::TerminalSession::new(),
             terminal_process: None,
             terminal: terminal::TerminalSession::new(),
             terminal_program: String::new(),
@@ -946,38 +948,58 @@ mod tests {
         let (mut app, id) = app_in_monitor();
 
         // Typed text: cursor sits after it.
-        app.handle(AppEvent::Process(crate::process::ProcessEvent::Output {
+        app.handle(AppEvent::Process(crate::process::ProcessEvent::Bytes {
             id,
-            text: ">>> ab".to_string(),
+            data: b">>> ab".to_vec(),
         }));
         assert_eq!(app.device_monitor_output, vec![">>> ab".to_string()]);
-        assert_eq!(app.monitor_cursor(), Some(6));
+        assert_eq!(app.monitor_cursor(), Some((0, 6)));
 
         // One backspace echo: the line loses a char and the cursor tracks.
-        app.handle(AppEvent::Process(crate::process::ProcessEvent::Output {
+        app.handle(AppEvent::Process(crate::process::ProcessEvent::Bytes {
             id,
-            text: "\x08\x1b[K".to_string(),
+            data: b"\x08\x1b[K".to_vec(),
         }));
         assert_eq!(app.device_monitor_output, vec![">>> a".to_string()]);
-        assert_eq!(app.monitor_cursor(), Some(5));
+        assert_eq!(app.monitor_cursor(), Some((0, 5)));
 
         // Left arrow moves the cursor without changing the text.
-        app.handle(AppEvent::Process(crate::process::ProcessEvent::Output {
+        app.handle(AppEvent::Process(crate::process::ProcessEvent::Bytes {
             id,
-            text: "\x1b[D".to_string(),
+            data: b"\x1b[D".to_vec(),
         }));
         assert_eq!(app.device_monitor_output, vec![">>> a".to_string()]);
-        assert_eq!(app.monitor_cursor(), Some(4));
+        assert_eq!(app.monitor_cursor(), Some((0, 4)));
 
+        app.processes.cancel(id);
+    }
+
+    #[test]
+    fn monitor_vt_grid_preserves_zephyr_completion_columns() {
+        let (mut app, id) = app_in_monitor();
+
+        // Zephyr's shell prints one candidate, advances through blank cells
+        // with CSI C, then prints the next. A line editor cannot move beyond
+        // existing text; the VT grid can.
+        app.handle(AppEvent::Process(crate::process::ProcessEvent::Bytes {
+            id,
+            data: b"\r\n  alpha\x1b[5Cbeta".to_vec(),
+        }));
+
+        let screen = app.device_monitor_terminal.screen().contents();
+        assert!(
+            screen.contains("  alpha     beta"),
+            "completion candidates lost their terminal columns: {screen:?}"
+        );
         app.processes.cancel(id);
     }
 
     #[test]
     fn monitor_cursor_disappears_when_the_session_owns_no_keyboard() {
         let (mut app, id) = app_in_monitor();
-        app.handle(AppEvent::Process(crate::process::ProcessEvent::Output {
+        app.handle(AppEvent::Process(crate::process::ProcessEvent::Bytes {
             id,
-            text: ">>> ".to_string(),
+            data: b">>> ".to_vec(),
         }));
 
         // Focus moved off the monitor: no cursor, even mid-session.
@@ -1015,7 +1037,7 @@ mod tests {
         ));
         let id = app
             .processes
-            .spawn_pty(command, Duration::from_secs(30))
+            .spawn_pty_raw(command, Duration::from_secs(30), 24, 80)
             .expect("the session spawned");
         app.device_monitor_process = Some(id);
         app.focus = Focus::Logs;

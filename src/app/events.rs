@@ -227,22 +227,13 @@ impl App {
                 self.finish_address_capture();
                 return;
             }
-            crate::process::ProcessEvent::Line {
-                id,
-                stream: _,
-                text,
-            } if Some(*id) == self.device_monitor_process => {
-                self.monitor_console
-                    .push_line(&mut self.device_monitor_output, text.clone());
-                self.update_script_from_monitor();
-                return;
-            }
-            crate::process::ProcessEvent::Output { id, text }
+            // The interactive device monitor is a terminal, not a line log:
+            // raw bytes preserve split UTF-8 and every VT cursor/attribute
+            // sequence for its emulator.
+            crate::process::ProcessEvent::Bytes { id, data }
                 if Some(*id) == self.device_monitor_process =>
             {
-                self.monitor_console
-                    .feed(&mut self.device_monitor_output, text);
-                self.update_script_from_monitor();
+                self.feed_device_monitor(data);
                 return;
             }
             crate::process::ProcessEvent::Finished {
@@ -251,10 +242,11 @@ impl App {
                 duration: _,
             } if Some(*id) == self.device_monitor_process => {
                 self.device_monitor_process = None;
-                self.monitor_console.push_line(
-                    &mut self.device_monitor_output,
-                    format!("[monitor {}]", outcome.summary()),
-                );
+                let epitaph = format!("[monitor {}]", outcome.summary());
+                self.device_monitor_terminal
+                    .write(&format!("\r\n{epitaph}\r\n"));
+                self.monitor_console
+                    .push_line(&mut self.device_monitor_output, epitaph);
                 return;
             }
             // The Terminal tab's shell (PTY): the emulator is fed the raw

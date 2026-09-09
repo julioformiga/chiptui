@@ -53,7 +53,19 @@ impl App {
                 }
                 return;
             }
+            if key.modifiers.contains(KeyModifiers::SHIFT)
+                && matches!(key.code, KeyCode::PageUp | KeyCode::PageDown)
+            {
+                let page = self.page();
+                if key.code == KeyCode::PageUp {
+                    self.monitor_scroll_up(page);
+                } else {
+                    self.monitor_scroll_down(page);
+                }
+                return;
+            }
             if let Some((id, bytes)) = self.device_monitor_process.zip(key_to_bytes(key)) {
+                self.monitor_scroll = MonitorScroll::default();
                 self.processes.write_stdin(id, &bytes);
             }
             return;

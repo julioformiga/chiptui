@@ -359,6 +359,7 @@ impl App {
                 id,
                 stream: Stream::Stdout,
                 text,
+                ..
             } if *id == fetching_id => {
                 if let PackageIndex::Fetching { stdout, .. } = &mut self.package_index {
                     stdout.push_str(text);

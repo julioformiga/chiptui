@@ -1292,7 +1292,11 @@ impl App {
         // `on_key` intercepts it ahead of this capture, so it still reaches
         // `toggle_row3_fullscreen` rather than the pty.
         if self.is_monitor_active() {
-            let mut keys = vec![("ctrl+f", "fullscreen"), ("ctrl+]", "exit REPL/monitor")];
+            let mut keys = vec![
+                ("ctrl+f", "fullscreen"),
+                ("ctrl+]", "exit REPL/monitor"),
+                ("shift+pgup", "scroll back"),
+            ];
             // The platform monitor attaches without resetting the board, so
             // an application that only speaks at boot has already said
             // everything it was going to say. idf_monitor's own chord is

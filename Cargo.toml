@@ -114,7 +114,8 @@ ratatui-image = { version = "11", default-features = false, features = [
 # escape-sequence engine; `tui-term` maps a `vt100::Screen` onto a ratatui
 # buffer with its colours intact (its own deps are `ratatui-core`/
 # `ratatui-widgets`, the crates ratatui 0.30 is built from). Both are
-# confined to that one tab --- every other console keeps `LineConsole`.
+# shared by the Terminal tab and interactive device Monitor; ordinary command
+# output and semantic side captures keep `LineConsole`.
 vt100 = "0.16.2"
 tui-term = "0.3.4"
 
