@@ -1486,9 +1486,11 @@ one-line contextual shortcut footer:
   entry, visually distinct from the notices. While the pane holds focus, `Up`/`Down`
   walk the lines themselves --- every entry is selectable, the newest selected by
   default, the view scrolling to keep the selection on screen (`PageUp`/`PageDown`/
-  `Home`/`End` and the wheel keep the free scroll) --- and `Enter`, or a click on a
-  row, copies the selected line to the clipboard, the same gesture the Device Info
-  pane's MAC row owns, only silent: the copy itself is not logged. `Monitor` shows
+   `Home`/`End` and the wheel keep the free scroll) --- and `Enter`, or a click on a
+   row, copies the selected line to the clipboard, the same gesture the Device Info
+   pane's MAC row owns, only silent: the copy itself is not logged. Both clicks need
+   the pane to already hold focus --- the position `Enter` is always in --- so an
+   unfocused click is spent on taking focus and copies nothing. `Monitor` shows
   whichever live process output the user last asked for: a
   running or just-finished flash/erase command (`esptool`), or a live device serial session
   once one exists; the tab itself only appears for a backend with
@@ -1629,8 +1631,11 @@ The `[zephyr]` keys are implemented (§10); the same section in a project's
 `[ui] mouse = true` opts in to mouse reporting for the session (§4.7):
 left clicks focus panes, select rows and press the buttons and tabs they
 land on --- always through the same handlers the keyboard uses, so every
-gate (dimmed rows, destructive confirms) applies unchanged --- and the
-wheel scrolls the log/monitor pane. Off by default: reporting on makes
+gate (dimmed rows, destructive confirms) applies unchanged; a click that
+*acts* on a row (copying a log line or the MAC, pressing a stacked Actions
+button, opening an Environment row's dialog) additionally needs its pane
+already focused, the position `Enter` is always in, so an unfocused click
+only takes focus. The wheel scrolls the log/monitor pane. Off by default: reporting on makes
 the terminal send clicks to the app instead of selecting text, and
 keyboard stays primary (§4.7). Motion, drag and hover are not reported.
 

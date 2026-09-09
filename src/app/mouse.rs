@@ -186,21 +186,29 @@ impl App {
         }
 
         // Row 3: one pane, whose top border carries the tab strip. A click
-        // on a tab switches to it; on the body it focuses the pane.
+        // on a tab switches to it; on the body it focuses the pane. The
+        // rows answer only once that focus is already held --- the
+        // position `Enter` is always in --- so an unfocused click is spent
+        // on focus alone and copies nothing.
         if contains(areas.row3, point) {
             if let Some(tab) = strip_tab(point, areas.row3, &self.log_strip_tabs()) {
                 self.select_log_tab(tab);
             } else if point.1 > areas.row3.y {
-                self.focus = Focus::Logs;
-                self.click_log_body(point, areas.row3);
+                if self.focus == Focus::Logs {
+                    self.click_log_body(point, areas.row3);
+                } else {
+                    self.focus = Focus::Logs;
+                }
             }
         }
     }
 
     /// The Log tab's body: a row's click is `Enter`'s twin (the MAC row's
-    /// gesture) --- it selects the line and queues its copy. The hit-test
-    /// recomputes the drawn rows from the published viewport, the standing
-    /// rule for gestures.
+    /// gesture) --- it selects the line and queues its copy. Like `Enter`,
+    /// it only reaches a pane that already holds focus; the caller spends
+    /// an unfocused click on focus alone. The hit-test recomputes the
+    /// drawn rows from the published viewport, the standing rule for
+    /// gestures.
     fn click_log_body(&mut self, point: (u16, u16), rect: Rect) {
         if self.log_tab != LogTab::Log {
             return;
@@ -226,8 +234,12 @@ impl App {
     /// opens --- the pane has no row to select while it is empty, so the
     /// double click's target is the pane itself (`index` 0). Once something
     /// is read, the one clickable fact is the MAC row, copied the same way
-    /// `Enter` on the focused pane does.
+    /// `Enter` on the focused pane does --- and like the Log row's click,
+    /// only when the pane already held focus: an unfocused click is spent
+    /// on focus alone (the double click still lands, its first press
+    /// having granted focus).
     fn click_device_info(&mut self, point: (u16, u16), rect: Rect) {
+        let was_focused = self.focus == Focus::DeviceInfo;
         self.focus = Focus::DeviceInfo;
         let unidentified = self
             .flash
@@ -235,6 +247,9 @@ impl App {
             .is_none_or(|flash| flash.details.is_empty());
         if unidentified {
             self.maybe_double_click(Focus::DeviceInfo, 0);
+            return;
+        }
+        if !was_focused {
             return;
         }
         let mac = self
@@ -254,7 +269,9 @@ impl App {
     /// cursor. The pane is never scrolled (`panels::INFO_ROWS` fixed), so
     /// the row under the pointer is the row that gets the cursor. A click
     /// is also the row's `Enter` --- every row's predefined action is a
-    /// dialog (a picker), so selecting and asking are the same gesture.
+    /// dialog (a picker), so selecting and asking are the same gesture ---
+    /// but only once the pane already holds focus: an unfocused click is
+    /// spent on focus alone, like every other acting gesture.
     fn click_project(&mut self, point: (u16, u16), rect: Rect) {
         let rows = self.project_rows();
         let len = rows.len();
@@ -263,7 +280,11 @@ impl App {
             // out of focus (`focus_project`'s own rule).
             return;
         }
+        let was_focused = self.focus == Focus::Project;
         self.focus = Focus::Project;
+        if !was_focused {
+            return;
+        }
         if let Some(index) = inner_row(point, rect, 0, 0) {
             self.project_cursor = index.min(len - 1);
             // The merged `Board · Shield` row carries two dialogs: the
@@ -508,8 +529,14 @@ impl App {
     /// (`run_build_action`, dimmed-rows-are-no-ops included). A click on
     /// the rules, dividers or the reserved footer's state line does
     /// nothing; the footer's `Stop` box is the one footer row that acts.
+    /// Like every acting gesture, it needs the pane to already hold
+    /// focus: an unfocused click is spent on focus alone.
     fn click_build_stack(&mut self, point: (u16, u16), rect: Rect) {
+        let was_focused = self.focus == Focus::Build;
         self.focus = Focus::Build;
+        if !was_focused {
+            return;
+        }
         let Some(panel) = self.build.as_ref() else {
             return;
         };
@@ -537,9 +564,14 @@ impl App {
 
     /// The flash actions tab's stacked buttons, the same shape as the
     /// build pane's (`run_flash_pane_action`, whose gates are the run's:
-    /// busy rows warn rather than start, destructive ones ask).
+    /// busy rows warn rather than start, destructive ones ask) --- and the
+    /// same focus rule: an unfocused click is spent on focus alone.
     fn click_flash_stack(&mut self, point: (u16, u16), rect: Rect) {
+        let was_focused = self.focus == Focus::FilesDevice;
         self.focus = Focus::FilesDevice;
+        if !was_focused {
+            return;
+        }
         let Some(flash) = self.flash.as_ref() else {
             return;
         };
@@ -1908,8 +1940,20 @@ mod tests {
             .position(|line| line.contains("Project path"))
             .expect("MicroPython asks for the project path");
         assert_eq!(app.project_cursor, 0, "the pane starts on its first row");
+        // The pane starts unfocused: the first click is spent on focus
+        // alone, the cursor asks for a second one.
+        app.focus = Focus::Logs;
         click(&mut app, 2, row as u16);
-        assert_eq!(app.focus, Focus::Project);
+        assert_eq!(
+            app.focus,
+            Focus::Project,
+            "the first click focuses the pane"
+        );
+        assert_eq!(
+            app.project_cursor, 0,
+            "and moves nothing until the pane already held focus"
+        );
+        click(&mut app, 2, row as u16);
         assert_eq!(app.project_cursor, 1, "the clicked row took the cursor");
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -2073,8 +2117,16 @@ mod tests {
             .position(|line| line.contains("Install Zephyr"))
             .expect("the stack draws Install Zephyr") as u16;
         let col = column_of(&lines[row as usize], "Install Zephyr").unwrap();
+        // The pane starts unfocused: the first click is spent on focus
+        // alone, the press asks for a second one.
+        app.focus = Focus::Logs;
         click(&mut app, col, row);
-        assert_eq!(app.focus, Focus::Build);
+        assert_eq!(app.focus, Focus::Build, "the first click focuses the pane");
+        assert!(
+            app.overlay.is_none(),
+            "and presses nothing until the pane already held focus"
+        );
+        click(&mut app, col, row);
         let panel = app.build.as_ref().unwrap();
         let caps = app.manager.capabilities();
         assert_eq!(
@@ -2204,8 +2256,21 @@ mod tests {
             .expect("the stack draws Search firmware online") as u16;
         let col = column_of(&lines[row as usize], "Search firmware online").unwrap();
         let before = app.logs.len();
+        // The pane starts unfocused: the first click is spent on focus
+        // alone, the press asks for a second one.
+        app.focus = Focus::FilesLocal;
         click(&mut app, col, row);
-        assert_eq!(app.focus, Focus::FilesDevice);
+        assert_eq!(
+            app.focus,
+            Focus::FilesDevice,
+            "the first click focuses the pane"
+        );
+        assert_eq!(
+            app.logs.len(),
+            before,
+            "and presses nothing until the pane already held focus"
+        );
+        click(&mut app, col, row);
         let flash = app.flash.as_ref().unwrap();
         assert_eq!(
             flash.pane_cursor, 0,
@@ -3007,8 +3072,20 @@ mod tests {
             .position(|l| l.contains("Projects base"))
             .expect("the checklist draws the projects-base row") as u16;
         assert!(app.overlay.is_none());
+        // The pane starts unfocused: the first click is spent on focus
+        // alone, the dialog asks for a second one.
+        app.focus = Focus::Logs;
         click(&mut app, 2, row);
-        assert_eq!(app.focus, Focus::Project);
+        assert_eq!(
+            app.focus,
+            Focus::Project,
+            "the first click focuses the pane"
+        );
+        assert!(
+            app.overlay.is_none(),
+            "and opens nothing until the pane already held focus"
+        );
+        click(&mut app, 2, row);
         assert!(
             matches!(app.overlay, Some(Overlay::DirPicker { .. })),
             "a click on a checklist row opens the row's dialog, like Enter"
@@ -3383,7 +3460,20 @@ mod tests {
         let shield_col = column_of(&lines[row as usize], "· Shield:").unwrap();
 
         // The board half: anywhere left of the separator (the leading
-        // label column included --- the row is one target).
+        // label column included --- the row is one target). The pane
+        // starts unfocused, so the first click is spent on focus alone
+        // and the picker asks for a second one.
+        app.focus = Focus::Logs;
+        click(&mut app, 2, row);
+        assert_eq!(
+            app.focus,
+            Focus::Project,
+            "the first click focuses the pane"
+        );
+        assert!(
+            app.overlay.is_none(),
+            "and opens nothing until the pane already held focus"
+        );
         click(&mut app, 2, row);
         assert!(
             matches!(app.overlay, Some(Overlay::BoardPicker { .. })),
@@ -3405,9 +3495,11 @@ mod tests {
 
     /// A log row's click is `Enter`'s twin on the Log tab (the MAC row's
     /// gesture): it selects the line and queues its copy --- any line, not
-    /// only the `$` command rows.
+    /// only the `$` command rows. And like `Enter`, it needs the pane to
+    /// already hold focus: the first click is spent on taking focus, the
+    /// copy asks for a second one.
     #[test]
-    fn clicking_a_log_row_copies_the_line() {
+    fn clicking_a_log_row_copies_the_line_once_focused() {
         let root = project_dir("logcopy", 0);
         let mut app = app_with_backend(BackendKind::MicroPython, &root);
         app.logs.info("a plain notice");
@@ -3421,12 +3513,25 @@ mod tests {
             .expect("the command row is drawn") as u16;
         let column = column_of(&lines[row as usize], "west build").unwrap();
         assert!(app.take_clipboard_request().is_none());
+        // The pane starts unfocused, the state an unfocused click arrives
+        // in (the fixture's own focus lands here by other means).
+        app.focus = Focus::Project;
         click(&mut app, column, row);
-        assert_eq!(app.focus, Focus::Logs, "the click also focuses the pane");
+        assert_eq!(app.focus, Focus::Logs, "the first click focuses the pane");
+        assert!(
+            app.take_clipboard_request().is_none(),
+            "and is spent on that alone: nothing is queued"
+        );
+        assert_ne!(
+            app.logs.selected_text(),
+            Some("west build"),
+            "the unfocused click must not take the selection either"
+        );
+        click(&mut app, column, row);
         assert_eq!(
             app.take_clipboard_request(),
             Some("west build".to_string()),
-            "the clicked command is queued for the clipboard"
+            "the second click queues the command for the clipboard"
         );
         assert_eq!(
             app.logs.selected_text(),
@@ -3434,7 +3539,8 @@ mod tests {
             "and takes the selection, off the tail"
         );
 
-        // A notice row copies the same way --- every line is selectable.
+        // A notice row copies the same way --- every line is selectable,
+        // and the pane holds focus by now.
         let notice = lines
             .iter()
             .position(|line| line.contains("a plain notice"))
@@ -3450,7 +3556,9 @@ mod tests {
 
     /// The MAC row's click queues the clipboard write (the binary's loop
     /// turns it into the terminal's OSC 52) --- pinned against the drawn
-    /// row, and only that row: the pane's other facts stay inert.
+    /// row, and only that row: the pane's other facts stay inert. Like the
+    /// Log row's click, it needs the pane to already hold focus: the first
+    /// click is spent on taking focus.
     #[test]
     fn clicking_the_mac_row_copies_it() {
         let root = project_dir("mac", 1);
@@ -3470,27 +3578,34 @@ mod tests {
         let mac_col = column_of(&lines[row as usize], "24:6F:28").unwrap();
         click(&mut app, mac_col, row);
         assert_eq!(
-            app.take_clipboard_request(),
-            Some(mac),
-            "the MAC row's click queues exactly the MAC"
-        );
-        assert_eq!(
             app.focus,
             Focus::DeviceInfo,
-            "the click also focuses the pane"
+            "the first click focuses the pane"
+        );
+        assert!(
+            app.take_clipboard_request().is_none(),
+            "and asks for a second one before copying, like Enter's own position"
+        );
+        click(&mut app, mac_col, row);
+        assert_eq!(
+            app.take_clipboard_request(),
+            Some(mac),
+            "the MAC row's second click queues exactly the MAC"
         );
 
         // A neighbouring row (the firmware identity) is not a copy target,
-        // but it still focuses the pane like every other row would.
+        // but it still focuses the pane like every other row would --- and
+        // stays inert once focused too: only the MAC row copies.
         app.focus = Focus::Project;
         render(&mut app, 100, 40);
         let other = lines.iter().position(|l| l.contains("Firmware:")).unwrap() as u16;
+        click(&mut app, mac_col, other);
+        assert_eq!(app.focus, Focus::DeviceInfo);
         click(&mut app, mac_col, other);
         assert!(
             app.take_clipboard_request().is_none(),
             "only the MAC row copies"
         );
-        assert_eq!(app.focus, Focus::DeviceInfo);
         let _ = std::fs::remove_dir_all(&root);
     }
 

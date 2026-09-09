@@ -193,7 +193,11 @@ Mouse support is opt-in (`[ui] mouse = true`, default off so the
 terminal's own selection and scrollback keep working) and stays an
 alternative trigger for actions the keyboard already owns: a gesture lands
 through the same handlers `Enter`/arrows reach, never beside their gates.
-Left clicks and wheel steps only --- no motion, drag or hover. Hit-testing
+A click that acts on a row (copying a log line or the MAC row, pressing a
+stacked Actions button, opening an Environment row's dialog) additionally
+requires its pane to already hold focus --- the position `Enter` is always
+in --- so an unfocused click is spent on focus alone. Left clicks and
+wheel steps only --- no motion, drag or hover. Hit-testing
 recomputes the drawn geometry (`ui::layout`, the published frame area,
 `ui::home::hit_areas`) rather than caching rects; a gesture that arrives
 while reporting is off, under a modal, or before a frame is dropped.
