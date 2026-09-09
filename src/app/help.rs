@@ -325,22 +325,28 @@ const DASHBOARD_COMMANDS: [HelpBinding; 29] = [
             site("r", "re-detect", 10, &[Focus::Logs], &[], When::Always),
         ],
     ),
-    // The Device Info pane's actions: `Enter` offers the identification
-    // while the pane is empty (the pane's message names the gesture), and
-    // copies the MAC once one was read --- the same write the row's click
-    // performs.
+    // The copy rows: `Enter` on the Device Info pane offers the
+    // identification while the pane is empty (the pane's message names
+    // the gesture) and copies the MAC once one was read --- the same write
+    // the row's click performs; on the Log tab it copies the selected
+    // line (the rows the arrows walk; `$` marks the commands). That site
+    // ranks after `ctrl+f`'s: the footer's middle-dropping sacrifices the
+    // copy chip first, since fullscreen's discoverability is the pinned one.
     action(
         "enter",
-        "identify the board, or copy its MAC once read",
+        "copy the MAC (device) or the selected line (log)",
         KeyCode::Enter,
-        &[site(
-            "enter",
-            "copy mac",
-            10,
-            &[Focus::DeviceInfo],
-            &[],
-            When::Always,
-        )],
+        &[
+            site(
+                "enter",
+                "copy mac",
+                10,
+                &[Focus::DeviceInfo],
+                &[],
+                When::Always,
+            ),
+            site("enter", "copy line", 64, &[Focus::Logs], &[], When::LogTab),
+        ],
     ),
     // The explicit "stop the device and capture its data" gesture, from
     // any pane: reading the chip and firmware restarts the board, so it
@@ -929,7 +935,9 @@ mod tests {
 
         // Logs while a run is active: the run's own keys ride between the
         // dashboard commands and the tail. Row 3's tabs answer to the
-        // chord only now --- the plain arrows switch nothing.
+        // chord only now --- the plain arrows switch nothing. The command
+        // rows' copy sits after `ctrl+f`: when the footer narrows, it is
+        // the chip to sacrifice first.
         let mut logs = ctx(micropython(), Focus::Logs);
         logs.run_active = true;
         logs.run_view = true;
@@ -945,6 +953,7 @@ mod tests {
                 "ctrl+c",
                 "s",
                 "ctrl+f",
+                "enter",
                 "shift+p",
                 "?",
             ]

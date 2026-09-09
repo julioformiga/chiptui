@@ -149,6 +149,13 @@ impl App {
     /// process id and is a no-op for an event it did not start, which is
     /// simpler than tracking ownership here.
     pub(super) fn on_process(&mut self, event: &crate::process::ProcessEvent) {
+        // Every spawned process leaves its command line in the log as a
+        // selectable, copyable entry (the pane's `$` rows) --- ahead of the
+        // per-owner dispatch below, so no subsystem has to remember to log
+        // its own, and a process that fails to spawn still shows what ran.
+        if let crate::process::ProcessEvent::Started { label, .. } = event {
+            self.logs.command(label.clone());
+        }
         // The package index fetch owns its events before any subsystem:
         // curl shares the process pool with mpremote/esptool, and an
         // unrecognized id must still reach whoever it belongs to.

@@ -938,8 +938,9 @@ impl App {
                 .warn("menuconfig: this backend offers no such action");
             return;
         };
-        self.logs
-            .info(format!("running {command} (the TUI is suspended)"));
+        // The command runs suspended outside the process pool, so no
+        // `Started` event will log it --- push the `$` row here instead.
+        self.logs.command(command.to_string());
         self.pending_command = Some(command);
     }
 
@@ -1068,7 +1069,6 @@ impl App {
                 return;
             }
         };
-        let full_label = command.to_string();
         let caps = self.manager.capabilities();
         if !panel.start(
             label,
@@ -1080,7 +1080,9 @@ impl App {
         ) {
             return;
         }
-        self.logs.info(format!("running {full_label}"));
+        // No "running ..." notice: the process pool's `Started` event logs
+        // the command line itself (the log's `$` rows), which is the same
+        // fact once.
         // The command's home while it runs is the Monitor tab (`SPEC.md`
         // §11) --- showing it, without moving the user off the panel.
         self.view = super::View::Dashboard;

@@ -1102,7 +1102,9 @@ impl Browser {
 
     /// Queues a run of `name`, in the current local directory, on the device
     /// --- "Run" on a local file. The script is never copied to the device
-    /// filesystem; only its captured output comes back.
+    /// filesystem; only its captured output comes back. No "running ..."
+    /// notice: the spawn's `Started` event logs the command line itself
+    /// (the log's `$` rows), which names the script.
     pub fn request_run(
         &mut self,
         name: &str,
@@ -1110,9 +1112,7 @@ impl Browser {
         port: Option<&str>,
     ) -> Vec<Notice> {
         let local_path = self.local_path.join(name);
-        let mut notices = vec![(Level::Info, format!("running {}", local_path.display()))];
-        notices.extend(self.enqueue(Request::Run(local_path), processes, port));
-        notices
+        self.enqueue(Request::Run(local_path), processes, port)
     }
 
     /// Queues a `mip install` of every specification --- the package-install

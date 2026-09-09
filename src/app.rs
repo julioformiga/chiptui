@@ -770,6 +770,16 @@ impl App {
         self.clipboard_request = Some(text);
     }
 
+    /// The Log pane's copy (`Enter` on the selection, or a row's click):
+    /// the selected line, queued for the clipboard *silently* --- copying a
+    /// log line must not become a log entry of its own, or every copy
+    /// would grow the very feed it reads.
+    pub(super) fn copy_selected_log_line(&mut self) {
+        if let Some(text) = self.logs.selected_text().map(str::to_string) {
+            self.clipboard_request = Some(text);
+        }
+    }
+
     /// Consumed by the binary's loop, like [`Self::take_pending_command`].
     pub fn take_clipboard_request(&mut self) -> Option<String> {
         self.clipboard_request.take()
@@ -2027,6 +2037,127 @@ mod tests {
         assert_eq!(app.logs.scroll(), 2, "one page is one viewport height");
         app.handle(key(KeyCode::End));
         assert!(app.logs.is_following());
+    }
+
+    #[test]
+    fn a_spawned_process_leaves_its_command_in_the_log() {
+        let mut app = app();
+        // The fixture is the pool's slow lane: long enough for the Started
+        // event to arrive, cancellable so the test leaves nothing running.
+        let id = app.processes.spawn(
+            crate::process::Command::new(format!(
+                "{}/tests/fixtures/bin/slow",
+                env!("CARGO_MANIFEST_DIR")
+            ))
+            .arg("5"),
+            Duration::from_secs(30),
+        );
+        for event in app.processes.drain() {
+            app.handle(AppEvent::Process(event));
+        }
+        assert_eq!(
+            app.logs.selected_text(),
+            Some("slow 5"),
+            "the Started label became a selected command entry"
+        );
+        app.processes.cancel(id);
+        let _ = app.processes.drain();
+    }
+
+    #[test]
+    fn the_log_arrows_walk_every_line_and_enter_copies() {
+        let mut app = app();
+        app.focus = Focus::Logs;
+        app.log_viewport = 10;
+        app.logs.info("a notice");
+        app.logs.command("west build");
+        app.logs.info("another notice");
+        app.logs.command("west flash");
+
+        // The selection starts on the newest line, like the MAC row is
+        // selected the moment its pane takes focus.
+        assert_eq!(app.logs.selected_text(), Some("west flash"));
+
+        app.handle(key(KeyCode::Up));
+        assert_eq!(
+            app.logs.selected_text(),
+            Some("another notice"),
+            "the arrows walk every line, notices included"
+        );
+        app.handle(key(KeyCode::Up));
+        assert_eq!(app.logs.selected_text(), Some("west build"));
+        app.handle(key(KeyCode::Char('k')));
+        app.handle(key(KeyCode::Up));
+        assert_eq!(
+            app.logs.selected_text(),
+            Some("a notice"),
+            "clamped at the oldest line"
+        );
+        app.handle(key(KeyCode::Down));
+        assert_eq!(app.logs.selected_text(), Some("west build"));
+
+        app.handle(key(KeyCode::Enter));
+        assert_eq!(
+            app.take_clipboard_request(),
+            Some("west build".to_string()),
+            "Enter queues the selected line for the clipboard"
+        );
+
+        // Paging keeps its free-scroll meaning beside the selection.
+        app.handle(key(KeyCode::PageUp));
+        app.handle(key(KeyCode::End));
+        assert!(app.logs.is_following());
+    }
+
+    #[test]
+    fn copying_a_log_line_does_not_log_the_copy() {
+        let mut app = app();
+        app.focus = Focus::Logs;
+        app.logs.info("a notice");
+        let entries = app.logs.len();
+
+        app.handle(key(KeyCode::Enter));
+        assert_eq!(
+            app.take_clipboard_request(),
+            Some("a notice".to_string()),
+            "any selected line copies"
+        );
+        assert_eq!(
+            app.logs.len(),
+            entries,
+            "the copy itself must not become a log entry"
+        );
+    }
+
+    #[test]
+    fn the_log_arrows_do_nothing_in_an_empty_log() {
+        let mut app = app();
+        app.focus = Focus::Logs;
+
+        app.handle(key(KeyCode::Up));
+        assert_eq!(app.logs.selected_text(), None, "nothing to select");
+        assert!(app.logs.is_following());
+        app.handle(key(KeyCode::Enter));
+        assert_eq!(
+            app.take_clipboard_request(),
+            None,
+            "and Enter has nothing to copy"
+        );
+    }
+
+    #[test]
+    fn the_line_selection_is_inert_on_the_other_row3_tabs() {
+        let mut app = app();
+        app.focus = Focus::Logs;
+        app.logs.command("west build");
+
+        app.log_tab = LogTab::Monitor;
+        app.handle(key(KeyCode::Enter));
+        assert_eq!(
+            app.take_clipboard_request(),
+            None,
+            "Enter copies only on the Log tab"
+        );
     }
 
     #[test]

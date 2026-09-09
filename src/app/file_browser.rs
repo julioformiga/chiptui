@@ -611,8 +611,8 @@ impl App {
         self.focus = super::Focus::Logs;
         self.log_tab = super::LogTab::Monitor;
 
-        self.logs.info(format!("running {}", local_path.display()));
-
+        // No "running ..." notice: the PTY spawn's `Started` event logs the
+        // command line itself (the log's `$` rows), which names the script.
         let timeout = crate::browser::RUN_TIMEOUT;
         match self.processes.spawn_pty(command, timeout) {
             Ok(id) => self.run_process = Some(id),

@@ -18,7 +18,8 @@ use crate::project::DetectionOutcome;
 use crate::ui::{
     Palette, SPINNER, border_style, content_style, dashboard_focused, highlighted_line,
     muted_style, numbered_title, output_style, paint_focus_wash, pane_block, pane_border,
-    pane_title, render_pane, shortcut_highlight_style, shortcut_letter, tilde_path,
+    pane_title, render_pane, selection_style, shortcut_highlight_style, shortcut_letter,
+    tilde_path,
 };
 
 /// Row 1's fixed content height: the Project and the Device info panes
@@ -845,7 +846,11 @@ pub fn draw_no_filesystem(frame: &mut Frame, area: Rect, app: &App, palette: Pal
 ///
 /// Long entries wrap at the pane's width with a hanging indent past the
 /// stamp, so a wrapped paragraph stays visually tied to its timestamp
-/// instead of overflowing or being cut off at the terminal edge.
+/// instead of overflowing or being cut off at the terminal edge. Command
+/// entries (`LogEntry::command`) read distinct from notices --- `$` in the
+/// marker column and the accent color --- and the selected line, whatever
+/// its kind, draws full-width in the selection colors while the pane holds
+/// focus, the MAC row's grammar: `Enter` or a click copies it.
 pub fn draw_logs(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
     // The tab strip owns the border row (see `draw_log_tabs`), so the pane
     // itself carries no title.
@@ -862,48 +867,70 @@ pub fn draw_logs(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette)
     app.logs
         .set_view_width(inner.width.saturating_sub(gutter) as usize);
 
-    let lines: Vec<Line> = app
-        .logs
-        .visible_rows(app.log_viewport)
-        .into_iter()
-        .map(|row| {
-            let style = match row.entry.level {
+    let rows = app.logs.visible_rows(app.log_viewport);
+    let selected = app.logs.selected_index();
+    let base = output_style(app);
+
+    paint_focus_wash(frame, inner, focused, palette);
+    frame.render_widget(block, area);
+
+    // Row by row rather than one Paragraph: the selected line needs a
+    // full-width selection background, which only a widget rect paints.
+    for (offset, row) in rows.into_iter().enumerate() {
+        let y = inner.y + offset as u16;
+        if y >= inner.bottom() {
+            break;
+        }
+        let style = if row.entry.command {
+            Style::new().fg(palette.accent)
+        } else {
+            match row.entry.level {
                 Level::Info => Style::new().fg(palette.fg),
                 Level::Success => Style::new().fg(palette.success),
                 Level::Warn => Style::new().fg(palette.warning),
                 Level::Error => Style::new().fg(palette.error),
-            };
-            if row.first {
-                let centis = row.entry.at.millisecond() / 10;
-                Line::from(vec![
-                    Span::styled(
-                        format!(
-                            "{:02}:{:02}:{:02}.{centis:02} ",
-                            row.entry.at.hour(),
-                            row.entry.at.minute(),
-                            row.entry.at.second()
-                        ),
-                        muted_style(palette),
-                    ),
-                    Span::styled(format!("{} ", row.entry.level.marker()), style),
-                    Span::styled(row.text, style),
-                ])
-            } else {
-                // Continuation of a wrapped entry: indented past the stamp so
-                // the whole paragraph reads as one timestamped line.
-                Line::from(vec![
-                    Span::raw(" ".repeat(PREFIX_WIDTH)),
-                    Span::styled(row.text, style),
-                ])
             }
-        })
-        .collect();
-
-    paint_focus_wash(frame, inner, focused, palette);
-    frame.render_widget(
-        Paragraph::new(lines).block(block).style(output_style(app)),
-        area,
-    );
+        };
+        let line = if row.first {
+            let centis = row.entry.at.millisecond() / 10;
+            let marker = if row.entry.command {
+                "$"
+            } else {
+                row.entry.level.marker()
+            };
+            Line::from(vec![
+                Span::styled(
+                    format!(
+                        "{:02}:{:02}:{:02}.{centis:02} ",
+                        row.entry.at.hour(),
+                        row.entry.at.minute(),
+                        row.entry.at.second()
+                    ),
+                    muted_style(palette),
+                ),
+                Span::styled(format!("{marker} "), style),
+                Span::styled(row.text, style),
+            ])
+        } else {
+            // Continuation of a wrapped entry: indented past the stamp so
+            // the whole paragraph reads as one timestamped line.
+            Line::from(vec![
+                Span::raw(" ".repeat(PREFIX_WIDTH)),
+                Span::styled(row.text, style),
+            ])
+        };
+        let rect = Rect {
+            x: inner.x,
+            y,
+            width: inner.width,
+            height: 1,
+        };
+        if focused && Some(row.index) == selected {
+            frame.render_widget(line.style(selection_style(palette)), rect);
+        } else {
+            frame.render_widget(line.style(base), rect);
+        }
+    }
 
     draw_log_scrollbar(frame, inner, app, palette);
 }

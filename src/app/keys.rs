@@ -412,6 +412,12 @@ impl App {
                 self.detect();
                 self.maybe_open_project_config();
             }
+            // The Log tab's copyable row, like the Device Info pane's MAC:
+            // the selected line, copied to the clipboard. The click twin
+            // lives in `app::mouse::click_log_body`.
+            KeyCode::Enter if self.focus == Focus::Logs && self.log_tab == LogTab::Log => {
+                self.copy_selected_log_line();
+            }
             KeyCode::Up | KeyCode::Char('k') => self.move_cursor(-1),
             KeyCode::Down | KeyCode::Char('j') => self.move_cursor(1),
             KeyCode::PageUp => self.move_cursor(-(self.page() as isize)),
@@ -458,8 +464,18 @@ impl App {
             // the user scrolls it holds its top-anchored position (new
             // output grows the document below the view).
             Focus::Logs if self.log_tab == LogTab::Log => {
-                // The log pane scrolls; up means "towards older entries".
-                if delta < 0 {
+                // The arrows walk the lines themselves --- every entry is
+                // selectable, each revealed as it takes the selection ---
+                // and paging/Home/End keep the free scroll.
+                if delta.unsigned_abs() == 1 && !self.logs.is_empty() {
+                    if delta < 0 {
+                        self.logs.select_prev();
+                    } else {
+                        self.logs.select_next();
+                    }
+                    self.logs.reveal_selected(self.log_viewport);
+                } else if delta < 0 {
+                    // The log pane scrolls; up means "towards older entries".
                     self.logs.scroll_up(delta.unsigned_abs(), self.log_viewport);
                 } else {
                     self.logs.scroll_down(delta as usize);

@@ -497,6 +497,63 @@ fn switching_to_the_monitor_tab_changes_row_three() {
     );
 }
 
+/// Command entries read distinct from notices (`$` in the marker column)
+/// and the selected one paints full-width in the selection colors while
+/// the pane holds focus --- the MAC row's grammar (`app::keys`,
+/// `app::mouse::click_log_body`).
+#[test]
+fn log_command_rows_are_marked_and_the_selected_one_is_highlighted() {
+    let mut app = app_with_backend(BackendKind::Zephyr);
+    app.focus = Focus::Logs;
+    app.logs.info("a plain notice");
+    app.logs.command("west build");
+
+    let mut terminal = Terminal::new(TestBackend::new(100, 40)).expect("test terminal");
+    terminal
+        .draw(|frame| chiptui::ui::draw(frame, &mut app))
+        .expect("draw succeeds");
+    let rendered = terminal.backend().to_string();
+    let row = rendered
+        .lines()
+        .position(|line| line.contains("$ west build"))
+        .expect("the command row carries the $ marker:\n{rendered}") as u16;
+    assert!(
+        !rendered
+            .lines()
+            .any(|line| line.contains("$ a plain notice")),
+        "notices keep their own markers:\n{rendered}"
+    );
+
+    // The selection background spans the whole row, including the cells
+    // past the text.
+    let buffer = terminal.backend().buffer().clone();
+    let selection = app.theme_palette().selection;
+    let tail = &buffer[(90, row)];
+    assert_eq!(
+        tail.bg, selection,
+        "the selected command row paints full-width"
+    );
+
+    // Unfocused, the same row draws plain: the highlight marks where
+    // `Enter` would act, and it does not pretend from another pane.
+    app.focus = Focus::Build;
+    let mut terminal = Terminal::new(TestBackend::new(100, 40)).expect("test terminal");
+    terminal
+        .draw(|frame| chiptui::ui::draw(frame, &mut app))
+        .expect("draw succeeds");
+    let rendered = terminal.backend().to_string();
+    let row = rendered
+        .lines()
+        .position(|line| line.contains("$ west build"))
+        .expect("the command row is still drawn:\n{rendered}") as u16;
+    let buffer = terminal.backend().buffer().clone();
+    assert_ne!(
+        buffer[(90, row)].bg,
+        selection,
+        "unfocused, the command row carries no selection"
+    );
+}
+
 #[test]
 fn dashboard_shows_the_working_directory_and_backend() {
     let mut app = app_with_backend(BackendKind::MicroPython);

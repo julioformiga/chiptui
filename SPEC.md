@@ -1481,8 +1481,15 @@ one-line contextual shortcut footer:
   placeholder while no pane exists yet.
 - **Row 3** --- a one-line `Log`/`Monitor`/`Terminal` tab strip over the selected tab's
   body, full width. `Left`/`Right` switch tabs while row 3 has focus, one step per press
-  and clamped at the ends. `Log` is the rolling status/notice feed
-  (unchanged). `Monitor` shows whichever live process output the user last asked for: a
+  and clamped at the ends. `Log` is the rolling status/notice feed,
+  and every process the app spawns also leaves its command line there as a `$`-marked
+  entry, visually distinct from the notices. While the pane holds focus, `Up`/`Down`
+  walk the lines themselves --- every entry is selectable, the newest selected by
+  default, the view scrolling to keep the selection on screen (`PageUp`/`PageDown`/
+  `Home`/`End` and the wheel keep the free scroll) --- and `Enter`, or a click on a
+  row, copies the selected line to the clipboard, the same gesture the Device Info
+  pane's MAC row owns, only silent: the copy itself is not logged. `Monitor` shows
+  whichever live process output the user last asked for: a
   running or just-finished flash/erase command (`esptool`), or a live device serial session
   once one exists; the tab itself only appears for a backend with
   `Capability::Monitor`. `Terminal` runs the user's own shell (`$SHELL`, `/bin/sh` as

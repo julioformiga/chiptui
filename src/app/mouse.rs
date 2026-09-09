@@ -192,7 +192,30 @@ impl App {
                 self.select_log_tab(tab);
             } else if point.1 > areas.row3.y {
                 self.focus = Focus::Logs;
+                self.click_log_body(point, areas.row3);
             }
+        }
+    }
+
+    /// The Log tab's body: a row's click is `Enter`'s twin (the MAC row's
+    /// gesture) --- it selects the line and queues its copy. The hit-test
+    /// recomputes the drawn rows from the published viewport, the standing
+    /// rule for gestures.
+    fn click_log_body(&mut self, point: (u16, u16), rect: Rect) {
+        if self.log_tab != LogTab::Log {
+            return;
+        }
+        let Some(row) = inner_row(point, rect, 0, 0) else {
+            return;
+        };
+        let index = {
+            let rows = self.logs.visible_rows(self.log_viewport);
+            rows.get(row).map(|row| row.index)
+        };
+        if let Some(index) = index {
+            self.logs.select_entry_at(index);
+            self.logs.reveal_selected(self.log_viewport);
+            self.copy_selected_log_line();
         }
     }
 
@@ -3377,6 +3400,51 @@ mod tests {
             "a click past the separator opens the shield picker"
         );
         assert!(!app.board_segment, "the click set the segment it landed on");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A log row's click is `Enter`'s twin on the Log tab (the MAC row's
+    /// gesture): it selects the line and queues its copy --- any line, not
+    /// only the `$` command rows.
+    #[test]
+    fn clicking_a_log_row_copies_the_line() {
+        let root = project_dir("logcopy", 0);
+        let mut app = app_with_backend(BackendKind::MicroPython, &root);
+        app.logs.info("a plain notice");
+        app.logs.command("west build");
+        app.logs.command("west flash");
+
+        let lines = render(&mut app, 100, 40);
+        let row = lines
+            .iter()
+            .position(|line| line.contains("west build"))
+            .expect("the command row is drawn") as u16;
+        let column = column_of(&lines[row as usize], "west build").unwrap();
+        assert!(app.take_clipboard_request().is_none());
+        click(&mut app, column, row);
+        assert_eq!(app.focus, Focus::Logs, "the click also focuses the pane");
+        assert_eq!(
+            app.take_clipboard_request(),
+            Some("west build".to_string()),
+            "the clicked command is queued for the clipboard"
+        );
+        assert_eq!(
+            app.logs.selected_text(),
+            Some("west build"),
+            "and takes the selection, off the tail"
+        );
+
+        // A notice row copies the same way --- every line is selectable.
+        let notice = lines
+            .iter()
+            .position(|line| line.contains("a plain notice"))
+            .expect("the notice row is drawn") as u16;
+        click(&mut app, 2, notice);
+        assert_eq!(
+            app.take_clipboard_request(),
+            Some("a plain notice".to_string()),
+            "a notice row copies too"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
