@@ -10,10 +10,12 @@
 # and **rejects the wrong forms** so reintroducing one breaks a test. The
 # real script builds its parser with `allow_abbrev=False` and marks `-k`,
 # `-z` and `-o/--output` `required=True`; the target words are an argparse
-# `choices` set; and `--json` takes ONE path containing the literal
-# `{target}`, which the script substitutes itself. Passing three paths, one
-# per target, is the mistake this fake exists to catch --- the same shape as
-# the `west sdk install -d` mistake that once passed the suite for a round.
+# `choices` set; `--json` takes ONE path containing the literal
+# `{target}`, which the script substitutes itself; and
+# `--filter-address-range` takes TWO arguments (START LENGTH, `int(x, 0)`)
+# and switches the run to one region's report --- the form
+# `dashboard.py::_create_memory_reports` uses, where the `--json` path names
+# the region outright and the single target is `all`.
 script=$1
 shift
 case "$script" in
@@ -30,6 +32,7 @@ workspace=
 json=
 output=
 targets=
+range=
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -39,6 +42,7 @@ while [ $# -gt 0 ]; do
         --workspace) workspace=$2; shift 2 ;;
         --workspace=*) workspace=${1#--workspace=}; shift ;;
         --json) json=$2; shift 2 ;;
+        --filter-address-range) range="$2 $3"; shift 3 ;;
         -q|--quiet) shift ;;
         rom|ram|all) targets="$targets $1"; shift ;;
         -*)
@@ -66,6 +70,52 @@ if [ -z "$json" ]; then
     printf 'fake size_report: this fake only covers the --json path\n' >&2
     exit 2
 fi
+
+# The region form: one range, one target, a json path naming the region with
+# no `{target}` left in it. The main form is everything else.
+if [ -n "$range" ]; then
+    [ "$targets" = " all" ] || {
+        printf 'fake size_report: a filtered run targets all alone, got%s\n' "$targets" >&2
+        exit 2
+    }
+    case "$json" in
+        *'{target}'*)
+            printf 'fake size_report: a filtered run names its region in --json, not {target}: %s\n' "$json" >&2
+            exit 2
+            ;;
+    esac
+    region=$(basename "$json" _report.json)
+    # The real script opens this path with a plain `open(out, "w")` and
+    # creates no parent, so a missing directory is a FileNotFoundError
+    # traceback --- after the whole DWARF walk. Creating it here would hide
+    # exactly that from the suite, so the fake refuses the same way.
+    dir=$(dirname "$json")
+    [ -d "$dir" ] || {
+        printf 'fake size_report: [Errno 2] No such file or directory: %s\n' "$json" >&2
+        exit 1
+    }
+    cat > "$json" <<JSON
+{
+  "symbols": {
+    "name": "Root", "size": 300, "identifier": "root", "loc": [],
+    "children": [
+      { "name": "$region", "size": 300, "identifier": "$region", "loc": [],
+        "children": [
+          { "name": "heap_$region", "size": 200, "identifier": "$region/heap",
+            "loc": ["all"], "address": 16, "section": ".bss" },
+          { "name": "stack_$region", "size": 100, "identifier": "$region/stack",
+            "loc": ["all"], "address": 32, "section": ".bss" }
+        ] }
+    ]
+  },
+  "total_size": 600
+}
+JSON
+    printf 'size_report: region %s range %s\n' "$region" "$range"
+    printf 'wrote %s\n' "$json"
+    exit 0
+fi
+
 case "$json" in
     *'{target}'*) ;;
     *)

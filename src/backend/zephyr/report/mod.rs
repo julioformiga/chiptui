@@ -14,6 +14,7 @@
 //! | `zephyr/.config-trace.json` | Kconfig |
 //! | `zephyr/zephyr.dts` | Device Tree |
 //! | `<build>/dashboard/{all,ram,rom}_report.json` | Memory Report |
+//! | `<build>/dashboard/<REGION>_report.json` | Memory Report's region tabs |
 //!
 //! Only the last one has to be *produced*: it comes from
 //! `scripts/footprint/size_report`, which needs the ELF's DWARF to map
@@ -64,6 +65,7 @@ pub mod json;
 pub mod kconfig;
 pub mod memory;
 pub mod partitions;
+pub mod regions;
 
 /// Where each artifact lives, given a project root and a build directory.
 ///
@@ -149,6 +151,31 @@ impl ReportPaths {
     /// One of `all`, `ram` or `rom`.
     pub fn memory_report(&self, target: &str) -> PathBuf {
         self.output.join(format!("{target}_report.json"))
+    }
+
+    /// The region report files that exist, as region names
+    /// (`SRAM1_report.json` answers `SRAM1`). The three fixed reports are
+    /// not regions and never answer here; an unreadable directory answers
+    /// nothing, which is the state a build that never generated reports
+    /// is in.
+    pub fn memory_region_reports(&self) -> Vec<String> {
+        let Ok(entries) = std::fs::read_dir(&self.output) else {
+            return Vec::new();
+        };
+        let mut names: Vec<String> = entries
+            .flatten()
+            .filter_map(|entry| {
+                let path = entry.path();
+                if !path.is_file() {
+                    return None;
+                }
+                let name = path.file_name()?.to_str()?;
+                let stem = name.strip_suffix("_report.json")?;
+                (!matches!(stem, "all" | "ram" | "rom")).then(|| stem.to_string())
+            })
+            .collect();
+        names.sort();
+        names
     }
 
     /// The C compiler description CMake writes, whose directory is named
@@ -315,6 +342,40 @@ mod tests {
         // `CMAKE_BINARY_DIR` for the `dashboard` target is the image's
         // directory, so both dashboards write and read the same reports.
         assert_eq!(paths.output, root.join("build/blinky/dashboard"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The region reports a dashboard dir holds are its file stems, sorted
+    /// --- determinism a plain `read_dir` does not give --- and the three
+    /// fixed reports are never regions.
+    #[test]
+    fn region_reports_are_the_dir_s_own_stems_sorted() {
+        let root = temp_dir("regions");
+        let output = root.join("build/dashboard");
+        std::fs::create_dir_all(&output).unwrap();
+        for name in ["all_report.json", "ram_report.json", "rom_report.json"] {
+            std::fs::write(output.join(name), "{}").unwrap();
+        }
+        // Written in an order the sorted answer must not keep.
+        std::fs::write(output.join("RTC_FAST_RAM_report.json"), "{}").unwrap();
+        std::fs::write(output.join("SRAM1_report.json"), "{}").unwrap();
+        std::fs::write(output.join("notes.txt"), "not a report").unwrap();
+        let paths = ReportPaths::new(&root, "build");
+        assert_eq!(
+            paths.memory_region_reports(),
+            vec!["RTC_FAST_RAM".to_string(), "SRAM1".to_string()]
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A build that never generated reports has no dashboard directory at
+    /// all --- not an error, just no regions to show.
+    #[test]
+    fn no_dashboard_dir_answers_no_regions() {
+        let root = temp_dir("no-regions");
+        std::fs::create_dir_all(root.join("build")).unwrap();
+        let paths = ReportPaths::new(&root, "build");
+        assert!(paths.memory_region_reports().is_empty());
         let _ = std::fs::remove_dir_all(&root);
     }
 }

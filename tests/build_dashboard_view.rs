@@ -131,22 +131,39 @@ fn the_menu_row_opens_the_window() {
 #[test]
 fn the_window_fits_the_declared_minimum() {
     let (mut app, root) = dashboard_app("min");
-    let frame = frame(&mut app);
+    let summary = frame(&mut app);
     for tab in DashboardTab::ALL {
         assert!(
-            frame.contains(tab.label()),
-            "the strip must show {}:\n{frame}",
+            summary.contains(tab.label()),
+            "the strip must show {}:\n{summary}",
             tab.label()
         );
     }
-    assert!(frame.contains("Details"), "the details pane:\n{frame}");
+    assert!(summary.contains("Details"), "the details pane:\n{summary}");
     assert!(
-        frame.contains("ctrl+"),
-        "the hint names the chord that switches tabs:\n{frame}"
+        summary.contains("ctrl+"),
+        "the hint names the chord that switches tabs:\n{summary}"
     );
     assert!(
-        frame.contains("xiao_esp32c3"),
-        "the Summary opens on the board:\n{frame}"
+        summary.contains("xiao_esp32c3"),
+        "the Summary opens on the board:\n{summary}"
+    );
+    // The Memory tab costs one more row (its report sub-strip) and one
+    // more strip's worth of titles; at the minimum it must still show its
+    // tree and the report it belongs to.
+    app.handle(chord(KeyCode::Right));
+    let memory = frame(&mut app);
+    assert!(
+        memory.contains("Total Memory"),
+        "the sub-strip fits the minimum:\n{memory}"
+    );
+    assert!(
+        memory.contains("RAM report") && memory.contains("ROM report"),
+        "all three fixed reports are named:\n{memory}"
+    );
+    assert!(
+        memory.contains("Root"),
+        "and the tree still has room:\n{memory}"
     );
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -337,8 +354,8 @@ fn a_missing_memory_report_is_a_named_state() {
     app.handle(chord(KeyCode::Right));
     let frame = wide(&mut app);
     assert!(
-        frame.contains("Generate the memory report"),
-        "the tab explains itself with the row that fixes it:\n{frame}"
+        frame.contains("Generate"),
+        "the tab explains itself with the button that fixes it:\n{frame}"
     );
     assert!(
         frame.contains("enter generates the report"),
@@ -531,8 +548,8 @@ fn app_with_interpreter(tag: &str, interpreter: &str) -> (App, std::path::PathBu
     (app, root)
 }
 
-/// With no report on disk the Memory tab leads with a row that offers to
-/// make one, and says what that costs.
+/// With no report on disk the Memory tab leads with a button that offers
+/// to make one, and says what that costs.
 #[test]
 fn the_memory_tab_offers_to_generate_a_missing_report() {
     let (mut app, root) = dashboard_app("prompt");
@@ -541,7 +558,7 @@ fn the_memory_tab_offers_to_generate_a_missing_report() {
     app.handle(chord(KeyCode::Right));
     let frame = wide(&mut app);
     assert!(
-        frame.contains("Generate the memory report"),
+        frame.contains("Generate"),
         "the tab offers the run:\n{frame}"
     );
     assert!(
@@ -600,7 +617,7 @@ fn generating_the_report_closes_the_window_and_brings_it_back() {
         "and it shows the report that was just written:\n{frame}"
     );
     assert!(
-        !frame.contains("Generate the memory report"),
+        !frame.contains("Generate"),
         "the offer is gone, the report being current:\n{frame}"
     );
     // The tree opens where it left off: the root expanded, the rest shut.
@@ -667,6 +684,280 @@ fn a_stale_report_keeps_its_rows_under_the_offer() {
         frame.contains("Root"),
         "the old numbers stay readable:\n{frame}"
     );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A devicetree that declares memory regions, for the report-queue tests:
+/// `SRAM1` overlaps the stat fixture's `.bss` at `0x3fc80000`, while
+/// `RTC_FAST_RAM` overlaps nothing in it and is therefore not reportable
+/// --- the same test `dashboard.py` applies.
+const REGION_DTS: &str = "\
+/* node '/' defined in board.dts:1 */
+/ {
+\t#address-cells = < 0x1 >;
+\t#size-cells = < 0x1 >;
+
+\t/* node '/soc' defined in soc.dtsi:1 */
+\tsoc {
+\t\t#address-cells = < 0x1 >;
+\t\t#size-cells = < 0x1 >;
+
+\t\t/* node '/soc/memory@3fc80000' defined in soc.dtsi:2 */
+\t\tsram1: memory@3fc80000 {
+\t\t\tcompatible = \"zephyr,memory-region\",
+\t\t\t             \"mmio-sram\";    /* in soc.dtsi:3 */
+\t\t\treg = < 0x3fc80000 0x60000 >;
+\t\t\tzephyr,memory-region = \"SRAM1\"; /* in soc.dtsi:5 */
+\t\t};
+
+\t\t/* node '/soc/memory@50000000' defined in soc.dtsi:8 */
+\t\trtc: memory@50000000 {
+\t\t\tcompatible = \"zephyr,memory-region\",
+\t\t\t             \"mmio-sram\";    /* in soc.dtsi:9 */
+\t\t\treg = < 0x50000000 0x2000 >;
+\t\t\tzephyr,memory-region = \"RTC_FAST_RAM\"; /* in soc.dtsi:11 */
+\t\t};
+\t};
+};
+";
+
+/// The Memory tab is a strip of its own --- the reports the HTML dashboard
+/// shows as tabs, titled the same --- walked by the shifted chord, while
+/// the plain arrows keep opening and closing the tree.
+#[test]
+fn the_memory_tab_shows_and_walks_its_report_views() {
+    let (mut app, root) = dashboard_app("views");
+    std::fs::write(
+        root.join("build/dashboard/ram_report.json"),
+        REPORT.replace("\"heap\"", "\"heap_ram\""),
+    )
+    .unwrap();
+    std::fs::write(root.join("build/zephyr/zephyr.dts"), REGION_DTS).unwrap();
+    std::fs::write(root.join("build/dashboard/SRAM1_report.json"), REPORT).unwrap();
+    app.build_dashboard.invalidate_memory();
+    app.handle(chord(KeyCode::Right));
+    assert_eq!(app.build_dashboard.tab, DashboardTab::Memory);
+
+    let frame = wide(&mut app);
+    for title in ["Total Memory", "RAM report", "ROM report", "SRAM1"] {
+        assert!(
+            frame.contains(title),
+            "the sub-strip names {title}:\n{frame}"
+        );
+    }
+    assert!(
+        !frame.contains("RTC_FAST_RAM"),
+        "no report, no tab:\n{frame}"
+    );
+    assert!(
+        frame.contains("Total Memory"),
+        "the pane carries the active report's title:\n{frame}"
+    );
+
+    fn shift(code: KeyCode) -> chiptui::app::AppEvent {
+        key_event(code, KeyModifiers::SHIFT)
+    }
+    app.handle(shift(KeyCode::Right));
+    assert_eq!(app.build_dashboard.memory_title(), "RAM report");
+    // Its own file: the RAM report's heap, not the all report's.
+    app.handle(key(KeyCode::Down));
+    app.handle(key(KeyCode::Right));
+    let frame = wide(&mut app);
+    assert!(
+        frame.contains("heap_ram"),
+        "the RAM view reads the RAM report:\n{frame}"
+    );
+
+    // The chord clamps at both ends and never wraps; the plain arrows
+    // still belong to the tree.
+    app.handle(shift(KeyCode::Left));
+    assert_eq!(app.build_dashboard.memory_title(), "Total Memory");
+    app.handle(shift(KeyCode::Left));
+    assert_eq!(
+        app.build_dashboard.memory_title(),
+        "Total Memory",
+        "clamped, not wrapped"
+    );
+    let before = app.build_dashboard.pane().selected;
+    app.handle(key(KeyCode::Down));
+    app.handle(key(KeyCode::Right));
+    assert_ne!(
+        app.build_dashboard.pane().selected,
+        before,
+        "a plain arrow still walks the tree"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A click on the memory sub-strip switches views --- through the same
+/// handler the chord reaches, found in the drawn frame like every click
+/// test here.
+#[test]
+fn a_click_on_a_memory_view_switches_it() {
+    let (mut app, root) = dashboard_app("click-views");
+    app.set_mouse_enabled(true);
+    app.handle(chord(KeyCode::Right));
+    let frame = wide(&mut app);
+    let (column, row) = find_label(&frame, "RAM report");
+    app.handle(AppEvent::Mouse(click(column + 2, row)));
+    assert_eq!(app.build_dashboard.memory_title(), "RAM report");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Generating the report is a *queue*: the main `rom/ram/all` run, then
+/// one `--filter-address-range` run per reportable region --- Zephyr's own
+/// dashboard shape, one DWARF walk per run, each labelled as itself in the
+/// log, and the window coming back only after the last one.
+#[test]
+fn generating_queues_one_run_per_reportable_region() {
+    let (mut app, root) = app_with_report_tool("queue");
+    std::fs::remove_file(root.join("build/dashboard/all_report.json")).unwrap();
+    std::fs::write(root.join("build/zephyr/zephyr.dts"), REGION_DTS).unwrap();
+    app.build_dashboard.invalidate_memory();
+    app.handle(chord(KeyCode::Right));
+    assert!(app.build_dashboard.selected_is_prompt());
+
+    app.handle(key(KeyCode::Enter));
+    assert!(app.overlay.is_none(), "the run belongs in the Monitor");
+    settle_while(
+        &mut app,
+        |app| app.build.as_ref().is_some_and(|panel| panel.is_busy()),
+        "the memory report queue",
+    );
+    for event in app.processes.drain() {
+        app.handle(AppEvent::Process(event));
+    }
+    assert!(
+        matches!(app.overlay, Some(Overlay::BuildDashboard)),
+        "the window comes back after the whole queue:\n{:?}",
+        app.overlay
+    );
+
+    let commands: Vec<String> = app
+        .logs
+        .visible(200)
+        .filter(|entry| entry.command)
+        .map(|entry| entry.message.clone())
+        .collect();
+    let size_report_runs: Vec<&String> = commands
+        .iter()
+        .filter(|line| line.contains("size_report"))
+        .collect();
+    assert_eq!(
+        size_report_runs.len(),
+        2,
+        "the main run and one region run --- RTC_FAST_RAM has no sections \
+         in it and is not worth a walk:\n{commands:#?}"
+    );
+    assert!(
+        size_report_runs[0].contains("{target}_report.json"),
+        "the main run writes the three fixed reports:\n{}",
+        size_report_runs[0]
+    );
+    assert!(
+        size_report_runs[1].contains("SRAM1_report.json")
+            && size_report_runs[1].contains("--filter-address-range"),
+        "the region run filters to the region:\n{}",
+        size_report_runs[1]
+    );
+    let notices: Vec<String> = app
+        .logs
+        .visible(200)
+        .map(|entry| entry.message.clone())
+        .collect();
+    assert!(
+        notices
+            .iter()
+            .any(|line| line.contains("Memory report (SRAM1)")),
+        "the region run is legible as itself in the log:\n{notices:#?}"
+    );
+
+    // The region tab arrived with its report, and reads its own file.
+    let frame = wide(&mut app);
+    assert!(
+        frame.contains("SRAM1"),
+        "the sub-strip grew a tab:\n{frame}"
+    );
+    for _ in 0..3 {
+        app.handle(key_event(KeyCode::Right, KeyModifiers::SHIFT));
+    }
+    assert_eq!(app.build_dashboard.memory_title(), "SRAM1");
+    app.handle(key(KeyCode::Down));
+    app.handle(key(KeyCode::Right));
+    let frame = wide(&mut app);
+    assert!(
+        frame.contains("heap_SRAM1"),
+        "the region view reads the region report:\n{frame}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A failed first run empties the queue rather than spending one DWARF
+/// walk per region to fail the same way: one command row, no reopen, and
+/// the Monitor holds the explanation.
+#[test]
+fn a_failed_report_run_empties_the_queue() {
+    let (mut app, root) = app_with_interpreter("queue-fails", "size-report-fails");
+    std::fs::remove_file(root.join("build/dashboard/all_report.json")).unwrap();
+    std::fs::write(root.join("build/zephyr/zephyr.dts"), REGION_DTS).unwrap();
+    app.build_dashboard.invalidate_memory();
+    app.handle(chord(KeyCode::Right));
+    assert!(app.build_dashboard.selected_is_prompt());
+
+    app.handle(key(KeyCode::Enter));
+    settle_while(
+        &mut app,
+        |app| app.build.as_ref().is_some_and(|panel| panel.is_busy()),
+        "the failing memory report",
+    );
+    for event in app.processes.drain() {
+        app.handle(AppEvent::Process(event));
+    }
+    assert!(
+        app.overlay.is_none(),
+        "a failure must not cover the Monitor with the window"
+    );
+    let commands: Vec<String> = app
+        .logs
+        .visible(200)
+        .filter(|entry| entry.command)
+        .map(|entry| entry.message.clone())
+        .collect();
+    assert_eq!(
+        commands
+            .iter()
+            .filter(|line| line.contains("size_report"))
+            .count(),
+        1,
+        "the queue was emptied, not carried on:\n{commands:#?}"
+    );
+    assert!(
+        !root.join("build/dashboard/SRAM1_report.json").is_file(),
+        "no region run happened"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// The Generate offer is a stacked button, and a stacked button is one of
+/// the clicks that *act* --- from a pane that already held the focus,
+/// which the window's list does by default.
+#[test]
+fn a_click_on_the_generate_button_runs_it() {
+    let (mut app, root) = app_with_report_tool("click-generate");
+    std::fs::remove_file(root.join("build/dashboard/all_report.json")).unwrap();
+    app.build_dashboard.invalidate_memory();
+    app.handle(chord(KeyCode::Right));
+    app.set_mouse_enabled(true);
+    assert_eq!(app.build_dashboard.focus, DocsFocus::List);
+
+    let frame = wide(&mut app);
+    let (column, row) = find_label(&frame, "Generate");
+    app.handle(AppEvent::Mouse(click(column, row)));
+    assert!(
+        app.build.as_ref().is_some_and(|panel| panel.is_busy()),
+        "the button click started the run"
+    );
+    assert!(app.overlay.is_none(), "and the window closed for it");
     let _ = std::fs::remove_dir_all(&root);
 }
 

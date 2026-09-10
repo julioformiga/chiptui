@@ -401,7 +401,11 @@ impl App {
                 self.reidentify_firmware_after_flash();
             }
             if reported {
-                self.reopen_dashboard_on_memory();
+                // A queued region run comes first: the window comes back
+                // on the report as a whole, not on its first third.
+                if !self.start_next_size_report() {
+                    self.reopen_dashboard_on_memory();
+                }
             }
             if simulated {
                 self.start_run();

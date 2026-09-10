@@ -2167,7 +2167,7 @@ fn the_monitor_tab_marks_the_last_finished_command() {
     app.log_tab = LogTab::Monitor;
     app.set_monitor_source(chiptui::app::MonitorSource::Build);
     let report = |ok| chiptui::build::BuildReport {
-        what: "Build",
+        what: "Build".to_string(),
         simulator: false,
         ok,
         cancelled: false,
@@ -2192,7 +2192,7 @@ fn the_monitor_tab_marks_the_last_finished_command() {
     // pane's footer: not the error cross (stopping is what the user asked
     // for) and not the success check either (nothing finished).
     app.build.as_mut().unwrap().last = Some(chiptui::build::BuildReport {
-        what: "Build",
+        what: "Build".to_string(),
         simulator: false,
         ok: false,
         cancelled: true,

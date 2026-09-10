@@ -10,7 +10,9 @@
 //! close the window (only `Esc` does), why there is no reload key, and why
 //! the tab strip answers `ctrl+←/→` --- the dashboard-wide chord --- rather
 //! than the plain arrows, which the list, the details and the two trees
-//! already need.
+//! already need. The Memory tab's own sub-strip (Total Memory / RAM report
+//! / ROM report / regions) answers the sibling chord `shift+←/→` for the
+//! same reason.
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -71,6 +73,28 @@ impl App {
         self.set_dashboard_tab(self.build_dashboard.tab.stepped(steps));
     }
 
+    /// Shows memory report view `index` --- the sub-strip's click door.
+    /// Loads what the new view needs; a view is a list the reader has not
+    /// necessarily walked before, so it starts from its top.
+    pub(crate) fn set_dashboard_memory_view(&mut self, index: usize) {
+        if self.build_dashboard.tab != DashboardTab::Memory {
+            return;
+        }
+        self.build_dashboard.set_memory_view(index);
+        self.dashboard_list_offset = 0;
+        if let Some(paths) = self.build_report_paths() {
+            self.build_dashboard.ensure_tab(&paths);
+        }
+    }
+
+    /// Walks the Memory tab's sub-strip in the arrow's direction. The
+    /// state clamps at both ends; a no-op on a tab whose views are not
+    /// loaded, which is every tab but Memory.
+    pub(crate) fn step_dashboard_memory_view(&mut self, steps: i32) {
+        let target = (self.build_dashboard.memory_view_index() as i32 + steps).max(0) as usize;
+        self.set_dashboard_memory_view(target);
+    }
+
     /// Hands the keyboard to one half of the body. The mouse's `Tab`.
     pub(crate) fn set_dashboard_focus(&mut self, focus: DocsFocus) {
         self.build_dashboard.focus = focus;
@@ -106,6 +130,7 @@ impl App {
     pub(super) fn on_build_dashboard_key(&mut self, key: KeyEvent) {
         let details = self.build_dashboard.focus == DocsFocus::Details;
         let control = key.modifiers.contains(KeyModifiers::CONTROL);
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         match key.code {
             // `q` is filter text, so `Esc` is the only way out --- the same
             // trade the package manager makes for the same reason.
@@ -117,6 +142,12 @@ impl App {
             // The strip answers the chord alone, on every strip in this app.
             KeyCode::Left if control => self.step_dashboard_tab(-1),
             KeyCode::Right if control => self.step_dashboard_tab(1),
+
+            // The Memory tab's own strip answers the shifted chord --- the
+            // sibling of the one above it, kept off the plain arrows
+            // because both trees need those to open and close.
+            KeyCode::Left if shift => self.step_dashboard_memory_view(-1),
+            KeyCode::Right if shift => self.step_dashboard_memory_view(1),
 
             KeyCode::Backspace => {
                 self.build_dashboard.pane_mut().input.pop();

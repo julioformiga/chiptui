@@ -12,6 +12,7 @@ use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use crate::app::{App, FileAction, Overlay, ThemeChoice};
 use crate::backend::Capability;
 use crate::browser::SyncPlan;
+use crate::build_dashboard::DashboardTab;
 use crate::flash::FlashAction;
 
 /// The minimum rows the workspace pane's embedded file list gets, past the
@@ -460,6 +461,11 @@ pub(crate) struct BuildDashboardAreas {
     pub(crate) popup: Rect,
     /// The tab strip, on the modal's top border row.
     pub(crate) strip: Rect,
+    /// The Memory tab's sub-strip (Total Memory / RAM report / ROM report /
+    /// regions), directly under the main strip. Height 0 on every other
+    /// tab --- the row is spent only where there is a second strip to
+    /// draw, which at the 80x32 minimum the body can afford either way.
+    pub(crate) views: Rect,
     /// The filter line.
     pub(crate) filter: Rect,
     /// The wrapped hint line(s) between the filter and the body.
@@ -478,7 +484,10 @@ pub(crate) struct BuildDashboardAreas {
 /// not a row. Every column a wider terminal adds still goes to the details.
 pub(crate) const BUILD_DASHBOARD_LIST_WIDTH: u16 = 42;
 
-pub(crate) fn build_dashboard(area: Rect) -> BuildDashboardAreas {
+/// `memory` says whether the Memory tab is in view, whose sub-strip costs
+/// the body one row --- the one geometry the click hit-testing and the
+/// renderer must agree on, recomputed per call rather than cached.
+pub(crate) fn build_dashboard(area: Rect, memory: bool) -> BuildDashboardAreas {
     let popup = super::centered(
         area,
         area.width.saturating_sub(2),
@@ -496,12 +505,26 @@ pub(crate) fn build_dashboard(area: Rect) -> BuildDashboardAreas {
         width: popup.width.saturating_sub(2),
         height: 1,
     };
-    let [filter, hint, body] = Layout::vertical([
-        Constraint::Length(1), // the filter line
-        Constraint::Length(2), // the wrapped hint
-        Constraint::Min(1),
-    ])
-    .areas(inner);
+    let rows: Vec<Constraint> = if memory {
+        vec![
+            Constraint::Length(1), // the memory sub-strip
+            Constraint::Length(1), // the filter line
+            Constraint::Length(2), // the wrapped hint
+            Constraint::Min(1),
+        ]
+    } else {
+        vec![
+            Constraint::Length(1), // the filter line
+            Constraint::Length(2), // the wrapped hint
+            Constraint::Min(1),
+        ]
+    };
+    let split = Layout::vertical(rows).split(inner);
+    let (views, filter, hint, body) = if memory {
+        (split[0], split[1], split[2], split[3])
+    } else {
+        (Rect { height: 0, ..inner }, split[0], split[1], split[2])
+    };
     let [list, details] = Layout::horizontal([
         Constraint::Length(BUILD_DASHBOARD_LIST_WIDTH.min(body.width)),
         Constraint::Min(1),
@@ -510,6 +533,7 @@ pub(crate) fn build_dashboard(area: Rect) -> BuildDashboardAreas {
     BuildDashboardAreas {
         popup,
         strip,
+        views,
         filter,
         hint,
         list,
@@ -658,7 +682,10 @@ pub(crate) fn overlay_popup(app: &App, overlay: &Overlay, frame: Rect) -> Rect {
 
         // ---- variants that already own a shared geometry helper --------
         Overlay::Packages => return packages(frame).popup,
-        Overlay::BuildDashboard => return build_dashboard(frame).popup,
+        Overlay::BuildDashboard => {
+            let memory = app.build_dashboard.tab == DashboardTab::Memory;
+            return build_dashboard(frame, memory).popup;
+        }
         Overlay::BoardPicker { .. } | Overlay::ShieldPicker { .. } => {
             return docs_picker(frame).popup;
         }

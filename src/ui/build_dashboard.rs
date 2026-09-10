@@ -8,6 +8,10 @@
 //! 80x32 minimum the body has 23 rows, and a strip that has a border to sit
 //! on should not also take one of them.
 //!
+//! The Memory tab adds a second strip of its own --- the reports the HTML
+//! dashboard shows as tabs --- on a row it does spend, plus the Generate
+//! button drawn as the bordered stacked button it is over the pane's top.
+//!
 //! Because the strip owns the top border, the modal carries no title of its
 //! own --- exactly like row 3's pane, and for the same reason. The strip's
 //! leading glyph and its tab names are the identity.
@@ -20,9 +24,17 @@ use ratatui::{Frame, symbols};
 
 use crate::app::{App, DocsFocus};
 use crate::build_dashboard::{DashboardTab, DetailLine, Marker, Row};
-use crate::ui::{Palette, draw_scrollbar, muted_style, selection_style};
+use crate::ui::Palette;
+use crate::ui::{draw_scrollbar, muted_style, selection_style};
 
+use super::button::{Button, render_stack};
 use super::overlay::{labelled, pane, wrap_words};
+
+/// How many rows the Generate button stack costs at the top of the Memory
+/// tab's list --- one button, its two rules (`stack_height`'s own `2N+1`).
+/// The click grammar and the renderer both read this constant, the same
+/// contract every drawn rect keeps here.
+pub(crate) const MEMORY_PROMPT_ROWS: u16 = 3;
 
 /// The indent one tree level costs. Two columns: enough to read as
 /// nesting, cheap enough that a depth-13 memory tree still shows names.
@@ -33,7 +45,8 @@ const INDENT: usize = 2;
 const MIN_LABEL: usize = 16;
 
 pub(crate) fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
-    let areas = crate::ui::layout::build_dashboard(area);
+    let memory = app.build_dashboard.tab == DashboardTab::Memory;
+    let areas = crate::ui::layout::build_dashboard(area, memory);
     frame.render_widget(Clear, areas.popup);
     // Untitled: the strip below sits on this border and is the title.
     frame.render_widget(
@@ -44,6 +57,9 @@ pub(crate) fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palett
     );
 
     draw_strip(frame, areas.strip, app, palette);
+    if memory {
+        draw_memory_strip(frame, areas.views, app, palette);
+    }
     draw_filter(frame, areas.filter, app, palette);
     frame.render_widget(
         Paragraph::new(hint(app).fg(palette.muted)).wrap(ratatui::widgets::Wrap { trim: false }),
@@ -102,6 +118,43 @@ fn draw_strip(frame: &mut Frame, strip: Rect, app: &App, palette: Palette) {
     );
 }
 
+/// The Memory tab's sub-strip: the reports the tab offers, titled the way
+/// the HTML dashboard titles its own tabs. Drawn with the same `Tabs`
+/// grammar as the main strip --- pad, title, pad, divider --- which is the
+/// width walk `mouse::row_tab` mirrors.
+fn draw_memory_strip(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+    let focused = app.build_dashboard.focus == DocsFocus::List;
+    let active = if focused {
+        Style::new()
+            .fg(palette.accent)
+            .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+    } else {
+        Style::new().add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+    };
+    let titles: Vec<Line> = app
+        .build_dashboard
+        .memory_view_titles()
+        .into_iter()
+        .map(|title| {
+            let style = if title == app.build_dashboard.memory_title() {
+                active
+            } else {
+                muted_style(palette)
+            };
+            Line::from(Span::styled(title.to_string(), style))
+        })
+        .collect();
+    frame.render_widget(
+        Tabs::new(titles)
+            .divider(symbols::DOT)
+            .select(app.build_dashboard.memory_view_index()),
+        area,
+    );
+}
+
 /// The filter field, with the tab's own count riding the right edge.
 fn draw_filter(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
     let search = app.icon_set().search();
@@ -146,7 +199,12 @@ fn counts(app: &App) -> String {
 }
 
 fn hint(app: &App) -> String {
-    let base = "ctrl+←/→ tabs · tab list/details · esc closes";
+    // The Memory tab owns a second strip, so its hint names the chord that
+    // walks it --- the sibling of the dashboard-wide one in the same breath.
+    let base = match app.build_dashboard.tab {
+        DashboardTab::Memory => "ctrl+←/→ tabs · shift+←/→ report · tab list/details · esc closes",
+        _ => "ctrl+←/→ tabs · tab list/details · esc closes",
+    };
     match app.build_dashboard.tab {
         // The one row in this window that runs something says so, because
         // it is also the only row `Enter` does not merely expand.
@@ -164,7 +222,16 @@ fn hint(app: &App) -> String {
 
 fn draw_list(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette, rows: &[Row]) {
     let focused = app.build_dashboard.focus == DocsFocus::List;
-    let block = pane(app.build_dashboard.tab.label(), focused, palette);
+    // The Memory tab's pane carries the active report's own title, which
+    // is what makes the tree below it readable as one of five and not as
+    // an anonymous fifth thing.
+    let memory = app.build_dashboard.tab == DashboardTab::Memory;
+    let title = if memory {
+        app.build_dashboard.memory_title().to_string()
+    } else {
+        app.build_dashboard.tab.label().to_string()
+    };
+    let block = pane(&title, focused, palette);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.width == 0 || inner.height == 0 {
@@ -185,23 +252,61 @@ fn draw_list(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette, row
         return;
     }
 
+    // The Generate offer is drawn as the button it is, not as a line of
+    // text: one bordered stack button above the tree, carrying the
+    // cursor when the pane's selection sits on it. The row behind it
+    // stays in `rows` --- the cursor, `Enter` and the click grammar walk
+    // rows, and the button is rows[0]'s costume.
+    let mut head = 0u16;
+    let mut skip = 0usize;
+    if memory && app.build_dashboard.memory_prompt_visible() {
+        let label = rows[0].label.clone();
+        let glyph = app.icon_set().play();
+        let mut button = Button::new(label)
+            .selected(app.build_dashboard.pane().selected == 0)
+            .enabled(true);
+        if !glyph.is_empty() {
+            button = button.icon(glyph, palette.secondary);
+        }
+        render_stack(frame, inner, inner.y, &[button], palette);
+        head = MEMORY_PROMPT_ROWS;
+        skip = 1;
+    }
+    let body = Rect {
+        y: inner.y.saturating_add(head),
+        height: inner.height.saturating_sub(head),
+        ..inner
+    };
+    if body.height == 0 {
+        app.dashboard_list_offset = 0;
+        return;
+    }
+
     // The scrollbar's column is reserved whatever happens, so the trailing
     // column never shifts when the bar appears --- the file panes' rule.
     let view = Rect {
-        width: inner.width.saturating_sub(1),
-        ..inner
+        width: body.width.saturating_sub(1),
+        ..body
     };
-    let items: Vec<ListItem> = rows
+    let items: Vec<ListItem> = rows[skip..]
         .iter()
         .map(|row| ListItem::new(row_line(row, view.width as usize, palette)))
         .collect();
-    let selected = app.build_dashboard.pane().selected.min(rows.len() - 1);
+    let drawn = &rows[skip..];
+    // The cursor on the button (selection 0) is the button's own
+    // highlight; the list below then carries no selection of its own.
+    let selected = app
+        .build_dashboard
+        .pane()
+        .selected
+        .min(rows.len() - 1)
+        .checked_sub(skip);
     // Seeded from the offset the previous frame settled on and published
     // back below: a fresh `ListState` re-anchors the view, which makes a
     // click on a visible row jump.
     let mut state = ListState::default()
-        .with_offset(app.dashboard_list_offset.min(rows.len() - 1))
-        .with_selected(Some(selected));
+        .with_offset(app.dashboard_list_offset.min(drawn.len().saturating_sub(1)))
+        .with_selected(selected);
     frame.render_stateful_widget(
         List::new(items).highlight_style(selection_style(palette)),
         view,
@@ -210,9 +315,9 @@ fn draw_list(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette, row
     app.dashboard_list_offset = state.offset();
     draw_scrollbar(
         frame,
-        inner,
-        rows.len(),
-        inner.height as usize,
+        body,
+        drawn.len(),
+        body.height as usize,
         state.offset(),
         palette,
     );

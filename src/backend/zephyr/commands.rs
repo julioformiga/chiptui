@@ -225,6 +225,60 @@ pub fn size_report(
         .arg("all")
 }
 
+/// The region variant of [`size_report`] --- one devicetree memory region's
+/// own report, the way `dashboard.py::_create_memory_reports` makes the
+/// Memory view's extra tabs (`SRAM1`, `RTC_FAST_RAM`, …).
+///
+/// The script's `--filter-address-range` takes the region's `START` and
+/// `LENGTH` as two separate arguments and only *one* range per invocation,
+/// so a region cannot ride the main run: it is a second full DWARF walk,
+/// which is the minutes it costs and why the runs queue in the Monitor
+/// rather than starting together. The numbers are decimal, the form
+/// `dashboard.py` passes (`str(addr)`); the parser reads them with
+/// `int(x, 0)`, which takes either base.
+///
+/// Everything else is the main run's shape with two substitutions: the
+/// `--json` path names the region (`<out>/<NAME>_report.json`, no
+/// `{target}` placeholder --- the target is always `all`) and the target
+/// list is the single word `all`.
+pub fn size_report_region(
+    python: &std::path::Path,
+    zephyr_base: &std::path::Path,
+    topdir: &std::path::Path,
+    elf: &std::path::Path,
+    out_dir: &std::path::Path,
+    region: &crate::backend::zephyr::report::regions::MemoryRegion,
+) -> Command {
+    Command::new(python.display().to_string())
+        .arg(
+            zephyr_base
+                .join("scripts")
+                .join("footprint")
+                .join("size_report")
+                .display()
+                .to_string(),
+        )
+        .arg("-k")
+        .arg(elf.display().to_string())
+        .arg("-z")
+        .arg(zephyr_base.display().to_string())
+        .arg(format!("--workspace={}", topdir.display()))
+        .arg("--json")
+        .arg(
+            out_dir
+                .join(format!("{}_report.json", region.name))
+                .display()
+                .to_string(),
+        )
+        .arg("--filter-address-range")
+        .arg(region.addr.to_string())
+        .arg(region.size.to_string())
+        .arg("--quiet")
+        .arg("--output")
+        .arg(".")
+        .arg("all")
+}
+
 /// `west build -t dashboard` --- the Zephyr 4.4 build dashboard: one HTML
 /// report consolidating the ram/rom reports, the Kconfig symbols, the
 /// initialization levels and the device tree, which the target itself

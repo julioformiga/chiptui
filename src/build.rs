@@ -68,8 +68,10 @@ pub struct CachedTarget {
 /// Result of the last finished command, for the panel's header line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuildReport {
-    /// What ran, as a label ("Build", "Clean", "Flash", …).
-    pub what: &'static str,
+    /// What ran, as a label ("Build", "Clean", "Flash", …). A `String`
+    /// because the memory report's queued runs carry the region in theirs
+    /// ("Memory report (SRAM1)").
+    pub what: String,
     pub ok: bool,
     /// Whether the command ran against the host simulator rather than the
     /// board. The state line says so --- `Build (simulator) ok in 3.2s` ---
@@ -92,7 +94,7 @@ pub struct BuildReport {
 
 struct Running {
     id: ProcessId,
-    what: &'static str,
+    what: String,
     /// A successful run leaves a fresh CMakeCache behind (build/rebuild;
     /// `west flash` does not reconfigure). See [`BuildPanel::finish`].
     updates_board: bool,
@@ -377,9 +379,13 @@ pub enum BuildAction {
     /// twin in every structural way: never a row of the stack, never a
     /// progress shape, and reached from a window rather than from the pane.
     ///
-    /// It writes into `<build>/dashboard/`, which is where Zephyr's own
-    /// `dashboard` target writes the same three files --- so one run serves
-    /// both dashboards and neither pays the minute twice.
+    /// It is a queue, not one command: the main `rom/ram/all` run, then one
+    /// `--filter-address-range` run per devicetree memory region the ELF
+    /// lands in, each a full DWARF walk --- `dashboard.py`'s own shape, and
+    /// the source of the Memory view's region tabs. Everything writes into
+    /// `<build>/dashboard/`, where Zephyr's own `dashboard` target writes
+    /// the same files, so one run serves both dashboards and neither pays
+    /// a walk twice.
     SizeReport,
 }
 
@@ -509,6 +515,14 @@ pub struct BuildPanel {
     /// Only success sets it --- a failure leaves the Monitor holding the
     /// explanation, which a modal over it would hide.
     size_report_finished: bool,
+    /// The memory report runs still waiting for the panel's process slot:
+    /// one per devicetree memory region, behind the main `rom/ram/all`
+    /// run that leads the queue out of [`Self::size_report_commands`].
+    /// [`Self::next_size_report`] hands them to the app one at a time as
+    /// each predecessor succeeds; a failure or a stop clears the rest,
+    /// because a region report describes the same DWARF walk the failed
+    /// run could not make.
+    pending_reports: VecDeque<(String, crate::process::Command)>,
     /// Set when a `Build`/`Rebuild` that targeted the *simulator* finished
     /// successfully and has not been consumed
     /// ([`Self::take_simulator_built`]): building a host target and then
@@ -554,6 +568,7 @@ impl BuildPanel {
             running: None,
             flash_finished: false,
             size_report_finished: false,
+            pending_reports: VecDeque::new(),
             simulator_built: false,
             tool_path: None,
             tool_env: Vec::new(),
@@ -914,8 +929,8 @@ impl BuildPanel {
 
     /// The running command's label ("Build", "Clean", "West update", ...),
     /// for the Monitor tab's live status.
-    pub fn running_label(&self) -> Option<&'static str> {
-        self.running.as_ref().map(|running| running.what)
+    pub fn running_label(&self) -> Option<&str> {
+        self.running.as_ref().map(|running| running.what.as_str())
     }
 
     /// Rows the action list shows --- see [`BuildAction::list`].
@@ -1195,29 +1210,40 @@ impl BuildPanel {
     /// The build-dashboard command (`west build -t dashboard`), rooted and
     /// decorated like the others --- a piped command, streamed into the
     /// Monitor tab like the lifecycle.
-    /// The memory-report command, decorated with this panel's cwd and
-    /// environment like every other one it runs.
+    /// The memory-report commands, decorated with this panel's cwd and
+    /// environment like every other one it runs: the main `rom/ram/all`
+    /// run first, then one per devicetree memory region the ELF lands in
+    /// --- `dashboard.py`'s own queue, whose region runs are the Memory
+    /// view's extra tabs.
+    ///
+    /// Each entry is the label the Monitor shows while it runs (and the
+    /// report line after), so a region run is legible as itself: the
+    /// second run of three says `Memory report (SRAM1)`, not a second
+    /// indistinguishable `Memory report`.
     ///
     /// `Err` is a refusal already phrased as a sentence --- the workspace's
-    /// missing interpreter here, the backend's own reasons through it.
-    pub fn size_report_command(
+    /// missing interpreter here, the backend's own reasons through it. A
+    /// devicetree or stat file that will not parse is not a refusal: the
+    /// regions simply come back empty, the same way `dashboard.py` warns
+    /// and carries on with the three fixed reports.
+    pub fn size_report_commands(
         &self,
         backend: &dyn crate::backend::Backend,
         workspace: &crate::backend::zephyr::workspace::Workspace,
-    ) -> Result<crate::process::Command, String> {
+    ) -> Result<Vec<(String, crate::process::Command)>, String> {
         let python = workspace.python().ok_or_else(|| {
             "the workspace has no Python --- the memory report runs a script from the \
              Zephyr checkout, which needs the venv's interpreter"
                 .to_string()
         })?;
         let paths = crate::backend::zephyr::report::ReportPaths::new(&self.root, &self.build_dir);
-        let command = backend.size_report_command(&crate::backend::BuildReportContext {
+        let ctx = crate::backend::BuildReportContext {
             python: &python,
             zephyr_base: &workspace.zephyr_base,
             topdir: &workspace.dir,
             elf: &paths.elf(),
             out_dir: &paths.output,
-        })?;
+        };
         // `size_report` opens its `--json` path with a plain `open(..., "w")`
         // and creates no parent, so a build directory that never ran Zephyr's
         // own `dashboard` target dies on a `FileNotFoundError` traceback after
@@ -1229,9 +1255,61 @@ impl BuildPanel {
                 paths.output.display()
             ));
         }
-        // Environment only: the program is the interpreter this command
-        // already names, not the workspace's `west`.
-        Ok(self.in_west_env(command.current_dir(&self.root)))
+        let mut runs = vec![(
+            "Memory report".to_string(),
+            backend.size_report_command(&ctx)?,
+        )];
+        let regions = self.reportable_regions(&paths);
+        for region in regions {
+            runs.push((
+                format!("Memory report ({})", region.name),
+                backend.size_report_region_command(&ctx, &region)?,
+            ));
+        }
+        // Environment only: the program is the interpreter these commands
+        // already name, not the workspace's `west`.
+        Ok(runs
+            .into_iter()
+            .map(|(label, command)| (label, self.in_west_env(command.current_dir(&self.root))))
+            .collect())
+    }
+
+    /// The devicetree memory regions worth a report: the region nodes the
+    /// devicetree declares, kept where the ELF's own section table says
+    /// something lands. Reading the two artifacts is the same read the
+    /// dashboard window's tabs do; neither existing is the common case for
+    /// a board with no `zephyr,memory-region` nodes, which answers empty.
+    fn reportable_regions(
+        &self,
+        paths: &crate::backend::zephyr::report::ReportPaths,
+    ) -> Vec<crate::backend::zephyr::report::regions::MemoryRegion> {
+        use crate::backend::zephyr::report::{devicetree, elf_stat, regions};
+        let nodes = std::fs::read_to_string(paths.devicetree())
+            .map(|text| devicetree::parse(&text))
+            .unwrap_or_default();
+        let sections = std::fs::read_to_string(paths.stat())
+            .map(|text| elf_stat::parse(&text))
+            .unwrap_or_default();
+        regions::reportable(&regions::discover(&nodes), &sections)
+    }
+
+    /// Parks the memory report runs the panel's one process slot cannot
+    /// start yet: everything but the first, which the caller starts. The
+    /// queue is replaced, not appended --- a fresh Generate answers the
+    /// build directory as it stands now.
+    pub fn queue_size_reports(&mut self, runs: Vec<(String, crate::process::Command)>) {
+        self.pending_reports = runs.into();
+    }
+
+    /// Whether any queued memory report run is still waiting.
+    pub fn has_pending_reports(&self) -> bool {
+        !self.pending_reports.is_empty()
+    }
+
+    /// Hands the app the next queued memory report run, if one waits ---
+    /// the caller starts it through the panel like the first.
+    pub fn next_size_report(&mut self) -> Option<(String, crate::process::Command)> {
+        self.pending_reports.pop_front()
     }
 
     pub fn dashboard_command(
@@ -1295,7 +1373,7 @@ impl BuildPanel {
     /// panel.
     pub fn start(
         &mut self,
-        what: &'static str,
+        what: impl Into<String>,
         updates_board: bool,
         action: BuildAction,
         command: crate::process::Command,
@@ -1314,7 +1392,7 @@ impl BuildPanel {
         let id = processes.spawn(command, BUILD_TIMEOUT);
         self.running = Some(Running {
             id,
-            what,
+            what: what.into(),
             updates_board,
             action,
             started: Instant::now(),
@@ -1444,7 +1522,7 @@ impl BuildPanel {
         caps: &Capabilities,
     ) -> Vec<(Level, String)> {
         let ok = outcome.is_success();
-        let what = running.what;
+        let what = running.what.clone();
         let message = match outcome {
             Outcome::Success => format!("{what}: done in {}", Self::secs(duration)),
             Outcome::Failed { code } => match code {
@@ -1531,6 +1609,13 @@ impl BuildPanel {
 
         if ok && running.action == BuildAction::Flash {
             self.flash_finished = true;
+        }
+        if !ok && running.action == BuildAction::SizeReport {
+            // The queued region runs describe the same DWARF walk the
+            // failed one could not make; carrying on would spend minutes
+            // per region to fail the same way, so the queue goes and the
+            // Monitor keeps the explanation.
+            self.pending_reports.clear();
         }
         if ok && running.action == BuildAction::SizeReport {
             self.size_report_finished = true;

@@ -958,8 +958,13 @@ impl App {
     ///
     /// The window is already closed by the time this runs (the caller closes
     /// it): a run of minutes belongs in the Monitor with `Stop` reachable,
-    /// not behind a modal. `App::on_process` re-opens the window on the
-    /// Memory tab when the run *succeeds* --- a failure leaves the Monitor
+    /// not behind a modal. The report is a *queue* --- the main
+    /// `rom/ram/all` run, then one per devicetree memory region, each a
+    /// full DWARF walk of its own --- because that is `dashboard.py`'s own
+    /// shape and the Memory view's region tabs come from the region runs.
+    /// The first run starts here; `App::on_process` starts each successor
+    /// as its predecessor succeeds, and re-opens the window on the Memory
+    /// tab only when the last one has --- a failure leaves the Monitor
     /// showing why, which a modal over it would hide.
     pub(super) fn start_size_report(&mut self) {
         let Some(workspace) = self
@@ -974,25 +979,55 @@ impl App {
         let Some(backend) = self.manager.backend() else {
             return;
         };
-        let command = match self
+        let runs = match self
             .build
             .as_ref()
-            .map(|panel| panel.size_report_command(backend, &workspace))
+            .map(|panel| panel.size_report_commands(backend, &workspace))
         {
-            Some(Ok(command)) => command,
+            Some(Ok(runs)) => runs,
             Some(Err(why)) => {
                 self.logs.warn(format!("memory report: {why}"));
                 return;
             }
             None => return,
         };
+        let mut runs = runs.into_iter();
+        let Some((label, command)) = runs.next() else {
+            return;
+        };
+        if let Some(panel) = self.build.as_mut() {
+            panel.queue_size_reports(runs.collect());
+        }
         self.start_build_command(
-            "Memory report",
+            label,
             false,
             BuildAction::SizeReport,
             Focus::Build,
             move |_, _| Ok(command),
         );
+    }
+
+    /// Starts the next queued memory report run, if one waits. Answers
+    /// whether it did --- `false` means the queue is empty and the caller
+    /// should bring the window back instead.
+    ///
+    /// Reached from `on_process`, on the success of the run before it;
+    /// a failure or a stop never gets here (the panel clears the queue).
+    pub(super) fn start_next_size_report(&mut self) -> bool {
+        let Some(panel) = self.build.as_mut() else {
+            return false;
+        };
+        let Some((label, command)) = panel.next_size_report() else {
+            return false;
+        };
+        self.start_build_command(
+            label,
+            false,
+            BuildAction::SizeReport,
+            Focus::Build,
+            move |_, _| Ok(command),
+        );
+        true
     }
 
     /// Runs what a simulator build just produced, streaming into the
@@ -1034,7 +1069,7 @@ impl App {
     /// return there (or its lifecycle successor) when it finishes.
     fn start_build_command(
         &mut self,
-        label: &'static str,
+        label: impl Into<String>,
         updates_board: bool,
         action: BuildAction,
         focus: Focus,
@@ -1043,6 +1078,7 @@ impl App {
             &dyn crate::backend::Backend,
         ) -> Result<crate::process::Command, String>,
     ) {
+        let label = label.into();
         let Some(backend) = self.manager.backend() else {
             return;
         };

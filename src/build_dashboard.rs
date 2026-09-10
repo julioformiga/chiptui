@@ -34,7 +34,7 @@ use std::path::{Path, PathBuf};
 use crate::app::DocsFocus;
 use crate::backend::zephyr::report::{
     self, ReportPaths, Stamp, build_info, build_info::BuildInfo, devicetree, devicetree::DtNode,
-    elf_stat, kconfig, kconfig::KconfigSymbol, memory, memory::MemoryReport,
+    elf_stat, kconfig, kconfig::KconfigSymbol, memory, memory::MemoryReport, regions,
 };
 
 /// The window's pages, in strip order.
@@ -215,6 +215,36 @@ impl DetailLine {
     }
 }
 
+/// One report the Memory tab shows: one of the three fixed ones, or a
+/// devicetree memory region's own.
+///
+/// Each carries its own parse cache and its own expansion set --- the
+/// reports share their tree shape (`Root`/`kernel`/… appear in all of
+/// them), so one shared expansion set would open a node in every view at
+/// once.
+#[derive(Debug, Clone, Default)]
+pub struct MemoryView {
+    /// The report file's stem: `all`, `ram`, `rom`, or a region name.
+    pub target: String,
+    /// The view's title --- Zephyr's own wording for the fixed three,
+    /// the region's name for the rest. The pane's title and the sub-strip
+    /// both read it, which is what tells the reader which report the tree
+    /// below them is.
+    pub title: String,
+    cached: Cached<MemoryReport>,
+    expanded: HashSet<String>,
+}
+
+impl MemoryView {
+    fn new(target: &str, title: &str) -> Self {
+        Self {
+            target: target.to_string(),
+            title: title.to_string(),
+            ..Self::default()
+        }
+    }
+}
+
 /// Everything the window shows.
 #[derive(Debug, Default)]
 pub struct DashboardState {
@@ -232,19 +262,26 @@ pub struct DashboardState {
     kconfig: Cached<Vec<KconfigSymbol>>,
     kconfig_traced: bool,
     devicetree: Cached<Vec<DtNode>>,
-    memory: Cached<MemoryReport>,
+    /// The reports the Memory tab offers as its sub-strip, in strip order:
+    /// the three fixed ones, then one per region report on disk.
+    memory_views: Vec<MemoryView>,
+    /// Which memory view the tab shows.
+    memory_view: usize,
     /// Sizes of the ELF and the binary, and the ELF's timestamp, for the
     /// Summary --- read from the filesystem, which is the only place they
     /// exist.
     elf_size: Option<u64>,
     bin_size: Option<u64>,
-    /// Expanded node keys, one set per tree tab. Keyed by the trees' own
-    /// stable identifiers (`size_report`'s `identifier`, a devicetree path)
-    /// rather than by row index, which every filter change would invalidate.
-    expanded_memory: HashSet<String>,
+    /// Expanded node keys for the devicetree tree, keyed by the tree's own
+    /// stable identifier (the node path) rather than by row index, which
+    /// every filter change would invalidate.
     expanded_devicetree: HashSet<String>,
     /// Whether the memory report on disk predates the ELF.
     memory_stale: bool,
+    /// Whether the memory view list must be rebuilt before the next read
+    /// --- set by [`Self::invalidate_memory`], because generating reports
+    /// changes which region files exist.
+    rebuild_memory_views: bool,
 }
 
 impl DashboardState {
@@ -262,12 +299,67 @@ impl DashboardState {
         self.source.as_ref()
     }
 
-    pub fn memory(&self) -> &Cached<MemoryReport> {
-        &self.memory
-    }
-
     pub fn memory_is_stale(&self) -> bool {
         self.memory_stale
+    }
+
+    /// The memory view in view, if the tab has one.
+    fn memory_view(&self) -> Option<&MemoryView> {
+        self.memory_views.get(self.memory_view)
+    }
+
+    /// The active memory view's title --- the pane's own title, so the
+    /// tree below it is never anonymous.
+    pub fn memory_title(&self) -> &str {
+        self.memory_view()
+            .map(|view| view.title.as_str())
+            .unwrap_or("Memory")
+    }
+
+    /// The memory sub-strip's titles, in strip order --- the same builder
+    /// the renderer draws from and the click hit-testing walks.
+    pub fn memory_view_titles(&self) -> Vec<&str> {
+        self.memory_views
+            .iter()
+            .map(|view| view.title.as_str())
+            .collect()
+    }
+
+    /// The memory sub-strip's selected position.
+    pub fn memory_view_index(&self) -> usize {
+        self.memory_view
+    }
+
+    /// Shows the memory view at `index`, if it exists --- a fresh list
+    /// starts from its top, the rule a tab switch already follows.
+    pub fn set_memory_view(&mut self, index: usize) {
+        if index >= self.memory_views.len() || index == self.memory_view {
+            return;
+        }
+        self.memory_view = index;
+        let pane = self.pane_mut();
+        pane.selected = 0;
+        pane.scroll = 0;
+        self.clamp_cursor();
+    }
+
+    /// Walks the memory sub-strip in the arrow's direction, clamped ---
+    /// never wrapping, the rule every other strip in this app follows.
+    pub fn step_memory_view(&mut self, steps: i32) {
+        let last = self.memory_views.len().saturating_sub(1) as i32;
+        let next = (self.memory_view as i32 + steps).clamp(0, last);
+        self.set_memory_view(next as usize);
+    }
+
+    /// Whether the Memory tab leads with the Generate button: the report
+    /// on disk predates the ELF, or the view in view has no file at all.
+    /// A file that exists but will not parse is not this --- the pane
+    /// shows its own error, which regenerating might not fix.
+    pub fn memory_prompt_visible(&self) -> bool {
+        let active_missing = self
+            .memory_view()
+            .is_some_and(|view| matches!(view.cached, Cached::Missing(_)));
+        self.memory_stale || active_missing
     }
 
     /// Whether the Kconfig rows came from the trace file rather than from
@@ -297,10 +389,15 @@ impl DashboardState {
         true
     }
 
-    /// Forgets the memory report, so the next entry re-reads it --- what a
-    /// finished `size_report` run needs.
+    /// Forgets the memory reports, so the next entry re-reads them --- what
+    /// a finished `size_report` run needs. The view list is rebuilt too:
+    /// the run may have written region files that did not exist, or the
+    /// view list was never built at all.
     pub fn invalidate_memory(&mut self) {
-        self.memory = Cached::Idle;
+        self.rebuild_memory_views = true;
+        for view in &mut self.memory_views {
+            view.cached = Cached::Idle;
+        }
     }
 }
 
@@ -485,30 +582,36 @@ impl DashboardState {
     }
 
     fn load_memory(&mut self, paths: &ReportPaths) {
-        let path = paths.memory_report("all");
         self.memory_stale = report::memory_report_stale(paths);
+        if self.rebuild_memory_views || self.memory_views.is_empty() {
+            self.memory_views = Self::discover_memory_views(paths);
+            self.memory_view = self
+                .memory_view
+                .min(self.memory_views.len().saturating_sub(1));
+            self.rebuild_memory_views = false;
+        }
+        let Some(view) = self.memory_views.get_mut(self.memory_view) else {
+            return;
+        };
+        let path = paths.memory_report(&view.target);
         let stamp = report::stamp(&path);
-        if !is_stale(&self.memory, stamp) {
+        if !is_stale(&view.cached, stamp) {
             return;
         }
         if let Some((_, len)) = stamp
             && len > MAX_MEMORY_REPORT_BYTES
         {
-            self.memory = Cached::Failed(format!(
+            view.cached = Cached::Failed(format!(
                 "the memory report is {} --- too large to read here",
                 report::display_size(len)
             ));
             return;
         }
-        self.memory = match read(
-            &path,
-            "no memory report yet --- generating one reads the ELF's debug info",
-        ) {
+        view.cached = match read(&path, &memory_missing_reason(&view.target)) {
             Ok((text, stamp)) => match memory::parse(&text) {
                 Some(value) => {
-                    if self.expanded_memory.is_empty() && !value.nodes.is_empty() {
-                        self.expanded_memory
-                            .insert(value.nodes[0].identifier.clone());
+                    if view.expanded.is_empty() && !value.nodes.is_empty() {
+                        view.expanded.insert(value.nodes[0].identifier.clone());
                     }
                     Cached::Ready { value, stamp }
                 }
@@ -516,6 +619,48 @@ impl DashboardState {
             },
             Err(state) => carry(state),
         };
+    }
+
+    /// The Memory tab's views: the three fixed reports --- titled the way
+    /// the HTML dashboard titles its tabs, so the two read as one feature
+    /// --- then one per region report on disk.
+    ///
+    /// Regions come in devicetree order where the devicetree declares
+    /// them, which is `dashboard.py`'s own tab order; a report file the
+    /// devicetree does not explain (regions changed since it was written)
+    /// still gets its view, in sorted order after the ones it does.
+    fn discover_memory_views(paths: &ReportPaths) -> Vec<MemoryView> {
+        let mut views = vec![
+            MemoryView::new("all", "Total Memory"),
+            MemoryView::new("ram", "RAM report"),
+            MemoryView::new("rom", "ROM report"),
+        ];
+        let existing: HashSet<String> = paths.memory_region_reports().into_iter().collect();
+        let nodes = std::fs::read_to_string(paths.devicetree())
+            .map(|text| devicetree::parse(&text))
+            .unwrap_or_default();
+        for region in regions::discover(&nodes) {
+            if existing.contains(&region.name)
+                && !views.iter().any(|view| view.target == region.name)
+            {
+                views.push(MemoryView::new(&region.name, &region.name));
+            }
+        }
+        for name in paths.memory_region_reports() {
+            if !views.iter().any(|view| view.target == name) {
+                views.push(MemoryView::new(&name, &name));
+            }
+        }
+        views
+    }
+}
+
+/// The sentence a missing report file reads as, per view: the fixed three
+/// name the run that writes them, a region names itself.
+fn memory_missing_reason(target: &str) -> String {
+    match target {
+        "all" => "no memory report yet --- generating one reads the ELF's debug info".to_string(),
+        other => format!("no {other}_report.json --- generating the memory report writes it"),
     }
 }
 
@@ -719,22 +864,29 @@ impl DashboardState {
             .collect()
     }
 
-    /// The Memory tab's synthetic first row, when the report is absent or
-    /// predates the ELF. A stale report keeps its rows *below* the prompt:
-    /// old numbers labelled stale beat no numbers at all.
+    /// The Memory tab's synthetic first row, when the Generate button
+    /// applies: the report is absent, predates the ELF, or the view in
+    /// view has no file. A stale report keeps its rows *below* the
+    /// button: old numbers labelled stale beat no numbers at all.
+    ///
+    /// The renderer draws this row as the bordered Generate button, not
+    /// as the line its label describes --- the row shape is what the
+    /// cursor, `Enter` and the click grammar walk.
     fn memory_prompt(&self) -> Option<Row> {
-        let missing = self.memory.value().is_none();
-        if !missing && !self.memory_stale {
+        if !self.memory_prompt_visible() {
             return None;
         }
+        let missing = self
+            .memory_view()
+            .is_none_or(|view| view.cached.value().is_none());
         Some(Row {
             index: usize::MAX,
             depth: 0,
             marker: Marker::None,
             label: if missing {
-                "\u{25b6} Generate the memory report".to_string()
+                "Generate".to_string()
             } else {
-                "\u{25b6} Regenerate \u{2014} the ELF is newer than this report".to_string()
+                "Regenerate".to_string()
             },
             trailing: String::new(),
             dimmed: false,
@@ -744,7 +896,10 @@ impl DashboardState {
 
     fn memory_rows(&self, filter: &str) -> Vec<Row> {
         let prompt = self.memory_prompt();
-        let Some(report) = self.memory.value() else {
+        let Some(view) = self.memory_view() else {
+            return prompt.into_iter().collect();
+        };
+        let Some(report) = view.cached.value() else {
             return prompt.into_iter().collect();
         };
         let nodes = &report.nodes;
@@ -768,7 +923,7 @@ impl DashboardState {
             let mut depth = nodes[index].depth;
             for node in nodes[..index].iter().rev() {
                 if node.depth < depth {
-                    if !self.expanded_memory.contains(&node.identifier) {
+                    if !view.expanded.contains(&node.identifier) {
                         return false;
                     }
                     depth = node.depth;
@@ -789,10 +944,8 @@ impl DashboardState {
                     .map(|(index, node)| Row {
                         index,
                         depth: node.depth,
-                        marker: self.marker(
-                            node.has_children,
-                            self.expanded_memory.contains(&node.identifier),
-                        ),
+                        marker: self
+                            .marker(node.has_children, view.expanded.contains(&node.identifier)),
                         label: node.name.clone(),
                         trailing: report::display_size(node.size),
                         dimmed: node.size == 0,
@@ -876,7 +1029,8 @@ impl DashboardState {
         }
         match self.tab {
             DashboardTab::Memory => Some(
-                self.memory
+                self.memory_view()?
+                    .cached
                     .value()?
                     .nodes
                     .get(row.index)?
@@ -890,7 +1044,10 @@ impl DashboardState {
 
     fn expanded_mut(&mut self) -> Option<&mut HashSet<String>> {
         match self.tab {
-            DashboardTab::Memory => Some(&mut self.expanded_memory),
+            DashboardTab::Memory => self
+                .memory_views
+                .get_mut(self.memory_view)
+                .map(|view| &mut view.expanded),
             DashboardTab::DeviceTree => Some(&mut self.expanded_devicetree),
             _ => None,
         }
@@ -985,23 +1142,39 @@ impl DashboardState {
                 .unwrap_or_default();
         };
         if row.prompt {
-            return vec![
+            let mut lines = vec![
                 DetailLine::Heading("Memory report".to_string()),
                 DetailLine::Blank,
                 DetailLine::Text(
-                    "Enter runs Zephyr's own size_report over the build's debug info. \
-                     It takes a few minutes and streams into the Monitor, where Stop \
-                     works; this window closes and comes back here when it finishes."
-                        .to_string(),
-                ),
-                DetailLine::Blank,
-                DetailLine::Text(
-                    "The three report files land in the build directory's dashboard/ \
-                     folder --- the same place west build -t dashboard writes them, so \
-                     one run serves both dashboards."
+                    "Enter runs Zephyr's own size_report over the build's debug info: \
+                      the Total Memory, RAM and ROM reports first, then one more run per \
+                      devicetree memory region --- the same reports west build -t \
+                      dashboard makes. Each run walks the whole ELF, so they queue in \
+                      the Monitor, where Stop works; this window closes and comes back \
+                      here when the last one finishes."
                         .to_string(),
                 ),
             ];
+            if self.memory_stale
+                && self
+                    .memory_view()
+                    .is_some_and(|view| view.cached.value().is_some())
+            {
+                lines.push(DetailLine::Blank);
+                lines.push(DetailLine::Text(
+                    "The ELF is newer than this report --- the numbers below describe \
+                      an older build."
+                        .to_string(),
+                ));
+            }
+            lines.push(DetailLine::Blank);
+            lines.push(DetailLine::Text(
+                "The report files land in the build directory's dashboard/ folder --- \
+                  the same place west build -t dashboard writes them, so one run \
+                  serves both dashboards."
+                    .to_string(),
+            ));
+            return lines;
         }
         match self.tab {
             DashboardTab::Summary => vec![
@@ -1024,7 +1197,7 @@ impl DashboardState {
             DashboardTab::Kconfig => self.kconfig.reason(),
             DashboardTab::ElfStats => self.stat.reason(),
             DashboardTab::DeviceTree => self.devicetree.reason(),
-            DashboardTab::Memory => self.memory.reason(),
+            DashboardTab::Memory => self.memory_view().and_then(|view| view.cached.reason()),
         };
         cached.or({
             if self.pane().input.trim().is_empty() {
@@ -1169,7 +1342,7 @@ impl DashboardState {
     }
 
     fn memory_details(&self, index: usize) -> Vec<DetailLine> {
-        let Some(report) = self.memory.value() else {
+        let Some(report) = self.memory_view().and_then(|view| view.cached.value()) else {
             return Vec::new();
         };
         let Some(node) = report.nodes.get(index) else {
@@ -1246,10 +1419,11 @@ impl DashboardState {
         roots
     }
 
-    /// The Memory tab's leading rows: the largest symbols, which is the
-    /// question a memory report is usually opened to answer.
+    /// The Memory tab's leading rows: the largest symbols in the view in
+    /// view, which is the question a memory report is usually opened to
+    /// answer.
     pub fn largest_symbols(&self) -> Vec<(String, String, String)> {
-        let Some(report) = self.memory.value() else {
+        let Some(report) = self.memory_view().and_then(|view| view.cached.value()) else {
             return Vec::new();
         };
         report
@@ -1713,7 +1887,7 @@ Key to Flags:
         let rows = state.rows();
         assert_eq!(rows.len(), 1);
         assert!(rows[0].prompt);
-        assert!(rows[0].label.contains("Generate the memory report"));
+        assert_eq!(rows[0].label, "Generate");
         assert!(state.selected_is_prompt());
         assert!(state.memory_is_stale());
     }
@@ -1729,10 +1903,180 @@ Key to Flags:
         let (mut state, _) = state_on(&root, DashboardTab::Memory);
         let rows = state.rows();
         assert!(rows[0].prompt);
-        assert!(rows[0].label.contains("Regenerate"));
+        assert_eq!(rows[0].label, "Regenerate");
         assert_eq!(rows[1].label, "Root", "the old tree is still readable");
         // The offer is not an entry: nothing ever looks it up in the report.
         assert!(!state.toggle_selected(), "the offer is not a tree row");
+    }
+
+    /// The devicetree fixture (`DTS`) declares one `zephyr,memory-region`
+    /// node: `sram0`/`memory@3fc80000`, named `SRAM1`.
+    const REGION_DTS: &str = "\
+/* node '/' defined in board.dts:1 */
+/ {
+\t#address-cells = < 0x1 >;
+\t#size-cells = < 0x1 >;
+
+\t/* node '/soc' defined in soc.dtsi:1 */
+\tsoc {
+\t\t#address-cells = < 0x1 >;
+\t\t#size-cells = < 0x1 >;
+
+\t\t/* node '/soc/memory@3fc80000' defined in soc.dtsi:2 */
+\t\tsram0: memory@3fc80000 {
+\t\t\tcompatible = \"zephyr,memory-region\";
+\t\t\treg = < 0x3fc80000 0x60000 >;
+\t\t\tzephyr,memory-region = \"SRAM1\";
+\t\t};
+\t};
+};
+";
+
+    /// A region report on disk becomes its own view, in devicetree order
+    /// after the fixed three, titled the way the HTML dashboard titles
+    /// its tabs --- which is what makes the two dashboards read as one.
+    #[test]
+    fn region_reports_on_disk_become_views_in_devicetree_order() {
+        let root = build_dir("memory-regions");
+        std::fs::write(root.join("build/zephyr/zephyr.dts"), REGION_DTS).unwrap();
+        // Written in an order the devicetree answer must not keep.
+        std::fs::write(
+            root.join("build/dashboard/RTC_FAST_RAM_report.json"),
+            REPORT,
+        )
+        .unwrap();
+        std::fs::write(root.join("build/dashboard/SRAM1_report.json"), REPORT).unwrap();
+        let (state, _) = state_on(&root, DashboardTab::Memory);
+        assert_eq!(
+            state.memory_view_titles(),
+            vec![
+                "Total Memory",
+                "RAM report",
+                "ROM report",
+                "SRAM1",
+                "RTC_FAST_RAM"
+            ]
+        );
+        assert_eq!(state.memory_title(), "Total Memory");
+    }
+
+    /// Every view reads its own file: `ram` shows the RAM report, the
+    /// region its own, and a view whose file is missing says so with the
+    /// Generate offer rather than an anonymous tree.
+    #[test]
+    fn each_view_reads_its_own_report() {
+        let root = build_dir("memory-own-files");
+        std::fs::write(
+            root.join("build/dashboard/ram_report.json"),
+            REPORT.replace("\"heap\"", "\"heap_ram\""),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("build/dashboard/SRAM1_report.json"),
+            REPORT.replace("\"heap\"", "\"heap_sram1\""),
+        )
+        .unwrap();
+        let (mut state, paths) = state_on(&root, DashboardTab::Memory);
+        state.set_memory_view(1);
+        state.ensure_tab(&paths);
+        state.pane_mut().selected = 0;
+        state.expand_selected();
+        state.pane_mut().selected = 1;
+        state.expand_selected();
+        let rows = labels(&state);
+        assert!(rows.contains(&"heap_ram".to_string()), "{rows:?}");
+
+        // A missing file is the Generate offer, and the title still names
+        // the view the reader is in.
+        state.set_memory_view(2);
+        state.ensure_tab(&paths);
+        assert_eq!(state.memory_title(), "ROM report");
+        assert!(state.memory_prompt_visible());
+        assert_eq!(labels(&state), vec!["Generate"]);
+        assert!(state.empty_reason().unwrap().contains("no rom_report.json"));
+
+        // The region view reads its own file.
+        state.set_memory_view(3);
+        state.ensure_tab(&paths);
+        assert_eq!(state.memory_title(), "SRAM1");
+        state.pane_mut().selected = 0;
+        state.expand_selected();
+        state.pane_mut().selected = 1;
+        state.expand_selected();
+        let rows = labels(&state);
+        assert!(rows.contains(&"heap_sram1".to_string()), "{rows:?}");
+    }
+
+    /// Expansion is per view: opening `Root`'s child in one report leaves
+    /// the others as they were, so comparing reports does not move four
+    /// cursors at once.
+    #[test]
+    fn expansion_is_isolated_per_view() {
+        let root = build_dir("memory-expansion");
+        std::fs::write(
+            root.join("build/dashboard/ram_report.json"),
+            REPORT.replace("\"heap\"", "\"heap_ram\""),
+        )
+        .unwrap();
+        let (mut state, paths) = state_on(&root, DashboardTab::Memory);
+        // Open `kernel` in Total Memory.
+        state.pane_mut().selected = 1;
+        state.expand_selected();
+        assert_eq!(labels(&state), vec!["Root", "kernel", "heap", "stack"]);
+
+        state.set_memory_view(1);
+        state.ensure_tab(&paths);
+        assert_eq!(
+            labels(&state),
+            vec!["Root", "kernel"],
+            "the RAM view's own root opens, its child stays shut"
+        );
+        state.pane_mut().selected = 1;
+        state.expand_selected();
+        assert_eq!(labels(&state), vec!["Root", "kernel", "heap_ram", "stack"]);
+
+        state.set_memory_view(0);
+        assert_eq!(
+            labels(&state),
+            vec!["Root", "kernel", "heap", "stack"],
+            "and switching back keeps that view's own state"
+        );
+    }
+
+    /// The sub-strip clamps at both ends and never wraps, resets the
+    /// cursor for the new list, and `invalidate_memory` finds a region
+    /// file that appeared since the list was built.
+    #[test]
+    fn the_memory_strip_clamps_and_the_view_list_rebuilds() {
+        let root = build_dir("memory-strip");
+        let paths = ReportPaths::new(&root, "build");
+        let mut state = DashboardState::default();
+        state.retarget(&root, "build");
+        state.tab = DashboardTab::Memory;
+        state.ensure_tab(&paths);
+        assert_eq!(state.memory_view_titles().len(), 3);
+
+        state.pane_mut().selected = 1;
+        state.step_memory_view(1);
+        assert_eq!(state.memory_view_index(), 1);
+        state.pane_mut().selected = 2;
+        state.step_memory_view(-1);
+        assert_eq!(state.memory_view_index(), 0, "clamped, not wrapped");
+        assert_eq!(state.pane().selected, 0, "a fresh list starts at its top");
+        state.step_memory_view(1);
+        state.step_memory_view(1);
+        state.step_memory_view(1);
+        assert_eq!(state.memory_view_index(), 2, "clamped at the other end");
+
+        // A region report that lands while the window is closed --- the
+        // generate flow --- joins the list on the next entry.
+        std::fs::write(root.join("build/dashboard/SRAM1_report.json"), REPORT).unwrap();
+        state.invalidate_memory();
+        state.ensure_tab(&paths);
+        assert_eq!(
+            state.memory_view_titles(),
+            vec!["Total Memory", "RAM report", "ROM report", "SRAM1"]
+        );
     }
 
     /// A missing artifact is a named state, not an error --- `zephyr.stat`

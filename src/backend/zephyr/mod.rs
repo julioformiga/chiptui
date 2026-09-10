@@ -242,6 +242,30 @@ impl Backend for ZephyrBackend {
         ))
     }
 
+    fn size_report_region_command(
+        &self,
+        ctx: &BuildReportContext<'_>,
+        region: &report::regions::MemoryRegion,
+    ) -> Result<crate::process::Command, String> {
+        if !ctx.elf.is_file() {
+            return Err(format!(
+                "no {} --- build the project first",
+                ctx.elf
+                    .file_name()
+                    .map(|name| name.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "zephyr.elf".to_string())
+            ));
+        }
+        Ok(commands::size_report_region(
+            ctx.python,
+            ctx.zephyr_base,
+            ctx.topdir,
+            ctx.elf,
+            ctx.out_dir,
+            region,
+        ))
+    }
+
     fn monitor_command(
         &self,
         ctx: &crate::backend::MonitorContext<'_>,

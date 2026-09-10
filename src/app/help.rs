@@ -1427,9 +1427,11 @@ impl App {
             ],
             // Free text here too, so the footer names the two gestures the
             // filter line cannot teach: the strip answers the chord, and
-            // `Enter` opens the row on the two tabs that are trees.
+            // `Enter` opens the row on the two tabs that are trees. The
+            // Memory tab's own strip answers the shifted sibling chord.
             Some(Overlay::BuildDashboard) => vec![
                 ("ctrl+\u{2190}/\u{2192}", "tabs"),
+                ("shift+\u{2190}/\u{2192}", "memory report"),
                 ("tab", "list/details"),
                 ("enter", "expand"),
                 ("F1", "help"),

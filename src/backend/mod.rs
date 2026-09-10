@@ -523,6 +523,19 @@ pub trait Backend {
         Err("this backend has no memory report".to_string())
     }
 
+    /// Returns the command that generates one devicetree memory region's
+    /// own report --- the Memory view's extra tabs, `dashboard.py`'s
+    /// per-region runs. Refuses exactly where [`Self::size_report_command`]
+    /// does.
+    fn size_report_region_command(
+        &self,
+        ctx: &BuildReportContext<'_>,
+        region: &crate::backend::zephyr::report::regions::MemoryRegion,
+    ) -> Result<crate::process::Command, String> {
+        let _ = (ctx, region);
+        Err("this backend has no memory report".to_string())
+    }
+
     /// Returns the command for one flavor of the build lifecycle
     /// (`AGENTS.md` §2: delegate to the ecosystem's own tools). Returns
     /// `None` if the backend offers no build capability or has not

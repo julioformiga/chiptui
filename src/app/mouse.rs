@@ -31,8 +31,10 @@ use crate::app::{
 };
 use crate::browser::{PaneState, Side};
 use crate::build::BuildAction;
+use crate::build_dashboard::DashboardTab;
 use crate::device::DevicePath;
 use crate::flash::{FlashAction, FlashPaneAction, FlashPanel, FlashScreen};
+use crate::ui::build_dashboard::MEMORY_PROMPT_ROWS;
 use crate::ui::layout::{self, RightKind, Row2};
 
 /// Rows a wheel step scrolls: a notch is a nudge, not a page (the
@@ -814,10 +816,22 @@ impl App {
                 // The strip first: it sits on the modal's top border, which
                 // is inside the popup rect, so a click there would
                 // otherwise fall through to the list test below.
-                let areas = layout::build_dashboard(frame);
+                let memory = self.build_dashboard.tab == DashboardTab::Memory;
+                let areas = layout::build_dashboard(frame, memory);
                 let tabs = self.dashboard_strip_tabs();
                 if let Some(tab) = strip_tab(point, areas.popup, &tabs) {
                     self.set_dashboard_tab(tab);
+                    return;
+                }
+                // The Memory tab's sub-strip sits on its own row under the
+                // main one --- no border to ride, so the walk starts at the
+                // row's own edge, through the same title widths the frame
+                // drew.
+                if memory
+                    && let Some(index) =
+                        row_tab(point, areas.views, &self.build_dashboard.memory_view_titles())
+                {
+                    self.set_dashboard_memory_view(index);
                     return;
                 }
                 // Picker grammar: a click selects, never activates ---
@@ -830,12 +844,28 @@ impl App {
                 if !contains(areas.list, point) {
                     return;
                 }
+                let had_focus = self.build_dashboard.focus == DocsFocus::List;
                 self.set_dashboard_focus(DocsFocus::List);
-                let len = self.build_dashboard.rows().len();
+                // The Generate offer is drawn as a stacked button, and a
+                // stacked button is one of the clicks that *acts* --- from
+                // a pane that already held the focus, the rule every
+                // acting click follows.
+                let prompt = memory && self.build_dashboard.memory_prompt_visible();
+                let head = if prompt { MEMORY_PROMPT_ROWS } else { 0 };
+                if prompt && click_on_prompt_button(areas.list, point) {
+                    self.set_dashboard_selection(0);
+                    if had_focus {
+                        self.generate_memory_report();
+                    }
+                    return;
+                }
+                let rows = self.build_dashboard.rows();
+                let skip = usize::from(prompt);
+                let drawn = rows.len().saturating_sub(skip);
                 if let Some(index) =
-                    dashboard_list_row(areas.list, point, self.dashboard_list_offset, len)
+                    dashboard_list_row(areas.list, point, self.dashboard_list_offset, drawn, head)
                 {
-                    self.set_dashboard_selection(index);
+                    self.set_dashboard_selection(index + skip);
                 }
             }
             Overlay::ProjectConfig => self.click_project_config(point),
@@ -1141,7 +1171,8 @@ impl App {
             // details; its state lives on `App`, not in the variant, so it
             // is answered here rather than through the tuple below.
             Some(Overlay::BuildDashboard) => {
-                let areas = layout::build_dashboard(frame);
+                let memory = self.build_dashboard.tab == DashboardTab::Memory;
+                let areas = layout::build_dashboard(frame, memory);
                 if contains(areas.list, point) {
                     self.build_dashboard.move_cursor(direction as i32);
                 } else if contains(areas.details, point) {
@@ -1498,6 +1529,34 @@ fn list_row(
     (index < len).then_some(index)
 }
 
+/// The tab a click on a plain tab *row* selected, `None` when the click
+/// missed every label. The sibling of [`strip_tab`] for a strip that has
+/// no border to sit on (the dashboard's memory sub-strip): the walk is the
+/// Ratatui `Tabs` grammar --- `pad + title + pad`, one divider between
+/// neighbours --- starting at the row's own left edge. Answers the title's
+/// index, which is the position the state's own selection uses.
+fn row_tab(point: (u16, u16), row: Rect, titles: &[&str]) -> Option<usize> {
+    if point.1 != row.y || row.width == 0 {
+        return None;
+    }
+    let mut x = row.x;
+    for (position, title) in titles.iter().enumerate() {
+        let width = 2 + title.chars().count() as u16;
+        let start = x;
+        x += width;
+        if position + 1 < titles.len() {
+            x += 1; // the DOT divider
+        }
+        if point.0 >= start && point.0 < x {
+            return Some(position);
+        }
+        if x > point.0 {
+            return None;
+        }
+    }
+    None
+}
+
 /// The tab a click on a pane's top-border strip selected, `None` when the
 /// click missed every label. Both strips draw with the Ratatui `Tabs`
 /// widget's grammar (`ui::panels::draw_log_tabs`,
@@ -1617,7 +1676,13 @@ fn docs_list_row(area: Rect, point: (u16, u16), offset: usize, len: usize) -> Op
 
 /// A row of the build dashboard's list, mapped through the offset the frame
 /// settled on --- [`docs_list_row`]'s rule, over that window's own geometry.
-fn dashboard_list_row(pane: Rect, point: (u16, u16), offset: usize, len: usize) -> Option<usize> {
+fn dashboard_list_row(
+    pane: Rect,
+    point: (u16, u16),
+    offset: usize,
+    len: usize,
+    head: u16,
+) -> Option<usize> {
     if len == 0 {
         return None;
     }
@@ -1630,8 +1695,27 @@ fn dashboard_list_row(pane: Rect, point: (u16, u16), offset: usize, len: usize) 
     if !contains(inner, point) || inner.height == 0 {
         return None;
     }
-    let index = offset + (point.1 - inner.y) as usize;
+    // `head` is the rows the pane draws above its list --- the Memory
+    // tab's Generate button. A click there is the button's, answered by
+    // the caller, not a row index.
+    if point.1 < inner.y + head {
+        return None;
+    }
+    let index = offset + (point.1 - inner.y - head) as usize;
     (index < len).then_some(index)
+}
+
+/// Whether a click lands on the Memory tab's Generate button --- the
+/// stacked button drawn over the pane's first [`MEMORY_PROMPT_ROWS`] inner
+/// rows, the same geometry `ui::build_dashboard::draw_list` renders.
+fn click_on_prompt_button(pane: Rect, point: (u16, u16)) -> bool {
+    let inner = Rect {
+        x: pane.x + 1,
+        y: pane.y + 1,
+        width: pane.width.saturating_sub(2),
+        height: pane.height.saturating_sub(2),
+    };
+    contains(inner, point) && point.1 < inner.y + MEMORY_PROMPT_ROWS
 }
 
 /// The project picker's row count: the configured folder's immediate
