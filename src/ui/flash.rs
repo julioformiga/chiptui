@@ -506,6 +506,7 @@ fn draw_custom_url(
 /// two backends' action panes read identically (`SPEC.md` §11). The area
 /// is the pane's inner rect: the tabbed border around it is drawn by
 /// `crate::ui::files`, the pane this tab lives in.
+/// Below 32 terminal rows, each button and the footer occupy one line.
 pub fn draw_actions_pane(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
     let Some(flash) = &app.flash else {
         frame.render_widget(
@@ -556,14 +557,13 @@ fn draw_action_rows(
         .selected(flash.pane_cursor == position);
         buttons.push(button);
     }
-    let y = area.y;
-    let stack_end = y + button::stack_height(&buttons);
-    let footer_top = stack_end.min(area.bottom().saturating_sub(3)).max(area.y);
+    let layout = button::ActionLayout::for_height(frame.area().height);
+    let footer_top = layout.footer_top(area, buttons.len());
     let stack_area = Rect {
         height: footer_top.saturating_sub(area.y),
         ..area
     };
-    button::render_stack(frame, stack_area, y, &buttons, palette);
+    layout.render(frame, stack_area, &buttons, palette);
     if stop {
         // The right end of the footer: the same stacked-button widget, one
         // button of its own, sharing its label row with the state. Same
@@ -576,10 +576,9 @@ fn draw_action_rows(
             height: area.bottom().saturating_sub(footer_top),
         };
         let selected = flash.pane_cursor == actions.len() - 1;
-        button::render_stack(
+        layout.render(
             frame,
             corner,
-            footer_top,
             &[Button::new("Stop")
                 .icon(icons.stop(), palette.warning)
                 .selected(selected)],
@@ -600,7 +599,9 @@ fn draw_action_state(
     footer_top: u16,
     palette: Palette,
 ) {
-    if area.height < 2 || footer_top + 1 >= area.bottom() {
+    let layout = button::ActionLayout::for_height(frame.area().height);
+    let state_y = footer_top + layout.label_offset();
+    if state_y >= area.bottom() {
         return;
     }
     let line = if let Some(activity) = flash.activity() {
@@ -664,7 +665,8 @@ fn draw_action_state(
         ])
     };
     let rect = Rect {
-        y: footer_top + 1,
+        y: state_y,
+        height: 1,
         width: if flash.is_busy() {
             button::footer_split(area.width).0
         } else {

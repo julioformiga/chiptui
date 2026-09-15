@@ -1398,6 +1398,14 @@ rule the package manager already follows.
 
 ### Dashboard layout
 
+The dashboard supports terminals from **80×24**. Below **32 total terminal
+rows**, the Actions panes use one line per button in a vertical list, without
+button borders or dividers. Their state/`Stop` footer also takes one line.
+At 32 rows and above, the shared-border button stack and three-row footer
+return. Resizing switches automatically, preserving the selected action;
+row 2 is sized for the active format and the log receives the remaining
+height. Both backends use the same rule, including mouse hit-testing.
+
 The Dashboard view is three rows, stacked top to bottom, below a one-line header and above a
 one-line contextual shortcut footer:
 

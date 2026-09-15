@@ -51,6 +51,108 @@ const LABEL_INDENT: usize = 1;
 /// expected to read `<icon>  <label>` for the two to line up.
 const DETAIL_INDENT: usize = LABEL_INDENT + 3;
 
+/// Dashboard action geometry, shared by rendering, sizing and mouse input.
+/// Short terminals use bare, single-line buttons; dialogs keep their boxes.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ActionLayout {
+    compact: bool,
+}
+
+impl ActionLayout {
+    pub(crate) fn for_height(terminal_height: u16) -> Self {
+        Self {
+            compact: terminal_height < 32,
+        }
+    }
+
+    pub(crate) fn stack_height(self, count: usize) -> u16 {
+        if self.compact || count == 0 {
+            count as u16
+        } else {
+            (2 * count + 1) as u16
+        }
+    }
+
+    pub(crate) fn label_offset(self) -> u16 {
+        u16::from(!self.compact)
+    }
+
+    pub(crate) fn footer_height(self) -> u16 {
+        1 + 2 * self.label_offset()
+    }
+
+    pub(crate) fn footer_top(self, area: Rect, count: usize) -> u16 {
+        (area.y + self.stack_height(count))
+            .min(area.bottom().saturating_sub(self.footer_height()))
+            .max(area.y)
+    }
+
+    /// Maps only drawn button cells, including the running footer's Stop.
+    pub(crate) fn hit_test(
+        self,
+        area: Rect,
+        point: (u16, u16),
+        count: usize,
+        busy: bool,
+    ) -> Option<usize> {
+        let (x, y) = point;
+        if x < area.x || x >= area.right() || y < area.y || y >= area.bottom() {
+            return None;
+        }
+        let footer = self.footer_top(area, count);
+        if y >= footer {
+            let (state, _) = footer_split(area.width);
+            let inset = self.label_offset();
+            return (busy
+                && y == footer + inset
+                && x >= area.x + state + inset
+                && x < area.right().saturating_sub(inset))
+            .then_some(count);
+        }
+        let row = y - area.y;
+        if self.compact {
+            (usize::from(row) < count).then_some(usize::from(row))
+        } else {
+            (x > area.x && x + 1 < area.right() && row % 2 == 1 && usize::from(row / 2) < count)
+                .then_some(usize::from(row / 2))
+        }
+    }
+
+    pub(super) fn render(
+        self,
+        frame: &mut Frame,
+        area: Rect,
+        buttons: &[Button],
+        palette: Palette,
+    ) {
+        if !self.compact {
+            render_stack(frame, area, area.y, buttons, palette);
+            return;
+        }
+        for (offset, button) in buttons.iter().take(area.height as usize).enumerate() {
+            let row = Rect {
+                y: area.y + offset as u16,
+                height: 1,
+                ..area
+            };
+            let content = icon_content(button.icon.map(|(glyph, _)| glyph), &button.label);
+            let body = pad_left(
+                &truncate(&format!(" {content}"), area.width as usize),
+                area.width as usize,
+            );
+            let line = Line::from(icon_body_spans(
+                body,
+                LABEL_INDENT,
+                button.icon.is_some(),
+                button.icon_style(palette),
+                button.row_style(palette),
+            ));
+            frame.render_widget(line, row);
+            highlight_selected(frame.buffer_mut(), area, row, button.selected, palette);
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Button {
     label: String,
@@ -481,6 +583,69 @@ mod tests {
 
     fn palette() -> Palette {
         ratatui_themes::ThemeName::TokyoNight.palette()
+    }
+
+    #[test]
+    fn action_hit_testing_matches_drawn_buttons_and_stop_in_both_formats() {
+        let buttons = [Button::new("First"), Button::new("Last")];
+        for height in [24, 31, 32, 40] {
+            let layout = ActionLayout::for_height(height);
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, height)).unwrap();
+            let area = Rect::new(2, 3, 36, 18);
+            let footer = layout.footer_top(area, buttons.len());
+            let (state, stop_width) = footer_split(area.width);
+            terminal
+                .draw(|frame| {
+                    layout.render(
+                        frame,
+                        Rect {
+                            height: footer - area.y,
+                            ..area
+                        },
+                        &buttons,
+                        palette(),
+                    );
+                    layout.render(
+                        frame,
+                        Rect::new(area.x + state, footer, stop_width, layout.footer_height()),
+                        &[Button::new("Stop").selected(true)],
+                        palette(),
+                    );
+                })
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            for (index, label) in ["First", "Last", "Stop"].iter().enumerate() {
+                let (x, y) = (area.y..area.bottom())
+                    .find_map(|y| {
+                        (area.x..area.right()).find_map(|x| {
+                            (buffer[(x, y)].symbol() == &label[..1]).then_some((x, y))
+                        })
+                    })
+                    .expect("button is drawn");
+                assert_eq!(layout.hit_test(area, (x, y), 2, true), Some(index));
+                if index == 2 {
+                    assert_eq!(layout.hit_test(area, (x, y), 2, false), None);
+                    assert_eq!(buffer[(x, y)].bg, palette().selection);
+                }
+            }
+            assert_eq!(
+                layout.hit_test(area, (area.x, footer), 2, true),
+                None,
+                "state is inert"
+            );
+            assert_eq!(
+                layout.hit_test(area, (area.x, area.bottom()), 2, true),
+                None
+            );
+            if height >= 32 {
+                assert_eq!(
+                    layout.hit_test(area, (area.x + 5, area.y + 2), 2, true),
+                    None,
+                    "divider"
+                );
+            }
+        }
     }
 
     /// The rendered stack, without TestBackend's quoting.

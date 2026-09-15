@@ -8,6 +8,8 @@
 //! by side, never one pushing the other, and never a row of the stack. The
 //! footer's three rows are reserved even while idle, so the pane's height
 //! never changes when a command starts.
+//! Below 32 terminal rows, the buttons and footer each take one line
+//! (`button::ActionLayout`); the state and Stop still share the footer.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -49,7 +51,9 @@ fn draw_state(
     footer_top: u16,
     palette: Palette,
 ) {
-    if area.height < 2 || footer_top + 1 >= area.bottom() {
+    let layout = button::ActionLayout::for_height(frame.area().height);
+    let state_y = footer_top + layout.label_offset();
+    if state_y >= area.bottom() {
         return;
     }
     // The state shares its row with the `Stop` box while a command runs and
@@ -88,7 +92,8 @@ fn draw_state(
         ])
     };
     let rect = Rect {
-        y: footer_top + 1,
+        y: state_y,
+        height: 1,
         width,
         ..area
     };
@@ -178,7 +183,7 @@ fn draw_rows(
     // the buttons above it, and `Stop` itself becomes the footer's box.
     let stop = panel.is_busy() && matches!(actions.last(), Some(crate::build::BuildAction::Stop));
     let icons = app.icon_set();
-    let y = area.y;
+    let layout = button::ActionLayout::for_height(frame.area().height);
     let mut buttons: Vec<Button> = Vec::new();
     let mains = &actions[..actions.len() - usize::from(stop)];
     for (position, action) in mains.iter().enumerate() {
@@ -228,18 +233,17 @@ fn draw_rows(
             }
         }
     }
-    // The footer sits directly under the stack's bottom rule --- no blank
+    // The footer sits directly under the stack (borderless when compact) --- no blank
     // row between Flash and Stop --- unless the pane is too short for
     // both, when it pins to the bottom instead and the stack clips above
     // it (the box carries the cursor while a command runs; a clipped
     // button row comes back when the command ends).
-    let stack_end = y + button::stack_height(&buttons);
-    let footer_top = stack_end.min(area.bottom().saturating_sub(3)).max(area.y);
+    let footer_top = layout.footer_top(area, buttons.len());
     let stack_area = Rect {
         height: footer_top.saturating_sub(area.y),
         ..area
     };
-    button::render_stack(frame, stack_area, y, &buttons, palette);
+    layout.render(frame, stack_area, &buttons, palette);
     if stop {
         // The right end of the footer: the same stacked-button widget, one
         // button of its own, sharing its label row with the state. Its
@@ -253,10 +257,9 @@ fn draw_rows(
             height: area.bottom().saturating_sub(footer_top),
         };
         let selected = panel.cursor == actions.len() - 1;
-        button::render_stack(
+        layout.render(
             frame,
             corner,
-            footer_top,
             &[Button::new("Stop")
                 .icon(icons.stop(), palette.warning)
                 .selected(selected)],

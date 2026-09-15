@@ -768,15 +768,14 @@ fn a_start_dir_below_the_project_root_rides_the_root_line() {
     let _ = std::fs::remove_dir_all(&base);
 }
 
-/// The declared minimum is a promise, not an aspiration: at exactly
-/// `MIN_WIDTH`x`MIN_HEIGHT` every button the Zephyr pane offers must be
+/// The bordered layout at 80x32 must still fit every button the Zephyr pane offers,
 /// drawn (frame closed, not clipped a row short), the Device info pane must
 /// keep all four of its rows, and row 3 must still have log to show. The
 /// button stack is what sizes row 2, so anything added to it moves this
 /// test --- which is the point: the constant and the layout cannot drift
 /// apart in silence.
 #[test]
-fn the_declared_minimum_fits_the_whole_dashboard() {
+fn the_bordered_layout_fits_the_whole_dashboard_at_32_rows() {
     use chiptui::backend::esptool::{ChipFamily, DeviceDetails};
 
     let mut app = header_fixture("minimum");
@@ -1345,6 +1344,56 @@ fn destructive_confirmations_name_the_action_the_target_and_the_cost() {
 }
 
 #[test]
+fn actions_reflow_on_resize_and_preserve_keyboard_selection() {
+    let mut app = header_fixture("compact-resize");
+    app.focus = Focus::Build;
+    app.build.as_mut().unwrap().cursor = 0;
+    app.handle(key(KeyCode::Down));
+    assert_eq!(app.build.as_ref().unwrap().cursor, 1);
+    let mut terminal = Terminal::new(TestBackend::new(80, 32)).unwrap();
+    for height in [32, 31, 24, 32] {
+        terminal.backend_mut().resize(80, height);
+        terminal
+            .draw(|frame| chiptui::ui::draw(frame, &mut app))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let rows: Vec<String> = (0..height)
+            .map(|y| (40..80).map(|x| buffer[(x, y)].symbol()).collect())
+            .collect();
+        let labels = [
+            "Install Zephyr",
+            "Menuconfig",
+            "Clean",
+            "Build",
+            "Rebuild",
+            "Flash",
+        ];
+        let positions: Vec<usize> = labels
+            .iter()
+            .map(|label| {
+                rows.iter()
+                    .position(|row| row.contains(label))
+                    .unwrap_or_else(|| panic!("missing {label} at height {height}: {rows:?}"))
+            })
+            .collect();
+        let step = if height < 32 { 1 } else { 2 };
+        assert!(positions.windows(2).all(|pair| pair[1] - pair[0] == step));
+        if height < 32 {
+            assert!(rows[positions[5] + 1].contains("never built"));
+            assert!(rows.iter().all(|row| !row.contains('├')));
+        } else {
+            assert!(rows[positions[5] + 1].contains('╰'));
+        }
+        assert_eq!(app.build.as_ref().unwrap().cursor, 1);
+        assert_eq!(
+            buffer[(45, positions[1] as u16)].bg,
+            app.theme_palette().selection
+        );
+        assert!(app.log_viewport >= 4, "log starved at {height}");
+    }
+}
+
+#[test]
 fn a_too_small_terminal_degrades_instead_of_panicking() {
     let mut app = app_with_backend(BackendKind::Zephyr);
     let frame = render(&mut app, 24, 6);
@@ -1361,10 +1410,10 @@ fn rendering_survives_a_wide_range_of_sizes() {
     for (width, height) in [
         (60, 14),
         (80, 24),
-        // The declared minimum and the two frames just under it, on each
-        // axis: both must draw the size warning rather than a clipped
-        // dashboard, and neither may panic on the way.
-        (79, 32),
+        // The minimum and its two unsupported neighbours, then the compact
+        // / bordered breakpoint.
+        (79, 24),
+        (80, 23),
         (80, 31),
         (80, 32),
         (100, 30),
@@ -1374,6 +1423,7 @@ fn rendering_survives_a_wide_range_of_sizes() {
     ] {
         let frame = render(&mut app, width, height);
         assert!(!frame.is_empty(), "empty frame at {width}x{height}");
+        assert_eq!(frame.contains("too small"), width < 80 || height < 24);
     }
 }
 

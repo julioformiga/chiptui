@@ -13,7 +13,7 @@
 mod build;
 pub(crate) mod build_dashboard;
 mod button;
-pub(crate) use button::{Button, STOP_BOX_WIDTH, button_at_row, stack_height};
+pub(crate) use button::{ActionLayout, Button, STOP_BOX_WIDTH, button_at_row, stack_height};
 mod files;
 mod flash;
 pub(crate) use flash::dialog_size as flash_dialog_size;
@@ -48,16 +48,11 @@ use ratatui::widgets::{
 use crate::app::{App, Focus, LogTab, View};
 use crate::backend::BackendKind;
 
-/// Below this the dashboard cannot be rendered legibly --- and the number
-/// is the *measured* one, not an aspiration: at 80x32 the row-2 button
-/// stack (six actions: one rule per edge, a divider between each pair, and
-/// the always-reserved three-row footer = 18 rows with its borders) fits
-/// whole, and row 3 still gets four content rows of log. One row less and
-/// the stack loses its bottom rule; one column less and the Device info
-/// pane's chip line wraps, pushing the `Firmware` row out of its fixed
-/// four. Anything that grows row 2 has to move these numbers with it.
+/// At 80x24 the compact action stack and its footer fit whole, with room
+/// for the log. Width still needs 80 so Device Info fits its fixed rows.
+/// At 32 terminal rows, Actions switches back to shared-border buttons.
 const MIN_WIDTH: u16 = 80;
-const MIN_HEIGHT: u16 = 32;
+const MIN_HEIGHT: u16 = 24;
 
 /// Frames of the shared "something is running" spinner, animated off
 /// [`App::ticks`] (one frame per tick). Used by the file panes' waits, the

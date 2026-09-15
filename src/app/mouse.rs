@@ -546,18 +546,12 @@ impl App {
         let actions = panel.actions(&caps);
         let stop = usize::from(panel.is_busy() && actions.last() == Some(&BuildAction::Stop));
         let mains = actions.len() - stop;
-        // The stack starts at the pane's inner top row. None of this
-        // pane's buttons carry a `.detail()` line (`SPEC.md` §15: the rows
-        // stay bare), so a bare placeholder per action has the same row
-        // shape `ui::button::render_stack` actually drew --- `button_at_row`
-        // is the one place that shape is turned into a button index, kept
-        // in step with [`crate::ui::button::stack_height`].
-        let Some(row) = point.1.checked_sub(rect.y + 1) else {
+        let Some(frame) = self.frame_area else {
             return;
         };
-        let placeholders: Vec<crate::ui::Button> =
-            (0..mains).map(|_| crate::ui::Button::new("")).collect();
-        if let Some(index) = crate::ui::button_at_row(&placeholders, row) {
+        let layout = crate::ui::ActionLayout::for_height(frame.height);
+        let inner = rect.inner(ratatui::layout::Margin::new(1, 1));
+        if let Some(index) = layout.hit_test(inner, point, mains, stop != 0) {
             let action = actions[index];
             self.build.as_mut().unwrap().cursor = index;
             self.run_build_action(action);
@@ -580,14 +574,12 @@ impl App {
         let actions = flash.pane_actions();
         let stop = usize::from(flash.is_busy() && actions.last() == Some(&FlashPaneAction::Stop));
         let mains = actions.len() - stop;
-        // Same bare-button row shape as the build pane's stack, and the
-        // same shared `button_at_row` --- see `click_build_stack`.
-        let Some(row) = point.1.checked_sub(rect.y + 1) else {
+        let Some(frame) = self.frame_area else {
             return;
         };
-        let placeholders: Vec<crate::ui::Button> =
-            (0..mains).map(|_| crate::ui::Button::new("")).collect();
-        if let Some(index) = crate::ui::button_at_row(&placeholders, row) {
+        let layout = crate::ui::ActionLayout::for_height(frame.height);
+        let inner = rect.inner(ratatui::layout::Margin::new(1, 1));
+        if let Some(index) = layout.hit_test(inner, point, mains, stop != 0) {
             let action = actions[index];
             self.flash.as_mut().unwrap().pane_cursor = index;
             self.run_flash_pane_action(action);
@@ -2174,40 +2166,42 @@ mod tests {
 
     #[test]
     fn a_click_on_a_build_button_selects_and_presses_it() {
-        let root = project_dir("buildbtn", 1);
-        let mut app = app_with_backend(BackendKind::Zephyr, &root);
-        assert!(app.build.is_some(), "a build backend gets the panel");
-        let lines = render(&mut app, 100, 40);
-        // `Install Zephyr` is the stack's leading row for an unresolved
-        // workspace and its action opens the install-directory picker ---
-        // observable without hardware, a board, or a spawned process.
-        let row = lines
-            .iter()
-            .position(|line| line.contains("Install Zephyr"))
-            .expect("the stack draws Install Zephyr") as u16;
-        let col = column_of(&lines[row as usize], "Install Zephyr").unwrap();
-        // The pane starts unfocused: the first click is spent on focus
-        // alone, the press asks for a second one.
-        app.focus = Focus::Logs;
-        click(&mut app, col, row);
-        assert_eq!(app.focus, Focus::Build, "the first click focuses the pane");
-        assert!(
-            app.overlay.is_none(),
-            "and presses nothing until the pane already held focus"
-        );
-        click(&mut app, col, row);
-        let panel = app.build.as_ref().unwrap();
-        let caps = app.manager.capabilities();
-        assert_eq!(
-            panel.actions(&caps)[panel.cursor],
-            BuildAction::InstallZephyr,
-            "the clicked row took the cursor"
-        );
-        assert!(
-            app.overlay.is_some(),
-            "the click ran the button, not just its selection"
-        );
-        let _ = std::fs::remove_dir_all(&root);
+        for height in [24, 31, 32, 40] {
+            let root = project_dir("buildbtn", 1);
+            let mut app = app_with_backend(BackendKind::Zephyr, &root);
+            assert!(app.build.is_some(), "a build backend gets the panel");
+            let lines = render(&mut app, 100, height);
+            // `Install Zephyr` is the stack's leading row for an unresolved
+            // workspace and its action opens the install-directory picker ---
+            // observable without hardware, a board, or a spawned process.
+            let row = lines
+                .iter()
+                .position(|line| line.contains("Install Zephyr"))
+                .expect("the stack draws Install Zephyr") as u16;
+            let col = column_of(&lines[row as usize], "Install Zephyr").unwrap();
+            // The pane starts unfocused: the first click is spent on focus
+            // alone, the press asks for a second one.
+            app.focus = Focus::Logs;
+            click(&mut app, col, row);
+            assert_eq!(app.focus, Focus::Build, "the first click focuses the pane");
+            assert!(
+                app.overlay.is_none(),
+                "and presses nothing until the pane already held focus"
+            );
+            click(&mut app, col, row);
+            let panel = app.build.as_ref().unwrap();
+            let caps = app.manager.capabilities();
+            assert_eq!(
+                panel.actions(&caps)[panel.cursor],
+                BuildAction::InstallZephyr,
+                "the clicked row took the cursor"
+            );
+            assert!(
+                app.overlay.is_some(),
+                "the click ran the button, not just its selection"
+            );
+            let _ = std::fs::remove_dir_all(&root);
+        }
     }
 
     /// The bug the shared [`layout::overlay_popup`] closed: the device
@@ -2314,43 +2308,45 @@ mod tests {
     /// already, this one did not.
     #[test]
     fn a_click_on_a_flash_button_selects_and_presses_it() {
-        let root = project_dir("flashbtn", 1);
-        let mut app = app_with_backend(BackendKind::MicroPython, &root);
-        app.browser = Some(Browser::new(&root));
-        app.show_device_actions_tab();
-        let lines = render(&mut app, 100, 40);
-        let row = lines
-            .iter()
-            .position(|line| line.contains("Search firmware online"))
-            .expect("the stack draws Search firmware online") as u16;
-        let col = column_of(&lines[row as usize], "Search firmware online").unwrap();
-        let before = app.logs.len();
-        // The pane starts unfocused: the first click is spent on focus
-        // alone, the press asks for a second one.
-        app.focus = Focus::FilesLocal;
-        click(&mut app, col, row);
-        assert_eq!(
-            app.focus,
-            Focus::FilesDevice,
-            "the first click focuses the pane"
-        );
-        assert_eq!(
-            app.logs.len(),
-            before,
-            "and presses nothing until the pane already held focus"
-        );
-        click(&mut app, col, row);
-        let flash = app.flash.as_ref().unwrap();
-        assert_eq!(
-            flash.pane_cursor, 0,
-            "the clicked row (the stack's leading one) took the cursor"
-        );
-        assert!(
-            app.logs.len() > before,
-            "the click ran the button, not just its selection --- with no \
+        for height in [24, 31, 32, 40] {
+            let root = project_dir("flashbtn", 1);
+            let mut app = app_with_backend(BackendKind::MicroPython, &root);
+            app.browser = Some(Browser::new(&root));
+            app.show_device_actions_tab();
+            let lines = render(&mut app, 100, height);
+            let row = lines
+                .iter()
+                .position(|line| line.contains("Search firmware online"))
+                .expect("the stack draws Search firmware online") as u16;
+            let col = column_of(&lines[row as usize], "Search firmware online").unwrap();
+            let before = app.logs.len();
+            // The pane starts unfocused: the first click is spent on focus
+            // alone, the press asks for a second one.
+            app.focus = Focus::FilesLocal;
+            click(&mut app, col, row);
+            assert_eq!(
+                app.focus,
+                Focus::FilesDevice,
+                "the first click focuses the pane"
+            );
+            assert_eq!(
+                app.logs.len(),
+                before,
+                "and presses nothing until the pane already held focus"
+            );
+            click(&mut app, col, row);
+            let flash = app.flash.as_ref().unwrap();
+            assert_eq!(
+                flash.pane_cursor, 0,
+                "the clicked row (the stack's leading one) took the cursor"
+            );
+            assert!(
+                app.logs.len() > before,
+                "the click ran the button, not just its selection --- with no \
              chip connected, pressing it logs the same warning `Enter` would"
-        );
-        let _ = std::fs::remove_dir_all(&root);
+            );
+            let _ = std::fs::remove_dir_all(&root);
+        }
     }
 
     #[test]

@@ -931,6 +931,43 @@ fn entering_a_micropython_backend_starts_on_the_actions_tab() {
 }
 
 #[test]
+fn actions_compact_below_32_rows_and_keep_the_selected_action() {
+    let project = Project::new("compact-actions");
+    let mut app = app_in_actions_tab(&project);
+    app.flash.as_mut().unwrap().pane_cursor = 0;
+    app.handle(key(KeyCode::Down));
+    assert_eq!(app.flash.as_ref().unwrap().pane_cursor, 1);
+    for height in [32, 31, 24, 32] {
+        let frame = render(&mut app, 100, height);
+        let rows: Vec<&str> = frame.lines().collect();
+        let labels = [
+            "Search firmware online",
+            "Manage packages",
+            "Flash information",
+            "Reset",
+            "Erase flash",
+            "Write / flash firmware",
+        ];
+        let positions: Vec<usize> = labels
+            .iter()
+            .map(|label| {
+                rows.iter()
+                    .position(|row| row.contains(label))
+                    .unwrap_or_else(|| panic!("missing {label} at {height}:\n{frame}"))
+            })
+            .collect();
+        let step = if height < 32 { 1 } else { 2 };
+        assert!(
+            positions.windows(2).all(|pair| pair[1] - pair[0] == step),
+            "{frame}"
+        );
+        assert_eq!(app.flash.as_ref().unwrap().pane_cursor, 1);
+        assert!(frame.contains("no command yet"));
+        assert!(app.log_viewport >= 4);
+    }
+}
+
+#[test]
 fn x_switches_the_device_pane_to_the_actions_tab() {
     let project = Project::new("pane-open");
     let mut app = app_in_actions_tab(&project);

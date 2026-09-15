@@ -108,7 +108,8 @@ pub(crate) fn dashboard(app: &App, body: Rect) -> DashboardAreas {
     // reflow the rows below, so the files tab rides at the actions tab's
     // height instead of the browser's historical 60/40 split.
     let [row2, row3] = if app.workspace_pane_visible() || app.device_actions_tab_available() {
-        let needed = row2_content_height(app)
+        let actions = super::ActionLayout::for_height(body.height.saturating_add(2));
+        let needed = row2_content_height(app, actions)
             .saturating_add(2) // the pane's borders (the state line is content, already counted)
             .min(rest.height.saturating_sub(3).max(1));
         Layout::vertical([Constraint::Length(needed), Constraint::Min(0)]).areas(rest)
@@ -169,18 +170,18 @@ pub(crate) fn dashboard(app: &App, body: Rect) -> DashboardAreas {
 /// The taller row-2 pane's inner content height: the project-files pane's
 /// minimum listing rows on one side (the walked path lives on its border
 /// now, so the listing is the whole content); the project pane's stacked
-/// button group --- one row per button, one rule at each edge and one
-/// divider between each pair --- on the other.
-fn row2_content_height(app: &App) -> u16 {
+/// button group on the other. Compact terminals omit its rules and
+/// dividers and reserve a one-row footer rather than three.
+fn row2_content_height(app: &App, layout: super::ActionLayout) -> u16 {
     let caps = app.manager.capabilities();
     let workspace = app.workspace.as_ref().map_or(0, |_| MIN_FILES_ROWS);
     let build = app.build.as_ref().map_or(0, |panel| {
-        // The stacked group plus a three-row footer, reserved whether or
+        // The stacked group plus its footer, reserved whether or
         // not the `Stop` box is showing (`Stop` is appended to the list,
         // never a stacked row, so the group itself never changes size):
         // the pane's height must not change when a command starts.
         let mains = panel.actions(&caps).len() - usize::from(panel.is_busy());
-        (2 * mains + 1 + 3) as u16
+        layout.stack_height(mains) + layout.footer_height()
     });
     // The device pane's strip sizes the row by the same rule whenever it
     // exists: its stack is the tallest content the browser row has, a
@@ -198,7 +199,7 @@ fn row2_content_height(app: &App) -> u16 {
         let mains = app.flash.as_ref().map_or(FlashAction::ALL.len(), |flash| {
             flash.pane_actions().len() - usize::from(flash.is_busy())
         });
-        (2 * mains + 1 + 3) as u16
+        layout.stack_height(mains) + layout.footer_height()
     } else {
         0
     };

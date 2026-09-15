@@ -429,6 +429,23 @@ fn stop_cancels_the_running_command() {
         "the state must share the footer row, beside the box:\n{frame}"
     );
     assert_eq!(app.focus, Focus::Build);
+    // Resize a running build across the breakpoint: the compact Stop shares
+    // the state row immediately after the last action and still answers Enter.
+    for height in [31, 24] {
+        let compact = render(&mut app, 100, height);
+        let rows: Vec<&str> = compact.lines().collect();
+        let flash = rows
+            .iter()
+            .position(|row| row.contains("⇧  Flash"))
+            .unwrap();
+        assert!(rows[flash + 1].contains("■  Stop"), "{compact}");
+        assert!(rows[flash + 1].contains("state Build · "), "{compact}");
+        let panel = app.build.as_ref().unwrap();
+        assert_eq!(
+            panel.actions(&app.manager.capabilities())[panel.cursor],
+            BuildAction::Stop
+        );
+    }
     app.handle(key(KeyCode::Enter));
 
     let cancelled = pump_until(
