@@ -18,7 +18,6 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, List, ListItem, ListState, Paragraph};
 
 use crate::home::{Flow, HomeScreen, Row};
-use crate::workspace::{DirRowKind, dir_rows};
 
 use super::{centered, icon_column, muted_style, selection_style};
 
@@ -196,8 +195,9 @@ pub fn draw(frame: &mut Frame, screen: &HomeScreen, theme: super::Palette) {
 /// hints, from the back, and always keep the last one --- the way out is
 /// the hint that must survive any width.
 fn footer_line(width: u16) -> String {
-    const HINTS: [&str; 5] = [
+    const HINTS: [&str; 6] = [
         "type to search",
+        "ctrl+o browse",
         "↑↓ move",
         "enter open",
         "del forget",
@@ -283,11 +283,22 @@ fn draw_flow(
     theme: super::Palette,
 ) {
     match flow {
-        Flow::CreateDir {
-            path,
-            selected,
-            error,
-        } => draw_create_dir(frame, area, path, *selected, error.as_deref(), theme),
+        Flow::OpenDir { picker } => super::path_picker::draw(
+            frame,
+            centered(area, super::path_picker::WIDTH, super::path_picker::HEIGHT),
+            "Open a project folder",
+            picker,
+            theme,
+            screen.icons(),
+        ),
+        Flow::CreateDir { picker } => super::path_picker::draw(
+            frame,
+            centered(area, super::path_picker::WIDTH, super::path_picker::HEIGHT),
+            "Where should the project folder go?",
+            picker,
+            theme,
+            screen.icons(),
+        ),
         Flow::CreateName {
             parent,
             input,
@@ -305,67 +316,6 @@ fn modal(title: &str, theme: super::Palette) -> Block<'static> {
             format!(" {title} "),
             Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
         ))
-}
-
-fn draw_create_dir(
-    frame: &mut Frame,
-    area: Rect,
-    path: &std::path::Path,
-    selected: usize,
-    error: Option<&str>,
-    theme: super::Palette,
-) {
-    let popup = centered(area, 72, 18);
-    frame.render_widget(Clear, popup);
-    let block = modal("Where should the project folder go?", theme);
-    let inner = block.inner(popup);
-    frame.render_widget(block, popup);
-
-    let [path_area, list_area, footer_area] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Min(1),
-        Constraint::Length(2),
-    ])
-    .areas(inner);
-
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("in   ", muted_style(theme)),
-            Span::styled(path.display().to_string(), Style::new().fg(theme.fg)),
-        ])),
-        path_area,
-    );
-
-    let (rows, read_error) = dir_rows(path);
-    let items: Vec<ListItem> = rows
-        .iter()
-        .map(|row| match row.kind {
-            DirRowKind::Use => ListItem::new(Line::from(vec![
-                Span::styled("→ ", Style::new().fg(theme.accent)),
-                "put it in this directory".fg(theme.fg).bold(),
-            ])),
-            DirRowKind::Parent | DirRowKind::Dir => ListItem::new(Line::from(Span::styled(
-                format!("  {}", row.name),
-                Style::new().fg(theme.fg),
-            ))),
-        })
-        .collect();
-    let mut state = ListState::default().with_selected(Some(selected));
-    frame.render_stateful_widget(
-        List::new(items).highlight_style(selection_style(theme)),
-        list_area,
-        &mut state,
-    );
-
-    let footer = match (error, read_error.as_deref()) {
-        (Some(error), _) => Line::from(error.to_string().fg(theme.error)),
-        (None, Some(read)) => Line::from(read.fg(theme.warning)),
-        (None, None) => Line::from("".fg(theme.muted)),
-    };
-    frame.render_widget(
-        Paragraph::new(footer).wrap(ratatui::widgets::Wrap { trim: false }),
-        footer_area,
-    );
 }
 
 fn draw_create_name(

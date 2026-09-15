@@ -82,6 +82,40 @@ fn press_project_row(app: &mut App) {
     app.handle(key(KeyCode::Enter));
 }
 
+#[test]
+fn browsing_outside_the_project_list_keeps_validation_and_cancel_restores_the_list() {
+    let root = root_for("browse");
+    let (mut app, root) = bare_app("browse", Some(&root.join("apps")));
+    let chosen = app_dir(&root.join("elsewhere"), "valid", true);
+    let invalid = app_dir(&root.join("elsewhere"), "invalid", false);
+    press_project_row(&mut app);
+    let previous = app.overlay.clone();
+    assert!(matches!(previous, Some(Overlay::ProjectPicker { .. })));
+    app.handle(common::ctrl('o'));
+    app.handle(key(KeyCode::Esc));
+    assert_eq!(app.overlay, previous);
+    app.handle(common::ctrl('o'));
+    for path in [&invalid, &chosen] {
+        app.handle(common::ctrl('l'));
+        app.handle(common::ctrl('u'));
+        for ch in path.to_str().unwrap().chars() {
+            app.handle(key(KeyCode::Char(ch)));
+        }
+        app.handle(key(KeyCode::Enter));
+        app.handle(key(KeyCode::Enter));
+        if path == &invalid {
+            assert!(
+                matches!(&app.overlay, Some(Overlay::DirPicker { picker, .. }) if picker.error.is_some())
+            );
+            assert_ne!(app.build.as_ref().unwrap().root, invalid);
+        }
+    }
+    assert!(app.overlay.is_none());
+    assert_eq!(app.build.as_ref().unwrap().root, chosen);
+    assert_eq!(app.workspace.as_ref().unwrap().files_root, chosen);
+    let _ = std::fs::remove_dir_all(root);
+}
+
 /// The `Build` button --- fifth row of the panel's list (Update Zephyr,
 /// SDK List, Menuconfig, Clean, Build, ...) now that the workspace pair
 /// leads and the questions live in the workspace pane.

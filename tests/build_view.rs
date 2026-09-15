@@ -1025,7 +1025,7 @@ fn the_workspace_file_section_titles_with_the_project_and_offers_the_parent_row(
         "the title bar must name the project:\n{frame}"
     );
     assert!(
-        !frame.contains("📁 .."),
+        !frame.contains("📂 .."),
         "no parent row at the project root:\n{frame}"
     );
 
@@ -1039,7 +1039,7 @@ fn the_workspace_file_section_titles_with_the_project_and_offers_the_parent_row(
         "the title must concatenate the descent:\n{frame}"
     );
     assert!(
-        frame.contains("📁 .."),
+        frame.contains("📂 .."),
         "the parent row must lead:\n{frame}"
     );
 }
@@ -1906,10 +1906,10 @@ fn startup_asks_where_the_installation_is_when_nothing_is_configured() {
     let ws = workspace_under(&home, "myzephyr");
 
     app.maybe_open_workspace_picker();
-    let Overlay::DirPicker { path, .. } = app.overlay.clone().unwrap() else {
+    let Overlay::DirPicker { picker, .. } = app.overlay.clone().unwrap() else {
         panic!("startup must ask immediately");
     };
-    assert_eq!(path, home, "the picker starts at the user's home");
+    assert_eq!(picker.path, home, "the picker starts at the user's home");
 
     // Navigate to the installation: Down past ".." onto it, Enter to
     // descend (which lands on "use this directory")…
@@ -1983,10 +1983,10 @@ fn a_wrong_directory_is_rejected_with_the_install_guide() {
         "a refused directory must offer to become an installation"
     );
     app.handle(key(KeyCode::Char('n')));
-    let Overlay::DirPicker { error, .. } = app.overlay.clone().unwrap() else {
+    let Overlay::DirPicker { picker, .. } = app.overlay.clone().unwrap() else {
         panic!("declining the offer must leave the picker open");
     };
-    let error = error.expect("the rejection must explain itself");
+    let error = picker.error.expect("the rejection must explain itself");
     assert!(error.contains(".west"), "names the marker: {error}");
     assert!(
         error.contains("docs.zephyrproject.org"),

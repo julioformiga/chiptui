@@ -126,12 +126,67 @@ fn go_to(app: &mut App, row: ProjectConfigRow) {
 
 fn type_into(app: &mut App, row: ProjectConfigRow, value: &str) {
     go_to(app, row);
-    app.handle(key(KeyCode::Enter));
+    app.handle(if row.picker_kind().is_some() {
+        common::ctrl('e')
+    } else {
+        key(KeyCode::Enter)
+    });
     app.handle(key(KeyCode::Delete)); // replace rather than append
     for ch in value.chars() {
         app.handle(key(KeyCode::Char(ch)));
     }
     app.handle(key(KeyCode::Enter));
+}
+
+#[test]
+fn path_pickers_return_to_the_pending_config_transaction_and_cancel_without_changes() {
+    let dir = TempDir::new("path-picker");
+    let folder = dir.home.join("sdk");
+    std::fs::create_dir_all(&folder).unwrap();
+    let mut app = dir.app();
+    app.bootstrap();
+    open(&mut app);
+    pick_zephyr(&mut app);
+    go_to(&mut app, ProjectConfigRow::ZephyrSdk);
+    app.handle(key(KeyCode::Enter));
+    assert!(matches!(app.overlay, Some(Overlay::DirPicker { .. })));
+    app.handle(common::ctrl('l'));
+    app.handle(common::ctrl('u'));
+    for ch in "~/sdk".chars() {
+        app.handle(key(KeyCode::Char(ch)));
+    }
+    app.handle(key(KeyCode::Enter)); // navigate
+    assert!(matches!(app.overlay, Some(Overlay::DirPicker { .. })));
+    app.handle(key(KeyCode::Enter)); // select
+    assert_eq!(app.overlay, Some(Overlay::ProjectConfig));
+    assert_eq!(
+        app.project_config
+            .as_ref()
+            .unwrap()
+            .value(ProjectConfigRow::ZephyrSdk),
+        Some(folder.to_str().unwrap().into())
+    );
+    assert!(
+        !dir.file().exists(),
+        "selection is pending, never a configuration write"
+    );
+    app.handle(key(KeyCode::Enter));
+    assert!(
+        matches!(&app.overlay, Some(Overlay::DirPicker { picker, .. }) if picker.path == folder)
+    );
+    app.handle(key(KeyCode::F(1)));
+    app.handle(key(KeyCode::Esc));
+    app.handle(key(KeyCode::Esc));
+    assert_eq!(app.overlay, Some(Overlay::ProjectConfig));
+    go_to(&mut app, ProjectConfigRow::ZephyrWest);
+    let pending = app.project_config.as_ref().unwrap().change_count();
+    app.handle(key(KeyCode::Enter));
+    assert!(matches!(app.overlay, Some(Overlay::FilePicker { .. })));
+    app.handle(key(KeyCode::Esc));
+    assert_eq!(app.overlay, Some(Overlay::ProjectConfig));
+    assert_eq!(app.project_config.as_ref().unwrap().change_count(), pending);
+    apply(&mut app);
+    assert!(dir.text().contains(folder.to_str().unwrap()));
 }
 
 /// Picks Zephyr on the card strip. `←` from an unanswered strip lands on the

@@ -267,6 +267,7 @@ pub struct FlashPanel {
     pub screen: FlashScreen,
     pub firmware: Vec<LocalEntry>,
     pub selected_firmware: Option<usize>,
+    chosen_firmware: Option<PathBuf>,
     pub chip: ChipGuess,
     /// Everything esptool has reported about the connected board so far,
     /// accumulated across runs (`SPEC.md`'s device panel). Independent of
@@ -404,6 +405,7 @@ impl FlashPanel {
             screen: FlashScreen::Menu,
             firmware: Vec::new(),
             selected_firmware: None,
+            chosen_firmware: None,
             chip: ChipGuess::Unknown,
             details: DeviceDetails::default(),
             offset: String::new(),
@@ -609,6 +611,7 @@ impl FlashPanel {
     /// one is noise. With none, or several, the caller is told so it can warn
     /// or open a picker.
     pub fn discover_firmware(&mut self) -> Vec<Notice> {
+        self.chosen_firmware = None;
         match files::firmware_candidates(&self.firmware_dir) {
             Ok(entries) => {
                 let notice = match entries.len() {
@@ -639,6 +642,7 @@ impl FlashPanel {
 
     pub fn select_firmware(&mut self, index: usize) -> bool {
         if index < self.firmware.len() {
+            self.chosen_firmware = None;
             self.selected_firmware = Some(index);
             true
         } else {
@@ -647,8 +651,21 @@ impl FlashPanel {
     }
 
     pub fn selected_firmware_path(&self) -> Option<PathBuf> {
+        if let Some(path) = &self.chosen_firmware {
+            return Some(path.clone());
+        }
         let entry = self.firmware.get(self.selected_firmware?)?;
         Some(self.firmware_dir.join(&entry.name))
+    }
+
+    /// A file picker may choose an image anywhere without moving the
+    /// project's firmware download directory.
+    pub fn choose_firmware(&mut self, path: PathBuf) {
+        self.selected_firmware = self
+            .firmware
+            .iter()
+            .position(|entry| self.firmware_dir.join(&entry.name) == path);
+        self.chosen_firmware = Some(path);
     }
 
     pub fn set_offset(&mut self, offset: String) {
@@ -733,7 +750,7 @@ impl FlashPanel {
         if !action.needs_firmware() {
             return None;
         }
-        if self.selected_firmware.is_none() {
+        if self.selected_firmware_path().is_none() {
             return Some("select a firmware file first");
         }
         if self.offset.trim().is_empty() {

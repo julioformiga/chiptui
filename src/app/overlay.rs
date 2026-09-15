@@ -273,30 +273,8 @@ impl App {
                 );
             }
             Overlay::SdkToolchains { selected } => self.on_sdk_toolchains_key(key, selected),
-            Overlay::FirmwarePicker { selected } => {
-                let count = self
-                    .flash
-                    .as_ref()
-                    .map_or(0, |flash| flash.firmware.len())
-                    .max(1);
-                match key.code {
-                    KeyCode::Esc | KeyCode::Char('q') => self.overlay = None,
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        self.overlay = Some(Overlay::FirmwarePicker {
-                            selected: (selected + count - 1) % count,
-                        });
-                    }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        self.overlay = Some(Overlay::FirmwarePicker {
-                            selected: (selected + 1) % count,
-                        });
-                    }
-                    KeyCode::Enter => {
-                        self.apply_firmware_picker(selected);
-                        self.overlay = None;
-                    }
-                    _ => {}
-                }
+            Overlay::FilePicker { purpose, picker } => {
+                self.on_file_picker_key(key, purpose, picker)
             }
             Overlay::ProjectConfig => self.on_project_config_key(key),
             // Both hand the window back on either answer: the slot is one
@@ -613,18 +591,21 @@ impl App {
                     _ => {}
                 }
             }
-            Overlay::DirPicker {
-                purpose,
-                path,
-                selected,
-                error,
-            } => self.on_dir_picker_key(key, purpose, path, selected, error),
+            Overlay::DirPicker { purpose, picker } => self.on_dir_picker_key(key, purpose, picker),
             Overlay::ProjectPicker {
                 mpy,
                 dir,
                 selected,
                 error,
             } => {
+                if key
+                    .modifiers
+                    .contains(ratatui::crossterm::event::KeyModifiers::CONTROL)
+                    && key.code == KeyCode::Char('o')
+                {
+                    self.browse_project(mpy, dir);
+                    return;
+                }
                 // Same grammar as the other pickers: arrows walk the rows,
                 // Enter accepts, Esc leaves. Navigation clears a previous
                 // error --- it described a row that is no longer selected.
@@ -1156,12 +1137,10 @@ fn is_help_reachable_overlay(overlay: &Overlay) -> bool {
     match overlay {
         Overlay::RenameEntry { .. }
         | Overlay::OtaAddress { .. }
-        | Overlay::DirPicker { .. }
         | Overlay::BuildTarget { .. }
         | Overlay::ProjectPicker { .. }
         | Overlay::DevicePicker { .. }
         | Overlay::ThemePicker { .. }
-        | Overlay::FirmwarePicker { .. }
         | Overlay::FileActions { .. }
         | Overlay::RestoreDeviceScript { .. }
         | Overlay::ZephyrActions { .. }
@@ -1175,7 +1154,9 @@ fn is_help_reachable_overlay(overlay: &Overlay) -> bool {
         // The help itself, the confirms (whose footer is `y/n` and whose
         // one job is to be answered), and the windows that carry their own
         // way out.
-        Overlay::Help { .. }
+        Overlay::DirPicker { .. }
+        | Overlay::FilePicker { .. }
+        | Overlay::Help { .. }
         | Overlay::Confirm { .. }
         | Overlay::ConfirmBuild { .. }
         | Overlay::ConfirmDownloadOverwrite { .. }
@@ -1223,7 +1204,7 @@ fn is_text_entry_overlay(overlay: &Overlay) -> bool {
         | Overlay::OtaTransport { .. }
         | Overlay::DevicePicker { .. }
         | Overlay::ThemePicker { .. }
-        | Overlay::FirmwarePicker { .. }
+        | Overlay::FilePicker { .. }
         | Overlay::FileActions { .. }
         | Overlay::RestoreDeviceScript { .. }
         | Overlay::ZephyrActions { .. }
@@ -1262,7 +1243,7 @@ pub enum Overlay {
     /// closes. `filter` is live from the first keystroke, the grammar the
     /// board picker and the package manager use --- so `j`/`k` are filter
     /// text here, not movement --- and it narrows both divisions at once:
-    /// the dashboard alone lists forty rows, so search is the way
+    /// the dashboard alone lists forty-one rows, so search is the way
     /// through them.
     Help { filter: String, selected: usize },
     /// Serial device selection (`SPEC.md` §8: never guess which board).
@@ -1278,9 +1259,11 @@ pub enum Overlay {
     /// (`SPEC.md` §15). `message` is the literal command about to run, never
     /// a paraphrase.
     Confirm { message: String, confirm: bool },
-    /// Firmware file selection when more than one `.bin`/`.elf` was found in
-    /// `firmware/`.
-    FirmwarePicker { selected: usize },
+    /// Shared file browser, with the consumer's filter and accept action.
+    FilePicker {
+        purpose: super::path_picker_view::FilePurpose,
+        picker: crate::path_picker::PathPicker,
+    },
     /// The project configuration screen: `chiptui.toml`, edited in place
     /// (`SPEC.md` §7, §13).
     ///
@@ -1373,9 +1356,7 @@ pub enum Overlay {
     /// component, two validations.
     DirPicker {
         purpose: crate::workspace::DirPurpose,
-        path: std::path::PathBuf,
-        selected: usize,
-        error: Option<String>,
+        picker: crate::path_picker::PathPicker,
     },
     /// The project picker: the configured projects folder's subdirectories.
     /// For Zephyr (`mpy: false`) each row carries whether it holds build

@@ -118,6 +118,9 @@ fn home_loop(
             .size()
             .ok()
             .map(|size| ratatui::layout::Rect::new(0, 0, size.width, size.height));
+        if let Some(area) = area {
+            screen.set_frame_area(area);
+        }
         // The frame's events as one batch, the dashboard loop's own rule:
         // everything already queued joins the event that unblocked the
         // loop, so a fast wheel burst over the project rows is one

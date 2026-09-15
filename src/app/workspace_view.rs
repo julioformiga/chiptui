@@ -197,102 +197,19 @@ impl App {
     }
 
     pub(super) fn open_purpose_picker(&mut self, purpose: DirPurpose) {
-        let start = if self.home_dir.is_dir() {
-            self.home_dir.clone()
-        } else {
-            PathBuf::from("/")
+        let preferred = match purpose {
+            DirPurpose::Installation => self
+                .workspace
+                .as_ref()
+                .and_then(|panel| panel.dir().cloned()),
+            DirPurpose::Projects => self
+                .workspace
+                .as_ref()
+                .and_then(|panel| panel.projects.clone()),
+            DirPurpose::MpyProjects => self.mpy_projects.clone(),
+            _ => None,
         };
-        self.overlay = Some(Overlay::DirPicker {
-            purpose,
-            path: start,
-            selected: 0,
-            error: None,
-        });
-    }
-
-    /// Applies a key to the open directory picker: arrows walk the rows,
-    /// `Enter` (or `→`) opens the row under the cursor --- descending into
-    /// directories, stepping up at `..`, and *validating* the current
-    /// directory at the "use this directory" row --- and `←`/Backspace go
-    /// up. Any navigation clears a previous validation error: it described
-    /// a directory that is no longer under the cursor.
-    pub(super) fn on_dir_picker_key(
-        &mut self,
-        key: KeyEvent,
-        purpose: DirPurpose,
-        path: PathBuf,
-        selected: usize,
-        error: Option<String>,
-    ) {
-        let (rows, _) = crate::workspace::dir_rows(&path);
-        let count = rows.len().max(1);
-        let rebuild = |app: &mut Self, path: PathBuf, selected: usize| {
-            let (rows, _) = crate::workspace::dir_rows(&path);
-            let selected = selected.min(rows.len().saturating_sub(1));
-            app.overlay = Some(Overlay::DirPicker {
-                purpose,
-                path,
-                selected,
-                error: None,
-            });
-        };
-        let descend = |app: &mut Self, path: PathBuf| {
-            // Landing on the "use this directory" row is the point: the
-            // reflex Enter after navigating *into* the right directory
-            // accepts it, instead of asking for one more hop.
-            app.overlay = Some(Overlay::DirPicker {
-                purpose,
-                path,
-                selected: 0,
-                error: None,
-            });
-        };
-        match key.code {
-            KeyCode::Esc | KeyCode::Char('q') => self.overlay = None,
-            KeyCode::Up | KeyCode::Char('k') => {
-                rebuild(self, path, (selected + count - 1) % count);
-            }
-            KeyCode::Down | KeyCode::Char('j') => {
-                rebuild(self, path, (selected + 1) % count);
-            }
-            KeyCode::Enter | KeyCode::Right => match rows.get(selected).map(|row| row.kind) {
-                Some(crate::workspace::DirRowKind::Use) => match purpose {
-                    DirPurpose::Installation => self.accept_workspace_dir(path),
-                    DirPurpose::Projects => self.accept_projects_dir(path),
-                    DirPurpose::MpyProjects => self.accept_mpy_projects_dir(path),
-                    DirPurpose::Install => self.accept_install_dir(path),
-                },
-                Some(crate::workspace::DirRowKind::Parent) => {
-                    let Some(parent) = path.parent().map(Path::to_path_buf) else {
-                        return;
-                    };
-                    descend(self, parent);
-                }
-                Some(crate::workspace::DirRowKind::Dir) => {
-                    let Some(dir) = rows.get(selected).map(|row| row.path.clone()) else {
-                        return;
-                    };
-                    descend(self, dir);
-                }
-                None => rebuild(self, path, selected),
-            },
-            KeyCode::Left | KeyCode::Backspace => {
-                let Some(parent) = path.parent().map(Path::to_path_buf) else {
-                    return;
-                };
-                descend(self, parent);
-            }
-            _ => {
-                if error.is_some() {
-                    self.overlay = Some(Overlay::DirPicker {
-                        purpose,
-                        path,
-                        selected,
-                        error,
-                    });
-                }
-            }
-        }
+        self.open_directory_picker(purpose, preferred);
     }
 
     /// Validates the directory the picker accepted and, when it is a real
@@ -395,12 +312,7 @@ impl App {
                 self.open_project_flow();
             }
             ProjectsResolution::Invalid(message) => {
-                self.overlay = Some(Overlay::DirPicker {
-                    purpose: DirPurpose::Projects,
-                    path: dir,
-                    selected: 0,
-                    error: Some(message),
-                });
+                self.directory_picker_error(DirPurpose::Projects, dir, message);
             }
             ProjectsResolution::NotConfigured => {}
         }

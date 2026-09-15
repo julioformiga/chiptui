@@ -1557,6 +1557,61 @@ A command palette may be added if it improves discoverability.
 The UI should use terminal colors by default rather than imposing a
 heavy theme.
 
+### Shared local path pickers
+
+All local directory and file selection uses one browser model and one
+modal renderer, including the home screen. The directory picker offers
+`use this directory`, parent navigation and sorted subdirectories. The file
+picker keeps directories navigable and filters files for its consumer;
+firmware accepts `.bin` and `.elf`, case-insensitively. Typed file paths
+must pass the same filter and existence/access checks as listed ones.
+Listings are snapshots shared by drawing and hit-testing, refreshed on
+navigation or explicitly, rather than re-read during every frame or click.
+Listing rows carry a kind mark --- directory, file or parent (`..`) ---
+following `[ui] icons`: two-cell emoji under `"unicode"` (the default),
+single-width Nerd Font glyphs under `"nerd"`, and no mark at all under
+`"none"`, in the same decoration column the file browser uses. Path rows
+in project configuration advertise their picker with the same glyph after
+the value. The file panes (Files, Device Files and the Zephyr workspace
+list) draw folders with the pickers' marks: the closed/open emoji pair
+under `"unicode"`, the single-width `nf-fa-folder`/`nf-fa-folder-open`
+pair under `"nerd"`. Under `"nerd"` their files take the pickers'
+`nf-fa-file` as well --- except `.py` and C-family sources, which keep
+their dedicated language logos --- so the whole icon column is
+single-width and aligned; the per-extension emoji table remains the
+`"unicode"` rendering.
+
+Both pickers have a path field (`Tab` / `Ctrl+L`), supporting absolute,
+relative and `~/` paths. `Enter` on a typed directory navigates into it;
+the directory picker's leading row then accepts it explicitly. Arrows,
+Home/End and PageUp/PageDown navigate the list; `.` on the list toggles
+hidden entries, `Ctrl+R` refreshes, and `F1` opens in-place help without
+losing navigation or input. Inside a field, arrows edit the cursor,
+`Ctrl+U` clears it, and `Esc` cancels the edit before it cancels the picker.
+The directory picker also offers `Ctrl+N`: one new folder name, created
+only after `Enter`, without overwriting an existing entry. Errors stay in
+the picker with the reason and a recovery hint.
+
+`Ctrl+O` opens the browser from the home project list, the backend project
+lists and the MicroPython Actions tab / firmware dialogs. Recognized project
+lists remain available; browsing elsewhere still uses the backend's project
+validation before re-rooting. Cancelling returns to the originating list.
+Firmware may be selected anywhere on disk; the project's `firmware/`
+remains the download destination, and selecting an image never bypasses
+flash confirmation or starts a command.
+
+Path rows in project configuration open the appropriate picker on `Enter`
+(directories for workspace, projects, SDK and application; a file for the
+west program). Selecting returns a pending answer to the same configuration
+transaction. `Ctrl+E` retains manual entry, including program names resolved
+through `PATH` and paths to installations not created yet.
+
+The last accepted folder is remembered across restarts per use in the
+**user** configuration's `[pickers]` section. An existing current answer
+takes priority, then usable history, then the flow's initial folder.
+Cancelled browsing does not change history; missing history directories are
+ignored. Picker history is UI state, never project configuration.
+
 ### Theming
 
 Every visible color is derived from the active `ratatui-themes` palette

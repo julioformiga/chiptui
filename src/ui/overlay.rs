@@ -269,17 +269,14 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
         } => draw_shield_picker(frame, area, app, &input, selected, scroll, focus, palette),
         Overlay::DirPicker {
             purpose,
-            path,
-            selected,
-            error,
-        } => draw_dir_picker(
+            picker,
+        } => super::path_picker::draw(
             frame,
-            area,
-            purpose,
-            &path,
-            selected,
-            error.as_deref(),
+            popup,
+            purpose.title(),
+            &picker,
             palette,
+            app.icon_set(),
         ),
         Overlay::BuildTarget { selected, .. } => {
             draw_build_target(frame, popup, app, selected, app.icon_set(), palette)
@@ -307,9 +304,11 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
                 palette,
             )
         }
-        Overlay::FirmwarePicker { selected } => {
-            draw_firmware_picker(frame, popup, app, selected, palette)
-        }
+        Overlay::FilePicker { purpose, picker } => super::path_picker::draw(frame, popup,
+            match purpose {
+                crate::app::path_picker_view::FilePurpose::Firmware => "Choose firmware (.bin / .elf)",
+                crate::app::path_picker_view::FilePurpose::Config(row) => row.label(),
+            }, &picker, palette, app.icon_set()),
         // Full-frame, so it takes the frame rather than the popup --- it
         // recomputes its own geometry from `layout::project_config`, the
         // definition `overlay_popup` above delegates to.
@@ -2057,84 +2056,6 @@ fn draw_sdk_toolchains(
     );
 }
 
-fn draw_dir_picker(
-    frame: &mut Frame,
-    popup: Rect,
-    purpose: crate::workspace::DirPurpose,
-    path: &std::path::Path,
-    selected: usize,
-    error: Option<&str>,
-    palette: Palette,
-) {
-    let title = match purpose {
-        crate::workspace::DirPurpose::Installation => "Where is the Zephyr installation?",
-        crate::workspace::DirPurpose::Projects => "Where are your Zephyr projects?",
-        crate::workspace::DirPurpose::MpyProjects => "Where are your MicroPython projects?",
-        crate::workspace::DirPurpose::Install => "Where should Zephyr be installed?",
-    };
-    frame.render_widget(Clear, popup);
-    let block = modal(title, palette);
-    frame.render_widget(block.clone(), popup);
-
-    let inner = block.inner(popup);
-    let [path_area, list_area, footer_area] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Min(1),
-        Constraint::Length(2),
-    ])
-    .areas(inner);
-
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("dir  ", muted_style(palette)),
-            Span::styled(path.display().to_string(), Style::new().fg(palette.fg)),
-        ])),
-        path_area,
-    );
-
-    let (rows, read_error) = crate::workspace::dir_rows(path);
-    let items: Vec<ListItem> = rows
-        .iter()
-        .map(|row| match row.kind {
-            crate::workspace::DirRowKind::Use => ListItem::new(Line::from(vec![
-                Span::styled("→ ", Style::new().fg(palette.accent)),
-                // The installer creates `zephyr/` *inside* the accepted
-                // folder, so the row has to say where things land --- "use
-                // this directory" would read as "install into it directly".
-                if purpose == crate::workspace::DirPurpose::Install {
-                    "install into zephyr/ inside this directory"
-                        .fg(palette.fg)
-                        .bold()
-                } else {
-                    "use this directory".fg(palette.fg).bold()
-                },
-            ])),
-            crate::workspace::DirRowKind::Parent | crate::workspace::DirRowKind::Dir => {
-                ListItem::new(Line::from(Span::styled(
-                    format!("  {}", row.name),
-                    Style::new().fg(palette.fg),
-                )))
-            }
-        })
-        .collect();
-    let mut state = ListState::default().with_selected(Some(selected));
-    frame.render_stateful_widget(
-        List::new(items).highlight_style(selection_style(palette)),
-        list_area,
-        &mut state,
-    );
-
-    let footer = match (error, read_error.as_deref()) {
-        (Some(error), _) => Line::from(error.to_string().fg(palette.error)),
-        (None, Some(read)) => Line::from(read.fg(palette.warning)),
-        (None, None) => Line::from("the choice is saved to the config".fg(palette.muted)),
-    };
-    frame.render_widget(
-        Paragraph::new(footer).wrap(ratatui::widgets::Wrap { trim: false }),
-        footer_area,
-    );
-}
-
 /// Project selection from the configured projects folder: every immediate
 /// subdirectory. For Zephyr the buildable ones carry the elements `west
 /// build` needs and the rest say so out loud --- the verification the gate
@@ -2293,53 +2214,6 @@ fn draw_build_target(
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
     super::button::render_stack(frame, inner, inner.y, &buttons, palette);
-}
-
-/// Chooses among several `.bin`/`.elf` candidates found in the project root.
-fn draw_firmware_picker(
-    frame: &mut Frame,
-    popup: Rect,
-    app: &App,
-    selected: usize,
-    palette: Palette,
-) {
-    let firmware = app
-        .flash
-        .as_ref()
-        .map(|flash| flash.firmware.as_slice())
-        .unwrap_or_default();
-
-    if firmware.is_empty() {
-        frame.render_widget(Clear, popup);
-        frame.render_widget(
-            Paragraph::new(vec![Line::from(
-                "No .bin/.elf firmware found in the project root.".fg(palette.warning),
-            )])
-            .block(modal("Firmware", palette)),
-            popup,
-        );
-        return;
-    }
-
-    let items: Vec<ListItem> = firmware
-        .iter()
-        .map(|entry| {
-            ListItem::new(Line::from(vec![
-                Span::styled(format!(" {} ", entry.name), Style::new().fg(palette.fg)),
-                Span::styled(format!("{} bytes", entry.size), muted_style(palette)),
-            ]))
-        })
-        .collect();
-    let mut state = ListState::default().with_selected(Some(selected));
-
-    frame.render_widget(Clear, popup);
-    frame.render_stateful_widget(
-        List::new(items)
-            .block(modal("Firmware", palette))
-            .highlight_style(selection_style(palette)),
-        popup,
-        &mut state,
-    );
 }
 
 /// Board target selection: a filter box over the `west boards` list

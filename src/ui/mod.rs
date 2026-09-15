@@ -27,6 +27,7 @@ pub(crate) use overlay::{BUILD_TARGET_COUNT, DISCARD_CHOICES, ZEPHYR_ACTIONS_COU
 pub(crate) mod ota;
 pub(crate) use ota::area as ota_area;
 mod panels;
+pub(crate) mod path_picker;
 mod project_config;
 pub(crate) use panels::board_shield_click_is_board;
 pub(crate) use panels::device_mac_row;

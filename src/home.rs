@@ -17,8 +17,8 @@ use std::path::{Path, PathBuf};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use crate::path_picker::{PathPicker, PickerKind, PickerOutcome};
 use crate::settings::{self, ProjectEntry, ProjectRegistry};
-use crate::workspace::{DirRowKind, dir_rows};
 
 /// What the screen decided, once it decides anything.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,34 +44,15 @@ fn in_rect(rect: ratatui::layout::Rect, point: (u16, u16)) -> bool {
 /// to select; the name prompt and the forget question are typed answers
 /// with no click surface.
 fn click_flow(flow: &mut Flow, point: (u16, u16), area: ratatui::layout::Rect) {
-    let Flow::CreateDir {
-        path,
-        selected,
-        error,
-    } = flow
-    else {
+    let (Flow::CreateDir { picker } | Flow::OpenDir { picker }) = flow else {
         return;
     };
-    let popup = crate::ui::centered(area, 72, 18);
-    let (rows, _) = dir_rows(path);
-    let len = rows.len();
-    let height = popup.height.saturating_sub(2 + 1 + 2) as usize; // borders, path line, footer
-    if len == 0 || height == 0 {
-        return;
-    }
-    let inner_y = popup.y + 1 + 1; // border, path line
-    let inner_bottom = popup.y + popup.height - 1 - 2; // border, footer
-    if point.1 < inner_y || point.1 >= inner_bottom {
-        return;
-    }
-    let offset = (*selected).saturating_sub(height - 1);
-    let index = offset + (point.1 - inner_y) as usize;
-    if index < len {
-        *selected = index;
-        // Selecting a row is navigation: like every key move, it clears the
-        // picker's last refusal.
-        *error = None;
-    }
+    let popup = crate::ui::centered(
+        area,
+        crate::ui::path_picker::WIDTH,
+        crate::ui::path_picker::HEIGHT,
+    );
+    crate::ui::path_picker::click(picker, popup, point);
 }
 
 /// One row of the list.
@@ -86,14 +67,10 @@ pub enum Row<'a> {
 /// A modal step layered over the list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Flow {
+    /// Browse for an existing project that the registry does not list yet.
+    OpenDir { picker: PathPicker },
     /// Choosing the folder the new project's own directory goes into.
-    /// Navigation is the workspace picker's ([`dir_rows`]) --- one directory
-    /// browser in the codebase, two questions asked with it.
-    CreateDir {
-        path: PathBuf,
-        selected: usize,
-        error: Option<String>,
-    },
+    CreateDir { picker: PathPicker },
     /// Naming the new project. The name becomes a directory inside `parent`,
     /// which is why it is rejected rather than sanitized: the user should
     /// see the name they typed on disk.
@@ -125,6 +102,7 @@ pub struct HomeScreen {
     selected: usize,
     flow: Option<Flow>,
     status: Option<String>,
+    picker_page: usize,
 }
 
 impl HomeScreen {
@@ -139,6 +117,7 @@ impl HomeScreen {
             selected: 0,
             flow: None,
             status: None,
+            picker_page: 10,
         };
         screen.reload();
         screen
@@ -175,6 +154,15 @@ impl HomeScreen {
 
     pub fn flow(&self) -> Option<&Flow> {
         self.flow.as_ref()
+    }
+
+    pub fn set_frame_area(&mut self, area: ratatui::layout::Rect) {
+        let popup = crate::ui::centered(
+            area,
+            crate::ui::path_picker::WIDTH,
+            crate::ui::path_picker::HEIGHT,
+        );
+        self.picker_page = crate::ui::path_picker::areas(popup)[2].height as usize;
     }
 
     /// A failure or notice to show under the list --- cleared by the next
@@ -312,6 +300,19 @@ impl HomeScreen {
     /// The wheel over the list steps the cursor, clamped at the ends (the
     /// keyboard's arrows wrap; a wheel that wraps feels like a bug).
     fn wheel(&mut self, direction: isize, point: (u16, u16), area: ratatui::layout::Rect) {
+        if let Some(flow) = &mut self.flow {
+            if let Flow::CreateDir { picker } | Flow::OpenDir { picker } = flow {
+                let popup = crate::ui::centered(
+                    area,
+                    crate::ui::path_picker::WIDTH,
+                    crate::ui::path_picker::HEIGHT,
+                );
+                if in_rect(crate::ui::path_picker::areas(popup)[2], point) && !picker.help {
+                    picker.step(direction * 3);
+                }
+            }
+            return;
+        }
         let areas = crate::ui::home::hit_areas(area);
         if !in_rect(areas.list, point) {
             return;
@@ -338,6 +339,14 @@ impl HomeScreen {
     /// leaving is `esc` and not `q`: with a live search field there are no
     /// letters left to spend on commands.
     fn on_list_key(&mut self, key: KeyEvent) -> Option<HomeOutcome> {
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('o') {
+            let start = settings::picker_directory(&self.config, "open_project", &self.home)
+                .unwrap_or_else(|| self.home.clone());
+            self.flow = Some(Flow::OpenDir {
+                picker: PathPicker::new(PickerKind::Directory, start, &self.home),
+            });
+            return None;
+        }
         match key.code {
             KeyCode::Esc => {
                 if self.query.is_empty() {
@@ -383,9 +392,7 @@ impl HomeScreen {
         match self.rows().get(self.selected)? {
             Row::Create => {
                 self.flow = Some(Flow::CreateDir {
-                    path: self.start_dir(),
-                    selected: 0,
-                    error: None,
+                    picker: PathPicker::new(PickerKind::Directory, self.start_dir(), &self.home),
                 });
                 None
             }
@@ -402,18 +409,48 @@ impl HomeScreen {
             .and_then(Path::parent)
             .map(Path::to_path_buf)
             .unwrap_or_default();
-        settings::last_parent(&config_dir, &self.home)
+        settings::picker_directory(&self.config, "create_project", &self.home)
+            .or_else(|| settings::last_parent(&config_dir, &self.home))
             .filter(|dir| dir.is_dir())
             .unwrap_or_else(|| self.home.clone())
     }
 
     fn on_flow_key(&mut self, flow: Flow, key: KeyEvent) -> Option<HomeOutcome> {
         match flow {
-            Flow::CreateDir {
-                path,
-                selected,
-                error,
-            } => self.on_create_dir_key(path, selected, error, key),
+            Flow::OpenDir { mut picker } => {
+                match picker.handle_key(key, self.picker_page) {
+                    PickerOutcome::Pending => self.flow = Some(Flow::OpenDir { picker }),
+                    PickerOutcome::Cancelled => {}
+                    PickerOutcome::Selected(path) => {
+                        if let Err(err) =
+                            settings::save_picker_directory(&self.config, "open_project", &path)
+                        {
+                            self.status = Some(format!("Could not remember picker folder: {err}"));
+                        }
+                        return Some(HomeOutcome::Open(path));
+                    }
+                }
+                None
+            }
+            Flow::CreateDir { mut picker } => {
+                match picker.handle_key(key, self.picker_page) {
+                    PickerOutcome::Pending => self.flow = Some(Flow::CreateDir { picker }),
+                    PickerOutcome::Cancelled => {}
+                    PickerOutcome::Selected(parent) => {
+                        if let Err(err) =
+                            settings::save_picker_directory(&self.config, "create_project", &parent)
+                        {
+                            self.status = Some(format!("Could not remember picker folder: {err}"));
+                        }
+                        self.flow = Some(Flow::CreateName {
+                            parent,
+                            input: String::new(),
+                            error: None,
+                        });
+                    }
+                }
+                None
+            }
             Flow::CreateName {
                 parent,
                 input,
@@ -430,74 +467,6 @@ impl HomeScreen {
         }
     }
 
-    fn on_create_dir_key(
-        &mut self,
-        path: PathBuf,
-        selected: usize,
-        error: Option<String>,
-        key: KeyEvent,
-    ) -> Option<HomeOutcome> {
-        let (rows, read_error) = dir_rows(&path);
-        let mut selected = selected.min(rows.len().saturating_sub(1));
-        match key.code {
-            KeyCode::Esc => return None,
-            KeyCode::Up => selected = step(selected, -1, rows.len()),
-            KeyCode::Down => selected = step(selected, 1, rows.len()),
-            KeyCode::Left | KeyCode::Backspace => {
-                if let Some(parent) = path.parent() {
-                    self.flow = Some(Flow::CreateDir {
-                        path: parent.to_path_buf(),
-                        selected: 0,
-                        error: None,
-                    });
-                    return None;
-                }
-            }
-            KeyCode::Enter | KeyCode::Right => {
-                let row = rows.get(selected)?;
-                match row.kind {
-                    // Accepting a folder is only "where the project goes";
-                    // it is not itself the project, so the only thing that
-                    // has to be true is that it is a directory.
-                    DirRowKind::Use if key.code == KeyCode::Enter => {
-                        if row.path.is_dir() {
-                            self.flow = Some(Flow::CreateName {
-                                parent: row.path.clone(),
-                                input: String::new(),
-                                error: None,
-                            });
-                        } else {
-                            self.flow = Some(Flow::CreateDir {
-                                path,
-                                selected,
-                                error: Some(format!("{} is not a directory", row.path.display())),
-                            });
-                        }
-                        return None;
-                    }
-                    DirRowKind::Use => {}
-                    // Descending lands on "use this directory", so a reflex
-                    // second `enter` accepts the folder just entered.
-                    DirRowKind::Parent | DirRowKind::Dir => {
-                        self.flow = Some(Flow::CreateDir {
-                            path: row.path.clone(),
-                            selected: 0,
-                            error: None,
-                        });
-                        return None;
-                    }
-                }
-            }
-            _ => {}
-        }
-        self.flow = Some(Flow::CreateDir {
-            path,
-            selected,
-            error: error.or(read_error),
-        });
-        None
-    }
-
     fn on_create_name_key(
         &mut self,
         parent: PathBuf,
@@ -510,9 +479,7 @@ impl HomeScreen {
             // Back to the folder picker, at the folder just accepted.
             KeyCode::Esc => {
                 self.flow = Some(Flow::CreateDir {
-                    path: parent,
-                    selected: 0,
-                    error: None,
+                    picker: PathPicker::new(PickerKind::Directory, parent, &self.home),
                 });
                 return None;
             }
@@ -585,13 +552,6 @@ fn matches_query(entry: &ProjectEntry, query: &str) -> bool {
         entry.backend.display_name().to_lowercase(),
     );
     query.split_whitespace().all(|term| haystack.contains(term))
-}
-
-fn step(selected: usize, delta: isize, len: usize) -> usize {
-    if len == 0 {
-        return 0;
-    }
-    (selected as isize + delta).rem_euclid(len as isize) as usize
 }
 
 #[cfg(test)]
@@ -713,6 +673,27 @@ mod tests {
     }
 
     #[test]
+    fn browse_opens_an_unregistered_folder_and_remembers_it() {
+        let fixture = Fixture::new("browse");
+        let folder = fixture.home.join("existing");
+        std::fs::create_dir_all(&folder).unwrap();
+        let mut screen = fixture.screen();
+        screen.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL));
+        screen.handle_key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL));
+        screen.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        typed(&mut screen, "existing");
+        screen.handle_key(key(KeyCode::Enter));
+        assert_eq!(
+            screen.handle_key(key(KeyCode::Enter)),
+            Some(HomeOutcome::Open(folder.clone()))
+        );
+        assert_eq!(folder.read_dir().unwrap().count(), 0);
+        let mut next = fixture.screen();
+        next.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL));
+        assert!(matches!(next.flow(), Some(Flow::OpenDir { picker }) if picker.path == folder));
+    }
+
+    #[test]
     fn esc_clears_the_filter_before_it_quits() {
         let fixture = Fixture::new("esc");
         fixture.record("blinky", BackendKind::Zephyr);
@@ -765,13 +746,13 @@ mod tests {
 
         let mut screen = fixture.screen();
         screen.handle_key(key(KeyCode::Enter)); // the create row
-        let Some(Flow::CreateDir { path, .. }) = screen.flow() else {
+        let Some(Flow::CreateDir { picker }) = screen.flow() else {
             panic!("expected the folder picker, got {:?}", screen.flow());
         };
-        assert_eq!(path, &fixture.home, "starts at $HOME the first time");
+        assert_eq!(picker.path, fixture.home, "starts at $HOME the first time");
 
-        // Descend into `apps` (rows: use, .., .config, apps) and accept it.
-        let rows = dir_rows(&fixture.home).0;
+        // Hidden entries are omitted by default in every picker.
+        let rows = picker.entries.clone();
         let index = rows.iter().position(|row| row.name == "apps").unwrap();
         for _ in 0..index {
             screen.handle_key(key(KeyCode::Down));

@@ -832,9 +832,11 @@ fn a_refused_folder_offers_the_installer_instead_of_only_saying_no() {
 
     app.overlay = Some(Overlay::DirPicker {
         purpose: chiptui::workspace::DirPurpose::Installation,
-        path: empty.clone(),
-        selected: 0,
-        error: None,
+        picker: chiptui::path_picker::PathPicker::new(
+            chiptui::path_picker::PickerKind::Directory,
+            empty.clone(),
+            &root,
+        ),
     });
     app.handle(key(KeyCode::Enter));
 
@@ -853,11 +855,11 @@ fn a_refused_folder_offers_the_installer_instead_of_only_saying_no() {
     // Declining puts the picker back exactly where the refusal left it ---
     // the overlay slot is one deep, so the offer has to restore it.
     app.handle(key(KeyCode::Char('n')));
-    let Some(Overlay::DirPicker { path, error, .. }) = app.overlay.clone() else {
+    let Some(Overlay::DirPicker { picker, .. }) = app.overlay.clone() else {
         panic!("declining must return to the picker");
     };
-    assert_eq!(path, empty);
-    assert!(error.is_some_and(|error| error.contains(".west")));
+    assert_eq!(picker.path, empty);
+    assert!(picker.error.is_some_and(|error| error.contains(".west")));
 
     // Accepting opens the installer one level in.
     app.handle(key(KeyCode::Enter));
@@ -872,9 +874,11 @@ fn the_offer_names_what_is_actually_in_the_folder() {
     let offer_title = |app: &mut App, dir: &Path| {
         app.overlay = Some(Overlay::DirPicker {
             purpose: chiptui::workspace::DirPurpose::Installation,
-            path: dir.to_path_buf(),
-            selected: 0,
-            error: None,
+            picker: chiptui::path_picker::PathPicker::new(
+                chiptui::path_picker::PickerKind::Directory,
+                dir.to_path_buf(),
+                &root,
+            ),
         });
         app.handle(key(KeyCode::Enter));
         assert!(
@@ -988,9 +992,11 @@ fn a_second_installation_switches_the_active_one_and_says_so() {
     std::fs::create_dir_all(&second).unwrap();
     app.overlay = Some(Overlay::DirPicker {
         purpose: chiptui::workspace::DirPurpose::Installation,
-        path: second.clone(),
-        selected: 0,
-        error: None,
+        picker: chiptui::path_picker::PathPicker::new(
+            chiptui::path_picker::PickerKind::Directory,
+            second.clone(),
+            &root,
+        ),
     });
     app.handle(key(KeyCode::Enter));
     app.handle(key(KeyCode::Char('y')));

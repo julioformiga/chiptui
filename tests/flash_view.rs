@@ -226,13 +226,52 @@ fn several_firmware_candidates_open_a_picker() {
     }
     app.handle(key(KeyCode::Enter));
 
-    assert_eq!(app.overlay, Some(Overlay::FirmwarePicker { selected: 0 }));
+    assert!(matches!(app.overlay, Some(Overlay::FilePicker { .. })));
 
     app.handle(key(KeyCode::Enter)); // choose the first
     assert_eq!(app.overlay, None);
     let flash = app.flash.as_ref().unwrap();
     assert_eq!(flash.screen, FlashScreen::Options);
     assert_eq!(flash.selected_firmware, Some(0));
+}
+
+#[test]
+fn choosing_external_firmware_preserves_the_download_folder_and_confirmation() {
+    let project = Project::new("picker-project");
+    let external = Project::new("picker-external");
+    let image = external.root.join("release image.BIN");
+    std::fs::write(&image, b"image").unwrap();
+    let mut app = app_with_flash(&project);
+    let home = project.root.join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    app.set_home_dir(&home);
+    app.handle(common::ctrl('o'));
+    assert!(matches!(app.overlay, Some(Overlay::FilePicker { .. })));
+    app.handle(common::ctrl('l'));
+    app.handle(common::ctrl('u'));
+    for ch in image.to_str().unwrap().chars() {
+        app.handle(key(KeyCode::Char(ch)));
+    }
+    app.handle(key(KeyCode::Enter));
+    let flash = app.flash.as_mut().unwrap();
+    assert_eq!(flash.selected_firmware_path(), Some(image.clone()));
+    assert_eq!(flash.firmware_dir, project.root.join("firmware"));
+    assert_eq!(flash.selected_action(), FlashAction::WriteFlash);
+    assert!(!flash.is_busy());
+    flash.set_offset("0x1000".into());
+    app.handle(key(KeyCode::Enter));
+    assert!(
+        matches!(&app.overlay, Some(Overlay::Confirm { message, confirm: false }) if message.contains(image.to_str().unwrap()))
+    );
+    app.handle(key(KeyCode::Esc));
+    assert!(!app.flash.as_ref().unwrap().is_busy());
+    // A fresh session reads the per-use history, without moving download output.
+    let mut next = app_with_flash(&project);
+    next.set_home_dir(&home);
+    next.handle(common::ctrl('o'));
+    assert!(
+        matches!(&next.overlay, Some(Overlay::FilePicker { picker, .. }) if picker.path == external.root)
+    );
 }
 
 #[test]

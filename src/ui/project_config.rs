@@ -340,7 +340,27 @@ fn row_line(app: &App, row: ProjectConfigRow, width: usize, palette: Palette) ->
             Style::new().fg(palette.fg),
         ),
     ];
-    let budget = width.saturating_sub(KEY_WIDTH + 6);
+    // A path row advertises its picker the way the Device Info MAC row
+    // advertises click-to-copy: the kind glyph after the value, drawn only
+    // when `[ui] icons` keeps decorations (the `none` set hides it whole).
+    let icons = app.icon_set();
+    let picker_mark = if icons.shows_decorations() {
+        row.picker_kind().map(|kind| {
+            let glyph = match kind {
+                crate::path_picker::PickerKind::Directory => icons.directory(),
+                crate::path_picker::PickerKind::File(_) => icons.file(),
+            };
+            let cells = if matches!(icons, crate::icons::IconSet::Nerd) {
+                1
+            } else {
+                2
+            };
+            (glyph, cells + 1)
+        })
+    } else {
+        None
+    };
+    let budget = width.saturating_sub(KEY_WIDTH + 6 + picker_mark.map_or(0, |(_, cells)| cells));
 
     // A row being typed into shows the buffer with a block cursor after it
     // --- the one-line-input grammar the rename and address dialogs use.
@@ -426,6 +446,9 @@ fn row_line(app: &App, row: ProjectConfigRow, width: usize, palette: Palette) ->
                 None => spans.push(Span::styled("—", muted_style(palette))),
             },
         },
+    }
+    if let Some((glyph, _)) = picker_mark {
+        spans.push(Span::styled(format!(" {glyph}"), muted_style(palette)));
     }
     Line::from(spans)
 }
@@ -704,6 +727,13 @@ fn draw_footer(frame: &mut Frame, areas: &ProjectConfigAreas, app: &App, palette
         let row = match panel.selected().map(ProjectConfigRow::kind) {
             None => "← →  pick     enter  settings     ",
             Some(RowKind::Choice(_)) => "← →  change     del  clear     ",
+            Some(RowKind::Text)
+                if panel
+                    .selected()
+                    .is_some_and(|row| row.picker_kind().is_some()) =>
+            {
+                "enter  browse     ctrl+e  type     del  clear     "
+            }
             Some(RowKind::Text) => "enter  edit     del  clear     ",
             _ => "",
         };

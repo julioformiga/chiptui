@@ -53,6 +53,7 @@ mod ota_view;
 pub mod overlay;
 pub use overlay::Overlay;
 pub mod packages;
+pub mod path_picker_view;
 pub mod probe;
 pub mod project_config_view;
 pub mod project_view;
@@ -277,6 +278,7 @@ pub struct App {
     /// The Monitor tab's on-screen geometry, published by the renderer.
     pub monitor_view: MonitorView,
     pub overlay: Option<Overlay>,
+    picker_return: Option<Overlay>,
     /// Height of the log pane, published by the renderer so page-scrolling and
     /// clamping match what is actually on screen.
     pub log_viewport: usize,
@@ -641,6 +643,7 @@ impl App {
             monitor_scroll: MonitorScroll::default(),
             monitor_view: MonitorView::default(),
             overlay: None,
+            picker_return: None,
             log_viewport: 1,
             frame_area: None,
             docs_viewport: 1,
@@ -2278,12 +2281,6 @@ mod tests {
                 kind: crate::backend::BuildKind::Build,
                 selected: 0,
             },
-            Overlay::DirPicker {
-                purpose: crate::workspace::DirPurpose::Installation,
-                path: std::path::PathBuf::new(),
-                selected: 0,
-                error: None,
-            },
             Overlay::ProjectPicker {
                 mpy: false,
                 dir: None,
@@ -2292,7 +2289,6 @@ mod tests {
             },
             Overlay::DevicePicker { selected: 0 },
             Overlay::ThemePicker { selected: 0 },
-            Overlay::FirmwarePicker { selected: 0 },
             Overlay::FileActions {
                 side: Side::Local,
                 name: "file.py".into(),

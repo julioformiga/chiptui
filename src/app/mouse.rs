@@ -771,22 +771,9 @@ impl App {
                     self.set_overlay_selected(index);
                 }
             }
-            Overlay::FirmwarePicker { selected } => {
-                let Some(len) = self.flash.as_ref().map(|flash| flash.firmware.len()) else {
-                    return;
-                };
-                if len == 0 {
-                    return;
-                }
-                if let Some(index) = list_row(
-                    point,
-                    rect,
-                    *selected,
-                    len,
-                    0,
-                    0,
-                ) {
-                    self.set_overlay_selected(index);
+            Overlay::FilePicker { .. } | Overlay::DirPicker { .. } => {
+                if let Some(Overlay::FilePicker { picker, .. } | Overlay::DirPicker { picker, .. }) = &mut self.overlay {
+                    crate::ui::path_picker::click(picker, rect, point);
                 }
             }
             Overlay::Packages => {
@@ -900,19 +887,6 @@ impl App {
                     len,
                     0,
                     0,
-                ) {
-                    self.set_overlay_selected(index);
-                }
-            }
-            Overlay::DirPicker { path, selected, .. } => {
-                let len = crate::workspace::dir_rows(path).0.len();
-                if let Some(index) = list_row(
-                    point,
-                    rect,
-                    *selected,
-                    len,
-                    1,
-                    2,
                 ) {
                     self.set_overlay_selected(index);
                 }
@@ -1137,6 +1111,19 @@ impl App {
     fn on_overlay_wheel(&mut self, direction: isize, event: MouseEvent) {
         let Some(frame) = self.frame_area else { return };
         let point = (event.column, event.row);
+        if let Some(Overlay::FilePicker { picker, .. } | Overlay::DirPicker { picker, .. }) =
+            &mut self.overlay
+        {
+            let popup = crate::ui::centered(
+                frame,
+                crate::ui::path_picker::WIDTH,
+                crate::ui::path_picker::HEIGHT,
+            );
+            if contains(crate::ui::path_picker::areas(popup)[2], point) && !picker.help {
+                picker.step(direction);
+            }
+            return;
+        }
         // The filtered list the keyboard walks; shields add the `(none)`
         // row that clears the pick. Owned before the write-back releases
         // `self.overlay`'s borrow.
@@ -1372,10 +1359,8 @@ impl App {
         if let Some(
             Overlay::DevicePicker { selected, .. }
             | Overlay::ThemePicker { selected, .. }
-            | Overlay::FirmwarePicker { selected, .. }
             | Overlay::RestoreDeviceScript { selected, .. }
             | Overlay::FileActions { selected, .. }
-            | Overlay::DirPicker { selected, .. }
             | Overlay::ProjectPicker { selected, .. }
             | Overlay::BuildTarget { selected, .. }
             | Overlay::BoardPicker { selected, .. }
@@ -2592,9 +2577,11 @@ mod tests {
         let mut app = app_with_backend(BackendKind::Zephyr, &root);
         app.overlay = Some(crate::app::Overlay::DirPicker {
             purpose: crate::workspace::DirPurpose::Installation,
-            path: root.clone(),
-            selected: 0,
-            error: None,
+            picker: crate::path_picker::PathPicker::new(
+                crate::path_picker::PickerKind::Directory,
+                root.clone(),
+                &root,
+            ),
         });
         let lines = render(&mut app, 100, 40);
         let row = lines
@@ -3126,7 +3113,7 @@ mod tests {
         let lines = render(&mut app, 100, 40);
         let parent = lines
             .iter()
-            .position(|l| l.contains("📁 .."))
+            .position(|l| l.contains("📂 .."))
             .expect("the parent row leads") as u16;
         assert_eq!(parent, row, "the parent row takes the vacated row");
         // The descent consumed its own pair, so the click behind it is a

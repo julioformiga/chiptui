@@ -3,8 +3,8 @@
 //! icons`][crate::settings::icons] = `"nerd"` in the user config) and
 //! *no glyphs at all* (`"none"`: the labels stand alone, and the
 //! decorative emojis outside the buttons --- the file browser's kind
-//! icons, the home screen's backend marks --- disappear too; see
-//! [`IconSet::shows_decorations`]).
+//! icons, the path pickers' kind glyphs, the home screen's backend
+//! marks --- disappear too; see [`IconSet::shows_decorations`]).
 //!
 //! This is the one place Private Use Area codepoints may exist at all ---
 //! and even here only as `\u{…}` escapes, never literal characters, so
@@ -89,8 +89,10 @@ impl IconSet {
     }
 
     /// Whether the *decorative* glyphs outside the button stacks --- the
-    /// file browser's kind emojis (`📁`/`🐍`/…), the home screen's backend
-    /// marks (`🐍`/`🔷`) --- draw at all. Every set but `None` keeps them:
+    /// file browser's kind emojis (`📁`/`🐍`/…), the path pickers' kind
+    /// glyphs ([`Self::directory`]/[`Self::file`]/[`Self::folder_open`]),
+    /// the home screen's backend marks (`🐍`/`🔷`) --- draw at all. Every
+    /// set but `None` keeps them:
     /// an icon *rendering* is a choice about how buttons look, while `none`
     /// is the operator saying the decoration itself is noise. The glyphs
     /// that carry state (the checklist's `✓ ⚠ ✗ □`, the sync markers, the
@@ -365,6 +367,46 @@ impl IconSet {
         }
     }
 
+    /// A directory row in a path picker's listing. `📁` /
+    /// `nf-fa-folder` --- the same glyph [`Self::folder`] lends the pane
+    /// titles, but here the Unicode half is the two-cell emoji (the
+    /// picker's icon column budgets two cells plus a pad, the file
+    /// browser's contract) rather than the width-1 `▣` the titles need.
+    /// Decoration: governed by [`Self::shows_decorations`], never a
+    /// button.
+    pub const fn directory(self) -> &'static str {
+        match self {
+            Self::Unicode => "📁",
+            Self::Nerd => "\u{F07B}",
+            Self::None => "",
+        }
+    }
+
+    /// A path picker's parent row (`..`). `📂` / `nf-fa-folder-open` ---
+    /// the opened variant of [`Self::directory`], so the way *up* reads
+    /// differently from the way *into* a folder. Decoration, like
+    /// [`Self::directory`].
+    pub const fn folder_open(self) -> &'static str {
+        match self {
+            Self::Unicode => "📂",
+            Self::Nerd => "\u{F07C}",
+            Self::None => "",
+        }
+    }
+
+    /// A file row in a path picker's listing. `📄` / `nf-fa-file`.
+    /// Decoration, like [`Self::directory`]. Under the Nerd set this is
+    /// also the file panes' fallback mark for every extension without a
+    /// dedicated vetted glyph (`.py` and C-family keep their logos), so
+    /// a nerd-rendered file column is single-width throughout.
+    pub const fn file(self) -> &'static str {
+        match self {
+            Self::Unicode => "📄",
+            Self::Nerd => "\u{F15B}",
+            Self::None => "",
+        }
+    }
+
     /// The MicroPython backend's mark: the Python logo under Nerd Font
     /// (the header's `▲` and the home row's `🐍` both become it), the
     /// header's own triangle in the Unicode set (the surface that owns the
@@ -422,7 +464,7 @@ impl IconSet {
     /// Every glyph of this set, in vocabulary order --- so tests can walk
     /// the whole set without restating the method list by hand. Covers both
     /// vocabularies: the button glyphs and the pane/tab decorations.
-    pub fn glyphs(self) -> [&'static str; 26] {
+    pub fn glyphs(self) -> [&'static str; 29] {
         [
             self.play(),
             self.clean(),
@@ -449,6 +491,9 @@ impl IconSet {
             self.list(),
             self.screen(),
             self.prompt(),
+            self.directory(),
+            self.folder_open(),
+            self.file(),
             self.python(),
         ]
     }

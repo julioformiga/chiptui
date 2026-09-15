@@ -26,6 +26,7 @@ pub mod icons;
 pub mod install;
 pub mod logs;
 pub mod ota;
+pub mod path_picker;
 pub mod process;
 pub mod progress;
 pub mod project;

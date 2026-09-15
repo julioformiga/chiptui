@@ -611,16 +611,8 @@ pub(crate) fn overlay_popup(app: &App, overlay: &Overlay, frame: Rect) -> Rect {
             0 => (52, 4),
             len => (64, len as u16 + 2),
         },
-        Overlay::FirmwarePicker { .. } => {
-            let len = app
-                .flash
-                .as_ref()
-                .map(|flash| flash.firmware.len())
-                .unwrap_or(0);
-            match len {
-                0 => (52, 4),
-                len => (64, len as u16 + 2),
-            }
+        Overlay::FilePicker { .. } | Overlay::DirPicker { .. } => {
+            (super::path_picker::WIDTH, super::path_picker::HEIGHT)
         }
         Overlay::ThemePicker { .. } => (44, ThemeChoice::all().len() as u16 + 2),
         Overlay::RestoreDeviceScript { .. } => (64, RESTORE_CHOICES as u16 + 4),
@@ -669,7 +661,7 @@ pub(crate) fn overlay_popup(app: &App, overlay: &Overlay, frame: Rect) -> Rect {
         }
 
         // ---- fixed-shape modals ----------------------------------------
-        Overlay::DirPicker { .. } | Overlay::ProjectPicker { .. } => (72, 18),
+        Overlay::ProjectPicker { .. } => (72, 18),
         Overlay::SdkToolchains { .. } => (56, frame.height.saturating_sub(4)),
         Overlay::CreateEntry { .. } | Overlay::RenameEntry { .. } | Overlay::OtaAddress { .. } => {
             (54, 6)

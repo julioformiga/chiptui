@@ -498,12 +498,7 @@ impl App {
     /// that opened the offer --- the user is where they were, with the
     /// reason still on screen.
     pub(super) fn decline_install_offer(&mut self, dir: std::path::PathBuf, reason: String) {
-        self.overlay = Some(Overlay::DirPicker {
-            purpose: DirPurpose::Installation,
-            path: dir,
-            selected: 0,
-            error: Some(reason),
-        });
+        self.directory_picker_error(DirPurpose::Installation, dir, reason);
     }
 
     /// The step list, for tests and for the overlay's rows.

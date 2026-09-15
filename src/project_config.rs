@@ -129,6 +129,18 @@ pub enum RowKind {
 const BOOL_IDS: [&str; 2] = ["true", "false"];
 
 impl ProjectConfigRow {
+    pub fn picker_kind(self) -> Option<crate::path_picker::PickerKind> {
+        use crate::path_picker::{FileFilter, PickerKind};
+        match self {
+            Self::ZephyrWorkspace
+            | Self::ZephyrProjects
+            | Self::ZephyrSdk
+            | Self::ZephyrApp
+            | Self::MpyProjects => Some(PickerKind::Directory),
+            Self::ZephyrWest => Some(PickerKind::File(FileFilter::All)),
+            _ => None,
+        }
+    }
     /// The `[section] key` this row writes, or `None` for a heading or a
     /// report. An empty section is the file's top level.
     pub const fn slot(self) -> Option<(&'static str, &'static str)> {
@@ -739,6 +751,12 @@ impl ProjectConfigPanel {
             row,
             input: self.value(row).unwrap_or_default(),
         });
+    }
+
+    pub fn set_path(&mut self, row: ProjectConfigRow, path: &Path) {
+        if row.picker_kind().is_some() {
+            self.record(row, Some(path.to_string_lossy().into_owned()));
+        }
     }
 
     pub fn cancel_edit(&mut self) {

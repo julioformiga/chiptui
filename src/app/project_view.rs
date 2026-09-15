@@ -228,12 +228,11 @@ impl App {
     /// inside it is the other half of the answer.
     pub(super) fn accept_mpy_projects_dir(&mut self, dir: PathBuf) {
         if !dir.is_dir() {
-            self.overlay = Some(Overlay::DirPicker {
-                purpose: DirPurpose::MpyProjects,
-                path: dir,
-                selected: 0,
-                error: Some("the folder vanished — it existed when it was accepted".to_string()),
-            });
+            self.directory_picker_error(
+                DirPurpose::MpyProjects,
+                dir,
+                "the folder vanished — it existed when it was accepted".to_string(),
+            );
             return;
         }
         let target = self.user_config_path();

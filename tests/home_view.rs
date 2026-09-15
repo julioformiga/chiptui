@@ -466,7 +466,14 @@ fn creating_a_project_draws_the_folder_picker_then_the_name_prompt() {
         picker.contains("Where should the project folder go?"),
         "{picker}"
     );
-    assert!(picker.contains("put it in this directory"), "{picker}");
+    assert!(
+        picker.contains("use this directory"),
+        "the shared picker's accept row is drawn:\n{picker}"
+    );
+    assert!(
+        picker.contains("📂 .."),
+        "the default (unicode) icon set marks the parent row:\n{picker}"
+    );
 
     press(&mut screen, KeyCode::Enter); // accept the starting folder
     press(&mut screen, KeyCode::Char('x'));

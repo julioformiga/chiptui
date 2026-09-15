@@ -363,24 +363,6 @@ impl WorkspacePanel {
     }
 }
 
-/// One navigable row of the directory picker.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DirRow {
-    pub name: String,
-    pub path: PathBuf,
-    pub kind: DirRowKind,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DirRowKind {
-    /// Accepts the current directory as the chosen location.
-    Use,
-    /// Steps up to the parent.
-    Parent,
-    /// Descends into the named subdirectory.
-    Dir,
-}
-
 /// Which question the directory picker is answering. The navigation is one
 /// component; only the accept-path validation and the title differ --- a
 /// directory is an *installation* when `.west/` says so, a *projects
@@ -405,50 +387,10 @@ pub enum DirPurpose {
     /// workspace itself is created as `zephyr/` inside it (see
     /// [`crate::app::App::open_installer`]).
     Install,
-}
-
-/// The directory picker's rows for `path`: "use this directory" first (the
-/// target of a reflex `Enter` when the user has navigated to the right
-/// place), the parent when one exists, then every subdirectory sorted by
-/// name. A directory that cannot be read still lists the first rows and
-/// reports why, so navigation never dead-ends.
-pub fn dir_rows(path: &Path) -> (Vec<DirRow>, Option<String>) {
-    let mut rows = vec![DirRow {
-        name: "use this directory".to_string(),
-        path: path.to_path_buf(),
-        kind: DirRowKind::Use,
-    }];
-    if let Some(parent) = path.parent() {
-        rows.push(DirRow {
-            name: "..".to_string(),
-            path: parent.to_path_buf(),
-            kind: DirRowKind::Parent,
-        });
-    }
-    match std::fs::read_dir(path) {
-        Ok(entries) => {
-            let mut dirs: Vec<(String, PathBuf)> = entries
-                .flatten()
-                .filter(|entry| entry.path().is_dir())
-                .map(|entry| {
-                    (
-                        entry.file_name().to_string_lossy().into_owned(),
-                        entry.path(),
-                    )
-                })
-                .collect();
-            dirs.sort();
-            for (name, path) in dirs {
-                rows.push(DirRow {
-                    name,
-                    path,
-                    kind: DirRowKind::Dir,
-                });
-            }
-            (rows, None)
-        }
-        Err(err) => (rows, Some(format!("cannot read {}: {err}", path.display()))),
-    }
+    Config(crate::project_config::ProjectConfigRow),
+    Project {
+        mpy: bool,
+    },
 }
 
 #[cfg(test)]
@@ -658,33 +600,41 @@ mod tests {
 
     #[test]
     fn dir_rows_offer_use_parent_then_subdirectories_sorted() {
+        use crate::path_picker::{EntryKind, PathPicker, PickerKind};
         let tmp = std::env::temp_dir().join(format!("chiptui-dirs-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(tmp.join("beta")).unwrap();
         std::fs::create_dir_all(tmp.join("alpha")).unwrap();
         std::fs::write(tmp.join("file.txt"), b"").unwrap();
 
-        let (rows, error) = dir_rows(&tmp);
-        assert!(error.is_none());
+        let picker = PathPicker::new(PickerKind::Directory, tmp.clone(), &tmp);
+        let rows = picker.entries;
+        assert!(picker.error.is_none());
         let names: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
         assert_eq!(
             names,
             vec!["use this directory", "..", "alpha", "beta"],
             "files never list; directories sort"
         );
-        assert_eq!(rows[0].kind, DirRowKind::Use);
-        assert_eq!(rows[1].kind, DirRowKind::Parent);
+        assert_eq!(rows[0].kind, EntryKind::Use);
+        assert_eq!(rows[1].kind, EntryKind::Parent);
         assert_eq!(rows[2].path, tmp.join("alpha"));
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn an_unreadable_directory_still_navigates() {
-        let (rows, error) = dir_rows(Path::new("/nonexistent-no-such-dir"));
-        assert!(error.is_some(), "the read failure is reported");
+        use crate::path_picker::{EntryKind, PathPicker, PickerKind};
+        let picker = PathPicker::new(
+            PickerKind::Directory,
+            PathBuf::from("/nonexistent-no-such-dir"),
+            Path::new("/"),
+        );
+        let rows = picker.entries;
+        assert!(picker.error.is_some(), "the read failure is reported");
         assert_eq!(rows.len(), 2, "the 'use' row and the parent remain");
-        assert_eq!(rows[0].kind, DirRowKind::Use);
-        assert_eq!(rows[1].kind, DirRowKind::Parent);
+        assert_eq!(rows[0].kind, EntryKind::Use);
+        assert_eq!(rows[1].kind, EntryKind::Parent);
         assert_eq!(rows[1].path, Path::new("/"));
     }
 }

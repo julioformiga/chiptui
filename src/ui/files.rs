@@ -623,23 +623,43 @@ fn row_spans(
 /// ([`IconSet::python`](crate::icons::IconSet::python)), and a C-family
 /// file follows [`IconSet::c_lang`] the same way: the file list reads in
 /// the same vocabulary the header and the home rows do, instead of mixing
-/// an emoji logo into a nerd-rendered UI. Every other extension keeps its
-/// emoji in every set (none of them has a dedicated Nerd glyph in the
-/// project's vetted `custom-*`/seti range --- see [`IconSet::c_lang`]'s
-/// doc), and the `none` set never reaches here --- the whole column is
+/// an emoji logo into a nerd-rendered UI. Under Nerd every other
+/// extension takes the pickers' file mark ([`IconSet::file`]), so every
+/// glyph in the column is single-width and the marks line up; the
+/// per-extension emoji table is the Unicode set's rendering. The `none`
+/// set never reaches here --- the whole column is
 /// decoration and hides first (`shows_decorations`).
 ///
 /// Every emoji here is picked to be `Emoji_Presentation=Yes` on its own
 /// (never a dual-presentation symbol needing a variation selector to force
 /// width --- `⚙️`/`👁️`/`🗑️` used to be exactly that, and different
 /// terminals disagreed with `unicode-width` about their column count; see
-/// `row_spans`' doc). The kind glyph plus whether it draws a single cell
-/// wide --- true only for the Nerd set's language logos,
-/// [`icon_column`]'s caller-declared width rather than a guess from the
-/// codepoint.
+/// `row_spans`' doc). The parent row (`..`) is the one directory that
+/// reads differently: the opened folder --- the mark the path pickers
+/// give their own `..` row --- in the set's own rendering (`📂`, or the
+/// single-width `nf-fa-folder-open` under Nerd). The kind glyph plus
+/// whether it draws a single cell wide --- under the Nerd set *every*
+/// glyph here is single-width, which is the alignment this column buys ---
+/// [`icon_column`]'s caller-declared width rather than a
+/// guess from the codepoint.
 fn icon(name: &str, is_dir: bool, icons: crate::icons::IconSet) -> (&'static str, bool) {
     if is_dir {
-        return ("📁", false);
+        // The parent row is the way *up*, and reads as the opened folder
+        // --- the same mark the path pickers give their `..` row
+        // ([`IconSet::folder_open`]); every other directory keeps the
+        // closed one. Under the Nerd set both draw the pickers'
+        // single-width glyphs ([`IconSet::directory`]) instead of the
+        // emoji, so a nerd-rendered UI carries no emoji folders.
+        if name == ".." {
+            return match icons {
+                crate::icons::IconSet::Nerd => (icons.folder_open(), true),
+                _ => ("📂", false),
+            };
+        }
+        return match icons {
+            crate::icons::IconSet::Nerd => (icons.directory(), true),
+            _ => ("📁", false),
+        };
     }
     let ext = std::path::Path::new(name)
         .extension()
@@ -654,6 +674,13 @@ fn icon(name: &str, is_dir: bool, icons: crate::icons::IconSet) -> (&'static str
             crate::icons::IconSet::Nerd => (icons.c_lang(), true),
             _ => ("🔧", false),
         },
+        // Under the Nerd set every other extension follows the pickers'
+        // file mark: single-width like the folders beside it, so the
+        // *glyphs* --- not just the names --- line up. The per-extension
+        // emoji table below is the Unicode set's rendering (none of these
+        // has a dedicated Nerd glyph in the project's vetted
+        // `custom-*`/seti range --- see [`IconSet::c_lang`]'s doc).
+        _ if matches!(icons, crate::icons::IconSet::Nerd) => (icons.file(), true),
         Some("rs") => ("🦀", false),
         Some("dts" | "dtsi" | "overlay") => ("🔌", false),
         Some("md" | "rst") => ("📝", false),
@@ -768,9 +795,9 @@ mod tests {
     /// A `.py` row borrows the backend's own mark under the Nerd set ---
     /// the same Python logo the header and the home rows carry, single
     /// cell wide --- and a C-family row follows [`IconSet::c_lang`] the
-    /// same way, while every other extension keeps its two-cell emoji
-    /// there (neither has a dedicated Nerd glyph in the project's vetted
-    /// range).
+    /// same way. Every other extension takes the pickers' single-width
+    /// file mark there, so the whole column aligns; the emoji table is
+    /// the Unicode set's.
     #[test]
     fn a_py_or_c_file_follows_its_language_mark_under_the_nerd_set() {
         assert_eq!(
@@ -784,8 +811,21 @@ mod tests {
             "nf-custom-c"
         );
         assert_eq!(icon("device.h", false, IconSet::Nerd), ("\u{E61E}", true));
-        assert_eq!(icon("lib.rs", false, IconSet::Nerd), ("🦀", false));
-        assert_eq!(icon("firmware.bin", false, IconSet::Nerd), ("📄", false));
+        assert_eq!(
+            icon("lib.rs", false, IconSet::Nerd),
+            ("\u{F15B}", true),
+            "no dedicated Rust glyph in the vetted range: the pickers' nf-fa-file"
+        );
+        assert_eq!(
+            icon("firmware.bin", false, IconSet::Nerd),
+            ("\u{F15B}", true)
+        );
+        assert_eq!(icon("prj.conf", false, IconSet::Nerd), ("\u{F15B}", true));
+        assert_eq!(
+            icon("main.py", false, IconSet::Unicode),
+            ("🐍", false),
+            "the Unicode set keeps the emoji table"
+        );
     }
 
     #[test]
@@ -860,6 +900,99 @@ mod tests {
             palette,
         );
         assert_eq!(emoji[0].width(), 3, "the emoji column is three cells");
+    }
+
+    #[test]
+    fn the_parent_row_wears_the_open_folder_of_the_active_set() {
+        // The pickers' `..` mark, synced to every pane that draws a parent
+        // row: 📂 in the Unicode set, the single-width `nf-fa-folder-open`
+        // (padded into the same three cells) under Nerd, no column at all
+        // under `none`.
+        let palette = ratatui_themes::ThemeName::TokyoNight.palette();
+        let spans = row_spans(
+            "..",
+            true,
+            0,
+            None,
+            40,
+            crate::icons::IconSet::Unicode,
+            palette,
+        );
+        assert!(
+            spans[0].content.contains('📂'),
+            "unicode set: {:?}",
+            spans[0].content
+        );
+        assert_eq!(spans[0].width(), 3, "the emoji column is three cells");
+
+        let spans = row_spans(
+            "..",
+            true,
+            0,
+            None,
+            40,
+            crate::icons::IconSet::Nerd,
+            palette,
+        );
+        assert!(
+            spans[0].content.contains('\u{F07C}'),
+            "nerd set: {:?}",
+            spans[0].content
+        );
+        assert_eq!(
+            spans[0].width(),
+            3,
+            "the single-width mark pads into the fixed column: {:?}",
+            spans[0].content
+        );
+
+        let spans = row_spans(
+            "..",
+            true,
+            0,
+            None,
+            40,
+            crate::icons::IconSet::None,
+            palette,
+        );
+        assert!(
+            spans[0].content.starts_with(".."),
+            "the none set drops the column, name first: {:?}",
+            spans[0].content
+        );
+        // A plain directory keeps the closed folder: the emoji in the
+        // Unicode set, the pickers' single-width `nf-fa-folder` (padded
+        // into the same three cells) under Nerd.
+        let spans = row_spans(
+            "src",
+            true,
+            0,
+            None,
+            40,
+            crate::icons::IconSet::Unicode,
+            palette,
+        );
+        assert!(spans[0].content.contains('📁'), "{:?}", spans[0].content);
+        let spans = row_spans(
+            "src",
+            true,
+            0,
+            None,
+            40,
+            crate::icons::IconSet::Nerd,
+            palette,
+        );
+        assert!(
+            spans[0].content.contains('\u{F07B}'),
+            "nerd set: {:?}",
+            spans[0].content
+        );
+        assert_eq!(
+            spans[0].width(),
+            3,
+            "the single-width folder pads into the fixed column: {:?}",
+            spans[0].content
+        );
     }
 
     #[test]

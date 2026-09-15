@@ -95,6 +95,14 @@ impl App {
     /// not throw work away by reflex" rule --- except from the top-level
     /// menu, where there is nowhere closer to go.
     pub(super) fn on_flash_key(&mut self, key: KeyEvent) {
+        if key
+            .modifiers
+            .contains(ratatui::crossterm::event::KeyModifiers::CONTROL)
+            && key.code == KeyCode::Char('o')
+        {
+            self.open_firmware_picker();
+            return;
+        }
         let Some(screen) = self.flash.as_ref().map(|flash| flash.screen) else {
             return;
         };
@@ -163,6 +171,14 @@ impl App {
     /// pane's tabs) are handled one level up, with the dashboard dispatch:
     /// they switch from either side, row 3's rule.
     pub(super) fn on_flash_pane_key(&mut self, key: KeyEvent) {
+        if key
+            .modifiers
+            .contains(ratatui::crossterm::event::KeyModifiers::CONTROL)
+            && key.code == KeyCode::Char('o')
+        {
+            self.open_firmware_picker();
+            return;
+        }
         let Some(mut flash) = self.flash.take() else {
             return;
         };
@@ -497,7 +513,7 @@ impl App {
             return;
         }
 
-        if action.needs_firmware() && flash.selected_firmware.is_none() {
+        if action.needs_firmware() && flash.selected_firmware_path().is_none() {
             let notices = flash.discover_firmware();
             for (level, message) in notices {
                 self.logs.push(level, message);
@@ -522,8 +538,8 @@ impl App {
                     self.flash = Some(flash);
                 }
                 _ => {
-                    self.overlay = Some(Overlay::FirmwarePicker { selected: 0 });
                     self.flash = Some(flash);
+                    self.open_firmware_picker();
                 }
             }
             return;
@@ -1265,17 +1281,6 @@ impl App {
         }
     }
 
-    pub(super) fn apply_firmware_picker(&mut self, selected: usize) {
-        let Some(flash) = &mut self.flash else {
-            return;
-        };
-        if !flash.select_firmware(selected) {
-            return;
-        }
-        flash.screen = FlashScreen::Options;
-        flash.options_focus = OptionsField::Chip;
-    }
-
     /// An erase just succeeded and firmware discovery already ran
     /// (`FlashPanel::on_process`). Never flashes on its own --- that still
     /// needs its own confirmation --- only decides whether to ask which file
@@ -1298,7 +1303,7 @@ impl App {
                 self.view = View::Flash;
             }
             _ => {
-                self.overlay = Some(Overlay::FirmwarePicker { selected: 0 });
+                self.open_firmware_picker();
                 self.view = View::Flash;
             }
         }

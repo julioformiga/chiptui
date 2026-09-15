@@ -484,6 +484,18 @@ pub fn last_parent(config_dir: &Path, home: &Path) -> Option<PathBuf> {
     section_value(&text, "projects", "last_parent").map(|value| expand_home(&value, home))
 }
 
+/// Picker history is user state, separate from project configuration.
+pub fn picker_directory(config: &Path, key: &str, home: &Path) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(config).ok()?;
+    section_value(&text, "pickers", key)
+        .map(|value| expand_home(&value, home))
+        .filter(|path| path.is_dir())
+}
+
+pub fn save_picker_directory(config: &Path, key: &str, dir: &Path) -> std::io::Result<()> {
+    save_key(config, "pickers", key, &dir.to_string_lossy())
+}
+
 /// Reads `[ui] theme` from the user config: the raw slug (e.g.
 /// `"tokyo-night"`), unvalidated --- the caller turns it into a
 /// `ratatui_themes::ThemeName`, falling back to the default theme on an

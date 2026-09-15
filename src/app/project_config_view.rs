@@ -136,6 +136,13 @@ impl App {
         }
 
         match key.code {
+            KeyCode::Char('e')
+                if key
+                    .modifiers
+                    .contains(ratatui::crossterm::event::KeyModifiers::CONTROL) =>
+            {
+                panel.begin_edit()
+            }
             KeyCode::Esc => self.leave_project_config(),
             // The pickers' two-pane grammar: `Tab` hands the keyboard to
             // the details pane, whose arrows then scroll it --- the whole
@@ -170,6 +177,7 @@ impl App {
                 // the arrows already mean here.
                 None => panel.step(1),
                 Some(row) => match row.kind() {
+                    RowKind::Text if row.picker_kind().is_some() => self.open_config_path(row),
                     RowKind::Text => panel.begin_edit(),
                     RowKind::Choice(_) => panel.cycle(1),
                     _ => {}

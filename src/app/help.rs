@@ -12,7 +12,7 @@
 //! screen (see [`View`]) and narrows under a filter that is live from the
 //! first keystroke --- genuinely the board picker's grammar now, which the
 //! window used to claim while hiding its search behind `/`: the dashboard
-//! alone lists forty rows, so search is the way through them.
+//! alone lists forty-one rows, so search is the way through them.
 //!
 //! The descriptions are part of the data, not the rendering: each is
 //! summarized to fit its row on one line at the width the table needs (the
@@ -314,7 +314,20 @@ const DASHBOARD_NAVIGATION: [HelpBinding; 11] = [
     ),
 ];
 
-const DASHBOARD_COMMANDS: [HelpBinding; 29] = [
+const DASHBOARD_COMMANDS: [HelpBinding; 30] = [
+    ctrl(
+        "ctrl+o (actions tab)",
+        "choose a local firmware file",
+        KeyCode::Char('o'),
+        &[site(
+            "ctrl+o",
+            "firmware file",
+            20,
+            &[Focus::FilesDevice],
+            &[Capability::EraseFlash],
+            When::ActionsTab,
+        )],
+    ),
     action(
         "r",
         "re-detect, reload, or rename (file list)",
@@ -656,7 +669,20 @@ const FLASH_NAVIGATION: [HelpBinding; 3] = [
     binding("q / esc", "back one screen, then the dashboard"),
 ];
 
-const FLASH_COMMANDS: [HelpBinding; 7] = [
+const FLASH_COMMANDS: [HelpBinding; 8] = [
+    ctrl(
+        "ctrl+o",
+        "choose a local firmware file",
+        KeyCode::Char('o'),
+        &[site(
+            "ctrl+o",
+            "firmware file",
+            14,
+            ANY_FOCUS,
+            &[],
+            When::Always,
+        )],
+    ),
     // Help-only: activating the highlighted row is universal.
     action("enter", "run the selected action", KeyCode::Enter, &[]),
     // Help-only: cycling a field's value is what arrows do in a form.
@@ -773,8 +799,8 @@ mod tests {
             .map(|&section| bindings(View::Dashboard, section).len())
             .sum::<usize>();
         assert_eq!(
-            rows, 40,
-            "the docs say forty dashboard rows; update both of them \
+            rows, 41,
+            "the docs say forty-one dashboard rows; update both of them \
              (src/app/help.rs's header and Overlay::Help's) with this number"
         );
     }
@@ -1003,7 +1029,7 @@ mod tests {
         // Navigation and the way out stay in the help window; what remains
         // is the one action each screen offers that cannot be guessed,
         // plus the help tail that points at the rest.
-        for (screen, expected) in [
+        for (screen, mut expected) in [
             (
                 Some(FlashScreen::Menu),
                 vec![("s", "search online"), ("u", "paste URL"), ("?", "help")],
@@ -1022,6 +1048,7 @@ mod tests {
         ] {
             let mut context = ctx(zephyr(), Focus::Logs);
             context.flash_screen = screen;
+            expected.insert(expected.len() - 1, ("ctrl+o", "firmware file"));
             assert_eq!(footer(View::Flash, &context), expected, "screen {screen:?}");
         }
     }
@@ -1413,9 +1440,13 @@ impl App {
                 ("pgup/pgdn", "scroll the docs pane"),
                 ("F1", "help"),
             ],
-            Some(Overlay::DirPicker { .. }) => vec![("?", "help")],
+            Some(Overlay::DirPicker { .. } | Overlay::FilePicker { .. }) => {
+                vec![("ctrl+l", "path"), (".", "hidden (list)"), ("F1", "help")]
+            }
             Some(Overlay::BuildTarget { .. }) => vec![("F1", "help")],
-            Some(Overlay::ProjectPicker { .. }) => vec![("?", "help")],
+            Some(Overlay::ProjectPicker { .. }) => {
+                vec![("ctrl+o", "browse folders"), ("?", "help")]
+            }
             // Free text, so `?` filters rather than opens help --- and no
             // action can live on a plain letter for the same reason. The
             // footer names the gestures the field cannot teach.
@@ -1439,7 +1470,6 @@ impl App {
             Some(
                 Overlay::DevicePicker { .. }
                 | Overlay::ThemePicker { .. }
-                | Overlay::FirmwarePicker { .. }
                 | Overlay::FileActions { .. }
                 | Overlay::RestoreDeviceScript { .. }
                 | Overlay::FlashMethod { .. }

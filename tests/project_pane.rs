@@ -565,11 +565,11 @@ fn choosing_a_micropython_projects_folder_saves_and_chains_to_the_picker() {
     // folder --- and Enter opens its picker, which starts on "use this directory".
     enter_project_pane(&mut app);
     app.handle(key(KeyCode::Enter));
-    let Overlay::DirPicker { purpose, path, .. } = app.overlay.clone().unwrap() else {
+    let Overlay::DirPicker { purpose, picker } = app.overlay.clone().unwrap() else {
         panic!("the projects-folder question opens the directory picker");
     };
     assert_eq!(purpose, chiptui::workspace::DirPurpose::MpyProjects);
-    assert_eq!(path, home);
+    assert_eq!(picker.path, home);
 
     // Descend into mpy-apps (the first subdirectory sorts first), where
     // the reflex Enter accepts it.

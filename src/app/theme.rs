@@ -146,11 +146,23 @@ impl App {
         // It previews by being read from here rather than by changing the
         // session, so discarding restores it for free --- nothing was ever
         // committed to preview.
-        if matches!(self.overlay, Some(Overlay::ProjectConfig))
-            && let Some(icons) = self
-                .project_config
-                .as_ref()
-                .and_then(crate::project_config::ProjectConfigPanel::previewed_icons)
+        if matches!(
+            self.overlay,
+            Some(
+                Overlay::ProjectConfig
+                    | Overlay::DirPicker {
+                        purpose: crate::workspace::DirPurpose::Config(_),
+                        ..
+                    }
+                    | Overlay::FilePicker {
+                        purpose: super::path_picker_view::FilePurpose::Config(_),
+                        ..
+                    }
+            )
+        ) && let Some(icons) = self
+            .project_config
+            .as_ref()
+            .and_then(crate::project_config::ProjectConfigPanel::previewed_icons)
         {
             return icons;
         }
@@ -177,7 +189,17 @@ impl App {
             // the theme row, and --- since `Auto` follows the backend --- the
             // backend card the user is hovering, so picking a card repaints
             // the window in the colours that choice would bring.
-            Some(Overlay::ProjectConfig) => {
+            Some(
+                Overlay::ProjectConfig
+                | Overlay::DirPicker {
+                    purpose: crate::workspace::DirPurpose::Config(_),
+                    ..
+                }
+                | Overlay::FilePicker {
+                    purpose: super::path_picker_view::FilePurpose::Config(_),
+                    ..
+                },
+            ) => {
                 let panel = self.project_config.as_ref();
                 let backend = panel
                     .and_then(crate::project_config::ProjectConfigPanel::chosen)
