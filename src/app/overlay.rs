@@ -37,6 +37,24 @@ impl TargetPickerPurpose {
 }
 
 impl App {
+    /// Whether a picker overlay was opened from the project configuration
+    /// screen and so draws stacked on top of it (`ui::overlay`), rather
+    /// than replacing the view. The state side of the fact is
+    /// `picker_return` for the path pickers and the purpose for the
+    /// board/shield ones --- the same places that hand the configuration
+    /// window back when the picker closes.
+    pub(crate) fn picker_over_project_config(&self, overlay: &Overlay) -> bool {
+        match overlay {
+            Overlay::DirPicker { .. } | Overlay::FilePicker { .. } => {
+                self.picker_return.as_ref() == Some(&Overlay::ProjectConfig)
+            }
+            Overlay::BoardPicker { purpose, .. } | Overlay::ShieldPicker { purpose, .. } => {
+                matches!(purpose, TargetPickerPurpose::ProjectConfig(_))
+            }
+            _ => false,
+        }
+    }
+
     /// Shared key handling for every Yes/No confirm overlay
     /// (`Overlay::Confirm`, `ConfirmDownloadOverwrite`, `ConfirmUpload`,
     /// `ConfirmRestartDevice`, `ConfirmEraseForMicroPython`,

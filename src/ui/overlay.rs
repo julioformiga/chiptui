@@ -24,8 +24,21 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
     // mouse hit-testing (`app::mouse`) --- the numbers used to be written
     // out on both sides and drifted apart.
     let popup = super::layout::overlay_popup(app, &overlay, area);
+    // A picker opened from the project configuration screen stacks: the
+    // configuration window stays drawn underneath, the way it will be
+    // handed back when the picker closes. The state side lives on
+    // `picker_over_project_config`; the render cost is one extra in-memory
+    // redraw of a screen that is already redrawn every frame when it is
+    // open alone. Pickers opened anywhere else (workspace, install,
+    // project browse) replace the view as before.
+    let over_project_config = app.picker_over_project_config(&overlay);
+    if over_project_config {
+        super::project_config::draw(frame, area, app, palette);
+    }
     // Before anything is drawn: a two-cell glyph behind the popup's left
-    // edge would otherwise eat the border column (see the helper).
+    // edge would otherwise eat the border column (see the helper). Runs
+    // *after* the stacked screen above, so a glyph it draws behind the
+    // popup's edge cannot eat the border column either.
     super::clear_straddling_glyphs(frame.buffer_mut(), popup);
     match overlay {
         Overlay::Help { filter, selected } => {

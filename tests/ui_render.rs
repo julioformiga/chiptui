@@ -22,6 +22,7 @@ use chiptui::backend::BackendKind;
 use chiptui::backend::esptool::{ChipFamily, DeviceDetails};
 use chiptui::firmware_id::FirmwareVerdict;
 use chiptui::flash::FlashPanel;
+use chiptui::project_config::ProjectConfigRow;
 
 mod common;
 use common::{ctrl, key, render};
@@ -2419,4 +2420,91 @@ fn quitting_with_commands_running_asks_first() {
     assert!(app.should_quit(), "a second ctrl+c must always end it");
 
     app.processes.cancel_all();
+}
+
+/// Walks the configuration window's cursor to `row` (the same loop
+/// `tests/project_config.rs` drives, local so the render crate stays
+/// independent).
+fn go_to_config_row(app: &mut App, row: ProjectConfigRow) {
+    for _ in 0..40 {
+        let panel = app.project_config.as_ref().expect("the window is open");
+        if panel.selected() == Some(row) {
+            return;
+        }
+        app.handle(key(KeyCode::Down));
+    }
+    panic!("{row:?} is not a row of this window");
+}
+
+/// A picker opened from the project configuration screen stacks on top of
+/// it: the configuration window stays drawn underneath (and the way back
+/// --- `Esc`, or accepting a row --- was already handled by
+/// `picker_return`; only the drawing replaced the screen outright). The
+/// dir picker's popup is small, so the screen behind it shows whole; the
+/// dir picker's own footer hint is the marker proving the picker drew.
+#[test]
+fn a_dir_picker_opens_on_top_of_the_project_configuration_screen() {
+    let mut app = app_with_backend(BackendKind::Zephyr);
+    app.open_project_config(false);
+    go_to_config_row(&mut app, ProjectConfigRow::ZephyrSdk);
+    app.handle(key(KeyCode::Enter));
+    assert!(matches!(app.overlay, Some(Overlay::DirPicker { .. })));
+
+    let frame = render(&mut app, 100, 34);
+    assert!(
+        frame.contains("Project configuration"),
+        "the screen the picker answers from must stay drawn:\n{frame}"
+    );
+    assert!(
+        frame.contains(". hidden ·"),
+        "the dir picker itself must draw on top:\n{frame}"
+    );
+}
+
+/// The board picker from a target row stacks the same way: the
+/// configuration window's title row sits above the docs picker's popup
+/// (frame minus two rows), so it survives the wide modal on top.
+#[test]
+fn the_board_picker_opens_on_top_of_the_project_configuration_screen() {
+    let mut app = app_with_backend(BackendKind::Zephyr);
+    app.open_project_config(false);
+    go_to_config_row(&mut app, ProjectConfigRow::ZephyrBoard);
+    app.handle(key(KeyCode::Enter));
+    assert!(matches!(app.overlay, Some(Overlay::BoardPicker { .. })));
+
+    let frame = render(&mut app, 100, 40);
+    assert!(
+        frame.contains("Project configuration"),
+        "the screen the picker answers from must stay drawn:\n{frame}"
+    );
+    assert!(
+        frame.contains("Boards"),
+        "the board picker itself must draw on top:\n{frame}"
+    );
+}
+
+/// A dir picker opened anywhere else replaces the view as before: nothing
+/// of the configuration screen may leak underneath.
+#[test]
+fn a_dir_picker_outside_the_configuration_screen_draws_nothing_of_it() {
+    let mut app = app_with_backend(BackendKind::Zephyr);
+    let home = std::env::temp_dir();
+    app.overlay = Some(Overlay::DirPicker {
+        purpose: chiptui::workspace::DirPurpose::Installation,
+        picker: chiptui::path_picker::PathPicker::new(
+            chiptui::path_picker::PickerKind::Directory,
+            home.clone(),
+            &home,
+        ),
+    });
+
+    let frame = render(&mut app, 100, 34);
+    assert!(
+        frame.contains(". hidden ·"),
+        "the dir picker itself must draw:\n{frame}"
+    );
+    assert!(
+        !frame.contains("Project configuration"),
+        "no configuration screen under an unrelated picker:\n{frame}"
+    );
 }
