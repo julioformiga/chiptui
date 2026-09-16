@@ -914,7 +914,9 @@ one is being built is never guessed:
     survives the re-root, and the new project's own saved answers (below)
     are re-applied. The lifecycle buttons stay dimmed in the project panel
     until both answers exist --- the questions themselves are asked in
-    row 1's Project pane checklist, below `Projects base`.
+    row 1's Project pane checklist, below `Projects base`. With the cursor
+    parked on a dimmed button, the panel's state line names the answer
+    still missing, and the row to visit to answer it.
 
 For a root-as-project repository, the `chiptui.toml` that answers is the
 repository's own (the root is the project); an application folder's own

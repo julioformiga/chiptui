@@ -11,18 +11,18 @@
 //! Below 32 terminal rows, the buttons and footer each take one line
 //! (`button::ActionLayout`); the state and Stop still share the footer.
 
-use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
+use ratatui::Frame;
 
 use super::button::{self, Button};
 use super::workspace::label;
 use crate::app::{App, Focus};
 use crate::build::{BuildPanel, BuildReport};
 use crate::ui::{
-    Palette, dashboard_focused, numbered_title, pane_block, render_pane, shortcut_letter,
+    dashboard_focused, numbered_title, pane_block, render_pane, shortcut_letter, Palette,
 };
 
 pub fn draw(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
@@ -35,7 +35,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
     let inner = render_pane(frame, area, block, focused, palette);
 
     let footer_top = draw_rows(frame, inner, app, panel, palette);
-    draw_state(frame, inner, panel, footer_top, palette);
+    draw_state(frame, inner, app, panel, footer_top, palette);
 }
 
 /// The command state: the live counter while a command runs, the last
@@ -44,9 +44,12 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
 /// whether or not the `Stop` box is showing --- beside the box, on the
 /// left half, while one runs; full-width over the empty reservation
 /// otherwise. Nothing in the pane moves when a command starts or ends.
+/// Idle with the cursor on a dimmed lifecycle button, the line becomes
+/// the reason the row waits --- see [`gate_reason`].
 fn draw_state(
     frame: &mut Frame,
     area: Rect,
+    app: &App,
     panel: &BuildPanel,
     footer_top: u16,
     palette: Palette,
@@ -83,6 +86,8 @@ fn draw_state(
             None => format!("{name} · {}", BuildPanel::secs(elapsed)),
         };
         Line::from(vec![label("state", palette), text.fg(palette.accent)])
+    } else if let Some(reason) = gate_reason(app, panel) {
+        Line::from(vec![label("state", palette), reason.fg(palette.warning)])
     } else if let Some(report) = &panel.last {
         report_line(report, palette, width)
     } else {
@@ -98,6 +103,45 @@ fn draw_state(
         ..area
     };
     frame.render_widget(Paragraph::new(line), rect);
+}
+
+/// Why the lifecycle button under the cursor cannot run, when the cursor
+/// rests on one: a dimmed row says only *that* it waits, and the state
+/// line --- otherwise the report's or `never built`'s --- is where the
+/// missing checklist answer is named. `None` when the cursor sits on an
+/// enabled row or on one of the always-enabled environment rows: the
+/// line then keeps its own content. The busy dimming never reaches here
+/// (the running branch owns the line while a command runs), and the
+/// reason outranks a finished report because it is the one thing on the
+/// pane that blocks the user right now --- a report is history the
+/// Monitor tab also keeps.
+fn gate_reason(app: &App, panel: &BuildPanel) -> Option<&'static str> {
+    let caps = app.manager.capabilities();
+    let action = panel.action_at(&caps, panel.cursor)?;
+    if app.build_action_enabled(action) {
+        return None;
+    }
+    match action {
+        crate::build::BuildAction::Build(_)
+        | crate::build::BuildAction::Flash
+        | crate::build::BuildAction::Menuconfig => {
+            // Same questions `lifecycle_ready` asks, split so the line
+            // names the one still open: which of the two rows to visit
+            // is the whole point of saying anything.
+            if !app.project_gate_ok() {
+                Some("no buildable project --- answer the Project path row")
+            } else if panel.board.is_none() {
+                Some("no board yet --- pick one on the Board row")
+            } else {
+                None
+            }
+        }
+        // The environment row disables through an unresolved workspace, not
+        // a checklist answer --- the pane's two rows cannot fix that one,
+        // so it keeps the ordinary line (its own reason lives where the
+        // answer does, in the workspace pane).
+        _ => None,
+    }
 }
 
 fn report_line(report: &BuildReport, palette: Palette, width: u16) -> Line<'static> {

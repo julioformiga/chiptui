@@ -170,15 +170,14 @@ fn enter_builds_and_streams_into_the_monitor_tab() {
     // The build directory exists in the fixture, so the command is the
     // incremental `west build` --- no `-b`, the cache already carries it.
     // (The tool path leads the line: the override pointing at the fake.)
-    assert!(
-        app.build
-            .as_ref()
-            .unwrap()
-            .output
-            .front()
-            .unwrap()
-            .ends_with("west build")
-    );
+    assert!(app
+        .build
+        .as_ref()
+        .unwrap()
+        .output
+        .front()
+        .unwrap()
+        .ends_with("west build"));
 
     let finished = pump_until(
         &mut app,
@@ -287,15 +286,14 @@ fn clean_asks_before_running() {
         Some(chiptui::build::BuildAction::Build(BuildKind::Build)),
         "a running clean parks the cursor on Build"
     );
-    assert!(
-        app.build
-            .as_ref()
-            .unwrap()
-            .output
-            .front()
-            .unwrap()
-            .ends_with("west build -t clean")
-    );
+    assert!(app
+        .build
+        .as_ref()
+        .unwrap()
+        .output
+        .front()
+        .unwrap()
+        .ends_with("west build -t clean"));
 
     // Declining leaves nothing running.
     let mut app2 = app_with_west("clean-decline", "west");
@@ -318,15 +316,14 @@ fn rebuild_is_pristine_and_pins_the_cached_board() {
         app.build.as_ref().unwrap().is_busy(),
         "rebuild is not destructive: no confirm, straight to running"
     );
-    assert!(
-        app.build
-            .as_ref()
-            .unwrap()
-            .output
-            .front()
-            .unwrap()
-            .ends_with("west build --pristine=always -b nrf52840dk/nrf52840")
-    );
+    assert!(app
+        .build
+        .as_ref()
+        .unwrap()
+        .output
+        .front()
+        .unwrap()
+        .ends_with("west build --pristine=always -b nrf52840dk/nrf52840"));
     let _ = pump_until(
         &mut app,
         |app| app.build.as_ref().unwrap().last.is_some(),
@@ -1474,15 +1471,14 @@ fn flash_is_listed_confirms_and_runs_through_west() {
     app.handle(key(KeyCode::Char('y')));
     assert!(app.build.as_ref().unwrap().is_busy());
     assert_eq!(app.monitor_source, MonitorSource::Build);
-    assert!(
-        app.build
-            .as_ref()
-            .unwrap()
-            .output
-            .front()
-            .unwrap()
-            .ends_with("west flash")
-    );
+    assert!(app
+        .build
+        .as_ref()
+        .unwrap()
+        .output
+        .front()
+        .unwrap()
+        .ends_with("west flash"));
 
     let finished = pump_until(
         &mut app,
@@ -1588,14 +1584,13 @@ fn the_workspace_pane_resolves_from_project_config_and_runs_update() {
     );
     // The venv's west is what every command runs, and the environment says
     // which workspace it belongs to.
-    assert!(
-        app.build
-            .as_ref()
-            .unwrap()
-            .tool_path()
-            .unwrap()
-            .starts_with(ws.join(".venv/bin/west").to_str().unwrap())
-    );
+    assert!(app
+        .build
+        .as_ref()
+        .unwrap()
+        .tool_path()
+        .unwrap()
+        .starts_with(ws.join(".venv/bin/west").to_str().unwrap()));
 
     let frame = render(&mut app, 100, 32);
     assert!(frame.contains("Files"), "the pane renders:\n{frame}");
@@ -1951,14 +1946,13 @@ fn startup_asks_where_the_installation_is_when_nothing_is_configured() {
     // build panel's commands point at the venv's west.
     let panel = app.workspace.as_ref().unwrap();
     assert_eq!(panel.dir(), Some(&ws));
-    assert!(
-        app.build
-            .as_ref()
-            .unwrap()
-            .tool_path()
-            .unwrap()
-            .starts_with(ws.join(".venv/bin/west").to_str().unwrap())
-    );
+    assert!(app
+        .build
+        .as_ref()
+        .unwrap()
+        .tool_path()
+        .unwrap()
+        .starts_with(ws.join(".venv/bin/west").to_str().unwrap()));
 }
 
 #[test]
@@ -2502,5 +2496,59 @@ fn the_wheel_steps_the_listing_under_the_pointer_without_taking_focus() {
         app.focus,
         Focus::Logs,
         "the checklist wheel never focuses the pane either"
+    );
+}
+
+#[test]
+fn the_state_line_names_the_missing_board_under_a_dimmed_lifecycle_button() {
+    // The buttons dim for two checklist answers, and dimming alone says
+    // only *that* they wait. With the cursor parked on one, the reserved
+    // state line becomes the reason --- naming the Board row the cursor
+    // must visit. (140 columns: the reason must survive whole, the way
+    // the width tests below pin for the other states.)
+    let (mut app, _root) = zephyr_app("gate-board", None);
+    app.focus = Focus::Build;
+    cursor_on(&mut app, BuildAction::Menuconfig);
+    let frame = render(&mut app, 140, 32);
+    let state = frame
+        .lines()
+        .find(|line| line.contains("state "))
+        .unwrap_or_else(|| panic!("no state line:\n{frame}"));
+    assert!(
+        state.contains("no board yet --- pick one on the Board row"),
+        "the state line must say the board is what is missing:\n{state}"
+    );
+
+    // The reason belongs to the dimmed row, not to the pane: on an enabled
+    // row the line falls back to its ordinary content.
+    cursor_on(&mut app, BuildAction::InstallZephyr);
+    let frame = render(&mut app, 140, 32);
+    let state = frame
+        .lines()
+        .find(|line| line.contains("state "))
+        .unwrap_or_else(|| panic!("no state line:\n{frame}"));
+    assert!(
+        state.contains("never built"),
+        "an enabled row keeps the ordinary state line:\n{state}"
+    );
+}
+
+#[test]
+fn the_state_line_names_the_missing_project_when_the_root_has_no_application() {
+    // The gate asks two questions, so the reason must say which one still
+    // waits: here the board exists (the fixture's cache) and the project
+    // answer is the one that went away.
+    let (mut app, root) = zephyr_app("gate-project", Some("nrf52840dk/nrf52840"));
+    std::fs::remove_file(root.join("CMakeLists.txt")).unwrap();
+    app.focus = Focus::Build;
+    cursor_on(&mut app, BuildAction::Build(BuildKind::Build));
+    let frame = render(&mut app, 140, 32);
+    let state = frame
+        .lines()
+        .find(|line| line.contains("state "))
+        .unwrap_or_else(|| panic!("no state line:\n{frame}"));
+    assert!(
+        state.contains("no buildable project --- answer the Project path row"),
+        "the state line must name the project answer, not the board:\n{state}"
     );
 }
