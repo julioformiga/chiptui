@@ -194,6 +194,12 @@ fn project_loop(
     // application already selected --- entering from the project folder is
     // itself the answer, one `Enter` short of applied.
     app.maybe_open_entry_project();
+    // A directory the registry/config already names as Zephyr never applies
+    // a backend change in the configuration screen. Once board discovery
+    // has had its startup turn, ask for the still-missing project layout.
+    // An earlier question keeps the overlay slot and queues this at its own
+    // completion point instead.
+    app.maybe_offer_starting_layout();
 
     event_loop(&mut app, guard, events)?;
     Ok(app.take_switch_request())

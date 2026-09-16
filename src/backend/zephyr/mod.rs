@@ -10,6 +10,7 @@ pub mod flash_method;
 pub mod flash_plan;
 pub mod projects;
 pub mod report;
+pub mod samples;
 pub mod variants;
 pub mod workspace;
 pub mod yaml;

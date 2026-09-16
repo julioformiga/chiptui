@@ -327,7 +327,41 @@ MicroPython starts with `src/` for the sources kept in sync with the device
 files (§9's discovery and download saves into it), and the two entry points
 the board runs by name (`boot.py`, `main.py`). Zephyr starts with the three
 files `west build` requires: a `CMakeLists.txt` calling `find_package(Zephyr)`,
-an empty `prj.conf`, and `src/main.c`.
+an empty `prj.conf`, and `src/main.c` --- unless the resolved workspace has
+samples to offer.
+
+A Zephyr checkout carries hundreds of ready applications under
+`<zephyr_base>/samples/`, each `west build`-ready, and one of them is often
+the better starting point for a project that exists to study a subsystem.
+So when the backend answer just applied was Zephyr's and the directory was
+empty, the layout question is asked rather than answered: a filterable
+picker lists every sample (a directory is a sample by the build's own bar
+--- a `CMakeLists.txt` calling `find_package(Zephyr)`), led by the fixed
+`Minimal application` row that is the three files above. Selecting that row
+and pressing `Enter` explicitly applies it; `Esc` cancels the question
+without writing a layout. Picking a sample copies its whole tree (README, `tests.yaml` and board fragments
+included, `build*` output left behind), keeps its own `project()` name, and
+overwrites nothing already there. The apply's review names the coming
+question instead of listing files it may not write, and a workspace that is
+unconfigured, invalid or sample-less falls back to the minimal layout with
+a log line saying why --- the picker needs the local checkout, so it is
+never a question a fresh machine cannot answer.
+
+The same layout question is still owed when the registry or an existing
+`chiptui.toml` already identifies an otherwise-empty directory as Zephyr:
+startup offers the samples after its board scan (and after the workspace
+answer, when one was needed). `chiptui.toml` is metadata for this purpose,
+not a project layout by itself.
+
+The sample picker shows each sample as a folder row using the configured
+`[ui] icons` rendering. Its right-hand description pane reads the sample's
+`README.rst`, falling back to `README.md` and then `README.txt`, and removes
+common reStructuredText/Markdown presentation marks for terminal display.
+`Tab` switches focus between the sample list and this pane; list movement
+resets the description to its top, while arrows and page keys scroll it when
+the description has focus. `Enter` is required to apply either the selected
+sample or the explicit `Minimal application` row; `Esc` cancels the question
+without creating any project files.
 
 This is how a brand-new, otherwise-empty project directory gets a working
 backend: the user is not required to create marker files like `boot.py` or

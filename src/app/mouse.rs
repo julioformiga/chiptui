@@ -909,6 +909,27 @@ impl App {
                     self.set_overlay_selected(index);
                 }
             }
+            Overlay::SamplePicker {
+                input,
+                samples,
+                ..
+            } => {
+                // A click on the README pane hands it the keyboard; a click
+                // on the list takes focus back and selects its row.
+                let areas = layout::sample_picker(frame);
+                if contains(areas.details, point) {
+                    self.set_docs_picker_focus(DocsFocus::Details);
+                    return;
+                }
+                if !contains(areas.list, point) {
+                    return;
+                }
+                let len = crate::backend::zephyr::samples::filtered(samples, input).len() + 1;
+                self.set_docs_picker_focus(DocsFocus::List);
+                if let Some(index) = sample_list_row(frame, point, self.docs_list_offset, len) {
+                    self.set_overlay_selected(index);
+                }
+            }
             Overlay::BuildTarget { .. } => {
                 // A stacked-button menu, drawn the way `ZephyrActions` is:
                 // the click presses the button its row belongs to, through
@@ -1113,6 +1134,51 @@ impl App {
             );
             if contains(crate::ui::path_picker::areas(popup)[2], point) && !picker.help {
                 picker.step(direction);
+            }
+            return;
+        }
+        // The sample picker follows the docs pickers: the list wheel moves
+        // its cursor, while the README wheel scrolls its text without
+        // changing focus.
+        if matches!(self.overlay, Some(Overlay::SamplePicker { .. })) {
+            let action = match self.overlay.as_ref() {
+                Some(Overlay::SamplePicker {
+                    input,
+                    selected,
+                    scroll,
+                    samples,
+                    ..
+                }) => {
+                    let areas = layout::sample_picker(frame);
+                    let len = crate::backend::zephyr::samples::filtered(samples, input).len() + 1;
+                    if contains(areas.list, point) {
+                        Some((
+                            Some((*selected as isize + direction).clamp(0, len as isize - 1)
+                                as usize),
+                            None,
+                        ))
+                    } else if contains(areas.details, point) {
+                        let moved = if direction < 0 {
+                            scroll.saturating_sub(1)
+                        } else {
+                            scroll.saturating_add(1)
+                        };
+                        Some((None, Some(moved)))
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            };
+            if let Some((selection, details)) = action {
+                if let Some(moved) = selection {
+                    self.set_overlay_selected(moved);
+                }
+                if let Some(moved) = details
+                    && let Some(Overlay::SamplePicker { scroll, .. }) = &mut self.overlay
+                {
+                    *scroll = moved;
+                }
             }
             return;
         }
@@ -1354,6 +1420,7 @@ impl App {
             | Overlay::RestoreDeviceScript { selected, .. }
             | Overlay::FileActions { selected, .. }
             | Overlay::ProjectPicker { selected, .. }
+            | Overlay::SamplePicker { selected, .. }
             | Overlay::BuildTarget { selected, .. }
             | Overlay::BoardPicker { selected, .. }
             | Overlay::ShieldPicker { selected, .. }
@@ -1373,7 +1440,8 @@ impl App {
     fn set_docs_picker_focus(&mut self, focus: DocsFocus) {
         if let Some(
             Overlay::BoardPicker { focus: picker, .. }
-            | Overlay::ShieldPicker { focus: picker, .. },
+            | Overlay::ShieldPicker { focus: picker, .. }
+            | Overlay::SamplePicker { focus: picker, .. },
         ) = &mut self.overlay
         {
             *picker = focus;
@@ -1389,6 +1457,9 @@ impl App {
                 selected, scroll, ..
             }
             | Overlay::ShieldPicker {
+                selected, scroll, ..
+            }
+            | Overlay::SamplePicker {
                 selected, scroll, ..
             },
         ) = &mut self.overlay
@@ -1642,6 +1713,26 @@ fn docs_list_row(area: Rect, point: (u16, u16), offset: usize, len: usize) -> Op
         x: pane.x + 1,
         y: pane.y + 1,
         width: pane.width.saturating_sub(2),
+        height: pane.height.saturating_sub(2),
+    };
+    if !contains(inner, point) || inner.height == 0 {
+        return None;
+    }
+    let index = offset + (point.1 - inner.y) as usize;
+    (index < len).then_some(index)
+}
+
+/// Maps a click onto a row in the sample picker's bordered list, reserving
+/// the scrollbar column exactly as the renderer does.
+fn sample_list_row(area: Rect, point: (u16, u16), offset: usize, len: usize) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    let pane = layout::sample_picker(area).list;
+    let inner = Rect {
+        x: pane.x + 1,
+        y: pane.y + 1,
+        width: pane.width.saturating_sub(3),
         height: pane.height.saturating_sub(2),
     };
     if !contains(inner, point) || inner.height == 0 {
@@ -2521,6 +2612,80 @@ mod tests {
         assert!(
             app.overlay.is_none(),
             "a click outside the docs picker must close it, like Esc"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The sample picker's grammar is the pickers' own: a click on a drawn
+    /// row selects it (`Enter` stays the activation), a wheel notch over
+    /// the list walks the cursor clamped, and a click clear of the dialog
+    /// is `Esc` --- which here cancels the starting-layout question without
+    /// writing the minimal layout or a sample.
+    #[test]
+    fn the_sample_picker_selects_by_click_and_cancels_outside_without_layout() {
+        let sample = |rel: &str| {
+            crate::backend::zephyr::samples::Sample::new(
+                rel,
+                std::path::PathBuf::from(format!("/ws/zephyr/samples/{rel}")),
+            )
+        };
+        let root = project_dir("samplepicker", 0);
+        let mut app = app_with_backend(BackendKind::Zephyr, &root);
+        // The window the picker's answer hands back (the real flow pairs
+        // them: the picker opens out of the configuration screen's apply).
+        app.open_project_config(false);
+        app.overlay = Some(Overlay::SamplePicker {
+            input: String::new(),
+            selected: 0,
+            scroll: 0,
+            focus: DocsFocus::List,
+            samples: vec![sample("basic/blinky"), sample("hello_world")],
+        });
+        let lines = render(&mut app, 100, 40);
+        let row = lines
+            .iter()
+            .position(|line| line.contains("hello_world"))
+            .expect("a sample row is drawn") as u16;
+        let col = column_of(&lines[row as usize], "hello_world").unwrap();
+
+        // The click selects the drawn row and activates nothing.
+        click(&mut app, col, row);
+        assert!(
+            matches!(
+                &app.overlay,
+                Some(Overlay::SamplePicker { selected: 2, .. })
+            ),
+            "the click selected the drawn row, nothing more: {:?}",
+            app.overlay
+        );
+        assert!(
+            !root.join("src/main.c").exists(),
+            "selecting writes no layout"
+        );
+
+        // The wheel walks the cursor one row per notch, clamped at the
+        // ends (the arrows wrap; a wheel that wraps feels like a bug).
+        wheel(&mut app, -1, col, row);
+        wheel(&mut app, -1, col, row);
+        assert!(
+            matches!(
+                &app.overlay,
+                Some(Overlay::SamplePicker { selected: 0, .. })
+            ),
+            "clamped at the top"
+        );
+
+        // A click beside the dialog cancels it the way `Esc` does: no layout
+        // lands, and the configuration window is handed back.
+        click(&mut app, OUTSIDE.0, OUTSIDE.1);
+        assert_eq!(
+            app.overlay,
+            Some(Overlay::ProjectConfig),
+            "the picker's answer hands the configuration window back"
+        );
+        assert!(
+            !root.join("src/main.c").exists(),
+            "cancelling the picker writes no layout"
         );
         let _ = std::fs::remove_dir_all(&root);
     }

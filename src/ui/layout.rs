@@ -272,6 +272,48 @@ pub(crate) fn docs_picker(area: Rect) -> DocsPickerAreas {
     }
 }
 
+/// The sample picker's filter, list and README pane. It uses the same wide
+/// modal envelope as the documentation pickers, but its body is a simple
+/// two-column split: choices on the left, local sample documentation on the
+/// right.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SamplePickerAreas {
+    pub(crate) popup: Rect,
+    pub(crate) filter: Rect,
+    pub(crate) list: Rect,
+    pub(crate) details: Rect,
+    pub(crate) footer: Rect,
+}
+
+pub(crate) fn sample_picker(area: Rect) -> SamplePickerAreas {
+    let popup = super::centered(
+        area,
+        area.width.saturating_sub(2),
+        area.height.saturating_sub(4),
+    );
+    let inner = Rect {
+        x: popup.x + 1,
+        y: popup.y + 1,
+        width: popup.width.saturating_sub(2),
+        height: popup.height.saturating_sub(2),
+    };
+    let [filter, body, footer] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(1),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
+    let [list, details] =
+        Layout::horizontal([Constraint::Percentage(45), Constraint::Min(1)]).areas(body);
+    SamplePickerAreas {
+        popup,
+        filter,
+        list,
+        details,
+        footer,
+    }
+}
+
 /// The rect the two **wide modals** --- the Zephyr installer and the OTA
 /// panel --- fill: one column of margin per side, one row above and below.
 ///
@@ -663,6 +705,7 @@ pub(crate) fn overlay_popup(app: &App, overlay: &Overlay, frame: Rect) -> Rect {
 
         // ---- fixed-shape modals ----------------------------------------
         Overlay::ProjectPicker { .. } => (72, 18),
+        Overlay::SamplePicker { .. } => return sample_picker(frame).popup,
         Overlay::SdkToolchains { .. } => (56, frame.height.saturating_sub(4)),
         Overlay::CreateEntry { .. } | Overlay::RenameEntry { .. } | Overlay::OtaAddress { .. } => {
             (54, 6)

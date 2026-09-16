@@ -51,9 +51,11 @@ pub fn route(start: &Path, backends: &BackendRegistry, known: &ProjectRegistry) 
     }
 }
 
-/// Whether `dir` holds nothing the user put there. Hidden entries do not
-/// count: a freshly `git init`-ed directory is still an empty project, and
-/// so is one carrying an editor's dotfile.
+/// Whether `dir` holds no project layout yet. Hidden entries do not count:
+/// a freshly `git init`-ed directory is still an empty project, and so is
+/// one carrying an editor's dotfile. Neither does `chiptui.toml`: it records
+/// the backend/environment answer, but a directory containing only that
+/// answer still needs the starting files the answer selected.
 ///
 /// Shared with `App::apply_project_type`, which scaffolds a backend's
 /// starting layout only into such a directory: writing `CMakeLists.txt` into
@@ -62,9 +64,11 @@ pub(crate) fn is_empty_dir(dir: &Path) -> bool {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return false;
     };
-    !entries
-        .flatten()
-        .any(|entry| !entry.file_name().to_string_lossy().starts_with('.'))
+    !entries.flatten().any(|entry| {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        !name.starts_with('.') && name != crate::project::config::FILE_NAME
+    })
 }
 
 #[cfg(test)]
@@ -199,6 +203,22 @@ mod tests {
         let route = route_for(&dir, &ProjectRegistry::default());
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(route, Route::Open(dir));
+    }
+
+    #[test]
+    fn project_config_alone_is_not_a_layout() {
+        let dir = temp_dir("config-only");
+        std::fs::write(
+            dir.join(crate::project::config::FILE_NAME),
+            "project_type = \"zephyr\"\n",
+        )
+        .unwrap();
+
+        assert!(is_empty_dir(&dir));
+
+        std::fs::write(dir.join("CMakeLists.txt"), "# an actual project file\n").unwrap();
+        assert!(!is_empty_dir(&dir));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

@@ -206,6 +206,7 @@ impl App {
                     KeyCode::Enter => {
                         self.apply_device_picker(selected);
                         self.overlay = None;
+                        self.maybe_offer_starting_layout();
                     }
                     _ => {}
                 }
@@ -649,6 +650,110 @@ impl App {
                     KeyCode::Enter if mpy => self.apply_mpy_project_picker(selected),
                     KeyCode::Enter => self.apply_project_picker(selected, dir.clone()),
                     _ => rebuild(self, selected, error),
+                }
+            }
+            Overlay::SamplePicker {
+                input,
+                selected,
+                scroll,
+                focus,
+                samples,
+            } => {
+                // The cursor walks the *filtered* list plus its fixed row
+                // 0, so a filter change re-clamps `selected` the way the
+                // board picker's does. Row 0 is the minimal application:
+                // what a filter that hides every sample still offers. It is
+                // only written after the user selects it and presses Enter.
+                let count = crate::backend::zephyr::samples::filtered(&samples, &input).len() + 1;
+                // `samples` is an argument rather than a capture, so the
+                // `Enter` arm can still read it for the pick.
+                let rebuild =
+                    |app: &mut Self,
+                     input: String,
+                     mut selected: usize,
+                     samples: Vec<crate::backend::zephyr::samples::Sample>| {
+                        let count =
+                            crate::backend::zephyr::samples::filtered(&samples, &input).len() + 1;
+                        selected = selected.min(count.saturating_sub(1));
+                        app.overlay = Some(Overlay::SamplePicker {
+                            input,
+                            selected,
+                            scroll: 0,
+                            focus,
+                            samples,
+                        });
+                    };
+                match key.code {
+                    KeyCode::Esc => {
+                        self.overlay = None;
+                        self.cancel_sample_picker();
+                    }
+                    KeyCode::Backspace => {
+                        let mut input = input;
+                        input.pop();
+                        self.docs_list_offset = 0;
+                        rebuild(self, input, selected, samples);
+                    }
+                    KeyCode::Char(c) => {
+                        let mut input = input;
+                        input.push(c);
+                        self.docs_list_offset = 0;
+                        rebuild(self, input, selected, samples);
+                    }
+                    KeyCode::Up | KeyCode::Down if focus == DocsFocus::Details => {
+                        let scroll = if key.code == KeyCode::Up {
+                            scroll.saturating_sub(1)
+                        } else {
+                            scroll.saturating_add(1)
+                        };
+                        self.overlay = Some(Overlay::SamplePicker {
+                            input,
+                            selected,
+                            scroll,
+                            focus,
+                            samples,
+                        });
+                    }
+                    KeyCode::Up => rebuild(self, input, (selected + count - 1) % count, samples),
+                    KeyCode::Down => rebuild(self, input, (selected + 1) % count, samples),
+                    KeyCode::Home => rebuild(self, input, 0, samples),
+                    KeyCode::End => rebuild(self, input, count - 1, samples),
+                    KeyCode::Tab => {
+                        self.overlay = Some(Overlay::SamplePicker {
+                            input,
+                            selected,
+                            scroll,
+                            focus: focus.toggled(),
+                            samples,
+                        });
+                    }
+                    KeyCode::PageUp | KeyCode::PageDown => {
+                        let page = self.docs_viewport.max(1) as u16;
+                        let scroll = if key.code == KeyCode::PageUp {
+                            scroll.saturating_sub(page)
+                        } else {
+                            scroll.saturating_add(page)
+                        };
+                        self.overlay = Some(Overlay::SamplePicker {
+                            input,
+                            selected,
+                            scroll,
+                            focus,
+                            samples,
+                        });
+                    }
+                    KeyCode::Enter => {
+                        let pick = if selected == 0 {
+                            None
+                        } else {
+                            crate::backend::zephyr::samples::filtered(&samples, &input)
+                                .get(selected - 1)
+                                .map(|sample| (*sample).clone())
+                        };
+                        self.overlay = None;
+                        self.apply_sample_pick(pick);
+                    }
+                    _ => {}
                 }
             }
             Overlay::BuildTarget { kind, selected } => {
@@ -1148,6 +1253,7 @@ fn is_help_reachable_overlay(overlay: &Overlay) -> bool {
         | Overlay::OtaTransport { .. }
         | Overlay::BoardPicker { .. }
         | Overlay::ShieldPicker { .. }
+        | Overlay::SamplePicker { .. }
         | Overlay::Packages
         | Overlay::ProjectConfig
         | Overlay::BuildDashboard => true,
@@ -1195,6 +1301,7 @@ fn is_text_entry_overlay(overlay: &Overlay) -> bool {
         | Overlay::OtaAddress { .. }
         | Overlay::BoardPicker { .. }
         | Overlay::ShieldPicker { .. }
+        | Overlay::SamplePicker { .. }
         | Overlay::Packages
         | Overlay::ProjectConfig
         | Overlay::BuildDashboard => true,
@@ -1379,6 +1486,25 @@ pub enum Overlay {
         dir: Option<std::path::PathBuf>,
         selected: usize,
         error: Option<String>,
+    },
+    /// A brand-new Zephyr project's starting layout (`SPEC.md` §7): the
+    /// resolved workspace's `samples/` tree, listed right after the backend
+    /// answer is applied to an empty directory. Row 0 is always the minimal
+    /// application --- the three files `west build` needs, and the answer
+    /// `Esc` picks, so leaving the window never strands the directory
+    /// empty. `input` is the live filter over the samples' relative paths;
+    /// `scroll` and `focus` drive the README pane beside the list.
+    ///
+    /// The samples themselves ride in the variant: listing them is one
+    /// filesystem walk of the local checkout (no subprocess, unlike the
+    /// board picker's `west boards` fetch), so there is no background load
+    /// to hold elsewhere.
+    SamplePicker {
+        input: String,
+        selected: usize,
+        scroll: u16,
+        focus: DocsFocus,
+        samples: Vec<crate::backend::zephyr::samples::Sample>,
     },
     /// Where a `Build`/`Rebuild` should run: on the board, or on the host
     /// simulator the project also keeps

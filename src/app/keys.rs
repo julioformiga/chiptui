@@ -411,6 +411,7 @@ impl App {
                 self.logs.info("re-running project detection");
                 self.detect();
                 self.maybe_open_project_config();
+                self.maybe_offer_starting_layout();
             }
             // The Log tab's copyable row, like the Device Info pane's MAC:
             // the selected line, copied to the clipboard. The click twin

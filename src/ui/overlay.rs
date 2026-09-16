@@ -304,6 +304,15 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
                 palette,
             )
         }
+        Overlay::SamplePicker {
+            input,
+            selected,
+            scroll,
+            focus,
+            samples,
+        } => draw_sample_picker(
+            frame, area, app, &input, selected, scroll, focus, &samples, palette,
+        ),
         Overlay::FilePicker { purpose, picker } => super::path_picker::draw(frame, popup,
             match purpose {
                 crate::app::path_picker_view::FilePurpose::Firmware => "Choose firmware (.bin / .elf)",
@@ -2159,6 +2168,161 @@ fn draw_project_picker(
     frame.render_widget(
         Paragraph::new(footer).wrap(ratatui::widgets::Wrap { trim: false }),
         footer_area,
+    );
+}
+
+/// The starting-layout question for a brand-new Zephyr project
+/// (`SPEC.md` §7): the workspace's own samples, filtered live. Row 0 is
+/// the fixed minimal application --- always there, even when the filter
+/// hides every sample, because it is the answer `Esc` picks and the one
+/// that never leaves the directory empty.
+#[allow(clippy::too_many_arguments)]
+fn draw_sample_picker(
+    frame: &mut Frame,
+    area: Rect,
+    app: &mut App,
+    input: &str,
+    selected: usize,
+    scroll: u16,
+    focus: DocsFocus,
+    samples: &[crate::backend::zephyr::samples::Sample],
+    palette: Palette,
+) {
+    let areas = crate::ui::layout::sample_picker(area);
+    let popup = areas.popup;
+    frame.render_widget(Clear, popup);
+    frame.render_widget(modal("Start from a Zephyr sample", palette), popup);
+
+    // The same search line every filterable window draws: the field is
+    // always live, so there is no mode to report.
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!("{} ", app.icon_set().search()),
+                muted_style(palette),
+            ),
+            Span::styled(input.to_string(), Style::new().fg(palette.fg)),
+            Span::styled("▏", Style::new().fg(palette.accent)),
+        ])),
+        areas.filter,
+    );
+
+    let filtered = crate::backend::zephyr::samples::filtered(samples, input);
+    let mut items = vec![ListItem::new(Line::from(vec![
+        Span::styled(" Minimal application ", Style::new().fg(palette.fg).bold()),
+        Span::styled(
+            "CMakeLists.txt · prj.conf · src/main.c",
+            muted_style(palette),
+        ),
+    ]))];
+    items.extend(filtered.iter().map(|sample| {
+        let icons = app.icon_set();
+        let mut spans = Vec::new();
+        if icons.shows_decorations() {
+            spans.push(Span::styled(
+                super::icon_column(
+                    icons.directory(),
+                    matches!(icons, crate::icons::IconSet::Nerd),
+                ),
+                muted_style(palette),
+            ));
+        }
+        spans.push(Span::styled(
+            format!(" {}", sample.rel),
+            Style::new().fg(palette.fg),
+        ));
+        ListItem::new(Line::from(spans))
+    }));
+    let list_block = pane("Samples", focus == DocsFocus::List, palette);
+    let list_inner = list_block.inner(areas.list);
+    frame.render_widget(list_block, areas.list);
+    let list_view = Rect {
+        width: list_inner.width.saturating_sub(1),
+        ..list_inner
+    };
+    let mut state = ListState::default()
+        .with_offset(app.docs_list_offset)
+        .with_selected(Some(selected));
+    frame.render_stateful_widget(
+        List::new(items).highlight_style(selection_style(palette)),
+        list_view,
+        &mut state,
+    );
+    app.docs_list_offset = state.offset();
+    super::draw_scrollbar(
+        frame,
+        list_inner,
+        filtered.len() + 1,
+        list_inner.height as usize,
+        state.offset(),
+        palette,
+    );
+
+    let details_block = pane("Description", focus == DocsFocus::Details, palette);
+    let details_inner = details_block.inner(areas.details);
+    frame.render_widget(details_block, areas.details);
+    let details_view = Rect {
+        width: details_inner.width.saturating_sub(1),
+        ..details_inner
+    };
+    let mut lines = Vec::new();
+    if selected == 0 {
+        lines.push(Line::from("Minimal application".fg(palette.fg).bold()));
+        lines.push(Line::from(""));
+        lines.extend(
+            wrap_words(
+                "A small Zephyr application with the files required to start a build.",
+                details_view.width as usize,
+            )
+            .into_iter()
+            .map(Line::from),
+        );
+    } else if let Some(sample) = filtered.get(selected - 1) {
+        lines.push(Line::from(sample.rel.clone().fg(palette.fg).bold()));
+        if let Some(description) = &sample.description {
+            lines.push(Line::from(
+                format!("from {}", description.source).fg(palette.muted),
+            ));
+            lines.push(Line::from(""));
+            lines.extend(
+                wrap_words(&description.text, details_view.width as usize)
+                    .into_iter()
+                    .map(Line::from),
+            );
+        } else {
+            lines.push(Line::from(""));
+            lines.push(Line::from(
+                "No README.rst, README.md or README.txt found.".fg(palette.muted),
+            ));
+        }
+    }
+    app.docs_viewport = details_inner.height as usize;
+    let total = lines.len();
+    let max_scroll = total.saturating_sub(app.docs_viewport);
+    let start = (scroll as usize).min(max_scroll);
+    let visible = lines.into_iter().skip(start).collect::<Vec<_>>();
+    frame.render_widget(Paragraph::new(visible), details_view);
+    super::draw_scrollbar(
+        frame,
+        details_inner,
+        total,
+        app.docs_viewport,
+        start,
+        palette,
+    );
+
+    let footer = if filtered.is_empty() && !input.is_empty() {
+        format!("no sample matches {input:?} — choose a layout and press enter")
+    } else {
+        format!(
+            "{} of {} samples · tab: description · esc: cancel",
+            filtered.len(),
+            samples.len()
+        )
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(footer.fg(palette.muted))),
+        areas.footer,
     );
 }
 

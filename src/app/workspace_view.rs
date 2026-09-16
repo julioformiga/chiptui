@@ -268,6 +268,9 @@ impl App {
                 }
                 self.overlay = None;
                 self.refresh_workspace_resolution();
+                if self.maybe_offer_starting_layout() {
+                    return;
+                }
                 // The entry question may be the next one queued: a session
                 // started in a repository whose application sits one level
                 // down asks it once the installation answer lands, instead

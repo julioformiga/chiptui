@@ -7,7 +7,10 @@
 //! capabilities.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -1544,6 +1547,96 @@ fn the_chosen_backend_tints_its_card_and_the_sections_it_governs() {
         "the section wash must stay a whisper: {:?} against {:?}",
         workspace.bg,
         palette.bg
+    );
+}
+
+/// The starting-layout question of a brand-new Zephyr project
+/// (`SPEC.md` §7): the workspace's samples under a live filter, led by the
+/// fixed minimal application --- always available for an explicit `Enter`, so
+/// it is never filtered away. Draw-only: `Enter` would write a layout into
+/// the temp directory this fixture roots at; `Esc` only cancels.
+#[test]
+fn the_sample_picker_leads_with_the_minimal_application() {
+    let sample = |rel: &str| {
+        let mut sample = chiptui::backend::zephyr::samples::Sample::new(
+            rel,
+            PathBuf::from(format!("/ws/zephyr/samples/{rel}")),
+        );
+        sample.description = Some(chiptui::backend::zephyr::samples::Description {
+            source: "README.rst",
+            text: Arc::from(
+                "Blinky sample\n\nThis description is intentionally long enough to scroll.\nAnother line.",
+            ),
+        });
+        sample
+    };
+    let mut app = app_with_backend(BackendKind::Zephyr);
+    app.overlay = Some(Overlay::SamplePicker {
+        input: String::new(),
+        selected: 0,
+        scroll: 0,
+        focus: chiptui::app::DocsFocus::List,
+        samples: vec![sample("basic/blinky"), sample("hello_world")],
+    });
+
+    let frame = render(&mut app, 100, 34);
+    assert!(
+        frame.contains("Start from a Zephyr sample"),
+        "the title:\n{frame}"
+    );
+    assert!(
+        frame.contains("Minimal application"),
+        "the fixed row 0:\n{frame}"
+    );
+    assert!(frame.contains("basic/blinky"), "a sample row:\n{frame}");
+    assert!(
+        frame.contains("esc: cancel"),
+        "the footer names what Esc does:\n{frame}"
+    );
+    assert!(frame.contains("Description"), "the side pane:\n{frame}");
+
+    // The list owns the keyboard initially. Selecting a sample updates the
+    // adjacent README pane, and Tab hands the arrows to that pane.
+    app.handle(key(KeyCode::Down));
+    let frame = render(&mut app, 100, 34);
+    assert!(frame.contains("README.rst"), "the README source:\n{frame}");
+    assert!(
+        frame.contains("Blinky sample"),
+        "the cleaned README:\n{frame}"
+    );
+    app.handle(key(KeyCode::Tab));
+    app.handle(key(KeyCode::Down));
+    assert!(matches!(
+        app.overlay,
+        Some(Overlay::SamplePicker {
+            selected: 1,
+            focus: chiptui::app::DocsFocus::Details,
+            scroll: 1,
+            ..
+        })
+    ));
+
+    // The filter narrows the samples but never removes row 0, and the
+    // footer says so when nothing matches.
+    for ch in "blinky".chars() {
+        app.handle(key(KeyCode::Char(ch)));
+    }
+    let frame = render(&mut app, 100, 34);
+    assert!(frame.contains("basic/blinky"), "the match stays:\n{frame}");
+    assert!(
+        !frame.contains("hello_world"),
+        "the non-match is filtered out:\n{frame}"
+    );
+    assert!(
+        frame.contains("Minimal application"),
+        "row 0 survives any filter:\n{frame}"
+    );
+
+    app.handle(key(KeyCode::Char('z')));
+    let frame = render(&mut app, 100, 34);
+    assert!(
+        frame.contains("no sample matches"),
+        "an empty filter result says why:\n{frame}"
     );
 }
 

@@ -1432,6 +1432,12 @@ impl App {
             // The docs pane on the right answers the scrolling keys ---
             // but only after `Tab` hands it the keyboard, which is the
             // one key a user cannot guess.
+            // Free text like the board picker, so `?` filters and `F1` is
+            // the way to the help; `esc`'s meaning is on the window's own
+            // footer (it cancels the starting-layout question).
+            Some(Overlay::SamplePicker { .. }) => {
+                vec![("tab", "swap list/description focus"), ("F1", "help")]
+            }
             // Free text like the package manager, so `?` filters and `F1`
             // is the way to the help --- named here for the same reason it
             // is named there: the field cannot teach it.

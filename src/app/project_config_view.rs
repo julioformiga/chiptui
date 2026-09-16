@@ -101,6 +101,26 @@ impl App {
         }
     }
 
+    /// Offers the starting-layout picker when detection already knows an
+    /// empty directory is Zephyr --- most importantly, when the project
+    /// registry supplied the backend before this session began. That path
+    /// never applies a backend change in the configuration screen, so the
+    /// apply-time hook alone cannot reach it.
+    ///
+    /// Returns whether the picker opened, so a preceding startup question can
+    /// hand off to it without opening another overlay. A configuration window
+    /// already on screen owns the question instead and blocks this second
+    /// door.
+    pub fn maybe_offer_starting_layout(&mut self) -> bool {
+        if self.overlay.is_some()
+            || self.manager.selected_kind() != Some(BackendKind::Zephyr)
+            || !crate::startup::is_empty_dir(&self.project_config_root())
+        {
+            return false;
+        }
+        self.maybe_offer_samples(BackendKind::Zephyr)
+    }
+
     pub(super) fn on_project_config_key(&mut self, key: KeyEvent) {
         // Read before the panel borrow: paging the details pane moves by
         // the rows the last frame actually drew.
@@ -306,6 +326,9 @@ impl App {
             self.request_home_screen();
             return;
         }
+        if self.maybe_offer_starting_layout() {
+            return;
+        }
         self.maybe_open_workspace_picker();
         // The project question's entry form follows the same rule: it lands
         // only when the workspace question did not (the guard is inside),
@@ -433,6 +456,16 @@ impl App {
         match kind {
             Some(kind) => {
                 if was_empty {
+                    // Zephyr's empty directory may start from one of the
+                    // workspace's own samples instead of the minimal layout:
+                    // when the tree lists any, that question owns the
+                    // layout --- its answer writes the files and then runs
+                    // the tail below, so the device scan never contends
+                    // with the picker for the one-deep overlay slot.
+                    if self.maybe_offer_samples(kind) {
+                        self.record_open_project();
+                        return;
+                    }
                     self.report_scaffold(kind);
                 } else {
                     self.logs
@@ -446,6 +479,14 @@ impl App {
             )),
         }
 
+        self.finish_backend_apply();
+    }
+
+    /// The tail every applied backend answer runs: resolve the environment
+    /// around the new backend, refresh the tool report, start device
+    /// discovery and place the startup focus. Shared with the sample
+    /// picker, whose answer completes the apply the overlay deferred.
+    pub(super) fn finish_backend_apply(&mut self) {
         self.ensure_workspace_panel();
         self.report_tools();
         self.maybe_scan_devices();
@@ -453,6 +494,104 @@ impl App {
         // startup route does rather than merely clamping --- the user has
         // not navigated anywhere yet to keep.
         self.place_startup_focus();
+    }
+
+    /// Offers the workspace's `samples/` tree as the new project's starting
+    /// layout (`SPEC.md` §7), when there are any to offer. `true` means the
+    /// picker opened and owns what happens next; `false` means the caller
+    /// falls back to the minimal scaffold --- the answer for a backend
+    /// without samples (MicroPython), and for a workspace that names none,
+    /// with a log line saying why so the fallback never reads as a miss.
+    fn maybe_offer_samples(&mut self, kind: BackendKind) -> bool {
+        use crate::backend::zephyr::workspace::Resolution;
+
+        if kind != BackendKind::Zephyr {
+            return false;
+        }
+        // Resolved fresh from the files this apply just wrote, so a
+        // `Zephyr path` answered in this very transaction already counts.
+        let workspace = match self.resolve_workspace() {
+            Resolution::Single(workspace) => workspace,
+            Resolution::Invalid(_) => {
+                self.logs
+                    .info("Zephyr samples unavailable (the workspace is not a valid installation)");
+                return false;
+            }
+            Resolution::NotConfigured => {
+                self.logs
+                    .info("Zephyr samples unavailable (no workspace configured yet)");
+                return false;
+            }
+        };
+        let dir = workspace.zephyr_base.join("samples");
+        let samples = crate::backend::zephyr::samples::list_samples(&dir);
+        if samples.is_empty() {
+            self.logs
+                .info(format!("no buildable samples under {}", dir.display()));
+            return false;
+        }
+        self.overlay = Some(Overlay::SamplePicker {
+            input: String::new(),
+            selected: 0,
+            scroll: 0,
+            focus: crate::app::DocsFocus::List,
+            samples,
+        });
+        self.docs_list_offset = 0;
+        true
+    }
+
+    /// The sample picker's explicit answer: the minimal scaffold for row 0,
+    /// or a copy of the picked sample's tree. Then the deferred tail of the
+    /// apply runs, and the configuration window comes back with its applied
+    /// notice --- unless the device scan opened a question of its own, the
+    /// one-deep slot's standing rule.
+    pub(super) fn apply_sample_pick(
+        &mut self,
+        sample: Option<crate::backend::zephyr::samples::Sample>,
+    ) {
+        match sample {
+            None => self.report_scaffold(BackendKind::Zephyr),
+            Some(sample) => {
+                let root = self.manager.scaffold_dir().to_path_buf();
+                match crate::backend::zephyr::samples::copy_sample(&sample.dir, &root) {
+                    Ok(created) if created.written.is_empty() => {
+                        self.logs
+                            .success(format!("sample {} --- nothing new to copy", sample.rel));
+                    }
+                    Ok(created) => {
+                        self.logs.success(format!(
+                            "sample {} --- copied {}",
+                            sample.rel,
+                            created
+                                .written
+                                .iter()
+                                .map(|path| path.display().to_string())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ));
+                    }
+                    Err(err) => self.logs.warn(format!(
+                        "sample {} could not be copied: {err} --- the directory keeps what was written",
+                        sample.rel
+                    )),
+                }
+            }
+        }
+        self.finish_backend_apply();
+        if self.overlay.is_none() && self.project_config.is_some() {
+            self.overlay = Some(Overlay::ProjectConfig);
+        }
+    }
+
+    /// Cancelling the sample question is not an answer to its starting-layout
+    /// question. Complete the already explicit backend selection, but leave
+    /// the project tree untouched.
+    pub(super) fn cancel_sample_picker(&mut self) {
+        self.finish_backend_apply();
+        if self.overlay.is_none() && self.project_config.is_some() {
+            self.overlay = Some(Overlay::ProjectConfig);
+        }
     }
 
     fn report_scaffold(&mut self, kind: BackendKind) {
@@ -640,16 +779,77 @@ impl App {
         let scaffold = self.config_scaffold();
         if !scaffold.is_empty() {
             lines.push(String::new());
-            lines.push(format!(
-                "creates {} starting {}",
-                scaffold.len(),
-                if scaffold.len() == 1 { "file" } else { "files" }
-            ));
-            for file in scaffold {
-                lines.push(format!("  {file}"));
+            // When the workspace offers samples, the layout is a question
+            // the apply itself asks next --- the review names the question
+            // rather than the minimal answer it may not take.
+            if self.samples_offer(panel) {
+                lines.push(
+                    "starting layout: your pick next — the workspace's samples, or the minimal application"
+                        .to_string(),
+                );
+            } else {
+                lines.push(format!(
+                    "creates {} starting {}",
+                    scaffold.len(),
+                    if scaffold.len() == 1 { "file" } else { "files" }
+                ));
+                for file in scaffold {
+                    lines.push(format!("  {file}"));
+                }
             }
         }
         lines
+    }
+
+    /// Whether the apply would offer the workspace's samples: the chosen
+    /// backend is Zephyr, the directory is empty and a workspace --- the
+    /// one already resolved, or the one this very transaction is about to
+    /// answer --- has a samples tree. `false` keeps the review on the
+    /// minimal layout's file list, which is then exactly what applying
+    /// writes.
+    ///
+    /// This runs once per frame while the review is open, so it is an
+    /// existence check, never the tree walk --- a checkout that ships a
+    /// `samples/` directory ships samples, and the picker does the real
+    /// listing (with the real count) the moment the question opens.
+    fn samples_offer(&self, panel: &ProjectConfigPanel) -> bool {
+        use crate::backend::zephyr::workspace::{Resolution, ResolveInput};
+
+        if panel.chosen() != Some(BackendKind::Zephyr)
+            || !panel.backend_changed()
+            || !crate::startup::is_empty_dir(panel.root())
+        {
+            return false;
+        }
+        let workspace = match self.resolve_workspace() {
+            Resolution::Single(workspace) => Some(workspace),
+            _ => {
+                // A `Zephyr path` answered in this transaction is not on
+                // disk yet; the preview still owes the user its
+                // consequences, so resolve the pending answer as if
+                // written. Either file would do --- resolution reads both
+                // levels the same way.
+                let pending = panel
+                    .pending_for(ProjectConfigRow::ZephyrWorkspace)
+                    .and_then(|value| value.map(str::to_string));
+                pending.and_then(|pending| {
+                    let settings = crate::settings::ZephyrSettings {
+                        workspace: Some(pending),
+                        ..crate::settings::ZephyrSettings::default()
+                    };
+                    let input = ResolveInput {
+                        project_settings: Some(&settings),
+                        user_settings: None,
+                        home: &self.home_dir,
+                    };
+                    match crate::backend::zephyr::workspace::resolve(&input) {
+                        Resolution::Single(workspace) => Some(workspace),
+                        _ => None,
+                    }
+                })
+            }
+        };
+        workspace.is_some_and(|workspace| workspace.zephyr_base.join("samples").is_dir())
     }
 }
 

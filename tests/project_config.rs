@@ -372,6 +372,197 @@ fn an_empty_directory_is_still_scaffolded_after_the_keys_are_written() {
     assert!(dir.path.join("src/main.c").is_file());
 }
 
+/// A workspace fixture carrying a samples tree: `.west/` and the `zephyr/`
+/// checkout are what validation needs, and the two samples under it are
+/// what the picker lists.
+fn fake_workspace(root: &Path) -> PathBuf {
+    let workspace = root.join("workspace");
+    std::fs::create_dir_all(workspace.join(".west")).unwrap();
+    let samples = workspace.join("zephyr/samples");
+    write_fake_sample(&samples, "basic/blinky");
+    write_fake_sample(&samples, "hello_world");
+    workspace
+}
+
+fn write_fake_sample(samples: &Path, rel: &str) {
+    let dir = samples.join(rel);
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(
+        dir.join("CMakeLists.txt"),
+        "find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})\nproject(the_sample)\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("prj.conf"), "# the sample's own fragment\n").unwrap();
+    std::fs::write(dir.join("src/main.c"), "int main(void) { return 0; }\n").unwrap();
+}
+
+#[test]
+fn an_empty_zephyr_directory_is_offered_the_workspaces_samples() {
+    let dir = TempDir::new("samples");
+    let workspace = fake_workspace(dir.root());
+    let mut app = dir.app();
+    app.set_serial_dir(dir.home.join("dev"));
+    app.bootstrap();
+    app.maybe_open_project_config();
+    pick_zephyr(&mut app);
+    type_into(
+        &mut app,
+        ProjectConfigRow::ZephyrWorkspace,
+        workspace.to_str().unwrap(),
+    );
+
+    // The review names the coming question rather than a minimal layout it
+    // may not take.
+    let review = app.config_review_lines().join("\n");
+    assert!(
+        review.contains("your pick next"),
+        "the review names the sample question: {review}"
+    );
+
+    apply(&mut app);
+
+    let Some(Overlay::SamplePicker {
+        samples, selected, ..
+    }) = &app.overlay
+    else {
+        panic!("the samples question opens: {:?}", app.overlay);
+    };
+    assert_eq!(*selected, 0, "the minimal application leads");
+    assert_eq!(samples.len(), 2);
+    assert!(
+        !dir.path.join("CMakeLists.txt").exists(),
+        "the layout waits for the pick --- only chiptui.toml is written"
+    );
+
+    // `Esc` cancels the starting-layout question. It must not silently choose
+    // the minimal layout or write any project files.
+    app.handle(key(KeyCode::Esc));
+    assert_eq!(app.overlay, Some(Overlay::ProjectConfig));
+    assert!(!dir.path.join("CMakeLists.txt").exists());
+    assert!(!dir.path.join("prj.conf").exists());
+    assert!(!dir.path.join("src/main.c").exists());
+}
+
+#[test]
+fn a_picked_sample_becomes_the_starting_layout() {
+    let dir = TempDir::new("samples-pick");
+    let workspace = fake_workspace(dir.root());
+    let mut app = dir.app();
+    app.set_serial_dir(dir.home.join("dev"));
+    app.bootstrap();
+    app.maybe_open_project_config();
+    pick_zephyr(&mut app);
+    type_into(
+        &mut app,
+        ProjectConfigRow::ZephyrWorkspace,
+        workspace.to_str().unwrap(),
+    );
+    apply(&mut app);
+
+    // The filter narrows to the one sample whose path contains it; row 0
+    // stays the minimal application, so the sample is one `Down` away.
+    for ch in "hello".chars() {
+        app.handle(key(KeyCode::Char(ch)));
+    }
+    app.handle(key(KeyCode::Down));
+    app.handle(key(KeyCode::Enter));
+
+    assert_eq!(app.overlay, Some(Overlay::ProjectConfig));
+    let cmake = std::fs::read_to_string(dir.path.join("CMakeLists.txt")).unwrap();
+    assert!(
+        cmake.contains("project(the_sample)"),
+        "the sample's own project name is kept: {cmake}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path.join("prj.conf")).unwrap(),
+        "# the sample's own fragment\n"
+    );
+    assert!(dir.path.join("src/main.c").is_file());
+}
+
+#[test]
+fn an_empty_registered_zephyr_project_is_offered_samples_at_startup() {
+    let dir = TempDir::new("registered-samples");
+    let workspace = fake_workspace(dir.root());
+    let user_config = settings::user_config_path(&dir.config_dir());
+    settings::save_workspace(&user_config, &workspace).unwrap();
+    settings::record_project(
+        &user_config,
+        settings::ProjectEntry::new(&dir.path, BackendKind::Zephyr),
+    )
+    .unwrap();
+
+    let mut app = dir.app();
+    let serial_dir = dir.home.join("dev");
+    let serial_port = serial_dir.join("ttyACM0");
+    std::fs::create_dir_all(&serial_dir).unwrap();
+    std::fs::write(&serial_port, "").unwrap();
+    app.set_serial_dir(serial_dir);
+    app.bootstrap();
+    app.maybe_open_project_config();
+    app.maybe_scan_devices();
+
+    assert_eq!(
+        app.overlay, None,
+        "the registry already answered the backend"
+    );
+    assert_eq!(
+        app.devices.selected_port(),
+        Some(serial_port.to_str().unwrap()),
+        "board discovery runs before the starting-layout question"
+    );
+    assert!(
+        app.maybe_offer_starting_layout(),
+        "but it has not answered which starting files to use"
+    );
+    assert!(matches!(app.overlay, Some(Overlay::SamplePicker { .. })));
+
+    app.handle(key(KeyCode::Down));
+    app.handle(key(KeyCode::Enter));
+
+    assert_eq!(
+        app.overlay, None,
+        "a direct-start picker has no configuration window to restore"
+    );
+    let cmake = std::fs::read_to_string(dir.path.join("CMakeLists.txt")).unwrap();
+    assert!(cmake.contains("project(the_sample)"), "{cmake}");
+    assert!(dir.path.join("src/main.c").is_file());
+}
+
+#[test]
+fn a_workspace_without_samples_falls_back_to_the_minimal_layout() {
+    let dir = TempDir::new("samples-none");
+    let workspace = dir.root().join("workspace");
+    std::fs::create_dir_all(workspace.join(".west")).unwrap();
+    std::fs::create_dir_all(workspace.join("zephyr")).unwrap();
+    let mut app = dir.app();
+    app.set_serial_dir(dir.home.join("dev"));
+    app.bootstrap();
+    app.maybe_open_project_config();
+    pick_zephyr(&mut app);
+    type_into(
+        &mut app,
+        ProjectConfigRow::ZephyrWorkspace,
+        workspace.to_str().unwrap(),
+    );
+
+    // No samples: the review lists the minimal layout's files, as before.
+    let review = app.config_review_lines().join("\n");
+    assert!(
+        review.contains("src/main.c"),
+        "the minimal layout is what applying writes: {review}"
+    );
+
+    apply(&mut app);
+
+    assert_eq!(
+        app.overlay,
+        Some(Overlay::ProjectConfig),
+        "no samples, no question"
+    );
+    assert!(dir.path.join("src/main.c").is_file());
+}
+
 #[test]
 fn a_micropython_answer_scans_for_a_device() {
     let dir = TempDir::new("scan");
@@ -877,6 +1068,10 @@ fn a_project_the_registry_already_names_is_never_asked() {
 
     assert_eq!(app.overlay, None, "the registry already answered");
     assert_eq!(app.manager.selected_kind(), Some(BackendKind::Zephyr));
+    assert!(
+        !app.maybe_offer_starting_layout(),
+        "an existing project layout is not a starting-files question"
+    );
 }
 
 #[test]
