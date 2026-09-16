@@ -407,6 +407,31 @@ impl IconSet {
         }
     }
 
+    /// A free-text row in the project configuration's list: the answer is
+    /// typed. `✎` / `nf-fa-pencil` --- [`Self::pencil`]'s own pair, since
+    /// "edit a configuration" and "this row is hand-typed" are the same
+    /// statement in two panes. Decoration, like [`Self::directory`].
+    pub const fn text_edit(self) -> &'static str {
+        match self {
+            Self::Unicode => "✎",
+            Self::Nerd => "\u{F040}",
+            Self::None => "",
+        }
+    }
+
+    /// A fixed-set row in the project configuration's list: the answer is
+    /// cycled or picked, never typed. `☰` / `nf-fa-list` ---
+    /// [`Self::list`]'s own pair; the Log tab's claim on it is a pane
+    /// title, a surface this row never shares. Decoration, like
+    /// [`Self::directory`].
+    pub const fn choice(self) -> &'static str {
+        match self {
+            Self::Unicode => "☰",
+            Self::Nerd => "\u{F03A}",
+            Self::None => "",
+        }
+    }
+
     /// The MicroPython backend's mark: the Python logo under Nerd Font
     /// (the header's `▲` and the home row's `🐍` both become it), the
     /// header's own triangle in the Unicode set (the surface that owns the
@@ -464,7 +489,7 @@ impl IconSet {
     /// Every glyph of this set, in vocabulary order --- so tests can walk
     /// the whole set without restating the method list by hand. Covers both
     /// vocabularies: the button glyphs and the pane/tab decorations.
-    pub fn glyphs(self) -> [&'static str; 29] {
+    pub fn glyphs(self) -> [&'static str; 31] {
         [
             self.play(),
             self.clean(),
@@ -494,6 +519,8 @@ impl IconSet {
             self.directory(),
             self.folder_open(),
             self.file(),
+            self.text_edit(),
+            self.choice(),
             self.python(),
         ]
     }

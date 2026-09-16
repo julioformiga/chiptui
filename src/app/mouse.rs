@@ -1400,12 +1400,19 @@ impl App {
         };
         // The list draws with a fresh `ListState` every frame, so ratatui's
         // minimal-scroll offset is a pure function of the cursor and the
-        // height --- which is exactly what `bare_list_row` reproduces.
+        // height --- which is exactly what `bare_list_row` reproduces. The
+        // rows live inside the pane's border, one cell in on every side.
         let selected = match panel.cursor() {
             crate::project_config::Cursor::Row(index) => index,
             crate::project_config::Cursor::Cards => 0,
         };
-        if let Some(index) = bare_list_row(point, areas.list, selected, panel.rows().len(), 0) {
+        let list = Rect {
+            x: areas.list.x + 1,
+            y: areas.list.y + 1,
+            width: areas.list.width.saturating_sub(2),
+            height: areas.list.height.saturating_sub(2),
+        };
+        if let Some(index) = bare_list_row(point, list, selected, panel.rows().len(), 0) {
             panel.set_details_focus(crate::app::DocsFocus::List);
             self.project_config_select(index);
         }
@@ -2606,6 +2613,7 @@ mod tests {
             selected: 0,
             scroll: 0,
             focus: DocsFocus::List,
+            purpose: crate::app::overlay::TargetPickerPurpose::Build,
         });
         render(&mut app, 100, 40);
         click(&mut app, OUTSIDE.0, OUTSIDE.1);

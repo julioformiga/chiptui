@@ -11,6 +11,7 @@ use crate::backend::BuildKind;
 use crate::build::{BoardChoice, BuildAction, BuildPanel};
 use crate::project::config;
 
+use super::overlay::TargetPickerPurpose;
 use super::{App, DocsFocus, Focus, LogTab, MonitorSource, Overlay};
 
 impl App {
@@ -51,11 +52,16 @@ impl App {
     /// fetch on first open (the list is slow to produce and useless until
     /// asked for), plus the docs index that enriches it.
     pub fn open_board_picker(&mut self) {
+        self.open_board_picker_for(TargetPickerPurpose::Build);
+    }
+
+    fn open_board_picker_for(&mut self, purpose: TargetPickerPurpose) {
         self.overlay = Some(Overlay::BoardPicker {
             input: String::new(),
             selected: 0,
             scroll: 0,
             focus: DocsFocus::default(),
+            purpose,
         });
         self.docs_list_offset = 0;
         self.docs.ensure_index(&self.docs_label());
@@ -291,11 +297,16 @@ impl App {
     /// Opens the shield picker, kicking off the background `west shields`
     /// fetch on first open, like the board picker does for `west boards`.
     pub(super) fn open_shield_picker(&mut self) {
+        self.open_shield_picker_for(TargetPickerPurpose::Build);
+    }
+
+    fn open_shield_picker_for(&mut self, purpose: TargetPickerPurpose) {
         self.overlay = Some(Overlay::ShieldPicker {
             input: String::new(),
             selected: 0,
             scroll: 0,
             focus: DocsFocus::default(),
+            purpose,
         });
         self.docs_list_offset = 0;
         self.docs.ensure_index(&self.docs_label());
@@ -333,6 +344,66 @@ impl App {
         panel.set_shield(Some(name.clone()));
         self.logs.info(format!("shield set to {name}"));
         self.persist_target();
+    }
+
+    /// Opens the existing target catalogue for a configuration row. The
+    /// catalogue needs a resolved Zephyr session for its `west` environment;
+    /// a newly selected backend must therefore be applied first.
+    pub(super) fn open_config_target_picker(
+        &mut self,
+        row: crate::project_config::ProjectConfigRow,
+    ) {
+        if !row.uses_target_picker() {
+            return;
+        }
+        self.ensure_build_panel();
+        if self.build.is_none() {
+            if let Some(panel) = &mut self.project_config {
+                panel.set_error(
+                    "apply a Zephyr backend and a valid workspace before choosing a target",
+                );
+            }
+            return;
+        }
+        match row {
+            crate::project_config::ProjectConfigRow::ZephyrBoard => {
+                self.open_board_picker_for(TargetPickerPurpose::ProjectConfig(row));
+            }
+            crate::project_config::ProjectConfigRow::ZephyrShield => {
+                self.open_shield_picker_for(TargetPickerPurpose::ProjectConfig(row));
+            }
+            _ => {}
+        }
+    }
+
+    /// Returns a picker choice to the project configuration transaction
+    /// instead of persisting it through the build panel.
+    pub(super) fn apply_config_target_picker(
+        &mut self,
+        row: crate::project_config::ProjectConfigRow,
+        filter: &str,
+        selected: usize,
+        shield: bool,
+    ) {
+        let value = match self.build.as_ref() {
+            Some(_) if shield && selected == 0 => Some(None),
+            Some(panel) if shield => panel
+                .filtered_shields(filter)
+                .get(selected.saturating_sub(1))
+                .map(|item| Some(item.name.clone())),
+            Some(panel) => panel
+                .filtered_boards(filter)
+                .get(selected)
+                .map(|item| Some(item.name.clone())),
+            None => None,
+        };
+        let Some(value) = value else {
+            return;
+        };
+        if let Some(panel) = &mut self.project_config {
+            panel.set_target(row, value);
+        }
+        self.overlay = Some(Overlay::ProjectConfig);
     }
 
     /// Runs a panel action: destructive ones (`Clean`, `Flash`, and

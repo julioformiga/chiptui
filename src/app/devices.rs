@@ -219,7 +219,7 @@ impl App {
     /// configured directory, and the build panel reads only the project's
     /// own `CMakeCache.txt` plus its registry entry's saved board/shield,
     /// if either exists.
-    fn ensure_build_panel(&mut self) {
+    pub(super) fn ensure_build_panel(&mut self) {
         if !self.build_pane_visible_precondition() || self.build.is_some() {
             return;
         }

@@ -138,8 +138,15 @@ fn type_into(app: &mut App, row: ProjectConfigRow, value: &str) {
     app.handle(key(KeyCode::Enter));
 }
 
+fn set_target(app: &mut App, row: ProjectConfigRow, value: Option<&str>) {
+    app.project_config
+        .as_mut()
+        .unwrap()
+        .set_target(row, value.map(str::to_string));
+}
+
 #[test]
-fn path_pickers_return_to_the_pending_config_transaction_and_cancel_without_changes() {
+fn directory_pickers_return_to_the_pending_config_transaction_and_cancel_without_changes() {
     let dir = TempDir::new("path-picker");
     let folder = dir.home.join("sdk");
     std::fs::create_dir_all(&folder).unwrap();
@@ -178,15 +185,90 @@ fn path_pickers_return_to_the_pending_config_transaction_and_cancel_without_chan
     app.handle(key(KeyCode::Esc));
     app.handle(key(KeyCode::Esc));
     assert_eq!(app.overlay, Some(Overlay::ProjectConfig));
-    go_to(&mut app, ProjectConfigRow::ZephyrWest);
-    let pending = app.project_config.as_ref().unwrap().change_count();
-    app.handle(key(KeyCode::Enter));
-    assert!(matches!(app.overlay, Some(Overlay::FilePicker { .. })));
-    app.handle(key(KeyCode::Esc));
-    assert_eq!(app.overlay, Some(Overlay::ProjectConfig));
-    assert_eq!(app.project_config.as_ref().unwrap().change_count(), pending);
     apply(&mut app);
     assert!(dir.text().contains(folder.to_str().unwrap()));
+}
+
+#[test]
+fn target_pickers_return_to_the_pending_configuration_transaction() {
+    let dir = TempDir::new("target-picker");
+    std::fs::write(dir.file(), "project_type = \"zephyr\"\n").unwrap();
+    let mut app = dir.app();
+    app.bootstrap();
+    open(&mut app);
+
+    go_to(&mut app, ProjectConfigRow::ZephyrBoard);
+    app.handle(key(KeyCode::Enter));
+    assert!(matches!(
+        app.overlay,
+        Some(Overlay::BoardPicker {
+            purpose: chiptui::app::overlay::TargetPickerPurpose::ProjectConfig(
+                ProjectConfigRow::ZephyrBoard
+            ),
+            ..
+        })
+    ));
+    app.handle(key(KeyCode::Esc));
+    assert_eq!(app.overlay, Some(Overlay::ProjectConfig));
+
+    go_to(&mut app, ProjectConfigRow::ZephyrShield);
+    app.handle(key(KeyCode::Enter));
+    assert!(matches!(
+        app.overlay,
+        Some(Overlay::ShieldPicker {
+            purpose: chiptui::app::overlay::TargetPickerPurpose::ProjectConfig(
+                ProjectConfigRow::ZephyrShield
+            ),
+            ..
+        })
+    ));
+    app.handle(key(KeyCode::Esc));
+    assert_eq!(app.overlay, Some(Overlay::ProjectConfig));
+}
+
+#[test]
+fn udp_address_uses_an_ipv4_mask_and_validation() {
+    let dir = TempDir::new("ip-address");
+    std::fs::write(dir.file(), "project_type = \"zephyr\"\n").unwrap();
+    let mut app = dir.app();
+    app.bootstrap();
+    open(&mut app);
+    go_to(&mut app, ProjectConfigRow::OtaAddress);
+    app.handle(key(KeyCode::Enter));
+    app.handle(key(KeyCode::Char('x')));
+    assert_eq!(
+        app.project_config.as_ref().unwrap().editing(),
+        Some((ProjectConfigRow::OtaAddress, "")),
+        "the IPv4 mask rejects non-address characters"
+    );
+    for ch in "999.1.1.1".chars() {
+        app.handle(key(KeyCode::Char(ch)));
+    }
+    app.handle(key(KeyCode::Enter));
+    assert!(
+        app.project_config.as_ref().unwrap().editing().is_some(),
+        "an out-of-range IPv4 octet remains editable"
+    );
+    assert!(
+        app.project_config
+            .as_ref()
+            .unwrap()
+            .error()
+            .is_some_and(|error| error.contains("valid IPv4"))
+    );
+    app.handle(key(KeyCode::Delete));
+    for ch in "192.168.1.42".chars() {
+        app.handle(key(KeyCode::Char(ch)));
+    }
+    app.handle(key(KeyCode::Enter));
+    assert_eq!(
+        app.project_config
+            .as_ref()
+            .unwrap()
+            .value(ProjectConfigRow::OtaAddress)
+            .as_deref(),
+        Some("192.168.1.42")
+    );
 }
 
 /// Picks Zephyr on the card strip. `←` from an unanswered strip lands on the
@@ -895,10 +977,10 @@ fn the_leave_dialog_lists_what_is_at_stake() {
     app.bootstrap();
     open(&mut app);
     pick_zephyr(&mut app);
-    type_into(
+    set_target(
         &mut app,
         ProjectConfigRow::ZephyrBoard,
-        "native_sim/native/64",
+        Some("native_sim/native/64"),
     );
     app.handle(key(KeyCode::Esc));
 
@@ -1090,7 +1172,7 @@ fn re_detecting_asks_again_until_resolved() {
 /// Render-pinned: the clicks land on the *drawn* geometry, found in the
 /// frame, because byte offsets are not columns (the borders are multi-byte).
 #[test]
-fn sections_draw_a_rule_a_count_and_the_backends_edge() {
+fn sections_draw_a_rule_and_a_count() {
     let dir = TempDir::new("sections");
     std::fs::write(
         dir.file(),
@@ -1115,25 +1197,8 @@ fn sections_draw_a_rule_a_count_and_the_backends_edge() {
     );
     let zephyr = heading("Zephyr");
     assert!(
-        zephyr.contains("1/8"),
-        "one of the eight Zephyr rows is answered:\n{zephyr}"
-    );
-
-    let governed = frame
-        .lines()
-        .find(|line| line.contains("Target board") && line.contains("qemu_x86"))
-        .expect("the board row is drawn");
-    assert!(
-        governed.contains('▎'),
-        "a row the chosen backend owns carries its edge:\n{governed}"
-    );
-    let plain = frame
-        .lines()
-        .find(|line| line.contains("Color theme"))
-        .expect("a General row is drawn");
-    assert!(
-        !plain.contains('▎'),
-        "General stays unmarked --- the boundary is what the edge is for:\n{plain}"
+        zephyr.contains("1/7"),
+        "one of the seven Zephyr rows is answered:\n{zephyr}"
     );
 }
 
@@ -1163,9 +1228,13 @@ fn the_details_pane_names_the_key_the_winner_and_the_pending_line() {
         assert!(frame.contains(expected), "missing {expected:?}:\n{frame}");
     }
 
-    type_into(&mut app, ProjectConfigRow::ZephyrBoard, "native_sim");
+    type_into(
+        &mut app,
+        ProjectConfigRow::ZephyrBuildArgs,
+        "-DCONF_FILE=debug.conf",
+    );
     let frame = common::render(&mut app, 110, 38);
-    for expected in ["Will write", "board = \"native_sim\""] {
+    for expected in ["Will write", "build_args = \"-DCONF_FILE=debug.conf\""] {
         assert!(frame.contains(expected), "missing {expected:?}:\n{frame}");
     }
 }
@@ -1219,7 +1288,7 @@ fn the_details_pane_lists_every_theme_and_scrolls() {
 }
 
 #[test]
-fn rows_carry_a_state_mark_and_pending_ones_the_transition() {
+fn rows_carry_their_controls_glyph_and_pending_ones_the_transition() {
     let dir = TempDir::new("marks");
     std::fs::write(
         dir.file(),
@@ -1241,29 +1310,30 @@ fn rows_carry_a_state_mark_and_pending_ones_the_transition() {
     }
     let board = line(&frame, "Target board", "qemu_x86");
     assert!(
-        board.contains('✓'),
-        "a saved answer carries its mark and its value:\n{board}"
+        board.contains('☰'),
+        "a picked answer carries the fixed-set glyph:\n{board}"
     );
-    let theme = line(&frame, "Color theme", "default");
+    let theme = line(&frame, "Color theme", "Tokyo Night");
     assert!(
-        theme.contains('←'),
-        "an inherited answer says so, and from where:\n{theme}"
+        theme.contains('☰'),
+        "a cycled choice is the same control:\n{theme}"
     );
-    let shield = line(&frame, "Shield", "—");
+    let workspace = line(&frame, "Workspace path", "—");
     assert!(
-        shield.contains('·'),
-        "an unanswered row is marked, not blank:\n{shield}"
+        workspace.contains("📁"),
+        "a path-picker row carries the folder:\n{workspace}"
+    );
+    let args = line(&frame, "Extra build arguments", "—");
+    assert!(
+        args.contains('✎'),
+        "a free-text row carries the pencil:\n{args}"
     );
 
     // Editing the board replaces the value in place with the transition,
     // not with a bare new word.
-    type_into(&mut app, ProjectConfigRow::ZephyrBoard, "native_sim");
+    set_target(&mut app, ProjectConfigRow::ZephyrBoard, Some("native_sim"));
     let frame = common::render(&mut app, 110, 38);
-    let board = line(&frame, "Target board", "qemu_x86 → native_sim");
-    assert!(
-        board.contains('●'),
-        "a pending answer names what it replaces:\n{board}"
-    );
+    line(&frame, "Target board", "qemu_x86 → native_sim");
 }
 
 #[test]

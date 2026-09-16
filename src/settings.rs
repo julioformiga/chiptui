@@ -3,7 +3,7 @@
 //!
 //! `SPEC.md` §13: user configuration lives outside the project, project
 //! configuration inside `chiptui.toml`. Both need the same `[zephyr]` section
-//! (workspace / sdk / west paths), so the parsing lives here once and both
+//! (workspace / sdk paths), so the parsing lives here once and both
 //! readers call it. Like `project::config`, this is a hand-rolled tolerant
 //! parser rather than a `toml` dependency --- the section has three string
 //! keys, and the same bias against pulling in a crate for one shape applies.
@@ -35,11 +35,6 @@ pub struct ZephyrSettings {
     pub projects: Option<String>,
     /// Optional toolchain location, exported as `ZEPHYR_SDK_INSTALL_DIR`.
     pub sdk: Option<String>,
-    /// Optional explicit west executable; without one, `<workspace>/.venv/
-    /// bin/west` is used when it exists, then `west` from `PATH`. A
-    /// relative path is resolved against the workspace, and a bare program
-    /// name is a deliberate `PATH` lookup.
-    pub west: Option<String>,
     /// The board this project builds for, and the shield on it.
     ///
     /// Read from a *project's* `chiptui.toml` only. The struct is shared by
@@ -57,7 +52,6 @@ impl ZephyrSettings {
         self.workspace.is_none()
             && self.projects.is_none()
             && self.sdk.is_none()
-            && self.west.is_none()
             && self.board.is_none()
             && self.shield.is_none()
     }
@@ -90,7 +84,6 @@ impl ZephyrSettings {
                 "workspace" => &mut settings.workspace,
                 "projects" => &mut settings.projects,
                 "sdk" => &mut settings.sdk,
-                "west" => &mut settings.west,
                 "board" => &mut settings.board,
                 "shield" => &mut settings.shield,
                 _ => continue,
@@ -845,7 +838,15 @@ mod tests {
         let settings = ZephyrSettings::parse(text);
         assert_eq!(settings.workspace.as_deref(), Some("~/zephyrproject"));
         assert_eq!(settings.sdk.as_deref(), Some("~/zephyr-sdk-0.17.1"));
-        assert_eq!(settings.west.as_deref(), Some("/opt/west"));
+        assert_eq!(
+            settings,
+            ZephyrSettings {
+                workspace: Some("~/zephyrproject".to_string()),
+                sdk: Some("~/zephyr-sdk-0.17.1".to_string()),
+                ..Default::default()
+            },
+            "unknown west entries are ignored"
+        );
     }
 
     #[test]
@@ -859,7 +860,6 @@ mod tests {
         let text = "[zephyr]\nworkspace = \"~/ws\"\n[zephyr-extra]\nwest = \"nope\"\n";
         let settings = ZephyrSettings::parse(text);
         assert_eq!(settings.workspace.as_deref(), Some("~/ws"));
-        assert_eq!(settings.west, None, "[zephyr-extra] is another section");
     }
 
     #[test]

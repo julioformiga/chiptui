@@ -14,11 +14,9 @@
 //! screen already uses to tell the two kinds apart at a glance, and reusing
 //! it is what makes the card and the project row read as the same fact.
 //!
-//! The one place this spends any boldness: the chosen backend's tint
-//! continues, as a whisper, behind the sections that backend governs. It
-//! ties the choice to what it controls with no extra chrome, at the
-//! focus-wash denominator (1/64) rather than the home row's 3/16 --- a
-//! row-sized wash must read at a glance, a column-sized one must not.
+//! The list itself is one bordered pane, the Details column's sibling: a
+//! heading with a rule and its answered count is the only delimiter between
+//! sections, and General scrolls by exactly like the backend's own groups.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -26,24 +24,24 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, List, ListItem, ListState, Paragraph, Wrap};
 
-use super::layout::{CARD_WIDTH, ProjectConfigAreas};
+use super::layout::ProjectConfigAreas;
 use super::{Palette, draw_scrollbar, muted_style, selection_style};
 use crate::app::App;
-use crate::backend::{BackendKind, blend};
+use crate::backend::BackendKind;
 use crate::project_config::{
-    Cursor, Destination, Notice, ProjectConfigRow, RowKind, Section, backend_summary, choice_label,
+    Cursor, Destination, Notice, ProjectConfigPanel, ProjectConfigRow, RowKind, backend_summary,
+    choice_label,
 };
 
 /// Where a row's value starts, so every answer lines up under the one above
 /// however long its label is ("Auto-confirm image", at 18, is the longest).
-const KEY_WIDTH: usize = 19;
+const KEY_WIDTH: usize = 22;
 
 pub(super) fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
     let areas = super::layout::project_config(area);
-    let Some(panel) = app.project_config.as_ref() else {
+    if app.project_config.is_none() {
         return;
-    };
-    let chosen = panel.chosen();
+    }
 
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
@@ -57,7 +55,7 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palett
 
     draw_header(frame, &areas, app, palette);
     draw_cards(frame, &areas, app, palette);
-    draw_rows(frame, &areas, app, palette, chosen);
+    draw_rows(frame, &areas, app, palette);
     draw_details(frame, &areas, app, palette);
     draw_footer(frame, &areas, app, palette);
 }
@@ -198,26 +196,30 @@ fn draw_cards(frame: &mut Frame, areas: &ProjectConfigAreas, app: &App, palette:
             .alignment(ratatui::layout::Alignment::Center),
         areas.hint,
     );
-    let _ = CARD_WIDTH;
 }
 
-/// The key list: sections, then their keys, indented under them.
-fn draw_rows(
-    frame: &mut Frame,
-    areas: &ProjectConfigAreas,
-    app: &App,
-    palette: Palette,
-    chosen: Option<BackendKind>,
-) {
+/// The key list: one bordered pane, the Details column's sibling, with
+/// sections, then their keys, inside it.
+fn draw_rows(frame: &mut Frame, areas: &ProjectConfigAreas, app: &App, palette: Palette) {
     let Some(panel) = app.project_config.as_ref() else {
         return;
     };
+    // The keyboard's whereabouts ride the border, the Details pane's own
+    // grammar in mirror: accent while the list drives, muted once `Tab`
+    // hands the arrows to the details.
+    let focused = panel.details_focus() == crate::app::DocsFocus::List;
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(super::border_style(focused, palette));
+    let inner = block.inner(areas.list);
+    frame.render_widget(block, areas.list);
+
     // The list reserves the scrollbar's column whether or not a bar is
     // drawn, so nothing reflows when one appears (`ui::files::list_view`'s
     // rule).
     let body = Rect {
-        width: areas.list.width.saturating_sub(1),
-        ..areas.list
+        width: inner.width.saturating_sub(1),
+        ..inner
     };
     let items: Vec<ListItem> = panel
         .rows()
@@ -240,54 +242,20 @@ fn draw_rows(
     );
     draw_scrollbar(
         frame,
-        areas.list,
+        inner,
         panel.rows().len(),
         body.height as usize,
         state.offset(),
         palette,
     );
-
-    // The chosen backend marks the sections it governs twice over: the
-    // whisper of a tint across the row (the choice above and the answers
-    // below are the same subject), and a `▎` edge in its accent on the
-    // leftmost cell --- the tint alone, at one channel step, was too
-    // subtle to say "this block belongs to the card you picked". General
-    // keeps neither, which is what makes the boundary legible.
-    let Some(kind) = chosen else { return };
-    let accent = kind.palette(palette).accent;
-    let wash = blend(accent, palette.bg, 1, 64);
-    for (offset, row) in panel.rows().iter().enumerate().skip(state.offset()) {
-        let y = body.y + (offset - state.offset()) as u16;
-        if y >= body.y + body.height {
-            break;
-        }
-        if row.section() == Section::General {
-            continue;
-        }
-        if selected != Some(offset) {
-            frame.buffer_mut().set_style(
-                Rect {
-                    x: body.x,
-                    y,
-                    width: body.width,
-                    height: 1,
-                },
-                Style::new().bg(wash),
-            );
-        }
-        let cell = &mut frame.buffer_mut()[(body.x, y)];
-        cell.set_symbol("▎");
-        cell.set_fg(accent);
-    }
 }
 
 /// One line of the list.
 fn row_line(app: &App, row: ProjectConfigRow, width: usize, palette: Palette) -> Line<'static> {
     let panel = app.project_config.as_ref();
     if let ProjectConfigRow::Heading(section) = row {
-        // A heading is a divider, not a caption: a rule across the column,
-        // and a count of how many of its rows have an answer anywhere ---
-        // the one summary that says whether a section still needs you.
+        // The heading opens its section: the title, a rule, and the
+        // answered count riding the rule's right end.
         let title = format!(" {} ", section.title());
         let (total, answered) = panel.map_or((0, 0), |panel| {
             let rows = panel.rows().iter().filter(|member| {
@@ -307,60 +275,67 @@ fn row_line(app: &App, row: ProjectConfigRow, width: usize, palette: Palette) ->
             (total, answered)
         });
         let count = format!("{answered}/{total}");
-        let rule = "─".repeat(width.saturating_sub(title.chars().count() + count.len() + 2));
+        let rule = "─".repeat(width.saturating_sub(title.chars().count() + count.len() + 3));
         return Line::from(vec![
+            Span::raw(" "),
             Span::styled(
                 title,
                 Style::new().fg(palette.accent).add_modifier(Modifier::BOLD),
             ),
             Span::styled(rule, muted_style(palette)),
-            Span::styled(format!(" {count}"), muted_style(palette)),
+            Span::styled(format!(" {count} "), muted_style(palette)),
         ]);
     }
 
-    // The state column: one fixed glyph before the label, so a row's
-    // standing is read off a mark rather than decoded from a colour ---
-    // four colours asked the reader to remember what each one meant.
-    //   ●  an answer waiting to be applied (the only thing not yet true)
-    //   ✓  written into the file this row edits
-    //   ←  absent here, answered by a less specific level
-    //   ·  unanswered anywhere
+    // The glyph column: exactly one mark per row, naming the *control* the
+    // row is answered through --- a folder for a path picker, ✎ for free
+    // text, ☰ for a fixed set --- so the same-shaped answers line up and a
+    // row's interaction is read off the mark. A row's *state* the value
+    // column says in colour: warning for an answer waiting to be applied,
+    // success for one written into the file, muted for an inherited or
+    // empty one.
     let pending = panel.and_then(|panel| panel.pending_for(row));
     let saved = panel.and_then(|panel| panel.saved(row));
-    let (mark, mark_style) = match pending {
-        Some(_) => ("●", Style::new().fg(palette.warning)),
-        None if saved.is_some() => ("✓", Style::new().fg(palette.success)),
-        None if app.project_config_fallback(row).is_some() => ("←", muted_style(palette)),
-        None => ("·", muted_style(palette)),
-    };
-    let mut spans = vec![
-        Span::styled(format!(" {mark} "), mark_style),
-        Span::styled(
-            format!("{:<KEY_WIDTH$}", row.label()),
-            Style::new().fg(palette.fg),
-        ),
-    ];
-    // A path row advertises its picker the way the Device Info MAC row
-    // advertises click-to-copy: the kind glyph after the value, drawn only
-    // when `[ui] icons` keeps decorations (the `none` set hides it whole).
     let icons = app.icon_set();
-    let picker_mark = if icons.shows_decorations() {
-        row.picker_kind().map(|kind| {
-            let glyph = match kind {
-                crate::path_picker::PickerKind::Directory => icons.directory(),
-                crate::path_picker::PickerKind::File(_) => icons.file(),
-            };
-            let cells = if matches!(icons, crate::icons::IconSet::Nerd) {
-                1
-            } else {
-                2
-            };
-            (glyph, cells + 1)
-        })
+    // `icon_column` centres the single-cell marks over the two-cell emoji's
+    // span so every row's label starts in the same column; reports carry no
+    // glyph and pay the column as blank, keeping the alignment.
+    let glyph = if icons.shows_decorations() {
+        match row.picker_kind() {
+            Some(crate::path_picker::PickerKind::Directory) => Some((
+                icons.directory(),
+                matches!(icons, crate::icons::IconSet::Nerd),
+            )),
+            Some(crate::path_picker::PickerKind::File(_)) => {
+                Some((icons.file(), matches!(icons, crate::icons::IconSet::Nerd)))
+            }
+            None if row.uses_target_picker() || matches!(row.kind(), RowKind::Choice(_)) => {
+                Some((icons.choice(), true))
+            }
+            None if matches!(row.kind(), RowKind::Text) => Some((icons.text_edit(), true)),
+            None => None,
+        }
     } else {
         None
     };
-    let budget = width.saturating_sub(KEY_WIDTH + 6 + picker_mark.map_or(0, |(_, cells)| cells));
+    let label = panel.map_or_else(
+        || row.label().to_string(),
+        |panel| display_label(panel, row),
+    );
+    let mut spans = vec![Span::raw(" ")];
+    if icons.shows_decorations() {
+        spans.push(match glyph {
+            Some((mark, single_cell)) => {
+                Span::styled(super::icon_column(mark, single_cell), muted_style(palette))
+            }
+            None => Span::raw("   "),
+        });
+    }
+    spans.push(Span::styled(
+        format!("{label:<KEY_WIDTH$}"),
+        Style::new().fg(palette.fg),
+    ));
+    let budget = width.saturating_sub(KEY_WIDTH + 5);
 
     // A row being typed into shows the buffer with a block cursor after it
     // --- the one-line-input grammar the rename and address dialogs use.
@@ -433,24 +408,39 @@ fn row_line(app: &App, row: ProjectConfigRow, width: usize, palette: Palette) ->
                 Style::new().fg(palette.success),
             )),
             None => match app.project_config_fallback(row) {
-                Some((value, origin)) => {
+                Some((value, _)) => {
                     spans.push(Span::styled(
-                        super::overlay::shorten_tail(
-                            &value,
-                            budget.saturating_sub(origin.chars().count() + 3),
-                        ),
+                        super::overlay::shorten_tail(&value, budget),
                         muted_style(palette),
                     ));
-                    spans.push(Span::styled(format!("  {origin}"), muted_style(palette)));
                 }
                 None => spans.push(Span::styled("—", muted_style(palette))),
             },
         },
     }
-    if let Some((glyph, _)) = picker_mark {
-        spans.push(Span::styled(format!(" {glyph}"), muted_style(palette)));
-    }
     Line::from(spans)
+}
+
+fn display_label(panel: &ProjectConfigPanel, row: ProjectConfigRow) -> String {
+    if row != ProjectConfigRow::OtaAddress {
+        return row.label().to_string();
+    }
+    match panel.ota_transport() {
+        crate::ota::Transport::Udp => "Board IP address".to_string(),
+        crate::ota::Transport::Serial => "Serial port".to_string(),
+        crate::ota::Transport::Ble => "Bluetooth address".to_string(),
+    }
+}
+
+fn display_hint(panel: &ProjectConfigPanel, row: ProjectConfigRow) -> &'static str {
+    if row != ProjectConfigRow::OtaAddress {
+        return row.hint();
+    }
+    match panel.ota_transport() {
+        crate::ota::Transport::Udp => "The board's IPv4 address for UDP updates.",
+        crate::ota::Transport::Serial => "The serial port smpmgr uses to reach the board.",
+        crate::ota::Transport::Ble => "The Bluetooth address smpmgr uses to reach the board.",
+    }
 }
 
 /// The details column: a bordered pane of labelled blocks in a fixed
@@ -526,7 +516,7 @@ fn draw_details(frame: &mut Frame, areas: &ProjectConfigAreas, app: &mut App, pa
 
     let mut lines = vec![
         Line::from(Span::styled(
-            row.label().to_string(),
+            display_label(panel, row),
             Style::new().fg(palette.accent).add_modifier(Modifier::BOLD),
         )),
         Line::from(Span::styled(
@@ -546,7 +536,7 @@ fn draw_details(frame: &mut Frame, areas: &ProjectConfigAreas, app: &mut App, pa
     // The hint is pre-wrapped (the docs pickers' own rule) rather than left
     // to `Paragraph::wrap`, so the pane's line count is exact and the
     // scroll offset clamps against a length that is really what is drawn.
-    for part in super::overlay::wrap_words(row.hint(), area.width as usize) {
+    for part in super::overlay::wrap_words(display_hint(panel, row), area.width as usize) {
         lines.push(Line::from(Span::styled(part, Style::new().fg(palette.fg))));
     }
 
@@ -730,7 +720,7 @@ fn draw_footer(frame: &mut Frame, areas: &ProjectConfigAreas, app: &App, palette
             Some(RowKind::Text)
                 if panel
                     .selected()
-                    .is_some_and(|row| row.picker_kind().is_some()) =>
+                    .is_some_and(|row| row.picker_kind().is_some() || row.uses_target_picker()) =>
             {
                 "enter  browse     ctrl+e  type     del  clear     "
             }

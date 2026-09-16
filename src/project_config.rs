@@ -22,6 +22,7 @@
 //! uses to tell the two kinds apart. Choosing one reveals the sections that
 //! backend owns; it writes nothing until the transaction is applied.
 
+use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 
 use crate::app::{DocsFocus, ThemeChoice};
@@ -96,7 +97,6 @@ pub enum ProjectConfigRow {
     ZephyrWorkspace,
     ZephyrProjects,
     ZephyrSdk,
-    ZephyrWest,
     ZephyrBoard,
     ZephyrShield,
     /// The application `west build` is pointed at, when the project root
@@ -129,15 +129,18 @@ pub enum RowKind {
 const BOOL_IDS: [&str; 2] = ["true", "false"];
 
 impl ProjectConfigRow {
+    pub const fn uses_target_picker(self) -> bool {
+        matches!(self, Self::ZephyrBoard | Self::ZephyrShield)
+    }
+
     pub fn picker_kind(self) -> Option<crate::path_picker::PickerKind> {
-        use crate::path_picker::{FileFilter, PickerKind};
+        use crate::path_picker::PickerKind;
         match self {
             Self::ZephyrWorkspace
             | Self::ZephyrProjects
             | Self::ZephyrSdk
             | Self::ZephyrApp
             | Self::MpyProjects => Some(PickerKind::Directory),
-            Self::ZephyrWest => Some(PickerKind::File(FileFilter::All)),
             _ => None,
         }
     }
@@ -151,7 +154,6 @@ impl ProjectConfigRow {
             Self::ZephyrWorkspace => Some((config::ZEPHYR_SECTION, "workspace")),
             Self::ZephyrProjects => Some((config::ZEPHYR_SECTION, "projects")),
             Self::ZephyrSdk => Some((config::ZEPHYR_SECTION, "sdk")),
-            Self::ZephyrWest => Some((config::ZEPHYR_SECTION, "west")),
             Self::ZephyrBoard => Some((config::ZEPHYR_SECTION, "board")),
             Self::ZephyrShield => Some((config::ZEPHYR_SECTION, "shield")),
             Self::ZephyrApp => Some((config::ZEPHYR_SECTION, "app")),
@@ -205,14 +207,13 @@ impl ProjectConfigRow {
             Self::ZephyrWorkspace => "Workspace path",
             Self::ZephyrProjects => "Projects folder",
             Self::ZephyrSdk => "SDK path",
-            Self::ZephyrWest => "west program",
             Self::ZephyrBoard => "Target board",
             Self::ZephyrShield => "Shield",
             Self::ZephyrApp => "Application folder",
             Self::ZephyrBuildArgs => "Extra build arguments",
             Self::OtaMethod => "Mechanism",
             Self::OtaTransport => "Transport",
-            Self::OtaAddress => "Board address",
+            Self::OtaAddress => "Board IP address",
             Self::OtaAutoConfirm => "Auto-confirm image",
             Self::MpyProjects => "Projects folder",
             Self::Variants => "Build variants",
@@ -272,7 +273,6 @@ impl ProjectConfigRow {
             Self::ZephyrWorkspace => "The west workspace root: the folder holding .west/.",
             Self::ZephyrProjects => "Where this machine's Zephyr applications live.",
             Self::ZephyrSdk => "The toolchain folder, exported as ZEPHYR_SDK_INSTALL_DIR.",
-            Self::ZephyrWest => "An explicit west program, instead of the workspace venv's.",
             Self::ZephyrBoard => "The board target west build -b is given.",
             Self::ZephyrShield => "The shield on that board, passed as --shield.",
             Self::ZephyrApp => {
@@ -283,7 +283,7 @@ impl ProjectConfigRow {
             }
             Self::OtaMethod => "The update mechanism. mcumgr is the only one implemented.",
             Self::OtaTransport => "How smpmgr reaches the board.",
-            Self::OtaAddress => "The board's address for that transport.",
+            Self::OtaAddress => "The board's IPv4 address for UDP updates.",
             Self::OtaAutoConfirm => {
                 "Confirm a verified image automatically, which makes it permanent."
             }
@@ -445,7 +445,6 @@ impl ProjectConfigPanel {
                 ProjectConfigRow::ZephyrWorkspace,
                 ProjectConfigRow::ZephyrProjects,
                 ProjectConfigRow::ZephyrSdk,
-                ProjectConfigRow::ZephyrWest,
                 ProjectConfigRow::ZephyrBoard,
                 ProjectConfigRow::ZephyrShield,
                 ProjectConfigRow::ZephyrApp,
@@ -759,12 +758,30 @@ impl ProjectConfigPanel {
         }
     }
 
+    /// Records a choice returned by one of the Zephyr target pickers. Like a
+    /// path pick, it remains part of this window's transaction until apply.
+    pub fn set_target(&mut self, row: ProjectConfigRow, value: Option<String>) {
+        if matches!(
+            row,
+            ProjectConfigRow::ZephyrBoard | ProjectConfigRow::ZephyrShield
+        ) {
+            self.record(row, value);
+        }
+    }
+
     pub fn cancel_edit(&mut self) {
         self.edit = None;
     }
 
     pub fn push_char(&mut self, ch: char) {
+        let masked_ipv4 = self.ota_transport() == Transport::Udp;
         if let Some(edit) = &mut self.edit {
+            if edit.row == ProjectConfigRow::OtaAddress
+                && masked_ipv4
+                && !ipv4_prefix_is_valid(&edit.input, ch)
+            {
+                return;
+            }
             edit.input.push(ch);
         }
     }
@@ -793,7 +810,38 @@ impl ProjectConfigPanel {
     pub fn commit_edit(&mut self) {
         let Some(edit) = self.edit.take() else { return };
         let value = edit.input.trim().to_string();
+        if edit.row == ProjectConfigRow::OtaAddress
+            && self.ota_transport() == Transport::Udp
+            && !value.is_empty()
+            && value.parse::<Ipv4Addr>().is_err()
+        {
+            self.error = Some("enter a valid IPv4 address (for example, 192.168.1.42)".to_string());
+            self.edit = Some(edit);
+            return;
+        }
         self.record(edit.row, (!value.is_empty()).then_some(value));
+    }
+
+    /// Rejects an apply that would pair UDP with an existing non-IPv4
+    /// address, including one inherited from the configuration file.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.ota_transport() != Transport::Udp {
+            return Ok(());
+        }
+        let Some(address) = self.value(ProjectConfigRow::OtaAddress) else {
+            return Ok(());
+        };
+        address.parse::<Ipv4Addr>().map_err(|_| {
+            "Board IP address must be a valid IPv4 address for UDP updates".to_string()
+        })?;
+        Ok(())
+    }
+
+    pub fn ota_transport(&self) -> Transport {
+        self.value(ProjectConfigRow::OtaTransport)
+            .as_deref()
+            .and_then(Transport::from_id)
+            .unwrap_or_default()
     }
 
     /// Steps the selected choice row by `delta`, the empty answer being the
@@ -912,6 +960,19 @@ impl ProjectConfigPanel {
         self.error = None;
         self.notice = Some(notice);
     }
+}
+
+/// Whether appending `next` preserves an editable IPv4-shaped input. This is
+/// an input mask, not validation: partial octets remain possible while typing.
+fn ipv4_prefix_is_valid(input: &str, next: char) -> bool {
+    if !next.is_ascii_digit() && next != '.' {
+        return false;
+    }
+    let candidate = format!("{input}{next}");
+    let parts: Vec<_> = candidate.split('.').collect();
+    parts.len() <= 4
+        && parts.iter().all(|part| part.len() <= 3)
+        && !(next == '.' && (input.is_empty() || input.ends_with('.')))
 }
 
 /// The spelling a choice row's value is shown with. Ids are what the file

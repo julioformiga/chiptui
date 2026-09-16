@@ -1596,12 +1596,14 @@ mod tests {
                 selected: 0,
                 scroll: 0,
                 focus: DocsFocus::List,
+                purpose: crate::app::overlay::TargetPickerPurpose::Build,
             },
             Overlay::ShieldPicker {
                 input: String::new(),
                 selected: 0,
                 scroll: 0,
                 focus: DocsFocus::List,
+                purpose: crate::app::overlay::TargetPickerPurpose::Build,
             },
             Overlay::Packages,
         ] {

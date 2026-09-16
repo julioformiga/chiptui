@@ -260,12 +260,14 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
             selected,
             scroll,
             focus,
+            ..
         } => draw_board_picker(frame, area, app, &input, selected, scroll, focus, palette),
         Overlay::ShieldPicker {
             input,
             selected,
             scroll,
             focus,
+            ..
         } => draw_shield_picker(frame, area, app, &input, selected, scroll, focus, palette),
         Overlay::DirPicker {
             purpose,

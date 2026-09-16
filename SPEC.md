@@ -700,8 +700,8 @@ consulted. The startup flow:
   the file remains the single source of truth and later starts never
   re-ask.
 
-The `west` executable is the configured `west` key when present, else the
-workspace's `.venv/bin/west` when it exists, else `west` from `PATH`. No
+The `west` executable is the workspace's `.venv/bin/west` when it exists,
+else `west` from `PATH`. No
 venv activation is performed or needed: executing the venv's console
 script directly is the activated environment, and the pieces `activate`
 adds are injected per command (`ZEPHYR_BASE` always --- derived from the
@@ -927,7 +927,6 @@ The optional keys, shared by both config levels:
 workspace = "~/zephyrproject"
 projects = "~/zephyrapps"
 # sdk = "~/zephyr-sdk-0.17.1"   # written by the installer when it installs one
-# west = "/custom/venv/bin/west"
 # app = "app"   # chiptui.toml only: the application directory when the
 #               # repository root is a board module (west build's source dir)
 ```
@@ -1402,23 +1401,24 @@ bare `,` where the terminal cannot send the chord --- and opened by itself
 over a directory that names no project.
 
 A card strip leads it, one card per backend, centred, and under it two
-columns: the answers on the left, grouped into General and the chosen
+bordered panes: the answers on the left, one continuous list grouped into
+General and the chosen
 backend's own sections (each heading a divider carrying how many of its
-rows have an answer), and a bordered Details pane on the right --- what the
+rows have an answer), and a Details pane on the right --- what the
 selected row is for, the key's literal spelling, what it can be, which
 level of the configuration stack answers it now (`chiptui.toml`, then the
 user config, then the defaults, stated once under the strip), and the
-literal line an unapplied answer will write. Each answer row carries a
-state mark (pending, in the file, answered by a less specific level,
-unanswered) and a pending one shows the `old → new` transition rather than
+literal line an unapplied answer will write. Each answer row carries one
+glyph naming its control --- a folder for a path picker, `✎` for free
+text, `☰` for a fixed set --- and the value's colour carries the state
+(written into the file, answered by a less specific level, unanswered, or
+waiting to be applied); a pending one shows the `old → new` transition
+rather than
 the new value alone. The Details pane lists every option of a choice row ---
 the whole theme catalogue included --- and scrolls when its content is taller
 than the pane (`tab` hands it the keyboard; the arrows and `pgup`/`pgdn`
 then scroll it, as do the wheel and a click over it). The chosen card is
-filled with its backend's tint, and
-the same tint continues as a whisper behind the sections that backend
-governs, with a `▎` edge in the backend's accent --- so the choice and the
-answers it controls read as one subject.
+filled with its backend's tint.
 
 `↑/↓` moves (headings are skipped) and reaches the cards above the first
 row; `←/→` picks a card there and changes a fixed-set value on a row;
@@ -1613,8 +1613,8 @@ Listing rows carry a kind mark --- directory, file or parent (`..`) ---
 following `[ui] icons`: two-cell emoji under `"unicode"` (the default),
 single-width Nerd Font glyphs under `"nerd"`, and no mark at all under
 `"none"`, in the same decoration column the file browser uses. Path rows
-in project configuration advertise their picker with the same glyph after
-the value. The file panes (Files, Device Files and the Zephyr workspace
+in project configuration advertise their picker with the same glyph before
+their label. The file panes (Files, Device Files and the Zephyr workspace
 list) draw folders with the pickers' marks: the closed/open emoji pair
 under `"unicode"`, the single-width `nf-fa-folder`/`nf-fa-folder-open`
 pair under `"nerd"`. Under `"nerd"` their files take the pickers'
@@ -1642,11 +1642,12 @@ Firmware may be selected anywhere on disk; the project's `firmware/`
 remains the download destination, and selecting an image never bypasses
 flash confirmation or starts a command.
 
-Path rows in project configuration open the appropriate picker on `Enter`
-(directories for workspace, projects, SDK and application; a file for the
-west program). Selecting returns a pending answer to the same configuration
-transaction. `Ctrl+E` retains manual entry, including program names resolved
-through `PATH` and paths to installations not created yet.
+Path rows in project configuration open the appropriate directory picker on
+`Enter` (workspace, projects, SDK and application). Selecting returns a
+pending answer to the same configuration transaction. `Ctrl+E` retains manual
+entry, including paths to installations not created yet. Board and shield rows
+open the filterable `west boards` and `west shields` pickers; their choices are
+also pending until the configuration transaction is applied.
 
 The last accepted folder is remembered across restarts per use in the
 **user** configuration's `[pickers]` section. An existing current answer
@@ -1720,7 +1721,6 @@ cmake = "cmake"
 workspace = "~/zephyrproject"
 projects = "~/zephyrapps"
 # sdk = "~/zephyr-sdk-0.17.1"
-# west = "~/zephyrproject/.venv/bin/west"
 
 [ui]
 log_panel = true

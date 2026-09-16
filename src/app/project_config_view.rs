@@ -197,6 +197,7 @@ impl App {
                 // the arrows already mean here.
                 None => panel.step(1),
                 Some(row) => match row.kind() {
+                    _ if row.uses_target_picker() => self.open_config_target_picker(row),
                     RowKind::Text if row.picker_kind().is_some() => self.open_config_path(row),
                     RowKind::Text => panel.begin_edit(),
                     RowKind::Choice(_) => panel.cycle(1),
@@ -245,6 +246,13 @@ impl App {
             return;
         };
         if !panel.is_dirty() {
+            return;
+        }
+        let validation = panel.validate();
+        if let Err(error) = validation {
+            if let Some(panel) = &mut self.project_config {
+                panel.set_error(error);
+            }
             return;
         }
         self.overlay = Some(Overlay::ConfirmApplyConfig { confirm: true });
@@ -349,6 +357,8 @@ impl App {
         let name = panel
             .pending_for(ProjectConfigRow::Name)
             .map(|value| value.map(str::to_string));
+        let target_changed = panel.pending_for(ProjectConfigRow::ZephyrBoard).is_some()
+            || panel.pending_for(ProjectConfigRow::ZephyrShield).is_some();
         let count = panel.change_count();
         // Asked before a single byte is written: `chiptui.toml` is not a
         // hidden entry, so the transaction's own first write is what would
@@ -372,6 +382,9 @@ impl App {
         // rather than holds, so re-resolving is all that is left.
         self.refresh_workspace_resolution();
         self.reload_mpy_projects();
+        if target_changed {
+            self.refresh_config_target();
+        }
         self.report_tools();
 
         let backend = self.manager.selected_kind();
@@ -420,6 +433,25 @@ impl App {
                 &self.config_dir,
                 &self.home_dir,
             ));
+    }
+
+    /// A target chosen in project configuration was deliberately not sent
+    /// through the build picker's immediate persistence path. Once its file
+    /// transaction lands, reflect the new, more-specific answer in a live
+    /// build panel too.
+    fn refresh_config_target(&mut self) {
+        let root = self.project_config_root();
+        let (board, shield) = self.target_answers(&root);
+        let Some(panel) = &mut self.build else {
+            return;
+        };
+        if let Some(board) = board {
+            match board.origin {
+                crate::build::BoardOrigin::ProjectFile => panel.set_project_file_board(board.name),
+                _ => panel.set_config_board(board.name),
+            }
+        }
+        panel.set_shield(shield);
     }
 
     /// Writes `project_type` and rebuilds the session around it.
@@ -709,14 +741,13 @@ impl App {
             ProjectConfigRow::Mouse => Some(("off".to_string(), "default")),
             ProjectConfigRow::ZephyrWorkspace
             | ProjectConfigRow::ZephyrProjects
-            | ProjectConfigRow::ZephyrSdk
-            | ProjectConfigRow::ZephyrWest => {
+            | ProjectConfigRow::ZephyrSdk => {
                 let user = crate::settings::load_user(&self.config_dir)?;
                 let value = match row {
                     ProjectConfigRow::ZephyrWorkspace => user.workspace,
                     ProjectConfigRow::ZephyrProjects => user.projects,
                     ProjectConfigRow::ZephyrSdk => user.sdk,
-                    _ => user.west,
+                    _ => unreachable!("only Zephyr path rows reach this branch"),
                 }?;
                 Some((value, "user config"))
             }

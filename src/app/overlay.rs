@@ -12,11 +12,29 @@ use crate::browser::Side;
 use crate::build::BuildAction;
 use crate::device::ScriptState;
 use crate::files::SyncStatus;
+use crate::project_config::ProjectConfigRow;
 
 use super::help::{self, HelpSection};
 use super::{
     App, DocsFocus, FileAction, OVERLAY_HELP, PendingEdit, ThemeChoice, View, ViewerSource,
 };
+
+/// Which flow owns a board or shield picker result. Configuration changes
+/// stay pending until its enclosing transaction is applied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TargetPickerPurpose {
+    Build,
+    ProjectConfig(ProjectConfigRow),
+}
+
+impl TargetPickerPurpose {
+    fn return_overlay(self) -> Option<Overlay> {
+        match self {
+            Self::Build => None,
+            Self::ProjectConfig(_) => Some(Overlay::ProjectConfig),
+        }
+    }
+}
 
 impl App {
     /// Shared key handling for every Yes/No confirm overlay
@@ -397,6 +415,7 @@ impl App {
                 selected,
                 scroll,
                 focus,
+                purpose,
             } => {
                 // The list the cursor walks is the *filtered* one, so every
                 // filter change re-clamps `selected` against the length the
@@ -418,6 +437,7 @@ impl App {
                         selected,
                         scroll: 0,
                         focus,
+                        purpose,
                     });
                 };
                 let count = self
@@ -427,7 +447,7 @@ impl App {
                     .unwrap_or(0)
                     .max(1);
                 match key.code {
-                    KeyCode::Esc | KeyCode::Char('q') => self.overlay = None,
+                    KeyCode::Esc | KeyCode::Char('q') => self.overlay = purpose.return_overlay(),
                     KeyCode::Backspace => {
                         let mut input = input;
                         input.pop();
@@ -459,6 +479,7 @@ impl App {
                             selected,
                             scroll,
                             focus,
+                            purpose,
                         });
                     }
                     KeyCode::Up => {
@@ -475,6 +496,7 @@ impl App {
                             selected,
                             scroll,
                             focus: focus.toggled(),
+                            purpose,
                         });
                     }
                     // The details pane pages by the rows the renderer drew
@@ -491,12 +513,18 @@ impl App {
                             selected,
                             scroll,
                             focus,
+                            purpose,
                         });
                     }
-                    KeyCode::Enter => {
-                        self.overlay = None;
-                        self.apply_board_picker(&input, selected);
-                    }
+                    KeyCode::Enter => match purpose {
+                        TargetPickerPurpose::Build => {
+                            self.overlay = None;
+                            self.apply_board_picker(&input, selected);
+                        }
+                        TargetPickerPurpose::ProjectConfig(row) => {
+                            self.apply_config_target_picker(row, &input, selected, false);
+                        }
+                    },
                     _ => {}
                 }
             }
@@ -505,6 +533,7 @@ impl App {
                 selected,
                 scroll,
                 focus,
+                purpose,
             } => {
                 // Same grammar as the board picker, over a list whose row 0
                 // is the `(none)` row --- the shield is optional, and that
@@ -521,6 +550,7 @@ impl App {
                         selected,
                         scroll: 0,
                         focus,
+                        purpose,
                     });
                 };
                 let count = self
@@ -529,7 +559,7 @@ impl App {
                     .map(|panel| panel.filtered_shields_count(&input) + 1)
                     .unwrap_or(1);
                 match key.code {
-                    KeyCode::Esc | KeyCode::Char('q') => self.overlay = None,
+                    KeyCode::Esc | KeyCode::Char('q') => self.overlay = purpose.return_overlay(),
                     KeyCode::Backspace => {
                         let mut input = input;
                         input.pop();
@@ -553,6 +583,7 @@ impl App {
                             selected,
                             scroll,
                             focus,
+                            purpose,
                         });
                     }
                     KeyCode::Up => {
@@ -569,6 +600,7 @@ impl App {
                             selected,
                             scroll,
                             focus: focus.toggled(),
+                            purpose,
                         });
                     }
                     KeyCode::PageUp | KeyCode::PageDown => {
@@ -583,12 +615,18 @@ impl App {
                             selected,
                             scroll,
                             focus,
+                            purpose,
                         });
                     }
-                    KeyCode::Enter => {
-                        self.overlay = None;
-                        self.apply_shield_picker(&input, selected);
-                    }
+                    KeyCode::Enter => match purpose {
+                        TargetPickerPurpose::Build => {
+                            self.overlay = None;
+                            self.apply_shield_picker(&input, selected);
+                        }
+                        TargetPickerPurpose::ProjectConfig(row) => {
+                            self.apply_config_target_picker(row, &input, selected, true);
+                        }
+                    },
                     _ => {}
                 }
             }
@@ -1440,6 +1478,7 @@ pub enum Overlay {
         selected: usize,
         scroll: u16,
         focus: DocsFocus,
+        purpose: TargetPickerPurpose,
     },
     /// The shield picker: the same filterable list grammar over `west
     /// shields`, with a leading `(none)` row --- the shield is optional, and
@@ -1453,6 +1492,7 @@ pub enum Overlay {
         selected: usize,
         scroll: u16,
         focus: DocsFocus,
+        purpose: TargetPickerPurpose,
     },
     /// The installation-directory picker: a real filesystem browser (no
     /// discovery guesses --- the user knows where their Zephyr lives).

@@ -49,9 +49,8 @@ pub const GETTING_STARTED: &str =
 /// project root (`cwd`) is.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WestEnv {
-    /// The west executable: the venv's console script when one exists, an
-    /// explicit config override, or bare `west` (a `PATH` lookup, the
-    /// pre-workspace behavior).
+    /// The west executable: the workspace venv's console script when one
+    /// exists, otherwise bare `west` (a `PATH` lookup).
     pub program: String,
     /// Environment overrides, applied to every command.
     pub env: Vec<(String, String)>,
@@ -145,8 +144,8 @@ impl Workspace {
     /// against `PATH` would call a perfectly good venv west "missing" for
     /// never having been exported. Resolution's own fallback --- a bare
     /// program name --- is not a location, so it is reported as absent here
-    /// and the `PATH` answer stands, which is what `west = "west"` (and a
-    /// venv with no west installed into it) asks for.
+    /// and the `PATH` answer stands when a workspace venv has no west
+    /// installed into it.
     pub fn tool_locations(&self) -> Vec<(&'static str, PathBuf)> {
         let west = Path::new(&self.west);
         if is_bare_name(west) {
@@ -325,8 +324,8 @@ pub fn install_state(dir: &Path) -> InstallState {
     InstallState::Complete
 }
 
-/// Builds the [`Workspace`] for a validated `dir`, layering the explicit
-/// pieces (west/sdk) from `settings` over the conventional derivations.
+/// Builds the [`Workspace`] for a validated `dir`, deriving the west program
+/// from the workspace and layering the optional SDK from `settings`.
 fn from_settings(
     input: &ResolveInput<'_>,
     dir: PathBuf,
@@ -335,23 +334,7 @@ fn from_settings(
 ) -> Workspace {
     let zephyr_base = dir.join(manifest_path(&dir));
     let venv = dir.join(".venv").is_dir().then(|| dir.join(".venv"));
-    let west = if let Some(west) = settings.west.as_deref() {
-        // A configured *path* is anchored to the workspace, never to the
-        // cwd: the cwd of the process and the cwd of the commands are two
-        // different directories (a picked project re-roots the latter), so
-        // a relative override would be validated against one and executed
-        // against the other. `join` leaves an absolute path alone. A bare
-        // program name carries no directory and stays a `PATH` lookup ---
-        // `west = "west"` asks for exactly that.
-        let west = expand_home(west, input.home);
-        if is_bare_name(&west) {
-            west
-        } else {
-            dir.join(west)
-        }
-        .display()
-        .to_string()
-    } else if let Some(venv) = &venv
+    let west = if let Some(venv) = &venv
         && venv.join("bin/west").is_file()
     {
         venv.join("bin/west").display().to_string()
@@ -372,10 +355,8 @@ fn from_settings(
     }
 }
 
-/// Whether a configured program is a bare name --- no directory component
-/// at all, which means `PATH` decides where it comes from, exactly as it
-/// does for every tool nobody configured. Anything with a directory in it
-/// is a *location*, and gets treated as one.
+/// Whether a program has no directory component and is therefore resolved
+/// through `PATH` rather than being a workspace-owned location.
 fn is_bare_name(program: &Path) -> bool {
     program
         .parent()
@@ -507,38 +488,20 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    /// A `west` override is a location in the workspace, not in whatever
-    /// directory ChipTUI happened to start in --- the commands run with the
-    /// project root as cwd, so a cwd-relative answer would be checked in one
-    /// place and executed in another. A bare name stays a `PATH` lookup.
     #[test]
-    fn a_west_override_is_anchored_to_the_workspace() {
-        let tmp = scratch("westpath");
+    fn west_is_always_derived_from_the_workspace() {
+        let tmp = scratch("derived-west");
         let ws = install_dir(&tmp, "myzephyr", false);
-        let resolved = |west: &str| {
-            let settings = ZephyrSettings {
-                workspace: Some(ws.display().to_string()),
-                west: Some(west.to_string()),
-                ..Default::default()
-            };
-            let mut input = input(&tmp);
-            input.user_settings = Some(&settings);
-            let Resolution::Single(workspace) = resolve(&input) else {
-                panic!("expected a resolved installation");
-            };
-            workspace.west
+        let settings = ZephyrSettings::parse(&format!(
+            "[zephyr]\nworkspace = \"{}\"\nwest = \"/opt/ignored-west\"\n",
+            ws.display()
+        ));
+        let mut input = input(&tmp);
+        input.user_settings = Some(&settings);
+        let Resolution::Single(workspace) = resolve(&input) else {
+            panic!("expected a resolved installation");
         };
-
-        assert_eq!(
-            resolved("tools/west"),
-            ws.join("tools/west").display().to_string()
-        );
-        assert_eq!(resolved("/opt/west"), "/opt/west");
-        assert_eq!(
-            resolved(super::super::commands::PROGRAM),
-            super::super::commands::PROGRAM,
-            "a bare name asks for PATH, and must not become <workspace>/west"
-        );
+        assert_eq!(workspace.west, super::super::commands::PROGRAM);
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
