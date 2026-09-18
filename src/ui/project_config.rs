@@ -289,11 +289,11 @@ fn row_line(app: &App, row: ProjectConfigRow, width: usize, palette: Palette) ->
 
     // The glyph column: exactly one mark per row, naming the *control* the
     // row is answered through --- a folder for a path picker, ✎ for free
-    // text, ☰ for a fixed set --- so the same-shaped answers line up and a
-    // row's interaction is read off the mark. A row's *state* the value
-    // column says in colour: warning for an answer waiting to be applied,
-    // success for one written into the file, muted for an inherited or
-    // empty one.
+    // text, ☰ for a fixed set, a chip for a board target --- so the
+    // same-shaped answers line up and a row's interaction is read off the
+    // mark. A row's *state* the value column says in colour: warning for an
+    // answer waiting to be applied, success for one written into the file,
+    // muted for an inherited or empty one.
     let pending = panel.and_then(|panel| panel.pending_for(row));
     let saved = panel.and_then(|panel| panel.saved(row));
     let icons = app.icon_set();
@@ -309,9 +309,8 @@ fn row_line(app: &App, row: ProjectConfigRow, width: usize, palette: Palette) ->
             Some(crate::path_picker::PickerKind::File(_)) => {
                 Some((icons.file(), matches!(icons, crate::icons::IconSet::Nerd)))
             }
-            None if row.uses_target_picker() || matches!(row.kind(), RowKind::Choice(_)) => {
-                Some((icons.choice(), true))
-            }
+            None if row.uses_target_picker() => Some((icons.microchip(), true)),
+            None if matches!(row.kind(), RowKind::Choice(_)) => Some((icons.choice(), true)),
             None if matches!(row.kind(), RowKind::Text) => Some((icons.text_edit(), true)),
             None => None,
         }

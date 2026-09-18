@@ -13,10 +13,10 @@ use std::path::{Path, PathBuf};
 
 use chiptui::app::{App, AppEvent, Overlay};
 use chiptui::backend::{BackendKind, BackendRegistry};
-use chiptui::project::{DetectionSource, ProjectManager, config};
+use chiptui::project::{config, DetectionSource, ProjectManager};
 use chiptui::project_config::{Cursor, ProjectConfigRow};
 use chiptui::settings::{self, ProjectRegistry};
-use chiptui::startup::{Route, route};
+use chiptui::startup::{route, Route};
 use ratatui::crossterm::event::KeyCode;
 
 mod common;
@@ -249,13 +249,12 @@ fn udp_address_uses_an_ipv4_mask_and_validation() {
         app.project_config.as_ref().unwrap().editing().is_some(),
         "an out-of-range IPv4 octet remains editable"
     );
-    assert!(
-        app.project_config
-            .as_ref()
-            .unwrap()
-            .error()
-            .is_some_and(|error| error.contains("valid IPv4"))
-    );
+    assert!(app
+        .project_config
+        .as_ref()
+        .unwrap()
+        .error()
+        .is_some_and(|error| error.contains("valid IPv4")));
     app.handle(key(KeyCode::Delete));
     for ch in "192.168.1.42".chars() {
         app.handle(key(KeyCode::Char(ch)));
@@ -1310,8 +1309,8 @@ fn rows_carry_their_controls_glyph_and_pending_ones_the_transition() {
     }
     let board = line(&frame, "Target board", "qemu_x86");
     assert!(
-        board.contains('☰'),
-        "a picked answer carries the fixed-set glyph:\n{board}"
+        board.contains('◆'),
+        "a picked board target carries the chip glyph:\n{board}"
     );
     let theme = line(&frame, "Color theme", "Tokyo Night");
     assert!(

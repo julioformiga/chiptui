@@ -226,7 +226,10 @@ impl IconSet {
     }
 
     /// Query the chip's identity: `Chip information`. `◆` /
-    /// `nf-fa-microchip`.
+    /// `nf-fa-microchip`. Also the mark of a board-target row in the
+    /// project configuration's list (`Target board`, `Shield`), where the
+    /// chip is what is being named --- the same statement in two panes,
+    /// the way [`Self::text_edit`] shares [`Self::pencil`].
     pub const fn microchip(self) -> &'static str {
         match self {
             Self::Unicode => "◆",
