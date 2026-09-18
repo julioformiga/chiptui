@@ -642,6 +642,10 @@ fn the_modal_fits_the_declared_minimum() {
     let (mut app, root) = ota_app("minimum", "smpmgr");
     open_and_probe(&mut app);
     let frame = render(&mut app, 80, 32);
+    // The pinned stack (the target block, the requirements, the prepare
+    // steps, the update heading, and --- never starved --- the output
+    // section) shows whole at the minimum. The document's tail --- the
+    // stages the viewport cannot hold --- waits behind the scrollbar.
     for needle in [
         "Target",
         "Image",
@@ -651,8 +655,6 @@ fn the_modal_fits_the_declared_minimum() {
         "Prepare",
         "VERSION",
         "Update",
-        "Verify",
-        "Confirm",
         "Output",
     ] {
         assert!(
@@ -660,6 +662,94 @@ fn the_modal_fits_the_declared_minimum() {
             "80x32 must show '{needle}':\n{frame}"
         );
     }
+    assert!(
+        frame.contains('┃'),
+        "an overflowing document draws its scrollbar:\n{frame}"
+    );
+    let stage_rows = |frame: &str| {
+        frame
+            .lines()
+            .filter(|line| line.contains("□ Confirm"))
+            .count()
+    };
+    assert_eq!(
+        stage_rows(&frame),
+        0,
+        "the last stage starts below the fold:\n{frame}"
+    );
+    // `j` walks the document, and the end holds: the last stage row draws
+    // whole above the pinned Output, and further `j`s change nothing.
+    let max = app.ota_doc_max;
+    assert!(max > 0, "80x32 leaves the document something to scroll");
+    for _ in 0..max + 5 {
+        app.handle(key(KeyCode::Char('j')));
+    }
+    let frame = render(&mut app, 80, 32);
+    assert_eq!(app.ota_doc_scroll, max, "the scroll clamps at the end");
+    assert_eq!(
+        stage_rows(&frame),
+        1,
+        "the scrolled-to-end document shows the last stage:\n{frame}"
+    );
+    // And `k` walks back to the top, where the document starts.
+    for _ in 0..max + 5 {
+        app.handle(key(KeyCode::Char('k')));
+    }
+    let frame = render(&mut app, 80, 32);
+    assert_eq!(app.ota_doc_scroll, 0, "the scroll clamps at the top");
+    assert!(
+        frame.contains("□ Probe"),
+        "the first stage is the top of the walk:\n{frame}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// The arrows' loyalty is contextual: when the document overflows they
+/// walk it; when it fits they stay the Output's keys, as they always were.
+#[test]
+fn the_arrows_scroll_the_document_only_when_it_overflows() {
+    let (mut app, root) = ota_app("docscroll", "smpmgr");
+    open_and_probe(&mut app);
+
+    // 80x32: the document does not fit, so `j` walks it and touches
+    // nothing else.
+    let _ = render(&mut app, 80, 32);
+    assert!(app.ota_doc_max > 0, "the document overflows at 80x32");
+    app.handle(key(KeyCode::Down));
+    assert_eq!(app.ota_doc_scroll, 1, "`j` scrolls the document");
+    app.handle(key(KeyCode::Up));
+    assert_eq!(app.ota_doc_scroll, 0, "`k` walks back");
+
+    // 100x38: everything fits, the scrollbar is gone, and the arrows are
+    // the Output's again --- `j` scrolls the output tail, the way every
+    // pre-existing output-scrolling test knows. The fixture's output feed
+    // is empty until something runs, so the test seeds it: scrolling an
+    // empty feed is a no-op, which would prove nothing.
+    let frame = render(&mut app, 100, 38);
+    assert_eq!(app.ota_doc_max, 0, "the document fits at 100x38");
+    assert!(
+        !frame.contains('┃'),
+        "no scrollbar when the document fits:\n{frame}"
+    );
+    let panel = app.ota.as_mut().unwrap();
+    for line in 0..8 {
+        panel.output.push_back(format!("upload line {line}"));
+    }
+    // `k` scrolls the output back; `j` returns it to the live tail, where
+    // a further `j` is a no-op (scroll 0 *is* the tail).
+    app.handle(key(KeyCode::Up));
+    assert_eq!(app.ota_doc_scroll, 0, "the document has nothing to move");
+    assert_eq!(
+        app.ota.as_ref().unwrap().output_scroll,
+        1,
+        "`k` scrolled the output back"
+    );
+    app.handle(key(KeyCode::Down));
+    assert_eq!(
+        app.ota.as_ref().unwrap().output_scroll,
+        0,
+        "`j` returned to the live tail"
+    );
     let _ = std::fs::remove_dir_all(&root);
 }
 

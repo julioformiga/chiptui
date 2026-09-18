@@ -358,6 +358,15 @@ pub struct App {
     /// Rows of OTA output the last frame drew --- `install_viewport`'s
     /// contract, for the OTA modal's own output section.
     pub ota_viewport: usize,
+    /// The OTA modal's document scroll: the first visible row of the
+    /// sections above the pinned Output (`Overlay::Ota`). The key handler
+    /// moves it; the renderer clamps it against the row total it alone
+    /// knows (the details pane's contract).
+    pub ota_doc_scroll: usize,
+    /// How many rows the OTA modal's document can still move --- total
+    /// minus viewport, published by the renderer each frame. Zero means
+    /// the document fits, and the arrows stay the Output's keys.
+    pub ota_doc_max: usize,
     /// The `smpmgr` program override, for tests (recorded here because the
     /// panel is created when the modal opens).
     ota_tool_path: Option<String>,
@@ -665,6 +674,8 @@ impl App {
             install_viewport: 0,
             ota: None,
             ota_viewport: 0,
+            ota_doc_scroll: 0,
+            ota_doc_max: 0,
             ota_tool_path: None,
             project_config: None,
             install_confirm_pending: false,

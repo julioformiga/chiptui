@@ -276,6 +276,31 @@ For UI changes, also verify:
 -   error paths;
 -   terminal restoration.
 
+## Iteration Discipline
+
+Any repeated task --- running checks, searching, probing, retrying ---
+starts with a declared stopping rule: what result ends the loop, and
+how many rounds it may take at most. The default for verification is
+one full pass over the affected checks once the change is in its final
+state.
+
+A round that answers the question ends the loop. Starting another needs
+a reason the last one cannot provide:
+
+-   the thing under test changed since the last round;
+-   the last round failed, and the failure is being diagnosed.
+
+Repeating a round that already succeeded "to be sure" spends the
+operator's machine time answering a question that was answered. A dead
+end that turns out to be environmental (external state, resource
+exhaustion, tooling crashes outside the change) is documented once with
+its observed cause and left to the operator --- not retried, and never
+worked around by guessing at the cause.
+
+Diagnostics added while investigating (temporary logging, scratch
+tests, instrumented re-runs) are removed before reporting; their
+findings, not their presence, are the deliverable.
+
 ## Backend Rules
 
 ### MicroPython

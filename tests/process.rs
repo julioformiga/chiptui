@@ -55,8 +55,13 @@ fn alive(pid: u32) -> bool {
 /// one. Waiting for the file to *exist* is not enough: `echo $! > f`
 /// creates it before it writes it, so an early read returns "" and the
 /// parse panics --- a flake that has nothing to do with the code under test.
+/// The deadline matches `run_to_completion`'s rather than a guess at how
+/// fast the fixture gets scheduled --- and it cannot fix the one failure
+/// this test ever caught in the act: something *outside* the suite once
+/// wiped the Scratch directory mid-run (the spawner's shell reported
+/// `getcwd: cannot access parent directories`), which no deadline survives.
 fn wait_for_pid(path: &std::path::Path) -> u32 {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(20);
     while Instant::now() < deadline {
         if let Ok(text) = std::fs::read_to_string(path)
             && let Ok(pid) = text.trim().parse()

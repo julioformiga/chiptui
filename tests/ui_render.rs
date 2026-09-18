@@ -8,18 +8,18 @@
 
 use std::path::PathBuf;
 use std::sync::{
-    Arc,
     atomic::{AtomicU64, Ordering},
+    Arc,
 };
 
-use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::KeyCode;
+use ratatui::Terminal;
 
 use chiptui::app::help::{self, HelpSection};
 use chiptui::app::{App, Focus, LogTab, Overlay};
-use chiptui::backend::BackendKind;
 use chiptui::backend::esptool::{ChipFamily, DeviceDetails};
+use chiptui::backend::BackendKind;
 use chiptui::firmware_id::FirmwareVerdict;
 use chiptui::flash::FlashPanel;
 use chiptui::project_config::ProjectConfigRow;
@@ -1250,8 +1250,8 @@ fn output_panes_dim_behind_a_dialog_but_never_for_focus_alone() {
 /// what is lost. The literal command stays quoted underneath (§15).
 #[test]
 fn destructive_confirmations_name_the_action_the_target_and_the_cost() {
-    use chiptui::backend::BuildKind;
     use chiptui::backend::esptool::{ChipFamily, DeviceDetails};
+    use chiptui::backend::BuildKind;
     use chiptui::build::BuildAction;
     use chiptui::flash::FlashAction;
 
@@ -1383,7 +1383,12 @@ fn actions_reflow_on_resize_and_preserve_keyboard_selection() {
         let step = if height < 32 { 1 } else { 2 };
         assert!(positions.windows(2).all(|pair| pair[1] - pair[0] == step));
         if height < 32 {
-            assert!(rows[positions[5] + 1].contains("never built"));
+            // The footer row under the stack is the state line, and this
+            // fixture's cursor rests on the dimmed `Menuconfig` with no
+            // board answered --- so the line carries the reason the row
+            // waits (`ui::build`'s `gate_reason`), which replaced the
+            // bare `never built` it used to keep.
+            assert!(rows[positions[5] + 1].contains("no board yet"));
             assert!(rows.iter().all(|row| !row.contains('├')));
         } else {
             assert!(rows[positions[5] + 1].contains('╰'));
@@ -1481,12 +1486,14 @@ fn overlays_draw_above_the_dashboard() {
     );
 }
 
-/// The window's two colour claims, which the text dump cannot show: the
-/// chosen backend's card is filled with that backend's own tint, and the
-/// same tint continues --- as a whisper --- behind the sections it governs,
-/// while General stays on the theme's own background.
+/// The window's colour claim the text dump cannot show: the chosen
+/// backend's card is filled with that backend's own tint --- and *only*
+/// the card. The rows below carry no paint at all: the sections are
+/// delimited by their headings alone (the row wash the screen once spent
+/// was retired with its two-column layout), so every row keeps the
+/// terminal's own ground.
 #[test]
-fn the_chosen_backend_tints_its_card_and_the_sections_it_governs() {
+fn the_chosen_backend_tints_its_card_and_only_its_card() {
     let mut app = app_with_backend(BackendKind::Zephyr);
     app.open_project_config(false);
 
@@ -1520,34 +1527,22 @@ fn the_chosen_backend_tints_its_card_and_the_sections_it_governs() {
         "the chosen card carries its backend's tint, not the theme's ground:\n{frame}"
     );
 
-    // The wash behind the rows the choice governs, and its absence above.
+    // And nowhere else: a governed row and a General row sit on the same
+    // ground --- the sections are separated by headings, not paint.
     let workspace = buffer
         .cell((4, row_of("Workspace path ")))
         .expect("a Zephyr row");
     let general = buffer
         .cell((4, row_of("Mouse support ")))
         .expect("a General row");
-    assert_ne!(
+    assert_eq!(
         workspace.bg, general.bg,
-        "the backend's sections are washed and General is not:\n{frame}"
+        "no row is washed --- the tint stops at the card:\n{frame}"
     );
     assert_eq!(
         general.bg,
         ratatui::style::Color::Reset,
         "General is not painted at all --- it keeps the terminal's own ground:\n{frame}"
-    );
-    // A whisper, not a highlight: at most a couple of channel steps.
-    let close = |a: u8, b: u8| a.abs_diff(b) <= 8;
-    let (ratatui::style::Color::Rgb(wr, wg, wb), ratatui::style::Color::Rgb(br, bg_, bb)) =
-        (workspace.bg, palette.bg)
-    else {
-        panic!("the theme draws in rgb");
-    };
-    assert!(
-        close(wr, br) && close(wg, bg_) && close(wb, bb),
-        "the section wash must stay a whisper: {:?} against {:?}",
-        workspace.bg,
-        palette.bg
     );
 }
 

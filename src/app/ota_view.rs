@@ -139,13 +139,44 @@ impl App {
             return;
         };
         let viewport = self.ota_viewport.max(1);
+        // Copied off `self` before the panel borrow: the renderer publishes
+        // both each frame (`ui::overlay`'s `Overlay::Ota` arm).
+        let doc_max = self.ota_doc_max;
+        let doc_scroll = self.ota_doc_scroll;
+        // The arrows' first loyalty is the document: when it does not fit
+        // (`doc_max > 0`), they scroll it behind its scrollbar. When it
+        // fits, they stay the Output's keys, as they always were.
         match key.code {
             // Scrolling stays live while a stage runs --- watching the
             // upload is the whole reason the modal carries output.
-            KeyCode::Char('k') | KeyCode::Up => panel.scroll_output(1, viewport),
-            KeyCode::Char('j') | KeyCode::Down => panel.scroll_output(-1, viewport),
-            KeyCode::PageUp => panel.scroll_output(viewport as isize, viewport),
-            KeyCode::PageDown => panel.scroll_output(-(viewport as isize), viewport),
+            KeyCode::Char('k') | KeyCode::Up => {
+                if doc_max > 0 {
+                    self.ota_doc_scroll = doc_scroll.saturating_sub(1);
+                } else {
+                    panel.scroll_output(1, viewport);
+                }
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if doc_max > 0 {
+                    self.ota_doc_scroll = (doc_scroll + 1).min(doc_max);
+                } else {
+                    panel.scroll_output(-1, viewport);
+                }
+            }
+            KeyCode::PageUp => {
+                if doc_max > 0 {
+                    self.ota_doc_scroll = doc_scroll.saturating_sub(viewport).min(doc_max);
+                } else {
+                    panel.scroll_output(viewport as isize, viewport);
+                }
+            }
+            KeyCode::PageDown => {
+                if doc_max > 0 {
+                    self.ota_doc_scroll = (doc_scroll + viewport).min(doc_max);
+                } else {
+                    panel.scroll_output(-(viewport as isize), viewport);
+                }
+            }
             KeyCode::Char('s') if !panel.is_busy() => panel.prepare.toggle_netshell(),
             // The net shell's cheap sibling: both answer "how does the
             // board name its own address", and both are opt-in blocks

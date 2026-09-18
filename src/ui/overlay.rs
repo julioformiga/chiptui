@@ -73,19 +73,21 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
             }
         }
         Overlay::Ota => {
-            // `install_viewport`'s contract, for the OTA modal's own
-            // output section.
-            if let Some(panel) = &app.ota {
-                app.ota_viewport = super::ota::output_viewport(area, panel);
-                super::ota::draw(
-                    frame,
-                    area,
-                    panel,
-                    app.home_dir(),
-                    app.ticks,
-                    app.icon_set(),
-                    palette,
-                );
+            // The document's publication, `install_viewport`'s contract
+            // doubled: how many rows it can still move (zero when it fits,
+            // which is what hands the arrows back to the output), and the
+            // offset clamped by the renderer, which alone knows the row
+            // totals. The draw reads the published values back, so the
+            // pixels and the key handler's arithmetic cannot drift.
+            let geometry = app
+                .ota
+                .as_ref()
+                .map(|panel| super::ota::document_geometry(area, panel));
+            if let Some((doc_viewport, doc_total, output_rows)) = geometry {
+                app.ota_doc_max = doc_total.saturating_sub(doc_viewport);
+                app.ota_doc_scroll = app.ota_doc_scroll.min(app.ota_doc_max);
+                app.ota_viewport = output_rows;
+                super::ota::draw(frame, area, app, palette);
             }
         }
         Overlay::OtaAddress { input } => draw_ota_address(frame, popup, app, &input, palette),

@@ -9,24 +9,32 @@
 //! three-row footer (state line left, the one action button boxed right),
 //! so nothing ever reflows when a stage starts or ends.
 //!
+//! The sections above the output are a document: when the modal is too
+//! short to hold them and the output at once, the document scrolls behind
+//! a scrollbar (the shared one-column bar) while the Output section and
+//! the footer stay pinned --- the output window never falls below
+//! [`MIN_OUTPUT`] rows, so watching a stage run never depends on how many
+//! prepare steps the project carries.
+//!
 //! Prepare and stage rows share the panes' checklist grammar
 //! ([`super::workspace::marked_row`]); a stage row's value is the literal
 //! `smpmgr` command, muted --- what runs is never hidden behind a friendly
 //! label (`SPEC.md` §15).
 
-use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph};
+use ratatui::Frame;
 
+use crate::app::App;
 use crate::ota::prepare::{Requirement, SlotCheck, Step, ToolProbe, TransportCheck};
 use crate::ota::update::{OtaAction, OtaPanel};
 use crate::stepper::{Phase, StepState};
 
 use super::button::{self, Button};
-use super::workspace::{RowMark, marked_row};
-use super::{Palette, SPINNER, muted_style, tilde_path};
+use super::workspace::{marked_row, RowMark};
+use super::{muted_style, tilde_path, Palette, SPINNER};
 
 /// The label column on both checklists (`board Kconfig fragment` is the
 /// longest), wider than the panes' 13 --- these are phrases.
@@ -34,19 +42,28 @@ const LABEL: usize = 21;
 /// Rows the target section always occupies: project, image, address.
 const TARGET_ROWS: u16 = 3;
 
-/// Rows the sections above the output occupy at this panel's list lengths,
-/// so the output area is whatever is left rather than a guess. Hand-counted
-/// per modal (the reason this file is a copy rather than a parameterisation
-/// of the installer's); the two list lengths are the driver's and the
-/// prepare flow's data.
-fn fixed_rows(panel: &OtaPanel) -> u16 {
-    // target, blank, heading, one requirement, the slot row, the transport
-    // row, blank, heading, the prepare steps, blank, heading, the driver's
-    // stages, blank, output heading.
+/// Rows pinned below the document no matter the modal's height: the
+/// Output heading and the footer's three.
+const PINNED: u16 = 4;
+/// The output window is never starved below this, even on a modal too
+/// short to hold the whole document: the document scrolling away is how
+/// the modal makes room, never the output shrinking to nothing.
+const MIN_OUTPUT: u16 = 4;
+
+/// Rows the document occupies at this panel's list lengths. Hand-counted
+/// against [`document_lines`] (the renderer's draw order, minus the
+/// pinned Output heading) --- `tests/ota_view.rs`'s minimum-size test
+/// renders the two against each other, so a drift between the count and
+/// the draw shows up as a clipped or gapped frame.
+fn document_rows(panel: &OtaPanel) -> u16 {
+    // target, blank, heading, one row per requirement, the slot row, the
+    // transport row, blank, heading, the prepare steps, blank, heading,
+    // the driver's stages, and the trailing blank before the pinned
+    // Output heading.
     TARGET_ROWS
         + 1
         + 1
-        + 1
+        + panel.prepare.requirements.len() as u16
         + 1
         + 1
         + 1
@@ -54,9 +71,31 @@ fn fixed_rows(panel: &OtaPanel) -> u16 {
         + panel.prepare.steps.len() as u16
         + 1
         + 1
-        + panel.stages.len() as u16
+        + panel.stage_list().len() as u16
         + 1
-        + 1
+}
+
+/// The modal's row budget at `body`'s size: how many rows the document
+/// gets, how many it has, and how many the output window gets. When the
+/// document fits above a [`MIN_OUTPUT`] output window, the output takes
+/// everything left; when it does not, the document's viewport is what the
+/// minimum leaves and the scrollbar appears. Published for the key
+/// handler's publication (the installer's `output_viewport` contract) and
+/// consumed by [`draw`], so the two can never disagree about the split.
+pub(crate) fn document_geometry(body: Rect, panel: &OtaPanel) -> (usize, usize, usize) {
+    let popup = area(body);
+    let usable = usize::from(popup.height.saturating_sub(2).saturating_sub(PINNED));
+    let doc_total = document_rows(panel) as usize;
+    let min_output = usize::from(MIN_OUTPUT);
+    if doc_total <= usable.saturating_sub(min_output) {
+        (doc_total, doc_total, usable - doc_total)
+    } else {
+        (
+            usable.saturating_sub(min_output),
+            doc_total,
+            usable.min(min_output),
+        )
+    }
 }
 
 /// The dialog fills the screen bar a margin, like the installer's.
@@ -64,29 +103,8 @@ pub(crate) fn area(body: Rect) -> Rect {
     super::layout::wide_modal(body)
 }
 
-/// Rows of output the modal can show at `body`'s size --- published so the
-/// key handler's page scrolling matches what is drawn, the same contract
-/// the installer's `output_viewport` keeps.
-pub fn output_viewport(body: Rect, panel: &OtaPanel) -> usize {
-    let popup = area(body);
-    usize::from(
-        popup
-            .height
-            .saturating_sub(2)
-            .saturating_sub(fixed_rows(panel))
-            .saturating_sub(3),
-    )
-}
-
-pub(super) fn draw(
-    frame: &mut Frame,
-    body: Rect,
-    panel: &OtaPanel,
-    home: &std::path::Path,
-    ticks: u64,
-    icons: crate::icons::IconSet,
-    palette: Palette,
-) {
+pub(super) fn draw(frame: &mut Frame, body: Rect, app: &App, palette: Palette) {
+    let panel = app.ota.as_ref().expect("the overlay arm checked");
     let popup = area(body);
     frame.render_widget(Clear, popup);
     let block = super::overlay::modal("OTA", palette);
@@ -96,58 +114,82 @@ pub(super) fn draw(
         return;
     }
 
-    let mut y = inner.y;
-    for line in target_lines(panel, home, palette) {
-        y = row(frame, inner, y, line);
-    }
-    y = row(frame, inner, y, Line::from(""));
-    y = row(
-        frame,
-        inner,
-        y,
-        heading("Requirements", "r re-checks", palette),
-    );
-    for state in &panel.prepare.requirements {
-        y = row(frame, inner, y, requirement_line(state, palette));
-    }
-    y = row(frame, inner, y, slot_line(&panel.prepare, palette));
-    y = row(frame, inner, y, transport_line(panel, palette));
-    y = row(frame, inner, y, Line::from(""));
-    y = row(
-        frame,
-        inner,
-        y,
-        heading("Prepare", prepare_hint(panel), palette),
-    );
-    for (index, step) in Step::ALL.iter().enumerate() {
-        y = row(frame, inner, y, prepare_line(panel, index, *step, palette));
-    }
-    y = row(frame, inner, y, Line::from(""));
-    y = row(
-        frame,
-        inner,
-        y,
-        heading("Update", update_hint(panel), palette),
-    );
-    for (index, stage) in panel.stage_list().iter().enumerate() {
-        y = row(
-            frame,
-            inner,
-            y,
-            stage_line(panel, index, *stage, ticks, palette),
-        );
-    }
-    y = row(frame, inner, y, Line::from(""));
-    y = row(
-        frame,
-        inner,
-        y,
-        heading("Output", output_hint(panel), palette),
-    );
+    let (doc_viewport, doc_total, output_rows) = document_geometry(body, panel);
+    let overflow = doc_total > doc_viewport;
+    // The renderer's clamp is the honest one: the offset arrives from the
+    // key handler, which works off last frame's publication.
+    let scroll = app.ota_doc_scroll.min(doc_total - doc_viewport);
 
+    // The pinned stack, from the bottom up: the footer's three rows, the
+    // output window above them, the Output heading above that --- and the
+    // document gets whatever remains at the top.
     let footer_top = inner.bottom().saturating_sub(3);
-    draw_output(frame, inner, y, footer_top, panel, palette);
-    draw_footer(frame, inner, footer_top, panel, icons, palette);
+    let heading_y = footer_top
+        .saturating_sub(output_rows as u16)
+        .saturating_sub(1);
+    let document = document_lines(panel, app.home_dir(), app.ticks, palette);
+    // The scrollbar's column is reserved only while the bar is drawn: on
+    // a modal where everything fits the rows keep their full width, and
+    // reflowing them for a bar that never appears would be the cost
+    // without the benefit.
+    let doc_width = if overflow {
+        inner.width.saturating_sub(1)
+    } else {
+        inner.width
+    };
+    let doc_area = Rect {
+        width: doc_width,
+        ..inner
+    };
+    let mut y = inner.y;
+    for line in document.iter().skip(scroll).take(doc_viewport) {
+        y = row(frame, doc_area, y, line.clone());
+    }
+    if overflow {
+        super::draw_scrollbar(frame, doc_area, doc_total, doc_viewport, scroll, palette);
+    }
+
+    row(
+        frame,
+        inner,
+        heading_y,
+        heading("Output", output_hint(panel, overflow), palette),
+    );
+    draw_output(frame, inner, heading_y + 1, footer_top, panel, palette);
+    draw_footer(frame, inner, footer_top, panel, app.icon_set(), palette);
+}
+
+/// The document: every row above the pinned Output section, in draw
+/// order. One builder for the renderer and for nothing else ---
+/// [`document_rows`] hand-counts its length for the geometry (a count
+/// needs no home, ticks or palette), and the minimum-size test holds the
+/// two against each other.
+fn document_lines(
+    panel: &OtaPanel,
+    home: &std::path::Path,
+    ticks: u64,
+    palette: Palette,
+) -> Vec<Line<'static>> {
+    let mut lines = target_lines(panel, home, palette);
+    lines.push(Line::from(""));
+    lines.push(heading("Requirements", "r re-checks", palette));
+    for state in &panel.prepare.requirements {
+        lines.push(requirement_line(state, palette));
+    }
+    lines.push(slot_line(&panel.prepare, palette));
+    lines.push(transport_line(panel, palette));
+    lines.push(Line::from(""));
+    lines.push(heading("Prepare", prepare_hint(panel), palette));
+    for (index, step) in Step::ALL.iter().enumerate() {
+        lines.push(prepare_line(panel, index, *step, palette));
+    }
+    lines.push(Line::from(""));
+    lines.push(heading("Update", update_hint(panel), palette));
+    for (index, stage) in panel.stage_list().iter().enumerate() {
+        lines.push(stage_line(panel, index, *stage, ticks, palette));
+    }
+    lines.push(Line::from(""));
+    lines
 }
 
 fn row(frame: &mut Frame, area: Rect, y: u16, line: Line<'static>) -> u16 {
@@ -384,8 +426,14 @@ fn update_hint(panel: &OtaPanel) -> String {
     }
 }
 
-fn output_hint(panel: &OtaPanel) -> String {
-    if panel.output_scroll > 0 {
+fn output_hint(panel: &OtaPanel, overflow: bool) -> String {
+    // While the document above is scrolled, the arrows belong to it ---
+    // the output window then simply follows whatever the stage prints.
+    // Claiming `j/k` for the output there would name a key that does
+    // something else.
+    if overflow {
+        "follows the run".to_string()
+    } else if panel.output_scroll > 0 {
         format!("↑{}  j/k scroll", panel.output_scroll)
     } else {
         "j/k scroll".to_string()
