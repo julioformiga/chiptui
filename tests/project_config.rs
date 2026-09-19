@@ -13,10 +13,10 @@ use std::path::{Path, PathBuf};
 
 use chiptui::app::{App, AppEvent, Overlay};
 use chiptui::backend::{BackendKind, BackendRegistry};
-use chiptui::project::{config, DetectionSource, ProjectManager};
+use chiptui::project::{DetectionSource, ProjectManager, config};
 use chiptui::project_config::{Cursor, ProjectConfigRow};
 use chiptui::settings::{self, ProjectRegistry};
-use chiptui::startup::{route, Route};
+use chiptui::startup::{Route, route};
 use ratatui::crossterm::event::KeyCode;
 
 mod common;
@@ -249,12 +249,13 @@ fn udp_address_uses_an_ipv4_mask_and_validation() {
         app.project_config.as_ref().unwrap().editing().is_some(),
         "an out-of-range IPv4 octet remains editable"
     );
-    assert!(app
-        .project_config
-        .as_ref()
-        .unwrap()
-        .error()
-        .is_some_and(|error| error.contains("valid IPv4")));
+    assert!(
+        app.project_config
+            .as_ref()
+            .unwrap()
+            .error()
+            .is_some_and(|error| error.contains("valid IPv4"))
+    );
     app.handle(key(KeyCode::Delete));
     for ch in "192.168.1.42".chars() {
         app.handle(key(KeyCode::Char(ch)));
@@ -1236,6 +1237,83 @@ fn the_details_pane_names_the_key_the_winner_and_the_pending_line() {
     for expected in ["Will write", "build_args = \"-DCONF_FILE=debug.conf\""] {
         assert!(frame.contains(expected), "missing {expected:?}:\n{frame}");
     }
+}
+
+#[test]
+fn the_details_pane_lists_the_session_build_variants() {
+    let dir = TempDir::new("variants");
+    std::fs::write(
+        dir.file(),
+        "project_type = \"zephyr\"\n\n\
+         [[variant]]\n\
+         name = \"sim\"\n\
+         board = \"native_sim/native/64\"\n\
+         \n\
+         [[variant]]\n\
+         name = \"board\"\n\
+         build_dir = \"build/board\"\n",
+    )
+    .unwrap();
+    let mut app = dir.app();
+    app.bootstrap();
+    // The startup sequence's own order: the scan is what builds the panel
+    // the session list lives on.
+    app.maybe_scan_devices();
+    open(&mut app);
+    go_to(&mut app, ProjectConfigRow::Variants);
+
+    let frame = common::render(&mut app, 110, 38);
+    for expected in [
+        "Build variants",
+        "read only",
+        "Session",
+        "sim",
+        "board",
+        "chiptui.toml",
+        "native_sim/native/64 · build",
+    ] {
+        assert!(frame.contains(expected), "missing {expected:?}:\n{frame}");
+    }
+    // A fresh session starts on the *board* variant, so it carries the
+    // Current block's winner mark; the others keep the option mark.
+    let board = frame
+        .lines()
+        .find(|line| line.contains("chiptui.toml") && line.contains("board"))
+        .expect("the active variant's row is drawn");
+    assert!(board.contains('▸'), "the built variant is marked:\n{frame}");
+    let sim = frame
+        .lines()
+        .find(|line| line.contains("discovered") || line.contains('○'))
+        .expect("the other variant is drawn");
+    assert!(sim.contains("sim"), "the idle variant is named:\n{frame}");
+}
+
+#[test]
+fn discovered_variants_earn_the_row_and_their_own_source_label() {
+    let dir = TempDir::new("discovered");
+    let mut app = dir.app();
+    // No `[[variant]]` block anywhere --- the session resolved two of them
+    // from build directories and `boards/` fragments. The snapshot is what
+    // `open_project_config` passes; the row's presence reads it.
+    let panel = chiptui::project_config::ProjectConfigPanel::new(
+        &dir.path,
+        &settings::user_config_path(&dir.config_dir()),
+        Some(BackendKind::Zephyr),
+        chiptui::backend::Capabilities::from_slice(&[chiptui::backend::Capability::WorkspaceSync]),
+        2,
+        false,
+    );
+    assert!(
+        panel.rows().contains(&ProjectConfigRow::Variants),
+        "discovered variants are reported too: {:?}",
+        panel.rows()
+    );
+    app.project_config = Some(panel);
+    assert_eq!(
+        app.project_config_fallback(ProjectConfigRow::Variants),
+        Some(("2 discovered".to_string(), "this session")),
+        "the value column names where the list came from"
+    );
 }
 
 #[test]

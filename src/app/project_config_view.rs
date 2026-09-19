@@ -48,11 +48,17 @@ impl App {
         let root = self.project_config_root();
         let user = self.user_config_path();
         let backend = self.manager.selected_kind();
+        // The row list is the file's shape, but a project that has only
+        // ever *built* its variants owns them just the same --- this
+        // snapshot decides the row's presence, while the drawn list reads
+        // the session live.
+        let session_variants = self.build.as_ref().map_or(0, |build| build.variants.len());
         self.project_config = Some(ProjectConfigPanel::new(
             &root,
             &user,
             backend,
             self.capabilities_of(backend),
+            session_variants,
             from_startup,
         ));
         self.overlay = Some(Overlay::ProjectConfig);
@@ -731,8 +737,17 @@ impl App {
                 }
             }
             ProjectConfigRow::Variants => {
-                let count = self.project_config.as_ref()?.variants();
-                Some((format!("{count} declared"), "chiptui.toml"))
+                let panel = self.project_config.as_ref()?;
+                // Declared variants are the file's own answer; a project
+                // that declares none but has built some reports where its
+                // list really came from.
+                let declared = panel.variants();
+                (declared > 0)
+                    .then(|| (format!("{declared} declared"), "chiptui.toml"))
+                    .or_else(|| {
+                        let session = panel.session_variants();
+                        (session > 0).then(|| (format!("{session} discovered"), "this session"))
+                    })
             }
             ProjectConfigRow::Theme => {
                 Some((self.theme_choice().display_name().to_string(), "default"))

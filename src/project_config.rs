@@ -26,6 +26,7 @@ use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 
 use crate::app::{DocsFocus, ThemeChoice};
+use crate::backend::zephyr::variants::Variant;
 use crate::backend::{BackendKind, Capabilities, Capability};
 use crate::icons::IconSet;
 use crate::ota::{OtaMethod, Transport};
@@ -383,6 +384,14 @@ pub struct ProjectConfigPanel {
     /// The details pane's scroll offset, clamped by the renderer, which
     /// knows the wrapped length (the docs pickers' own contract).
     details_scroll: usize,
+    /// How many build variants the *session* resolved when the window
+    /// opened. The row list is the file's shape, but a project that has
+    /// only ever *built* its variants --- discovered, never declared ---
+    /// owns them just the same, so this is what lets the report row
+    /// appear beside a file that declares none. A snapshot on purpose:
+    /// the row's *presence* reads this, while the drawn list reads the
+    /// session live.
+    session_variants: usize,
     from_startup: bool,
 }
 
@@ -392,6 +401,7 @@ impl ProjectConfigPanel {
         user_config: &Path,
         backend: Option<BackendKind>,
         caps: Capabilities,
+        session_variants: usize,
         from_startup: bool,
     ) -> Self {
         let path = root.join(config::FILE_NAME);
@@ -411,6 +421,7 @@ impl ProjectConfigPanel {
             notice: None,
             details_focus: DocsFocus::List,
             details_scroll: 0,
+            session_variants,
             from_startup,
         };
         panel.rebuild(caps);
@@ -450,7 +461,7 @@ impl ProjectConfigPanel {
                 ProjectConfigRow::ZephyrApp,
                 ProjectConfigRow::ZephyrBuildArgs,
             ]);
-            if self.variants() > 0 {
+            if self.variants() > 0 || self.session_variants > 0 {
                 rows.push(ProjectConfigRow::Variants);
             }
         }
@@ -616,6 +627,19 @@ impl ProjectConfigPanel {
 
     pub fn variants(&self) -> usize {
         config::parse_variants(&self.text).len()
+    }
+
+    /// How many build variants the session had resolved when the window
+    /// opened --- the report row's second reason to exist (see the field's
+    /// note), and the "Current" fallback's source label.
+    pub fn session_variants(&self) -> usize {
+        self.session_variants
+    }
+
+    /// The variants the project's own file declares, parsed live --- the
+    /// drawn list's fallback while the session has resolved none.
+    pub fn variant_list(&self) -> Vec<Variant> {
+        config::parse_variants(&self.text)
     }
 
     fn first_selectable(&self) -> usize {
@@ -1005,5 +1029,103 @@ pub const fn backend_summary(kind: BackendKind) -> &'static str {
     match kind {
         BackendKind::MicroPython => "a REPL and files on the board",
         BackendKind::Zephyr => "an image built with west",
+    }
+}
+
+/// One entry of the Details pane's build-variants block --- the session's
+/// resolved list, one line pair per variant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VariantEntry {
+    /// Whether this is the variant the session builds --- the one the pane
+    /// marks with `▸`, the "Current" block's winner mark.
+    pub active: bool,
+    /// The variant's short name.
+    pub name: String,
+    /// Where its definition came from, in the row vocabulary.
+    pub origin: &'static str,
+    /// The `board · --shield · build_dir` line it builds with.
+    pub detail: String,
+}
+
+/// The build-variants block, derived from the session's list: the variant
+/// being built marked, every origin named. Pure so the marks and the
+/// joining have tests without a terminal --- the pane adds the styling and
+/// the length cuts.
+pub fn variant_entries(variants: &[Variant], selected: Option<&str>) -> Vec<VariantEntry> {
+    variants
+        .iter()
+        .map(|variant| {
+            let mut parts = Vec::new();
+            if let Some(board) = &variant.board {
+                parts.push(board.clone());
+            }
+            if let Some(shield) = &variant.shield {
+                parts.push(format!("--shield {shield}"));
+            }
+            parts.push(variant.build_dir.clone());
+            VariantEntry {
+                active: selected == Some(variant.name.as_str()),
+                name: variant.name.clone(),
+                origin: variant.origin.label(),
+                detail: parts.join(" · "),
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::zephyr::variants::VariantOrigin;
+
+    fn variant(name: &str, board: &str, build_dir: &str) -> Variant {
+        Variant {
+            name: name.to_string(),
+            board: Some(board.to_string()),
+            shield: None,
+            build_dir: build_dir.to_string(),
+            origin: VariantOrigin::Discovered,
+        }
+    }
+
+    #[test]
+    fn entries_mark_the_active_variant_and_name_its_origin() {
+        let variants = vec![
+            variant("sim", "native_sim/native/64", "build/sim"),
+            variant("hardware", "nrf52840dk/nrf52840", "build/hardware"),
+        ];
+        let entries = variant_entries(&variants, Some("hardware"));
+        assert_eq!(entries.len(), 2);
+        assert!(!entries[0].active);
+        assert_eq!(entries[0].origin, "discovered");
+        assert_eq!(entries[0].detail, "native_sim/native/64 · build/sim");
+        assert!(entries[1].active, "the selected variant is marked");
+    }
+
+    #[test]
+    fn entries_compose_the_shield_and_the_declared_origin() {
+        let mut hardware = variant("hw", "nrf52840dk/nrf52840", "build/hw");
+        hardware.shield = Some("nrf52840dk_button".to_string());
+        hardware.origin = VariantOrigin::Declared;
+        let entries = variant_entries(std::slice::from_ref(&hardware), None);
+        assert_eq!(
+            entries[0].detail,
+            "nrf52840dk/nrf52840 · --shield nrf52840dk_button · build/hw"
+        );
+        assert_eq!(entries[0].origin, "chiptui.toml");
+        assert!(!entries[0].active);
+    }
+
+    #[test]
+    fn entries_without_a_board_still_name_the_build_directory() {
+        let host = Variant {
+            name: "unit".to_string(),
+            board: None,
+            shield: None,
+            build_dir: "build/unit".to_string(),
+            origin: VariantOrigin::Declared,
+        };
+        let entries = variant_entries(&[host], None);
+        assert_eq!(entries[0].detail, "build/unit");
     }
 }

@@ -565,70 +565,129 @@ fn draw_details(frame: &mut Frame, areas: &ProjectConfigAreas, app: &mut App, pa
         }
     }
 
+    // The build variants: a report row, so in place of the "Current"
+    // levels it gets the session's resolved list --- one entry per
+    // variant, the one being built marked, every origin named. The
+    // session's answer is the truth, but a session that has not resolved
+    // any yet (no build panel before the first scan) falls back to what
+    // the file declares, read live --- the row exists for the discovery's
+    // answer as much as for the declaration.
+    if row == ProjectConfigRow::Variants {
+        lines.push(Line::from(""));
+        lines.push(subheading("Session"));
+        let declared;
+        let (variants, selected) = match app.build.as_ref() {
+            Some(build) if !build.variants.is_empty() => {
+                (build.variants.as_slice(), build.variant_name())
+            }
+            _ => {
+                declared = panel.variant_list();
+                (declared.as_slice(), None)
+            }
+        };
+        let entries = crate::project_config::variant_entries(variants, selected);
+        for entry in &entries {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    if entry.active { "▸ " } else { "○ " },
+                    Style::new().fg(if entry.active {
+                        palette.accent
+                    } else {
+                        palette.muted
+                    }),
+                ),
+                Span::styled(
+                    format!("{:<14}", entry.name),
+                    if entry.active {
+                        Style::new().fg(palette.fg)
+                    } else {
+                        muted_style(palette)
+                    },
+                ),
+                Span::styled(entry.origin, muted_style(palette)),
+            ]));
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "    {}",
+                    super::overlay::shorten_tail(
+                        &entry.detail,
+                        area.width.saturating_sub(4) as usize
+                    )
+                ),
+                muted_style(palette),
+            )));
+        }
+        if entries.is_empty() {
+            lines.push(Line::from(Span::styled("—", muted_style(palette))));
+        }
+    }
+
     // The levels that can answer this row, most specific first, with the
     // one currently answering marked. An absent key is a question answered
     // somewhere less specific, not an open one --- this block is where the
     // window says so.
-    lines.push(Line::from(""));
-    lines.push(subheading("Current"));
-    let saved = panel.saved(row);
-    let destination = match row.destination() {
-        Destination::User => "user config",
-        Destination::Registry => "project registry",
-        _ => "chiptui.toml",
-    };
-    let fallback = app.project_config_fallback(row);
-    // A level's value is one line, cut from the left when long --- a path's
-    // tail is the identifying half, the same call the list rows make.
-    let value_budget = area.width.saturating_sub(22) as usize;
-    lines.push(level(
-        destination,
-        saved
-            .clone()
-            .map(|value| choice_label(row, &value))
-            .map(|value| super::overlay::shorten_tail(&value, value_budget)),
-        saved.is_some(),
-        palette,
-    ));
-    if saved.is_none()
-        && let Some((value, origin)) = fallback
-    {
+    if row != ProjectConfigRow::Variants {
+        lines.push(Line::from(""));
+        lines.push(subheading("Current"));
+        let saved = panel.saved(row);
+        let destination = match row.destination() {
+            Destination::User => "user config",
+            Destination::Registry => "project registry",
+            _ => "chiptui.toml",
+        };
+        let fallback = app.project_config_fallback(row);
+        // A level's value is one line, cut from the left when long --- a path's
+        // tail is the identifying half, the same call the list rows make.
+        let value_budget = area.width.saturating_sub(22) as usize;
         lines.push(level(
-            origin,
-            Some(super::overlay::shorten_tail(&value, value_budget)),
-            true,
+            destination,
+            saved
+                .clone()
+                .map(|value| choice_label(row, &value))
+                .map(|value| super::overlay::shorten_tail(&value, value_budget)),
+            saved.is_some(),
             palette,
         ));
-    }
-
-    if let Some(pending) = panel.pending_for(row) {
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            "Will write",
-            Style::new()
-                .fg(palette.warning)
-                .add_modifier(Modifier::BOLD),
-        )));
-        if let Some((section, _)) = row.slot()
-            && !section.is_empty()
+        if saved.is_none()
+            && let Some((value, origin)) = fallback
         {
+            lines.push(level(
+                origin,
+                Some(super::overlay::shorten_tail(&value, value_budget)),
+                true,
+                palette,
+            ));
+        }
+
+        if let Some(pending) = panel.pending_for(row) {
+            lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
-                format!("[{section}]"),
+                "Will write",
+                Style::new()
+                    .fg(palette.warning)
+                    .add_modifier(Modifier::BOLD),
+            )));
+            if let Some((section, _)) = row.slot()
+                && !section.is_empty()
+            {
+                lines.push(Line::from(Span::styled(
+                    format!("[{section}]"),
+                    muted_style(palette),
+                )));
+            }
+            let change = crate::project_config::Pending {
+                row,
+                value: pending.map(str::to_string),
+            };
+            lines.push(Line::from(Span::styled(
+                super::overlay::shorten_tail(&change.line(), area.width as usize),
+                Style::new().fg(palette.warning),
+            )));
+            lines.push(Line::from(Span::styled(
+                format!("in the {}", row.destination().label()),
                 muted_style(palette),
             )));
         }
-        let change = crate::project_config::Pending {
-            row,
-            value: pending.map(str::to_string),
-        };
-        lines.push(Line::from(Span::styled(
-            super::overlay::shorten_tail(&change.line(), area.width as usize),
-            Style::new().fg(palette.warning),
-        )));
-        lines.push(Line::from(Span::styled(
-            format!("in the {}", row.destination().label()),
-            muted_style(palette),
-        )));
     }
 
     // The pane scrolls over the rows actually drawn: the viewport is
