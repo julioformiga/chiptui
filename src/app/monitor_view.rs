@@ -2,7 +2,7 @@
 //! where the view sits in it.
 //!
 //! The scroll is anchored to the *top* of the document so live output never
-//! shifts a scrolled view (`CLAUDE.md`); the four consoles share this one
+//! shifts a scrolled view; the four consoles share this one
 //! offset, and the Terminal tab reuses the state but not the renderer.
 
 use super::{App, Focus, LogTab};

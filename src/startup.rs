@@ -17,8 +17,8 @@ use crate::settings::ProjectRegistry;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Route {
     /// Open the dashboard rooted at this directory. The directory need not
-    /// be a project yet: an empty one opens with the backend prompt
-    /// (`SPEC.md` §7), which is what makes `mkdir x && cd x && chiptui` work.
+    /// be an application yet: a registered empty directory can open with
+    /// its project configuration flow (`SPEC.md` §7).
     Open(PathBuf),
     /// Nothing here to open --- list the recorded projects instead.
     Home,

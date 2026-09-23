@@ -498,7 +498,7 @@ impl FlashPanel {
     /// `ui::layout::row2_content_height` leans on that equality for its
     /// no-panel fallback. `Packages` taking the row `VerifyFlash` gave up
     /// is what keeps it true --- and with it row 2's height and the
-    /// declared 80x32 minimum.
+    /// compact 80x24 layout and the bordered layout at 80x32.
     pub fn pane_actions(&self) -> Vec<FlashPaneAction> {
         let mut rows: Vec<FlashPaneAction> =
             vec![FlashPaneAction::SearchOnline, FlashPaneAction::Packages];

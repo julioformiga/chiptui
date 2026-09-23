@@ -5,7 +5,7 @@
 //! in this app now keeps. The window is the docs pickers' two-pane body
 //! with a tab strip added, and the strip rides the modal's *top border* the
 //! way row 3's Log/Monitor/Terminal strip rides its pane's: at the declared
-//! 80x32 minimum the body has 23 rows, and a strip that has a border to sit
+//! 80x32 size the body has 23 rows, and a strip that has a border to sit
 //! on should not also take one of them.
 //!
 //! The Memory tab adds a second strip of its own --- the reports the HTML
@@ -20,14 +20,14 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, List, ListItem, ListState, Paragraph, Tabs};
-use ratatui::{Frame, symbols};
+use ratatui::{symbols, Frame};
 
 use crate::app::{App, DocsFocus};
 use crate::build_dashboard::{DashboardTab, DetailLine, Marker, Row};
 use crate::ui::Palette;
 use crate::ui::{draw_scrollbar, muted_style, selection_style};
 
-use super::button::{Button, render_stack};
+use super::button::{render_stack, Button};
 use super::overlay::{labelled, pane, wrap_words};
 
 /// How many rows the Generate button stack costs at the top of the Memory

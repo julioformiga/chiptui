@@ -10,8 +10,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use chiptui::app::{App, DocsFocus, Overlay};
-use chiptui::backend::BackendKind;
 use chiptui::backend::zephyr::workspace::{Workspace, WorkspaceOrigin};
+use chiptui::backend::BackendKind;
 use chiptui::board_docs::{DocsEvent, IndexState};
 use chiptui::event::AppEvent;
 use ratatui::crossterm::event::KeyCode;
@@ -552,7 +552,7 @@ fn the_picker_fits_the_declared_minimum() {
     );
     assert!(settled);
 
-    // 80x32 is the dashboard's declared minimum; the full-frame picker
+    // At 80x32 the full-frame picker
     // must live inside it, both panes and the picture included. The
     // details column is narrow there, so a long vendor wraps with a
     // hanging indent rather than truncating --- both halves pinned.

@@ -11,8 +11,8 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use chiptui::app::{App, Focus, LogTab, MonitorSource, Overlay, View};
-use chiptui::backend::BackendKind;
 use chiptui::backend::esptool::ChipFamily;
+use chiptui::backend::BackendKind;
 use chiptui::browser::Browser;
 use chiptui::device::{DeviceInfo, ScriptState};
 use chiptui::event::AppEvent;
@@ -862,11 +862,10 @@ fn a_query_with_no_matching_boards_keeps_the_search_window_open() {
     let flash = app.flash.as_ref().unwrap();
     assert_eq!(flash.screen, FlashScreen::OnlineBoards);
     assert!(flash.online_boards.is_empty());
-    assert!(
-        app.logs
-            .visible(10)
-            .any(|entry| entry.message.contains("no boards found"))
-    );
+    assert!(app
+        .logs
+        .visible(10)
+        .any(|entry| entry.message.contains("no boards found")));
 }
 
 fn device(port: &str) -> DeviceInfo {
@@ -1621,7 +1620,7 @@ fn the_actions_tab_offers_packages_where_verify_used_to_sit() {
     // The swap is deliberately height-neutral: `row2_content_height`'s
     // no-panel fallback is `FlashAction::ALL.len()`, so the row would
     // reflow the moment the panel appeared if these two disagreed --- and
-    // the declared 80x32 minimum is measured against the same number.
+    // both the compact 80x24 layout and the bordered 80x32 layout depend on it.
     let idle = app.flash.as_ref().unwrap().pane_actions().len();
     assert_eq!(
         idle,

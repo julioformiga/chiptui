@@ -29,7 +29,7 @@ use ratatui::Terminal;
 /// The absolute path of a fake tool in `tests/fixtures/bin/`.
 ///
 /// Absolute on purpose: nothing here mutates `PATH`, so the tests stay
-/// parallel-safe (`CLAUDE.md`, "Testing").
+/// parallel-safe (`AGENTS.md`, "Testing").
 pub fn fake(tool: &str) -> String {
     format!("{}/tests/fixtures/bin/{tool}", env!("CARGO_MANIFEST_DIR"))
 }
@@ -64,7 +64,7 @@ pub fn ctrl(c: char) -> AppEvent {
 /// A left click at `(column, row)`.
 ///
 /// Columns are *drawn* columns, never byte offsets into the frame's lines ---
-/// the borders are multi-byte (`CLAUDE.md`, "Click tests are render-pinned").
+/// the borders are multi-byte.
 pub fn click(column: u16, row: u16) -> MouseEvent {
     MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),

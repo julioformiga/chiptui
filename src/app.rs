@@ -134,9 +134,8 @@ pub enum ProjectRow {
     MpyBoot,
 }
 
-/// Which tab row 3 is showing. `Left`/`Right` switch between them while
-/// [`Focus::Logs`] holds focus --- unbound otherwise, so the two-column file
-/// browser's own `Left`/`Right` handling never collides with this.
+/// Which tab row 3 is showing. `Ctrl+Left`/`Ctrl+Right` switch between them
+/// while [`Focus::Logs`] holds focus; plain arrows retain pane navigation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LogTab {
     #[default]
@@ -496,8 +495,7 @@ pub struct App {
     /// moment [`Self::browser`] next goes idle. `esptool` and `mpremote`
     /// hold the serial port exclusively, so the background chip query
     /// must never race the file listing that a fresh device selection also
-    /// kicks off (`AGENTS.md` §5's "one tool at a time" applies across
-    /// tools too, not just within `mpremote`).
+    /// kicks off (only one tool can own the port at a time).
     flash_query_pending: bool,
     /// Where the authorization to identify the selected device stands: the
     /// background `esptool chip-id` + firmware read the selection would

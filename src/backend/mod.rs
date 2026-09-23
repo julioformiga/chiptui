@@ -12,7 +12,7 @@
 //! The UI consumes capabilities; it never asks "is this MicroPython?".
 //! Operations stay behind small optional trait methods rather than a wider
 //! operations trait: there is exactly one caller shape per operation today,
-//! and `AGENTS.md` §8 asks for no abstraction without a concrete use case.
+//! and `AGENTS.md` asks for no abstraction without a concrete use case.
 
 /// `esptool` --- the Espressif chip tool. A *chip* tool, not a MicroPython
 /// one: firmware identification reads flash with it, and the Zephyr flash

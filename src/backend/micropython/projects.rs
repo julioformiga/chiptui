@@ -5,7 +5,7 @@
 //! cannot run without. MicroPython runs source directly (`SPEC.md` §6: no
 //! build step), so its bar is the tool's bar: **any** immediate
 //! subdirectory of the configured projects folder (`[micropython]
-//! projects`, user config only) is a project --- the picker lists them all,
+//! projects`, project file before user config) is a project --- the picker lists them all,
 //! marks none, refuses none. What a project *is* stays detection's
 //! weighted question ([`super`]'s own job); this is only a filesystem
 //! picker's inventory.

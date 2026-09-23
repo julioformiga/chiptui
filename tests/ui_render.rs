@@ -32,7 +32,7 @@ use common::{ctrl, key, render};
 /// assert against whatever the developer happens to have configured ---
 /// the theme picker's `(active)` row moves to `Auto` for anyone whose
 /// own `[ui] theme` is `auto`, and a test that ever answers a prompt
-/// would write into the real config (`CLAUDE.md`).
+/// would write into the real user config.
 fn scratch_home() -> PathBuf {
     static COUNT: AtomicU64 = AtomicU64::new(0);
     std::env::temp_dir().join(format!(

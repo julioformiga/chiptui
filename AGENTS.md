@@ -2,30 +2,22 @@
 
 ## Project
 
-This repository contains **ChipTUI**, a Rust terminal UI for
-embedded development.
-
-The application is project-aware and initially supports:
-
--   MicroPython
--   Zephyr
-
-It orchestrates existing tools instead of reimplementing their
-protocols.
+**ChipTUI** is a project-aware Rust TUI for MicroPython and Zephyr.
+`SPEC.md` defines product behavior and architecture; this file defines
+implementation and development rules for every coding agent.
 
 ## Read First
 
 Before modifying the project:
 
-1.  Read `SPEC.md`.
+1.  Read the relevant sections of `SPEC.md`.
 2.  Inspect the existing source tree.
 3.  Identify the relevant backend and capability model.
 4.  Check the current implementation before introducing new
     abstractions.
 
-`SPEC.md` is the product/architecture reference. If implementation
-reality differs from the specification, document the discrepancy before
-making a large architectural change.
+If implementation reality differs from the specification, document the
+discrepancy before making a large architectural change.
 
 ## Core Principles
 
@@ -33,13 +25,8 @@ making a large architectural change.
 
 This is a TUI, not an IDE.
 
-Do not add:
-
--   source-code editing;
--   unnecessary project-management features;
--   a plugin marketplace;
--   unrelated embedded frameworks;
--   complex abstractions without a concrete use case.
+Avoid source-code editing, unnecessary project-management features, plugin
+systems and abstractions without a current MicroPython/Zephyr use case.
 
 ### 2. Use existing tools
 
@@ -50,48 +37,24 @@ MicroPython → mpremote, esptool
 Zephyr      → west, CMake, Ninja
 ```
 
-Do not reimplement their protocols unless there is a demonstrated
-limitation that requires it.
+Do not reimplement their protocols unless a demonstrated limitation requires
+it. Construct commands as program and arguments, not shell strings; prefer
+machine-readable output when available. Keep board-specific behavior in its
+backend; Zephyr flash/debug mechanisms vary by board.
 
 ### 3. Backend capabilities
 
 Do not scatter framework checks throughout the UI.
 
-Avoid patterns such as:
-
-``` rust
-if project.is_micropython() { ... }
-else if project.is_zephyr() { ... }
-```
-
-when the decision can be represented through backend capabilities.
-
-The UI should ask the backend what operations are supported and render
-the appropriate actions.
+Let the UI ask the backend for capabilities and render supported actions;
+do not branch on backend names when a capability answers the question.
 
 ### 4. Project detection
 
-Detection must use multiple signals.
-
-Do not identify MicroPython solely from:
-
-``` text
-pyproject.toml
-```
-
-A normal Python project can contain that file.
-
-Zephyr detection should consider strong indicators such as:
-
-``` text
-.west/
-west.yml
-prj.conf
-app.overlay
-CMakeLists.txt
-```
-
-Detection should be explainable and overridable.
+Use multiple weighted signals, explain the result and allow overrides.
+`pyproject.toml` alone does not identify MicroPython; an ordinary
+`CMakeLists.txt` alone does not identify a Zephyr application. See
+`SPEC.md` §7 for the signals and startup routing.
 
 ### 5. External processes
 
@@ -105,10 +68,10 @@ All external process execution should support, where applicable:
 -   error reporting;
 -   cleanup.
 
-Avoid shell invocation when direct process execution is sufficient.
-
-Do not construct commands by concatenating untrusted strings into shell
-commands.
+Avoid a shell when direct execution suffices. Cancellation must reach
+delegating tools' children as well as the immediate process. For natural
+exit, drain output before reporting completion; a cancelled process must
+not hang waiting for a descendant that kept its pipes open.
 
 ### 6. Interactive serial sessions
 
@@ -116,16 +79,9 @@ REPL and serial monitor sessions are special.
 
 Do not treat them as ordinary line-oriented subprocess output.
 
-Preserve:
-
--   interactive input;
--   terminal behavior;
--   output streaming;
--   clean exit;
--   terminal restoration.
-
-Always ensure the terminal is restored if a monitor or REPL session
-fails.
+Preserve input, terminal behavior and output streaming, and restore terminal
+state on every exit path, including errors and panics. A PTY session must
+receive control keys as bytes; do not route it through line-oriented output.
 
 ## Rust Guidelines
 
@@ -169,21 +125,15 @@ user config.
 Long-running operations should show progress/status without freezing
 navigation.
 
-Destructive actions such as:
-
--   flash;
--   erase;
--   recursive remote delete;
-
-must require appropriate confirmation.
+Require the confirmation grammar in `SPEC.md` §15 for destructive actions.
 
 No Private Use Area codepoints (Nerd Font icons and the like) in any glyph
 the UI draws --- they render as tofu or blank space on a terminal without
 that font installed, and there is no fallback. Stick to standard Unicode
 (plain symbols or emoji); `tests/no_private_use_glyphs.rs` scans `src/` for
 violations. The single sanctioned exception is `src/icons.rs`, the shared
-button-glyph vocabulary, which may carry BMP Private Use Area codepoints
-(U+E000--U+F8FF, single-width `nf-fa-*` only) written as `\u{...}` escapes
+glyph vocabulary, which may carry single-width BMP Private Use Area
+codepoints (`nf-fa-*` and `nf-custom-*`) written as `\u{...}` escapes
 so the scan still holds without an exception list --- and those glyphs ship
 only behind the opt-in `[ui] icons = "nerd"` in the user config; the
 default rendering stays plain Unicode (`"unicode"`), with `"none"` drawing
@@ -218,13 +168,11 @@ Prioritize tests for:
 
 Do not require physical hardware for normal tests.
 
-Use fake executables or fixtures to simulate:
-
--   `mpremote`;
--   `esptool`;
--   `west`;
--   `cmake`;
--   `ninja`.
+Use fake executables or fixtures for external tools (`mpremote`, `esptool`,
+`west`, `cmake`, `ninja`, `smpmgr`). A fake must reproduce the tool rather
+than assumptions about it: verify load-bearing CLI flags against the tool,
+and make the fake reject incorrect invocations. Use absolute fixture paths
+instead of changing global `PATH`, so tests remain parallel-safe.
 
 Hardware tests should be separate and explicitly documented.
 
@@ -301,38 +249,6 @@ Diagnostics added while investigating (temporary logging, scratch
 tests, instrumented re-runs) are removed before reporting; their
 findings, not their presence, are the deliverable.
 
-## Backend Rules
-
-### MicroPython
-
-Use:
-
-``` text
-mpremote
-esptool
-```
-
-for the relevant operations.
-
-Do not duplicate MicroPython filesystem or REPL protocols in the MVP.
-
-### Zephyr
-
-Use:
-
-``` text
-west
-cmake
-ninja
-```
-
-as appropriate.
-
-Do not assume all Zephyr boards use the same flash/debug mechanism.
-
-Board-specific behavior belongs in the Zephyr backend rather than the
-generic UI.
-
 ## Configuration
 
 Keep user configuration separate from project configuration.
@@ -356,22 +272,6 @@ be provided.
 
 Keep detailed command output available in the log view.
 
-## Security / Safety
-
-Treat external command execution and device operations as potentially
-destructive.
-
-Never silently run:
-
-``` text
-erase flash
-recursive remote delete
-```
-
-without the appropriate confirmation.
-
-Do not hide destructive consequences from the user.
-
 ## Documentation
 
 Update documentation when behavior changes.
@@ -382,32 +282,3 @@ Keep `AGENTS.md` focused on implementation rules and development
 workflow.
 
 Do not duplicate large sections between the two files.
-
-## Future Backends
-
-Possible future backends include:
-
--   ESP-IDF;
--   Arduino CLI;
--   PlatformIO;
--   CircuitPython.
-
-Do not implement infrastructure solely for these future backends unless
-it also solves a current MicroPython/Zephyr problem.
-
-The architecture should permit future backends, but the current
-implementation should remain simple.
-
-## Definition of Done
-
-A feature is complete when:
-
--   it follows the specification;
--   the relevant backend remains isolated;
--   the UI remains responsive;
--   errors are handled;
--   tests are added or updated;
--   formatting/checks pass;
--   no unnecessary dependencies were introduced;
--   terminal state is restored on exit paths;
--   documentation is updated when necessary.

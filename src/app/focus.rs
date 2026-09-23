@@ -46,8 +46,8 @@ impl App {
             && (caps.contains(Capability::Flash) || caps.contains(Capability::EraseFlash))
     }
 
-    /// Whether the device pane is *currently showing* the Project actions
-    /// tab --- the state `x` and the pane's arrow keys switch, and the flag
+    /// Whether the device pane is *currently showing* the Actions tab ---
+    /// `x` and the `ctrl+arrow` chord switch, and the flag
     /// the renderer and the key dispatch branch on.
     pub fn device_actions_tab_active(&self) -> bool {
         self.device_pane_tab == DevicePaneTab::Actions && self.device_actions_tab_available()

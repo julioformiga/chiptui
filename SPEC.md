@@ -1,5 +1,8 @@
 # ChipTUI --- Specification
 
+This document describes product behavior and architecture. `AGENTS.md`
+contains the implementation and verification rules.
+
 ## 1. Overview
 
 **ChipTUI** is a terminal user interface written in Rust for
@@ -229,10 +232,12 @@ ChipTUI is project-aware, so the working directory decides the opening
 screen. A directory opens straight into the dashboard only when ChipTUI has
 a concrete reason to treat it as a project:
 
-1.  a directory (or an ancestor) named by a project-local `chiptui.toml`;
+1.  a directory (or an ancestor) whose `chiptui.toml` declares a valid
+    `project_type`;
 2.  a directory (or an ancestor) recorded in the project registry (§13);
 3.  a directory whose evidence reaches the auto-detection confidence floor
-    and settles on a single backend.
+    and settles on a single backend. The nearest ancestor with an answer
+    wins; within it, project config outranks the registry and evidence.
 
 Everything else --- an empty directory, an ambiguous one, or a directory full
 of files that match no backend --- opens the **home screen** instead. This is
@@ -243,12 +248,6 @@ and can forget an entry (the directory itself is never touched). It is also
 reachable from the dashboard, so projects can be switched without restarting;
 anything still running is named in a confirmation first, since leaving cancels
 it.
-
-This replaces an earlier rule that opened the dashboard for every readable
-directory and then overlaid the project configuration screen when detection
-failed. That made it too easy to end up inside a folder that was never meant
-to become a project. Routing the unrecognized cases to the home screen keeps
-`chiptui.toml` creation an explicit, user-initiated step.
 
 Creating a project asks for the folder it goes into, then the project's
 name; the new directory is empty, so the flow continues into the
@@ -316,9 +315,8 @@ confirmation (§3: explicit, never inferred):
 -   the answer is also recorded in the **user** configuration's project
     registry (§13), so the home screen lists the project;
 -   the backend's starting layout is written into the directory **only when
-    it was empty**. That is what the scaffold is for --- `mkdir x && cd x &&
-    chiptui` --- and a directory that already holds a project is not missing
-    a `CMakeLists.txt`. Nothing already there is overwritten either way.
+    it was empty** (for example, a directory created from the home screen).
+    Nothing already there is overwritten.
 
 MicroPython starts with `src/` for the sources kept in sync with the device
 (§9's filesystem browser opens on this directory), `firmware/` for firmware
@@ -361,30 +359,12 @@ the description has focus. `Enter` is required to apply either the selected
 sample or the explicit `Minimal application` row; `Esc` cancels the question
 without creating any project files.
 
-This is how a brand-new, otherwise-empty project directory gets a working
-backend: the user is not required to create marker files like `boot.py` or
-`west.yml` by hand before the TUI becomes useful.
-
-Nothing is written into the project directory by a **passive** act. What
-ChipTUI works out on its own --- that this looks like a Zephyr project, that
-this directory was opened before --- lives in the user configuration, never
-in someone's repository: a directory the user did not ask ChipTUI to modify
-stays as they left it.
-
-The rule used to be stated as "ChipTUI never writes `chiptui.toml`". That
-was a proxy, and it held while every project answer ChipTUI had was a
-passive one. It stops holding the moment the user *explicitly asks* ChipTUI
-to change the project --- preparing one for over-the-air updates (§10)
-writes `sysbuild.conf`, a `VERSION` file and a Kconfig block, all far more
-invasive than a line of configuration --- at which point refusing to record
-*which answers produced those files* is not restraint, it is an omission the
-user has to reconstruct by hand.
-
-So the rule is stated in terms of its reason: **a passive act writes
-nothing; an explicit, confirmed action may write, and when it writes
-`chiptui.toml` it writes surgically.** Surgically means the guarantee the
-user configuration already carries (§13): the touched key changes, and every
-other section, comment, unknown key and blank line survives byte-for-byte.
+**A passive act writes nothing into the project.** Detection and the record
+of an opened directory belong in the user configuration. An explicit,
+confirmed action may modify project files, including `chiptui.toml`, but
+must preserve every unrelated section, comment, unknown key and blank line
+there (§13). A new project needs no manually created marker files before
+the user chooses a backend and its starting layout.
 
 ### Manual override
 
@@ -486,8 +466,8 @@ the MVP.
 ### Projects folder and project selection
 
 MicroPython makes the project a question the same way Zephyr does (under
-`ProjectSelect`, §6): a **projects folder** (`[micropython] projects`, user
-config only --- a MicroPython project pins no environment of its own) and a
+`ProjectSelect`, §6): a **projects folder** (`[micropython] projects` in the
+user config, overridable in a project's `chiptui.toml`) and a
 **project** picked from its immediate subdirectories. MicroPython runs
 source directly, so any subdirectory is a project: the picker marks none
 and refuses none. The pick is session-only and re-roots the file browser's
@@ -592,9 +572,8 @@ terminal/serial stream and preserve terminal input/output semantics.
 
 `esptool` operations should be presented separately from normal
 MicroPython filesystem operations: the device pane's second tab,
-**Project actions** (opened with `x`; the arrow keys switch between it
-and **Device files** from either side while the pane has focus, the same
-rule as the Log/Monitor strip), carries the
+**Actions** (opened with `x`; `ctrl+←/→` walks the pane and its tabs,
+as in §11), carries the
 actions as the same stacked-button group the Zephyr project panel uses,
 including its reserved state/`Stop` footer --- one action grammar across
 backends. The per-action options screen and the online firmware screens
@@ -866,7 +845,7 @@ one is being built is never guessed:
 
 1.  the **projects folder** (`[zephyr] projects`) holds the user's
     applications --- any directory, resolved from the same two config
-    levels as `workspace`. Unset, the Project pane's chooser (a
+    levels as `workspace`. Unset, the Environment pane's chooser (a
     directory picker, validated by existence only) answers it and saves
     the pick the same way;
 2.  the **project** is an immediate subdirectory of that folder, chosen in
@@ -912,7 +891,7 @@ one is being built is never guessed:
     survives the re-root, and the new project's own saved answers (below)
     are re-applied. The lifecycle buttons stay dimmed in the project panel
     until both answers exist --- the questions themselves are asked in
-    row 1's Project pane checklist, below `Projects base`. With the cursor
+    row 1's Environment pane checklist, below `Projects base`. With the cursor
     parked on a dimmed button, the panel's state line names the answer
     still missing, and the row to visit to answer it.
 
@@ -995,7 +974,7 @@ A shield (an add-on board) is optional: the target builds without one.
 When chosen, the shield enters the build's first configuration as
 `--shield`; a pick must not silently modify project configuration.
 
-> **Status**: implemented. The Project pane's target row --- the board
+> The Environment pane's target row --- the board
 > with the shield riding on the same line, `←`/`→` switching which half
 > `Enter` acts on --- opens the same filterable picker over a background
 > `west
@@ -1163,15 +1142,15 @@ repo/
     prj.conf  boards/  src/
 ```
 
-That is enough for `west build` and *not* enough for `west boards`,
-which seeds its search roots from the workspace and never sees a module
-the project reaches by CMake alone. So ChipTUI finds such a module by
-walking up from the project (stopping at the projects folder) and passes
-its root to the **list** commands as `--board-root`, which is what puts
-the board in the picker. Nothing is injected into `west build`:
-inventing a `-DBOARD_ROOT` would be exactly the guess §8 forbids, and
-the application's own `CMakeLists.txt` is what makes the board
-buildable.
+That is enough for a plain `west build` but not for `west boards`, whose
+search roots do not include modules reached only through the application's
+CMake. ChipTUI walks up from the project (stopping at the projects folder),
+reads the module's declared `build.settings.board_root`, and passes the
+declared root to list commands as `--board-root`. It also passes that root
+to build *configurations* as `-DBOARD_ROOT`: sysbuild resolves boards before
+loading the application, so its `ZEPHYR_EXTRA_MODULES` cannot supply the
+root in time. An incremental build does not reconfigure and receives no
+CMake arguments. No root is invented when the module declares none.
 
 The application being a subdirectory is part of this layout, so the
 project picker looks one level deeper through a directory that is not
@@ -1215,7 +1194,7 @@ backend-specific configuration.
 > configuration will do, which is a different question.
 >
 > The dashboard's `x` routes a build-panel backend here and a filesystem
-> backend to the esptool dialog. Destructive (`SPEC.md` §15): it always runs
+> backend to the esptool dialog. Destructive (§15): it always runs
 > through a confirm quoting the literal command --- both addresses included,
 > and the refusal in its place when the plan cannot be composed.
 >
@@ -1408,11 +1387,10 @@ rows have an answer), and a Details pane on the right --- what the
 selected row is for, the key's literal spelling, what it can be, which
 level of the configuration stack answers it now (`chiptui.toml`, then the
 user config, then the defaults, stated once under the strip), and the
-literal line an unapplied answer will write. Each answer row carries one
-glyph naming its control --- a folder for a path picker, `✎` for free
-text, `☰` for a fixed set --- and the value's colour carries the state
-(written into the file, answered by a less specific level, unanswered, or
-waiting to be applied); a pending one shows the `old → new` transition
+literal line an unapplied answer will write. Each answer row carries a state
+marker (`●` pending, `✓` in the file, `←` answered at a less specific level,
+`·` unanswered). Path rows also advertise their picker. A pending row shows
+the `old → new` transition
 rather than
 the new value alone. The Details pane lists every option of a choice row ---
 the whole theme catalogue included --- and scrolls when its content is taller
@@ -1447,11 +1425,10 @@ one-line contextual shortcut footer:
 ┌───────────────────────────────────────────────────────────────┐
 │ ChipTUI Backend ◆ Zephyr      Project esp32c3_basic      ● /dev/ttyACM0 │
 ├───────────────────────────────┬───────────────────────────────┤
-│ Project                       │ Device                        │
-├───────────────────────────────┴───────────────────────────────┤
-│ Files: Local           │ Files: Device                        │
-│  (or, when the backend declares no Capability::Filesystem,    │
-│   a single full-width placeholder pane)                       │
+│ Environment                   │ Device Info                   │
+├───────────────────────────────┬───────────────────────────────┤
+│ Files: Local                  │ Actions • Device Files       │
+│ (Zephyr: Files)               │ (Zephyr: Actions)            │
 ├───────────────────────────────────────────────────────────────┤
 │ Log │ Monitor │ Terminal                                     │
 ├───────────────────────────────────────────────────────────────┤
@@ -1459,9 +1436,9 @@ one-line contextual shortcut footer:
 └───────────────────────────────────────────────────────────────┘
 ```
 
-- **Row 1** --- Project and Device, side by side, both a fixed four content rows (shorter
+- **Row 1** --- Environment and Device Info, side by side, both a fixed four content rows (shorter
   content is padded with blanks) so the rows below never shift when a workspace resolves or
-  device details accumulate. The Project pane is the checklist the environment's questions
+  device details accumulate. The Environment pane is the checklist the environment's questions
   live in --- navigable through the shortcuts overlay's `e` letter (`ctrl+k`; a deliberate
   detour off the `Tab` tour: the pane holds questions, not work; `Tab` leaves it back onto the
   tour, and the cursor lands on the first question still open). Zephyr asks
@@ -1477,25 +1454,14 @@ one-line contextual shortcut footer:
   contents are verified by a background `sha256sum` armed by the first root listing,
   so the row reaches a real `=`/`≠` instead of resting on the `≈` a size match alone
   produces. The script-running belief lives on the device pane's tab strip and in the
-  interrupt gates, not on a row. The board's firmware version rides
-  the Device info pane's `Firmware` row instead, read from the same identification window
-  that named the firmware: MicroPython and Zephyr compile their banners into the image
-  (`Firmware: MicroPython v1.28.0`, `Firmware: Zephyr v4.0.0`), and a plain ESP-IDF app's
-  descriptor carries its stamped build version (`Firmware: ESP-IDF v5.3.1`); MicroPython
-  falls back to the REPL banner the probe/monitor already sees when the read found no
-  version string, and a firmware that names no version stays bare rather than guessed.
-  The one layout the window cannot date --- a Zephyr *simple boot* image, whose application
-  banner sits deep in flash past it, deeper still for a bigger app --- is answered live first when
-  the platform monitor can run for the board (a resolved workspace, a known board, a configured
-  build): esptool has already reset the board to read it, so the app reboots and prints its own
-  boot banner on the UART regardless of image size, the same trick MicroPython's live REPL banner
-  already uses. Only when that is unavailable, or it finds nothing, does a follow-up flash read
-  (the next 1 MiB past the identification window) date the verdict already standing instead; a
-  hunt that finds nothing either way, or a board that went away, changes nothing. Whenever the
-  flash contents change the verdict is re-read: after the
-  esptool flow's erase/write the next listing re-identifies, and after a successful
-  `west flash` from the build panel --- which no listing drives --- the identification runs
-  again on its own once the port frees. Every row is a `□` while open,
+  interrupt gates, not on a row. The Device Info pane's `Firmware` row names
+  the detected firmware and its version when known: from the flash read's
+  banner or ESP-IDF descriptor, the REPL banner for MicroPython, or a live
+  boot-banner capture for Zephyr simple-boot images whose banner lies beyond
+  the initial flash window. If the monitor cannot capture it, a follow-up
+  flash read may supply a version without changing the firmware verdict;
+  missing evidence is never guessed. After erase or flash, identification
+  is refreshed when the port is free. Every row is a `□` while open,
   a `✓` once answered, a red `✗` when a configured answer fails validation. The
   environment's `versions` (Zephyr and venv Python, read from files) ride the pane's
   bottom border's right edge once a workspace resolves --- a late-arriving fact that
@@ -1504,9 +1470,9 @@ one-line contextual shortcut footer:
   log warning).
 - **Row 2** --- the dual-pane local/device file browser, shown whenever the selected backend
   declares `Capability::Filesystem`; for a backend that builds without a device filesystem
-  (today: Zephyr) the whole row is the pair **Project files | Project actions**: the
+  (today: Zephyr) the whole row is the pair **Files | Actions**: the
   project's own file list (the pane's title carries the walked path,
-  `Project files: name/src/`; no action menu --- `Enter` descends or hands a text file to
+  `Files: name/src/`; no action menu --- `Enter` descends or hands a text file to
   `$EDITOR`, `v` views, `Del` asks, `a` creates, `r` renames) beside the
   project panel (the build lifecycle). The project panel is buttons only
   (`Zephyr Actions` --- a stacked-button submenu holding `west update`, adding
@@ -1519,7 +1485,7 @@ one-line contextual shortcut footer:
   process tree (children run in their own process group), so a delegating tool like `west`
   cannot leave its helpers running after the cancellation. A filesystem backend that can also
   flash (today: MicroPython) keeps the dual-pane browser and gains the same button-group
-  grammar as the device pane's second tab: a `Project actions • Device files` strip on the
+  grammar as the device pane's second tab: an `Actions • Device Files` strip on the
   pane's border, the esptool actions plus the online-firmware entries as the stacked
   buttons, the same reserved state/`Stop` footer, and row 2 sized to the stack while that
   tab is showing. No file
@@ -1527,8 +1493,10 @@ one-line contextual shortcut footer:
   sources beyond the list is the user's editor's job; otherwise a single full-width
   placeholder while no pane exists yet.
 - **Row 3** --- a one-line `Log`/`Monitor`/`Terminal` tab strip over the selected tab's
-  body, full width. `Left`/`Right` switch tabs while row 3 has focus, one step per press
-  and clamped at the ends. `Log` is the rolling status/notice feed,
+  body, full width. `Ctrl+←/→` switches tabs while row 3 has focus, one step per press
+  and clamped at the ends. On the other rows that chord walks focus horizontally,
+  including each tab in a tabbed device pane; `Ctrl+↑/↓` moves between rows.
+  Plain arrows retain the focused pane's own navigation. `Log` is the rolling status/notice feed,
   and every process the app spawns also leaves its command line there as a `$`-marked
   entry, visually distinct from the notices. While the pane holds focus, `Up`/`Down`
   walk the lines themselves --- every entry is selectable, the newest selected by
@@ -1560,17 +1528,6 @@ for choosing and configuring an action, never full-screen replacements. Starting
 from the actions tab shows the Monitor tab without moving focus off the pane (the cursor
 waits on `Stop`); starting one from a dialog closes it and moves focus to row 3's Monitor
 tab, where its output streams --- there is no separate output screen.
-
-> **Status**: implemented. Row 2 is capability-driven: the dual-pane file browser for
-> MicroPython; for Zephyr the full row is Project files (the project's own listing, the
-> checklist having moved up to row 1's Project pane) | Project actions (`src/build.rs`: the
-> lifecycle buttons only, gated on both answers,
-> streaming into
-> the Monitor tab; commands are quoted by the confirm overlays, not on the rows). For
-> MicroPython the device pane is a tabbed pane (`src/ui/files.rs`): **Project actions**
-> (the esptool menu as the same button-stack widget, `src/ui/flash.rs`) • **Device files**,
-> with `x` and the pane's arrow keys switching. The
-> Monitor tab shows the device serial session (`m`), flash/erase output, and build output.
 
 The exact proportions (row heights, column widths) are not fixed.
 
@@ -1708,23 +1665,18 @@ Support two levels:
 
 ### User configuration
 
-Potentially:
+For example:
 
 ``` toml
-[tools]
-mpremote = "mpremote"
-esptool = "esptool"
-west = "west"
-cmake = "cmake"
-
 [zephyr]
 workspace = "~/zephyrproject"
 projects = "~/zephyrapps"
 # sdk = "~/zephyr-sdk-0.17.1"
 
 [ui]
-log_panel = true
-# mouse = true   # opt in to click/wheel reporting (see below)
+theme = "tokyo-night"
+icons = "unicode"
+mouse = false
 ```
 
 The `[zephyr]` keys are implemented (§10); the same section in a project's
@@ -1783,9 +1735,8 @@ only what an explicit action of the user's answered (§7) --- everything else
 in it is there because the user put it there, typically to commit it. Used
 primarily for:
 
--   backend override (read only);
--   default device;
--   board;
+-   backend override (`project_type`, editable in the configuration screen);
+-   board and shield;
 -   `[[variant]]` blocks, the project's build variants (§10; read only);
 -   `[ota]`, the over-the-air mechanism, transport and device address
     (§10) --- written by the preparation action;
@@ -2035,8 +1986,9 @@ These should only be implemented when a real use case exists.
 -   User can monitor serial output when supported.
 -   User can prepare a project for over-the-air updates, and a re-run of
     the preparation changes nothing.
--   User can push a new image to a running board without a cable, and the
-    cycle stops before confirming it.
+-   User can push a new image to a running board without a cable; a
+    verified image is confirmed by default, while `auto_confirm = false`
+    stops before confirmation and preserves the revert option.
 
 ### General
 
@@ -2048,147 +2000,50 @@ These should only be implemented when a real use case exists.
 
 ## 20. Project Structure
 
-Suggested initial structure:
-
-``` text
-chiptui/
-├── Cargo.toml
-├── src/
-│   ├── main.rs
-│   ├── app.rs
-│   ├── event.rs
-│   ├── config.rs
-│   ├── project/
-│   │   ├── mod.rs
-│   │   ├── detector.rs
-│   │   └── types.rs
-│   ├── backend/
-│   │   ├── mod.rs
-│   │   ├── micropython/
-│   │   └── zephyr/
-│   ├── device/
-│   │   ├── mod.rs
-│   │   └── discovery.rs
-│   ├── process/
-│   │   └── mod.rs
-│   └── ui/
-│       ├── mod.rs
-│       ├── layout.rs
-│       ├── components/
-│       └── views/
-├── tests/
-└── docs/
-```
-
-This structure is a starting point, not a requirement. Avoid creating
-modules before they are needed.
+The existing `src/` tree is the implementation reference. Keep the app,
+backend, project, process and UI responsibilities distinct; add modules
+when a concrete use case requires them, rather than following a speculative
+directory template.
 
 ## 21. Recommended Technology
 
-Rust is the preferred implementation language.
-
-Recommended initial stack:
-
--   Rust stable;
--   Ratatui;
--   Crossterm;
--   a maintained Rust serial communication crate if direct serial access
-    is required;
--   standard process APIs for external commands;
--   standard filesystem APIs;
--   a lightweight serialization/configuration format such as TOML.
-
-Async should only be introduced where it materially improves the
-architecture.
-
-A simple event-driven synchronous architecture may be preferable for the
-first implementation if it can keep long-running processes off the UI
-thread.
+Use stable Rust with Ratatui/Crossterm. The event-driven UI stays responsive
+by running long operations off its event loop (§12); an async runtime is not
+a prerequisite.
 
 ## 22. Important Technical Decisions
 
-### Delegate rather than reimplement
-
-The first implementation should invoke:
-
-``` text
-MicroPython → mpremote / esptool
-Zephyr      → west / CMake / Ninja
-```
-
-rather than duplicating their protocols.
-
-This reduces maintenance and keeps behavior aligned with the official
-ecosystems.
-
-### Backend capabilities
-
-The UI must consume capabilities rather than hard-code
-framework-specific menus.
-
-### Project detection
-
-Detection should be heuristic but explainable, with manual override.
-
-### Hardware independence
-
-The normal test suite must work without physical hardware.
+The governing decisions are described once at their point of use: delegate
+to ecosystem tools (§1, §9–§10), derive actions from backend capabilities
+(§6), detect projects with weighted and overridable evidence (§7), and keep
+normal tests hardware-independent (§16).
 
 ## 23. Risks
 
 ### External CLI changes
 
-Underlying tools can change their output or arguments.
-
-Mitigation:
-
--   centralize command construction;
--   minimize parsing of human-readable output;
--   prefer machine-readable output where available;
--   test supported versions.
+Underlying tools can change arguments and output. Centralize command
+construction, prefer machine-readable output, and test supported versions
+with faithful fixtures (§16).
 
 ### Device ambiguity
 
-Multiple boards may be connected.
-
-Mitigation:
-
--   explicit device selection;
--   stable identifiers where available;
--   show port and device metadata.
+Multiple boards may be connected. Select explicitly when ambiguous and
+show port/device identity (§8).
 
 ### Terminal state corruption
 
-Interactive serial sessions can interfere with the TUI.
-
-Mitigation:
-
--   isolate monitor sessions;
--   carefully manage raw terminal mode;
--   restore terminal state on every exit path.
+Interactive sessions need terminal restoration on every exit path (§11–§12).
 
 ### Overengineering
 
-Supporting many embedded ecosystems too early could make the core
-architecture complex.
-
-Mitigation:
-
--   MVP limited to MicroPython and Zephyr;
--   capability-based backend abstraction;
--   no plugin system until required.
+Keep the current scope on MicroPython and Zephyr (§3, §18).
 
 ### Firmware site markup changes
 
-The MicroPython download site has no machine-readable API; firmware
-discovery (§9) parses its HTML directly.
-
-Mitigation:
-
--   isolate all parsing behind one tested module, fixture-driven so the
-    normal test suite never depends on the live site;
--   treat a parse failure as "found nothing" rather than a crash, and always
-    allow the user to paste a direct download URL instead.
+The MicroPython download site has no machine-readable API: isolate its HTML
+parser behind fixture tests, treat parsing failure as "found nothing" rather
+than crashing, and retain direct URL entry (§9).
 
 ## 24. References
 

@@ -20,7 +20,7 @@
 //! `scripts/footprint/size_report`, which needs the ELF's DWARF to map
 //! symbols back to source files. That is the one place this feature delegates
 //! to Python, and it delegates to Zephyr's own script with its own `--json`
-//! output --- the `CLAUDE.md` rule (#2 delegate to external CLIs, #3 prefer
+//! output --- the `AGENTS.md` rule (delegate to external CLIs and prefer
 //! machine-readable tool output) rather than a reimplementation. The other
 //! four artifacts need no tool at all, so four of the five tabs work on a
 //! machine with none of `dashboard.py`'s dependencies (`jinja2`, `pygments`,
@@ -38,7 +38,7 @@
 //! # Cost
 //!
 //! All of these are read on the UI thread when a tab is entered, never in
-//! the draw path (`CLAUDE.md`'s rule, which `requirements.txt` learned the
+//! the draw path (the same rule `requirements.txt` learned the
 //! hard way). Measured on a real project --- an ESP32-C3 with LVGL, a
 //! debug build of this crate, so a conservative bound:
 //!

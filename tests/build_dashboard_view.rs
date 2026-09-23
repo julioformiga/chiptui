@@ -126,7 +126,7 @@ fn the_menu_row_opens_the_window() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// The window fits the declared 80x32 minimum: the whole strip, both panes,
+/// The window fits at 80x32: the whole strip, both panes,
 /// the filter and the hint, with no row lost and no label cut off the strip.
 #[test]
 fn the_window_fits_the_declared_minimum() {

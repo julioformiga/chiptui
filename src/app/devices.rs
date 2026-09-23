@@ -47,8 +47,7 @@ impl App {
     /// backend that browses files (its device scan under
     /// [`Capability::Filesystem`]), the workspace+build pair for one that
     /// builds without a device filesystem. A no-op once the panes exist
-    /// (`AGENTS.md` §5's "one `mpremote` at a time" applies just as much to
-    /// not re-issuing a scan that already ran).
+    /// (and does not re-issue an already running scan).
     ///
     /// Called from three places: `main.rs` right after startup, and
     /// [`App::apply_project_setup`] --- any moment the

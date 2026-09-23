@@ -496,8 +496,8 @@ pub(crate) fn packages(area: Rect) -> PackagesAreas {
 ///
 /// [`packages`]' geometry with a tab strip added --- and the strip costs no
 /// content row, because it rides the modal's *top border* the way row 3's
-/// Log/Monitor/Terminal strip rides its pane's. At the declared 80x32
-/// minimum the body is 23 rows, and spending one of them on a strip that
+/// Log/Monitor/Terminal strip rides its pane's. At 80x32 the body is 23
+/// rows, and spending one of them on a strip that
 /// has a border to sit on would be paying twice.
 pub(crate) struct BuildDashboardAreas {
     /// The modal itself (border included) --- the `Clear` rect.
@@ -507,7 +507,7 @@ pub(crate) struct BuildDashboardAreas {
     /// The Memory tab's sub-strip (Total Memory / RAM report / ROM report /
     /// regions), directly under the main strip. Height 0 on every other
     /// tab --- the row is spent only where there is a second strip to
-    /// draw, which at the 80x32 minimum the body can afford either way.
+    /// draw, which at 80x32 the body can afford either way.
     pub(crate) views: Rect,
     /// The filter line.
     pub(crate) filter: Rect,

@@ -13,10 +13,10 @@ use std::path::{Path, PathBuf};
 
 use chiptui::app::{App, AppEvent, Overlay};
 use chiptui::backend::{BackendKind, BackendRegistry};
-use chiptui::project::{DetectionSource, ProjectManager, config};
+use chiptui::project::{config, DetectionSource, ProjectManager};
 use chiptui::project_config::{Cursor, ProjectConfigRow};
 use chiptui::settings::{self, ProjectRegistry};
-use chiptui::startup::{Route, route};
+use chiptui::startup::{route, Route};
 use ratatui::crossterm::event::KeyCode;
 
 mod common;
@@ -249,13 +249,12 @@ fn udp_address_uses_an_ipv4_mask_and_validation() {
         app.project_config.as_ref().unwrap().editing().is_some(),
         "an out-of-range IPv4 octet remains editable"
     );
-    assert!(
-        app.project_config
-            .as_ref()
-            .unwrap()
-            .error()
-            .is_some_and(|error| error.contains("valid IPv4"))
-    );
+    assert!(app
+        .project_config
+        .as_ref()
+        .unwrap()
+        .error()
+        .is_some_and(|error| error.contains("valid IPv4")));
     app.handle(key(KeyCode::Delete));
     for ch in "192.168.1.42".chars() {
         app.handle(key(KeyCode::Char(ch)));
@@ -428,7 +427,7 @@ fn a_directory_that_already_holds_a_project_is_never_scaffolded() {
 
 #[test]
 fn an_empty_directory_is_still_scaffolded_after_the_keys_are_written() {
-    // The `mkdir x && cd x && chiptui` path. The transaction writes
+    // An empty directory opened for configuration. The transaction writes
     // `chiptui.toml` first, which is not a hidden entry --- so asking
     // whether the directory is empty *after* that write answers about a
     // directory this very apply had just filled, and the starting layout

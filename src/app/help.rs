@@ -1168,7 +1168,7 @@ impl App {
     /// where, built fresh from whatever is actually visible --- the same
     /// capability/visibility checks `focus_order`, `workspace_pane_visible`,
     /// `build_pane_visible` and `device_actions_tab_available` already use,
-    /// never a fixed table (`AGENTS.md` §1: capabilities, not conditionals).
+    /// never a fixed table (`AGENTS.md` §3: capabilities, not conditionals).
     /// `Environment` is included even though it is off the `Tab` tour ---
     /// the overlay's whole point is reaching panes a letter away, tour or
     /// not.

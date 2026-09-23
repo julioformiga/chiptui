@@ -155,8 +155,8 @@ impl App {
 
     // ---- MicroPython projects -------------------------------------------
 
-    /// Resolves `[micropython] projects` (user config only --- a
-    /// MicroPython project pins no environment of its own) once per
+    /// Resolves `[micropython] projects` (project file before user config)
+    /// once per
     /// session. The pickers refresh the answer afterwards; this is only the
     /// startup read.
     pub(super) fn ensure_mpy_projects(&mut self) {
