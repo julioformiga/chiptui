@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 use crate::backend::BackendRegistry;
 use crate::project::detect_from_known;
+use crate::project::{DetectionOutcome, DetectionSource};
 use crate::settings::ProjectRegistry;
 
 /// Which screen the session opens on.
@@ -25,29 +26,40 @@ pub enum Route {
 
 /// Decides the opening screen for `start`.
 ///
-/// A readable directory is **always** opened now, whatever detection made of
-/// it: a project it can name outright, an ambiguous one, an empty one, and a
-/// directory full of files it recognizes nothing in. The question the last
-/// case used to have no answer for --- "this *is* a project, it just does
-/// not look like one" --- is now a screen rather than a dead end, and the
-/// screen is the dashboard's `Overlay::ProjectConfig` (`App::
-/// maybe_open_project_config`), which writes the project's own
-/// `chiptui.toml`. Leaving it unanswered is what goes to the home screen,
-/// from inside the session, so the list is a way *out* of the question
-/// rather than the only answer to it.
+/// A directory is opened straight into the dashboard only when ChipTUI has a
+/// concrete reason to believe it is a project: a `chiptui.toml` file, a
+/// recorded entry in the user registry, or strong automatic detection. When
+/// none of those hold --- empty directories, ambiguous ones, or directories
+/// full of files that match no backend --- the session starts on the home
+/// screen so the user can choose or create a project instead of being
+/// dropped into a dashboard that might prompt for a `chiptui.toml`.
 ///
-/// The case that forced this: a Zephyr repository whose root is an
-/// out-of-tree board *module* --- the application one directory down --- has
-/// no `find_package(Zephyr)` at the top to score, so it reaches 0.25 against
-/// a 0.35 floor and reads as `Unknown`. It was a real project, opened in its
-/// own root, that the app could only answer with a list of other projects.
+/// This still covers the regression that motivated the previous rule: a
+/// Zephyr repository whose root is an out-of-tree board *module* scores low
+/// at the root, but such a directory is typically registered (the user
+/// opened it before) or can be selected explicitly from the home screen.
 ///
 /// A `start` that cannot be read is the one thing left that is not a
 /// project, so it routes to the home screen rather than failing the run.
 pub fn route(start: &Path, backends: &BackendRegistry, known: &ProjectRegistry) -> Route {
-    match detect_from_known(backends, start, known) {
-        Ok(_) => Route::Open(start.to_path_buf()),
-        Err(_) => Route::Home,
+    let detection = match detect_from_known(backends, start, known) {
+        Ok(detection) => detection,
+        Err(_) => return Route::Home,
+    };
+
+    let opens = matches!(
+        (&detection.source, &detection.outcome),
+        (DetectionSource::Config, _)
+            | (DetectionSource::Registered, _)
+            | (DetectionSource::Automatic, DetectionOutcome::Detected(_))
+    );
+
+    if opens {
+        // The dashboard starts where the user is; project detection inside
+        // the app finds the root above when one exists.
+        Route::Open(start.to_path_buf())
+    } else {
+        Route::Home
     }
 }
 
@@ -118,25 +130,23 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_directory_opens_so_it_can_be_scaffolded() {
+    fn an_empty_directory_goes_home() {
         let dir = temp_dir("empty");
         std::fs::create_dir_all(dir.join(".git")).unwrap();
         let route = route_for(&dir, &ProjectRegistry::default());
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(
             route,
-            Route::Open(dir),
-            "hidden entries do not make a directory non-empty"
+            Route::Home,
+            "without chiptui.toml or detection, the user picks the project"
         );
     }
 
-    /// The regression this routing exists for: a Zephyr repository whose
-    /// root is an out-of-tree board module, the application one level down.
-    /// Nothing at the top calls `find_package(Zephyr)`, so it scores 0.25
-    /// against a 0.35 floor and reads as `Unknown` --- and it used to be
-    /// answered with the home screen's list of *other* projects.
+    /// A directory with contents that do not amount to a project no longer
+    /// opens the dashboard: the home screen is the safer place for a folder
+    /// ChipTUI cannot confidently identify.
     #[test]
-    fn a_directory_with_contents_and_no_project_still_opens() {
+    fn a_directory_with_contents_and_no_project_goes_home() {
         let dir = temp_dir("busy");
         std::fs::create_dir_all(dir.join("boards")).unwrap();
         std::fs::create_dir_all(dir.join("zephyr")).unwrap();
@@ -147,8 +157,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(
             route,
-            Route::Open(dir),
-            "the configuration screen answers this, not the project list"
+            Route::Home,
+            "low-confidence detection should not auto-open a dashboard"
         );
     }
 
@@ -167,8 +177,8 @@ mod tests {
 
         assert_eq!(
             unknown,
-            Route::Open(dir.clone()),
-            "unrecorded it still opens --- the screen that names it is inside"
+            Route::Home,
+            "without registry or strong detection, the user picks the project"
         );
         assert_eq!(registered, Route::Open(dir));
     }
@@ -203,6 +213,32 @@ mod tests {
         let route = route_for(&dir, &ProjectRegistry::default());
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(route, Route::Open(dir));
+    }
+
+    #[test]
+    fn a_project_config_file_opens_without_other_evidence() {
+        let dir = temp_dir("config-file");
+        std::fs::write(
+            dir.join(crate::project::config::FILE_NAME),
+            "project_type = \"zephyr\"\n",
+        )
+        .unwrap();
+
+        let route = route_for(&dir, &ProjectRegistry::default());
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(route, Route::Open(dir));
+    }
+
+    #[test]
+    fn an_ambiguous_directory_goes_home() {
+        let dir = temp_dir("ambiguous");
+        // One weak MicroPython signal: above the noise floor but not enough
+        // to settle on a backend.
+        std::fs::write(dir.join("boot.py"), "").unwrap();
+
+        let route = route_for(&dir, &ProjectRegistry::default());
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(route, Route::Home);
     }
 
     #[test]

@@ -226,34 +226,29 @@ backend.
 ### Where a session starts
 
 ChipTUI is project-aware, so the working directory decides the opening
-screen --- and a readable directory always opens the dashboard, whatever
-detection made of it:
+screen. A directory opens straight into the dashboard only when ChipTUI has
+a concrete reason to treat it as a project:
 
-1.  a directory (or an ancestor) whose backend is known --- named by the
-    project registry (§13), by a project-local `chiptui.toml`, or by the
-    evidence itself --- opens straight into its project;
-2.  an *ambiguous* one opens too, so the question that resolves it appears
-    where the user already is;
-3.  an empty one opens so it can be scaffolded (below);
-4.  and so does a directory full of files that names no project, `$HOME`
-    being the usual case --- with the **project configuration screen**
-    (below) over it, which is the question that case has.
+1.  a directory (or an ancestor) named by a project-local `chiptui.toml`;
+2.  a directory (or an ancestor) recorded in the project registry (§13);
+3.  a directory whose evidence reaches the auto-detection confidence floor
+    and settles on a single backend.
 
-That last case used to route to the home screen instead, which answered
-"this directory is not a project I recognize" with a list of *other*
-projects and no way to say otherwise. The directory that made it untenable
-is a real one: a Zephyr repository whose root is an out-of-tree board
-module, with the application one directory down. Nothing at the root calls
-`find_package(Zephyr)`, so it scores 0.25 against a 0.35 floor --- a real
-project, opened in its own root, that the tool could only decline to open.
+Everything else --- an empty directory, an ambiguous one, or a directory full
+of files that match no backend --- opens the **home screen** instead. This is
+a project-selection area: create a new project, search and open a recorded
+one, or browse for an existing folder. It is backed entirely by the registry,
+shows each project's backend, name and path, filters live as the user types,
+and can forget an entry (the directory itself is never touched). It is also
+reachable from the dashboard, so projects can be switched without restarting;
+anything still running is named in a confirmation first, since leaving cancels
+it.
 
-The home screen is now what the configuration screen is *left* for: leaving
-it with the directory still unnamed goes there. It stays the project list:
-create a new project, or search and open a recorded one. It is backed entirely by the registry, shows each
-project's backend, name and path, filters live as the user types, and can
-forget an entry (the directory itself is never touched). It is also reachable
-from the dashboard, so projects can be switched without restarting; anything
-still running is named in a confirmation first, since leaving cancels it.
+This replaces an earlier rule that opened the dashboard for every readable
+directory and then overlaid the project configuration screen when detection
+failed. That made it too easy to end up inside a folder that was never meant
+to become a project. Routing the unrecognized cases to the home screen keeps
+`chiptui.toml` creation an explicit, user-initiated step.
 
 Creating a project asks for the folder it goes into, then the project's
 name; the new directory is empty, so the flow continues into the
@@ -267,10 +262,13 @@ any time with `ctrl+,` --- or a bare `,`, since a comma carries no control
 byte and a terminal without the Kitty keyboard protocol sends nothing at all
 for the chord.
 
-It opens **by itself** when detection concludes `Unknown` or `Ambiguous`, no
-project-local file is present and the registry does not name the directory
-(re-running detection --- the Log pane's `r` --- opens it again). Then it is
-the empty-project question, and it opens on the one thing it has to ask.
+It opens **by itself** inside the dashboard when detection concludes
+`Unknown` or `Ambiguous` after the user has already chosen or re-detected a
+project (re-running detection --- the Log pane's `r` --- opens it again). At
+startup, those same cases route to the home screen instead, so the user
+decides whether to enter the folder at all. Once a project is open, the
+configuration screen is the empty-project question, and it opens on the one
+thing it has to ask.
 
 **The backend is chosen, not typed.** A pair of cards leads the window, one
 per backend, each carrying that backend's own mark and its own colour ---

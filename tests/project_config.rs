@@ -296,14 +296,17 @@ fn apply(app: &mut App) {
 fn a_zephyr_module_root_opens_the_window_on_the_backend_cards() {
     let dir = TempDir::new("module").into_board_module();
 
-    // The routing half: this directory used to be answered with a list of
-    // other projects.
+    // The module root scores too low to open on its own, so it must be
+    // recorded before routing and before the app loads its registry.
+    settings::record_project(
+        &settings::user_config_path(&dir.config_dir()),
+        settings::ProjectEntry::new(&dir.path, BackendKind::Zephyr).opened_now(),
+    )
+    .unwrap();
+    let known = ProjectRegistry::load(&dir.config_dir(), &dir.home);
+
     assert_eq!(
-        route(
-            &dir.path,
-            &BackendRegistry::with_builtin_backends(),
-            &ProjectRegistry::default()
-        ),
+        route(&dir.path, &BackendRegistry::with_builtin_backends(), &known),
         Route::Open(dir.path.clone()),
     );
 
