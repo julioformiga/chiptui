@@ -165,15 +165,26 @@ impl App {
         // undone on the next open.
         let file = panel.root.join(config::FILE_NAME);
         if file.exists() {
-            let board = panel.board_name().map(str::to_string);
+            // A host target is not a board answer (`SPEC.md` §Build
+            // variants): it reaches `-b` through the variant that declares
+            // it, and persisting one as the project's board is what left a
+            // simulator build inside the next device build's command line.
+            // The key is skipped entirely --- neither written nor cleared
+            // --- so a stray host pick cannot erase a saved answer either.
+            let board = panel
+                .board_name()
+                .filter(|name| !crate::backend::zephyr::variants::is_simulator_target(name))
+                .map(str::to_string);
             let shield = panel.shield_name().map(str::to_string);
             let write = |key: &str, value: Option<&String>| match value {
                 Some(value) => config::set_key(&file, config::ZEPHYR_SECTION, key, value),
                 None => config::clear_key(&file, config::ZEPHYR_SECTION, key),
             };
-            if let Err(err) =
-                write("board", board.as_ref()).and_then(|()| write("shield", shield.as_ref()))
-            {
+            let board_write = match board.as_ref() {
+                Some(board) => write("board", Some(board)),
+                None => Ok(()),
+            };
+            if let Err(err) = board_write.and_then(|()| write("shield", shield.as_ref())) {
                 self.logs.warn(format!(
                     "could not save the target in {}: {err}",
                     file.display()
@@ -191,7 +202,16 @@ impl App {
             Some(known) => known.clone(),
             None => crate::settings::ProjectEntry::new(&root, kind),
         };
-        entry.board = panel.board_name().map(str::to_string);
+        // The same host-target rule as the file half above: a simulator
+        // build's board is the variant's answer, never the project's, and
+        // a stale one here would outrank the cache on the next open. The
+        // saved entry keeps whatever board it already holds.
+        if let Some(board) = panel
+            .board_name()
+            .filter(|name| !crate::backend::zephyr::variants::is_simulator_target(name))
+        {
+            entry.board = Some(board.to_string());
+        }
         entry.shield = panel.shield_name().map(str::to_string);
         // The *answer*, not the live target: a session starts on the board
         // whatever was built last, so recording the target here would
@@ -232,20 +252,18 @@ impl App {
         // The registry half is keyed by the project itself --- the entry
         // belongs to the directory `west` runs in.
         if let Some(entry) = self.manager.known_projects().entry_for(root) {
-            board = entry.board.clone().map(|name| BoardChoice {
-                name,
-                origin: crate::build::BoardOrigin::Config,
+            board = entry.board.clone().and_then(|name| {
+                crate::build::project_board(name, crate::build::BoardOrigin::Config)
             });
             shield = entry.shield.clone();
         }
         // The file half by the project's own `chiptui.toml` (`[zephyr]`).
         if let Ok(text) = std::fs::read_to_string(root.join(crate::project::config::FILE_NAME)) {
             let settings = crate::settings::ZephyrSettings::parse(&text);
-            if let Some(name) = settings.board {
-                board = Some(BoardChoice {
-                    name,
-                    origin: crate::build::BoardOrigin::ProjectFile,
-                });
+            if let Some(answer) = settings.board.and_then(|name| {
+                crate::build::project_board(name, crate::build::BoardOrigin::ProjectFile)
+            }) {
+                board = Some(answer);
             }
             if let Some(name) = settings.shield {
                 shield = Some(name);

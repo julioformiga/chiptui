@@ -87,6 +87,17 @@ fn browsing_outside_the_project_list_keeps_validation_and_cancel_restores_the_li
     let root = root_for("browse");
     let (mut app, root) = bare_app("browse", Some(&root.join("apps")));
     let chosen = app_dir(&root.join("elsewhere"), "valid", true);
+    std::fs::write(
+        chosen.join("chiptui.toml"),
+        "[zephyr]\nboard = \"native_sim/native/64\"\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(chosen.join("build")).unwrap();
+    std::fs::write(
+        chosen.join("build/CMakeCache.txt"),
+        "CACHED_BOARD:STRING=nrf52840dk/nrf52840\n",
+    )
+    .unwrap();
     let invalid = app_dir(&root.join("elsewhere"), "invalid", false);
     press_project_row(&mut app);
     let previous = app.overlay.clone();
@@ -112,6 +123,11 @@ fn browsing_outside_the_project_list_keeps_validation_and_cancel_restores_the_li
     }
     assert!(app.overlay.is_none());
     assert_eq!(app.build.as_ref().unwrap().root, chosen);
+    assert_eq!(
+        app.build.as_ref().unwrap().board_name(),
+        Some("nrf52840dk/nrf52840"),
+        "switching projects ignores a saved host answer and keeps the device cache"
+    );
     assert_eq!(app.workspace.as_ref().unwrap().files_root, chosen);
     let _ = std::fs::remove_dir_all(root);
 }
@@ -544,6 +560,108 @@ fn pick_nrf_board(app: &mut App) {
     );
 }
 
+fn reopen_repo(root: &std::path::Path) -> App {
+    let mut app = App::new(root);
+    app.set_serial_dir(root.join("dev"));
+    app.set_home_dir(root.join("home"));
+    app.bootstrap();
+    app.manager.set_override(Some(BackendKind::Zephyr));
+    app.maybe_scan_devices();
+    app
+}
+
+#[test]
+fn opening_a_project_ignores_host_answers_without_hiding_valid_fallbacks() {
+    for (tag, file_board, registry_board, expected) in [
+        (
+            "host-file",
+            "native_sim/native/64",
+            "registry_board",
+            "registry_board",
+        ),
+        (
+            "host-registry",
+            "file_board",
+            "native_sim/native/64",
+            "file_board",
+        ),
+        (
+            "host-both",
+            "native_sim/native/64",
+            "native_sim/native/64",
+            "cached_board",
+        ),
+    ] {
+        let (app, root) = repo_app(tag, None);
+        drop(app);
+        std::fs::write(
+            root.join("chiptui.toml"),
+            format!(
+                "project_type = \"zephyr\"\n[zephyr]\napp = \"app\"\nboard = \"{file_board}\"\n"
+            ),
+        )
+        .unwrap();
+        let mut entry = chiptui::settings::ProjectEntry::new(&root, BackendKind::Zephyr);
+        entry.board = Some(registry_board.to_string());
+        chiptui::settings::record_project(&root.join("home/.config/chiptui/config.toml"), entry)
+            .unwrap();
+        std::fs::create_dir_all(root.join("build")).unwrap();
+        std::fs::write(
+            root.join("build/CMakeCache.txt"),
+            "CACHED_BOARD:STRING=cached_board\n",
+        )
+        .unwrap();
+        let app = reopen_repo(&root);
+        assert_eq!(
+            app.build.as_ref().unwrap().board_name(),
+            Some(expected),
+            "{tag}"
+        );
+        drop(app);
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
+
+#[test]
+fn a_saved_board_pick_still_overrides_the_device_variant_after_reopening() {
+    let (mut app, root) = repo_app(
+        "variant-pick-reopen",
+        Some(
+            "project_type = \"zephyr\"\n[zephyr]\napp = \"app\"\n\n[[variant]]\nname = \"hardware\"\nboard = \"xiao_esp32c3\"\n",
+        ),
+    );
+    pick_nrf_board(&mut app);
+    let before = app
+        .build
+        .as_ref()
+        .unwrap()
+        .command(
+            chiptui::backend::BuildKind::Rebuild,
+            &chiptui::backend::zephyr::ZephyrBackend,
+        )
+        .unwrap();
+    assert!(before.to_string().contains("-b nrf52840dk/nrf52840"));
+    drop(app);
+    let app = reopen_repo(&root);
+    let panel = app.build.as_ref().unwrap();
+    assert_eq!(
+        panel.variant().unwrap().board.as_deref(),
+        Some("xiao_esp32c3")
+    );
+    let after = panel
+        .command(
+            chiptui::backend::BuildKind::Rebuild,
+            &chiptui::backend::zephyr::ZephyrBackend,
+        )
+        .unwrap();
+    assert!(
+        after.to_string().contains("-b nrf52840dk/nrf52840"),
+        "{after}"
+    );
+    drop(app);
+    let _ = std::fs::remove_dir_all(root);
+}
+
 /// Entering ChipTUI from a repository whose application sits one level down
 /// asks the project question with the answer one `Enter` away: the picker
 /// lists the *entered* directory (not the configured projects folder), the
@@ -749,6 +867,70 @@ fn the_target_pick_writes_the_repositorys_own_chiptui_and_the_registry() {
         .entry_for(&root)
         .expect("the registry carries the answer for the repository root");
     assert_eq!(entry.board.as_deref(), Some("nrf52840dk/nrf52840"));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A host target picked in the board picker answers where a build *runs*,
+/// not which board the project is for (`SPEC.md` §Build variants): it
+/// reaches `-b` through the variant that declares it, so neither the
+/// project's `chiptui.toml` nor the registry records it. The pick itself
+/// still answers the session --- a project whose only target is the
+/// simulator builds exactly this way.
+#[test]
+fn a_host_pick_is_never_recorded_as_the_projects_board() {
+    let (mut app, root) = repo_app("host-pick", Some("project_type = \"zephyr\"\n"));
+    app.maybe_open_entry_project();
+    app.handle(key(KeyCode::Enter)); // the preselected application
+
+    pick_nrf_board(&mut app);
+
+    app.build.as_mut().unwrap().set_tool_path(fake("west"));
+    enter_project_pane(&mut app);
+    for _ in 0..3 {
+        app.handle(key(KeyCode::Down));
+    }
+    app.handle(key(KeyCode::Enter));
+    assert!(matches!(app.overlay, Some(Overlay::BoardPicker { .. })));
+    let loaded = pump_until(
+        &mut app,
+        |app| {
+            matches!(
+                app.build.as_ref().unwrap().boards.state,
+                chiptui::build::ListState::Loaded(_)
+            )
+        },
+        10,
+    );
+    assert!(loaded, "the fake west boards never finished");
+    for ch in ['s', 'i', 'm'] {
+        app.handle(key(KeyCode::Char(ch)));
+    }
+    app.handle(key(KeyCode::Enter));
+    assert_eq!(
+        app.build.as_ref().unwrap().board_name(),
+        Some("native_sim/native"),
+        "the pick answers the session"
+    );
+
+    let written = std::fs::read_to_string(root.join("chiptui.toml")).unwrap();
+    assert!(
+        !written.contains("native_sim"),
+        "the host target never lands in the project's file:\n{written}"
+    );
+    assert!(
+        written.contains("board = \"nrf52840dk/nrf52840\""),
+        "the saved device board must survive the host pick:\n{written}"
+    );
+    let entry = app
+        .manager
+        .known_projects()
+        .entry_for(&root)
+        .expect("the registry entry exists for the repository root");
+    assert_eq!(
+        entry.board.as_deref(),
+        Some("nrf52840dk/nrf52840"),
+        "the registry keeps the saved device board too"
+    );
     let _ = std::fs::remove_dir_all(&root);
 }
 

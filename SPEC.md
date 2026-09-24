@@ -1098,7 +1098,37 @@ The project's `Board`/`Shield` answer is *not* touched. It is the
 checklist's answer to "which board is this project for", it is what the
 flash dialog names, and it is what the registry records --- and a host
 target is not an answer to that question, it is a place a build can run.
-The host variant's own board reaches `west build -b` and nothing else.
+The variant's own board reaches `west build -b`: a host variant always
+carries its (nothing else names it), and a device variant that declares
+one carries it over the project's cached answer. Explicit answers outrank
+a device variant, whether declared or discovered: the session pick first,
+then the project's `[zephyr] board`, then the registry. A pick saved by the
+board picker therefore keeps its precedence after the project reopens.
+
+That rule is enforced on the project answer itself, not only on the
+command: no source that seeds it --- the `chiptui.toml` `[zephyr] board`,
+the registry entry, a build directory's CMake cache --- records a host
+target. The cache of the directory a *variant* just built stays the
+variant's fact and is never folded into the project's answer; only a
+project with a single target folds it, because there the directory's
+cache *is* the answer. Without this, building the simulator moved
+`native_sim/native/64` into the project's board answer, where it
+survived the switch back to the board variant and named the simulator in
+its next build's command line.
+
+A host answer in a saved source is ignored without hiding a valid answer
+from a lower-ranked source. Picking a host target is session-only and
+preserves the device board already saved in the project file and registry.
+
+`--sysbuild` follows the same per-target rule. The flag is what builds
+the bootloader beside the application, which is what an over-the-air
+update on a board needs; a host target has neither bootloader nor flash,
+and a sysbuild configure of one injects MCUboot into the application
+image, which boards whose default output is the ELF alone
+(`native_sim`) cannot carry --- their configure dies with "nothing to
+sign". A build answered "simulator" therefore never carries the flag,
+whatever the project's `sysbuild.conf` says: the file is the hardware
+target's OTA answer, and stays one.
 
 **`Flash` is always the board's**, whatever was built last: a host build
 produces an executable, not an image, so it targets the board variant's

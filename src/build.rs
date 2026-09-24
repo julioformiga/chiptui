@@ -541,10 +541,8 @@ pub struct BuildPanel {
 impl BuildPanel {
     pub fn new(root: impl Into<PathBuf>, offset: UtcOffset) -> Self {
         let root = root.into();
-        let board = cached_board(&root, DEFAULT_BUILD_DIR).map(|name| BoardChoice {
-            name,
-            origin: BoardOrigin::Cache,
-        });
+        let board = cached_board(&root, DEFAULT_BUILD_DIR)
+            .and_then(|name| project_board(name, BoardOrigin::Cache));
         Self {
             workspace_installed: false,
             root,
@@ -691,12 +689,27 @@ impl BuildPanel {
     ///
     /// A host variant carries its own, because nothing else names it: the
     /// user never picks `native_sim` and no board cache of the project's
-    /// own holds it. Everything else --- including the board variant ---
-    /// defers to [`Self::board`], which is where the picked, saved and
-    /// cached answers already rank against each other.
+    /// own holds it. A **device** variant that declares a board carries it
+    /// too: its declaration or discovered target outranks the project's
+    /// cache. Explicit answers (a session pick, project file or registry)
+    /// still outrank a device variant, so persisting a pick does not change
+    /// the next rebuild's target when the project reopens.
+    /// Everything else --- including a device variant that
+    /// leaves the board open --- defers to [`Self::board`], which is where
+    /// the picked, saved and cached answers already rank against each
+    /// other.
     pub fn build_board(&self) -> Option<&str> {
         match self.variant() {
             Some(variant) if variant.is_simulator() => variant.board.as_deref(),
+            Some(variant)
+                if variant.board.is_some()
+                    && !self
+                        .board
+                        .as_ref()
+                        .is_some_and(|choice| choice.origin != BoardOrigin::Cache) =>
+            {
+                variant.board.as_deref()
+            }
             _ => self.board_name(),
         }
     }
@@ -704,11 +717,32 @@ impl BuildPanel {
     /// The shield the next build command passes, by the same rule as
     /// [`Self::build_board`]. A host build carries the shield its variant
     /// declares, which is normally none --- there is no board to put one on.
+    /// The shield keeps deferring to the project's answer for every other
+    /// variant: unlike the board, it has no cache fold that a simulator
+    /// build could poison (only the picker and the saved answers write it),
+    /// so the project's answer is never stale here.
     pub fn build_shield(&self) -> Option<&str> {
         match self.variant() {
             Some(variant) if variant.is_simulator() => variant.shield.as_deref(),
             _ => self.shield_name(),
         }
+    }
+
+    /// Whether the *next build command* passes `--sysbuild`, by the same
+    /// rule as [`Self::build_board`]: a per-target answer, not the project's.
+    ///
+    /// Sysbuild is what builds the bootloader beside the application, which
+    /// is what an over-the-air update on a board needs ([`Self::sysbuild`]).
+    /// A host target has neither bootloader nor flash --- and a sysbuild
+    /// configure of one injects MCUboot into the application image, which
+    /// dies on boards whose default output is the ELF alone (`native_sim`
+    /// enables neither `CONFIG_BUILD_OUTPUT_BIN` nor `CONFIG_BUILD_OUTPUT_HEX`,
+    /// so `cmake/mcuboot.cmake` finds "nothing to sign"). The simulator
+    /// variant's build therefore never carries the flag, whatever the
+    /// project's `sysbuild.conf` says --- the file is the hardware target's
+    /// OTA answer, and stays one.
+    pub fn build_sysbuild(&self) -> bool {
+        !self.targets_simulator() && self.sysbuild()
     }
 
     /// The selected variant, if the project has any.
@@ -842,10 +876,8 @@ impl BuildPanel {
             .as_ref()
             .is_none_or(|choice| choice.origin == BoardOrigin::Cache)
         {
-            self.board = cached_board(&self.root, &self.build_dir).map(|name| BoardChoice {
-                name,
-                origin: BoardOrigin::Cache,
-            });
+            self.board = cached_board(&self.root, &self.build_dir)
+                .and_then(|name| project_board(name, BoardOrigin::Cache));
         }
         self.cursor = 0;
     }
@@ -869,10 +901,8 @@ impl BuildPanel {
             .as_ref()
             .is_none_or(|choice| choice.origin != BoardOrigin::Picked)
         {
-            self.board = cached_board(&self.root, &self.build_dir).map(|name| BoardChoice {
-                name,
-                origin: BoardOrigin::Cache,
-            });
+            self.board = cached_board(&self.root, &self.build_dir)
+                .and_then(|name| project_board(name, BoardOrigin::Cache));
         }
         // The shield rides on the board answer and is project-scoped the
         // same way; with no cache to re-read, it resets to "none".
@@ -978,21 +1008,21 @@ impl BuildPanel {
 
     /// Applies the board saved in the project's registry entry: ranks like a
     /// pick for as long as the project stays the same (a cache read must not
-    /// erase it), but is re-derived on a project switch.
+    /// erase it), but is re-derived on a project switch. A host target is
+    /// not a board answer ([`project_board`]) and does not load.
     pub fn set_config_board(&mut self, name: impl Into<String>) {
-        self.board = Some(BoardChoice {
-            name: name.into(),
-            origin: BoardOrigin::Config,
-        });
+        if let Some(board) = project_board(name.into(), BoardOrigin::Config) {
+            self.board = Some(board);
+        }
     }
 
     /// Applies the board the project's own `chiptui.toml` declares, which
-    /// outranks the registry entry and the cache alike.
+    /// outranks the registry entry and the cache alike. A host target is not
+    /// a board answer ([`project_board`]) and does not load.
     pub fn set_project_file_board(&mut self, name: impl Into<String>) {
-        self.board = Some(BoardChoice {
-            name: name.into(),
-            origin: BoardOrigin::ProjectFile,
-        });
+        if let Some(board) = project_board(name.into(), BoardOrigin::ProjectFile) {
+            self.board = Some(board);
+        }
     }
 
     /// Applies a shield answer --- picked, or loaded with the saved board.
@@ -1131,7 +1161,7 @@ impl BuildPanel {
                 shield: self.build_shield(),
                 build_dir_exists: self.has_build_dir(),
                 build_dir: &self.build_dir,
-                sysbuild: self.sysbuild(),
+                sysbuild: self.build_sysbuild(),
                 source_dir: self.source_arg().as_deref(),
                 cmake_args: &self.cmake_args(),
             },
@@ -1560,11 +1590,16 @@ impl BuildPanel {
         });
         // A finished build/rebuild leaves a fresh CMakeCache behind: re-read
         // it so the header (and the next `--pristine=always -b …`) tracks
-        // what was just configured --- but a hand-picked board is session
-        // state and is never demoted by a command: the pick is what the
-        // commands pass as `-b`, and a cache that cannot be read (a layout
-        // this reader does not know, a build that wrote elsewhere) must not
-        // erase the user's explicit choice.
+        // what was just configured --- but only where that cache *is* the
+        // project's answer. With a variant selected the directory belongs
+        // to the variant, and its cache is the variant's fact
+        // ([`Self::build_board`]): folding a simulator build's board into
+        // the project's answer is what made the next device build configure
+        // `native_sim`. A hand-picked board is session state either way and
+        // is never demoted by a command: the pick is what the commands pass
+        // as `-b`, and a cache that cannot be read (a layout this reader
+        // does not know, a build that wrote elsewhere) must not erase the
+        // user's explicit choice.
         // The list just lost its `Stop` tail, so a cursor still sitting on
         // it (parked there by `start`) would point past the end --- and
         // predate this command anyway, so it cannot say where to land.
@@ -1629,20 +1664,25 @@ impl BuildPanel {
         {
             self.simulator_built = true;
         }
-        if ok && running.updates_board {
-            let cached = cached_board(&self.root, &self.build_dir).map(|name| BoardChoice {
-                name,
-                origin: BoardOrigin::Cache,
-            });
-            if !matches!(
-                self.board,
-                Some(BoardChoice {
-                    origin: BoardOrigin::Picked,
-                    ..
-                })
-            ) {
-                self.board = cached;
-            }
+        if ok
+            && running.updates_board
+            && self.variant.is_none()
+            && !self
+                .board
+                .as_ref()
+                .is_some_and(|choice| choice.origin == BoardOrigin::Picked)
+        {
+            // The cache fold is the no-variant project's mechanism: the
+            // project has one target, so what its build directory last
+            // configured *is* the board answer. With a variant selected the
+            // directory's cache is that variant's fact --- folding it into
+            // the project's answer is what turned a simulator build into
+            // "the project's board is native_sim", which then survived the
+            // switch back to the board variant and poisoned its next
+            // configuration. The variant's own declaration answers the
+            // build command instead ([`Self::build_board`]).
+            self.board = cached_board(&self.root, &self.build_dir)
+                .and_then(|name| project_board(name, BoardOrigin::Cache));
         }
         vec![(level, message)]
     }
@@ -1687,6 +1727,22 @@ impl BuildPanel {
 /// by something other than a Zephyr app build).
 pub fn cached_board(root: &Path, build_dir: &str) -> Option<String> {
     cached_target(root, build_dir).map(|target| target.board)
+}
+
+/// The board a *saved or cached* source offers as the project's answer,
+/// when it is one at all. A host target (`native_sim/native/64`) never is:
+/// it is a place a build can run, not a board the project is for
+/// (`SPEC.md` §Build variants), and letting one sit in the answer is what
+/// made a device build configure the simulator's board. A host target
+/// reaches `-b` only through the variant that declares it
+/// ([`BuildPanel::build_board`]), so every source that seeds the project's
+/// answer goes through here and drops the host target on the floor.
+pub(crate) fn project_board(name: String, origin: BoardOrigin) -> Option<BoardChoice> {
+    if crate::backend::zephyr::variants::is_simulator_target(&name) {
+        None
+    } else {
+        Some(BoardChoice { name, origin })
+    }
 }
 
 /// The board *and* shield a configured build directory holds, from the same
@@ -2335,6 +2391,249 @@ mod tests {
             build.to_string(),
             "west build",
             "no shield is no flag at all"
+        );
+    }
+
+    #[test]
+    fn a_simulator_variant_never_builds_sysbuild() {
+        // `sysbuild.conf` is the project's OTA answer --- the bootloader
+        // the *board* target builds beside the application. A host target
+        // has no bootloader to build, and a sysbuild configure of
+        // `native_sim` dies in `cmake/mcuboot.cmake` ("nothing to sign":
+        // the board's default output is the ELF alone), so the flag
+        // follows the same per-variant rule as `-b` and `--shield`
+        // ([`BuildPanel::build_sysbuild`]).
+        let dir = fixture_dir("sim-sysbuild");
+        // `fixture_dir` creates a plain `build/`; this project's build
+        // directories are the variants' own.
+        let _ = std::fs::remove_dir_all(dir.join("build"));
+        std::fs::write(
+            dir.join("sysbuild.conf"),
+            "SB_CONFIG_BOOTLOADER_MCUBOOT=y\n",
+        )
+        .unwrap();
+
+        let mut panel = BuildPanel::new(&dir, UtcOffset::UTC);
+        panel.set_variants(vec![
+            crate::backend::zephyr::variants::Variant {
+                name: "hardware".to_string(),
+                board: Some("xiao_esp32c3".to_string()),
+                shield: None,
+                build_dir: "build".to_string(),
+                origin: crate::backend::zephyr::variants::VariantOrigin::Declared,
+            },
+            crate::backend::zephyr::variants::Variant {
+                name: "sim".to_string(),
+                board: Some("native_sim/native/64".to_string()),
+                shield: None,
+                build_dir: "build_sim".to_string(),
+                origin: crate::backend::zephyr::variants::VariantOrigin::Declared,
+            },
+        ]);
+
+        // The hardware variant: the flag rides the first configuration
+        // (and a pristine rebuild) as before.
+        let build = panel.command(BuildKind::Build, &ZephyrBackend).unwrap();
+        assert!(build.to_string().contains(" --sysbuild"), "{build}");
+
+        // The simulator variant: the same project, the same sysbuild.conf
+        // --- and no flag on any of its builds.
+        panel.select_variant(panel.variant_index_for(true).unwrap());
+        let build = panel.command(BuildKind::Build, &ZephyrBackend).unwrap();
+        assert_eq!(
+            build.to_string(),
+            "west build -d build_sim -b native_sim/native/64"
+        );
+        let rebuild = panel.command(BuildKind::Rebuild, &ZephyrBackend).unwrap();
+        assert_eq!(
+            rebuild.to_string(),
+            "west build -d build_sim --pristine=always -b native_sim/native/64"
+        );
+
+        // A project with no variants keeps the project-wide answer: the
+        // board target is the only one, and `sysbuild.conf` speaks for it.
+        let boardless = BuildPanel::new(&dir, UtcOffset::UTC);
+        let build = boardless.command(BuildKind::Build, &ZephyrBackend).unwrap();
+        assert!(build.to_string().contains(" --sysbuild"), "{build}");
+    }
+
+    #[test]
+    fn a_host_target_never_becomes_the_projects_board_answer() {
+        // Every source that seeds the project's answer drops a host target:
+        // a simulator build is a place a build runs, not a board the
+        // project is for, and an answer that names it is what put
+        // `-b native_sim/native/64` on a device build's command line.
+        let dir = fixture_dir("host-answer");
+        // The build cache: this project's `build/` really was configured
+        // with the simulator once --- the fact stays the directory's.
+        std::fs::write(
+            dir.join("build/zephyr/CMakeCache.txt"),
+            "CACHED_BOARD:STRING=native_sim/native/64\n",
+        )
+        .unwrap();
+        let panel = BuildPanel::new(&dir, UtcOffset::UTC);
+        assert_eq!(panel.board_name(), None, "the cache seed");
+
+        // The two saved answers, which outrank the cache on load.
+        let mut panel = BuildPanel::new(&dir, UtcOffset::UTC);
+        panel.set_project_file_board("native_sim/native/64");
+        assert_eq!(panel.board_name(), None, "the chiptui.toml answer");
+        panel.set_config_board("native_sim/native/64");
+        assert_eq!(panel.board_name(), None, "the registry answer");
+
+        // A hardware board loads from every source as before.
+        panel.set_project_file_board("xiao_esp32c3");
+        assert_eq!(panel.board_name(), Some("xiao_esp32c3"));
+    }
+
+    #[test]
+    fn a_declared_device_variant_builds_its_own_target() {
+        // A variant outranks a cached answer, but not an explicit choice.
+        let dir = fixture_dir("declared-device");
+        let _ = std::fs::remove_dir_all(dir.join("build"));
+        let mut panel = BuildPanel::new(&dir, UtcOffset::UTC);
+        panel.board = project_board("nrf52840dk/nrf52840".into(), BoardOrigin::Cache);
+        panel.set_variants(vec![
+            crate::backend::zephyr::variants::Variant {
+                name: "hardware".to_string(),
+                board: Some("xiao_esp32c3".to_string()),
+                shield: Some("seeed_xiao_round_display".to_string()),
+                build_dir: "build".to_string(),
+                origin: crate::backend::zephyr::variants::VariantOrigin::Declared,
+            },
+            crate::backend::zephyr::variants::Variant {
+                name: "sim".to_string(),
+                board: Some("native_sim/native/64".to_string()),
+                shield: None,
+                build_dir: "build_sim".to_string(),
+                origin: crate::backend::zephyr::variants::VariantOrigin::Declared,
+            },
+        ]);
+
+        // The declaration beats the cache; the shield follows the project.
+        panel.set_shield(Some("saved_shield".to_string()));
+        let build = panel.command(BuildKind::Build, &ZephyrBackend).unwrap();
+        assert_eq!(
+            build.to_string(),
+            "west build -b xiao_esp32c3 --shield saved_shield"
+        );
+        let rebuild = panel.command(BuildKind::Rebuild, &ZephyrBackend).unwrap();
+        assert_eq!(
+            rebuild.to_string(),
+            "west build --pristine=always -b xiao_esp32c3 --shield saved_shield"
+        );
+
+        // Both persisted origins outrank declared and discovered variants.
+        for origin in [
+            crate::backend::zephyr::variants::VariantOrigin::Declared,
+            crate::backend::zephyr::variants::VariantOrigin::Discovered,
+        ] {
+            panel.variants[0].origin = origin;
+            panel.set_config_board("registry_board");
+            assert_eq!(panel.build_board(), Some("registry_board"));
+            panel.set_project_file_board("file_board");
+            assert_eq!(panel.build_board(), Some("file_board"));
+        }
+        // A session pick outranks the declaration too.
+        panel.set_picked("other_board");
+        let build = panel.command(BuildKind::Build, &ZephyrBackend).unwrap();
+        assert_eq!(
+            build.to_string(),
+            "west build -b other_board --shield saved_shield"
+        );
+    }
+
+    #[test]
+    fn a_variant_build_leaves_the_projects_board_answer_alone() {
+        // The fold that poisoned this project: a finished simulator build
+        // had its directory's cache (`native_sim/native/64`) folded into
+        // the *project's* board answer, which then survived the switch back
+        // to the board variant. With a variant selected the cache is the
+        // variant's fact --- the project's answer is nobody's to refresh.
+        let dir = fixture_dir("variant-fold");
+        std::fs::create_dir_all(dir.join("build_sim/zephyr")).unwrap();
+        std::fs::write(
+            dir.join("build_sim/zephyr/CMakeCache.txt"),
+            "CACHED_BOARD:STRING=native_sim/native/64\n",
+        )
+        .unwrap();
+        let mut panel = BuildPanel::new(&dir, UtcOffset::UTC);
+        panel.set_config_board("xiao_esp32c3");
+        panel.set_variants(vec![
+            crate::backend::zephyr::variants::Variant {
+                name: "hardware".to_string(),
+                board: None,
+                shield: None,
+                build_dir: "build".to_string(),
+                origin: crate::backend::zephyr::variants::VariantOrigin::Declared,
+            },
+            crate::backend::zephyr::variants::Variant {
+                name: "sim".to_string(),
+                board: Some("native_sim/native/64".to_string()),
+                shield: None,
+                build_dir: "build_sim".to_string(),
+                origin: crate::backend::zephyr::variants::VariantOrigin::Declared,
+            },
+        ]);
+        panel.select_variant(panel.variant_index_for(true).unwrap());
+
+        let mut processes = ProcessManager::new();
+        let caps = crate::backend::Capabilities::from_slice(&[crate::backend::Capability::Build]);
+        panel.start(
+            "Build",
+            true,
+            BuildAction::Build(BuildKind::Build),
+            crate::process::Command::new(fake("west")),
+            &mut processes,
+            &caps,
+        );
+        let running = panel.running.take().unwrap();
+        panel.finish(running, &Outcome::Success, Duration::from_secs(1), &caps);
+        assert_eq!(
+            panel.board_name(),
+            Some("xiao_esp32c3"),
+            "the simulator build's cache is the variant's fact, not the project's answer"
+        );
+        panel.select_variant(panel.variant_index_for(false).unwrap());
+        let rebuild = panel.command(BuildKind::Rebuild, &ZephyrBackend).unwrap();
+        assert_eq!(
+            rebuild.to_string(),
+            "west build --pristine=always -b xiao_esp32c3"
+        );
+
+        // The no-variant project keeps the fold: one target means the
+        // directory's cache *is* the answer. The cache changes between the
+        // seed and the finish, so the assertion says the fold ran rather
+        // than that the seed survived.
+        let dir = fixture_dir("plain-fold");
+        std::fs::create_dir_all(dir.join("build/zephyr")).unwrap();
+        std::fs::write(
+            dir.join("build/zephyr/CMakeCache.txt"),
+            "CACHED_BOARD:STRING=stale_board\n",
+        )
+        .unwrap();
+        let mut panel = BuildPanel::new(&dir, UtcOffset::UTC);
+        assert_eq!(panel.board_name(), Some("stale_board"), "the seed");
+        std::fs::write(
+            dir.join("build/zephyr/CMakeCache.txt"),
+            "CACHED_BOARD:STRING=nrf52840dk/nrf52840\n",
+        )
+        .unwrap();
+        let mut processes = ProcessManager::new();
+        panel.start(
+            "Build",
+            true,
+            BuildAction::Build(BuildKind::Build),
+            crate::process::Command::new(fake("west")),
+            &mut processes,
+            &caps,
+        );
+        let running = panel.running.take().unwrap();
+        panel.finish(running, &Outcome::Success, Duration::from_secs(1), &caps);
+        assert_eq!(
+            panel.board_name(),
+            Some("nrf52840dk/nrf52840"),
+            "the fold tracks what the one target's build just configured"
         );
     }
 
