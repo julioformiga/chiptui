@@ -198,8 +198,8 @@ impl Step {
                 // One `-t` carrying every name, and last on the line.
                 // `west sdk install` declares it `nargs="+"`, not
                 // `action="append"`: a repeated `-t` makes argparse
-                // *overwrite*, silently keeping only the final name, and the
-                // greedy `+` would swallow any option that followed.
+                // *overwrite*, silently keeping only the final group. The
+                // group stops at the next option, as argparse normally does.
                 //
                 // `-t` is also the spelling to use rather than the long
                 // form: current Zephyr calls it `--gnu-toolchains` and keeps
@@ -495,26 +495,37 @@ mod tests {
     #[test]
     fn the_sdk_installs_into_the_workspace_with_install_base() {
         let root = Path::new("/w/zephyr");
-        let picked = [
-            "arm-zephyr-eabi".to_string(),
-            "riscv64-zephyr-elf".to_string(),
-        ];
-        let ctx = context(root, &picked);
-        let command = Step::SdkInstall.command(&ctx).expect("command");
-        // `-b BASE` produces `BASE/zephyr-sdk-<version>`. One `-t`, every
-        // name after it, `-t` last: the option is `nargs="+"`, so a repeated
-        // flag would keep only the final name and the greedy `+` would eat a
-        // later option --- which is why `-b` has to come before it.
-        assert_eq!(
-            command.to_string(),
-            "west sdk install -b /w/zephyr -t arm-zephyr-eabi riscv64-zephyr-elf"
-        );
-        // The cwd is the manifest checkout, but only so west can resolve the
-        // workspace and read SDK_VERSION --- not to make `..` mean anything.
-        assert_eq!(
-            command.cwd().map(PathBuf::as_path),
-            Some(Path::new("/w/zephyr/zephyr"))
-        );
+        for (picked, expected) in [
+            (vec![], vec!["sdk", "install", "-b", "/w/zephyr"]),
+            (
+                vec![
+                    "arm-zephyr-eabi".to_string(),
+                    "riscv64-zephyr-elf".to_string(),
+                ],
+                vec![
+                    "sdk",
+                    "install",
+                    "-b",
+                    "/w/zephyr",
+                    "-t",
+                    "arm-zephyr-eabi",
+                    "riscv64-zephyr-elf",
+                ],
+            ),
+        ] {
+            let ctx = context(root, &picked);
+            let command = Step::SdkInstall.command(&ctx).expect("command");
+            // Exact argv excludes both -d and --install-dir, including when
+            // no toolchain has been picked. Only the UI gates that latter case.
+            assert_eq!(command.args_slice(), expected);
+            assert_eq!(command.program(), "/w/zephyr/.venv/bin/west");
+            assert_eq!(
+                command.cwd().map(PathBuf::as_path),
+                Some(Path::new("/w/zephyr/zephyr"))
+            );
+        }
+        let none = [];
+        let ctx = context(root, &none);
         assert_eq!(
             Step::WestUpdate
                 .command(&ctx)
@@ -523,25 +534,6 @@ mod tests {
                 .map(PathBuf::as_path),
             Some(root)
         );
-    }
-
-    #[test]
-    fn the_sdk_install_never_uses_install_dir() {
-        // Regression guard. `-d/--install-dir` is the SDK directory's final
-        // *name*, not a destination to install into, and it overrides `-b`.
-        // `-d ..` extracts gigabytes inside the git checkout and then runs
-        // `../setup.sh` from there --- a file that does not exist --- so west
-        // dies after moving a bundle into place but before downloading a
-        // single toolchain or registering anything.
-        let root = Path::new("/w/zephyr");
-        let none: [String; 0] = [];
-        let ctx = context(root, &none);
-        let rendered = Step::SdkInstall.command(&ctx).expect("command").to_string();
-        assert!(
-            !rendered.contains(" -d "),
-            "the SDK step must never pass --install-dir: {rendered}"
-        );
-        assert!(rendered.contains(" -b /w/zephyr"), "{rendered}");
     }
 
     #[test]

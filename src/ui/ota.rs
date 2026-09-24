@@ -21,11 +21,11 @@
 //! `smpmgr` command, muted --- what runs is never hidden behind a friendly
 //! label (`SPEC.md` §15).
 
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph};
-use ratatui::Frame;
 
 use crate::app::App;
 use crate::ota::prepare::{Requirement, SlotCheck, Step, ToolProbe, TransportCheck};
@@ -33,8 +33,8 @@ use crate::ota::update::{OtaAction, OtaPanel};
 use crate::stepper::{Phase, StepState};
 
 use super::button::{self, Button};
-use super::workspace::{marked_row, RowMark};
-use super::{muted_style, tilde_path, Palette, SPINNER};
+use super::workspace::{RowMark, marked_row};
+use super::{Palette, SPINNER, muted_style, tilde_path};
 
 /// The label column on both checklists (`board Kconfig fragment` is the
 /// longest), wider than the panes' 13 --- these are phrases.

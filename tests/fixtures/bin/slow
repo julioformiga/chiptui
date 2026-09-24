@@ -1,5 +1,14 @@
 #!/bin/sh
 # Emits a line, then blocks: for timeout and cancellation tests.
+# Spawned bare (as a plain command) or as a workspace's `west` (where the
+# panel's first argument is `build`); anything else is a caller bug.
+case $# in
+    0) ;;
+    *) [ "$1" = "build" ] || {
+        echo "slow: expected no arguments or 'west build ...', got: $*" >&2
+        exit 64
+    } ;;
+esac
 echo "starting"
 sleep 30
 echo "never reached"

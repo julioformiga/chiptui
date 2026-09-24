@@ -1,17 +1,60 @@
 #!/bin/sh
 # Fake `west` for ChipTUI tests.
 #
-# Echoes its arguments as a line and exits 0, so a test can assert both the
+# Validates the supported command subset and echoes its arguments, so a test can assert both the
 # exact command the panel composed (the panel logs `$ west build ...` as the
 # first output line) and the success path end to end. `boards` and `shields`
-# reproduce the `west boards`/`west shields` formats (name, whitespace,
-# description) for the pickers.
+# reproduce the tools' requested formats for the pickers.
 #
 # The installer's subcommands do the minimum real work their step's
 # resumption check looks for --- `.west/config`, the manifest checkout's
 # `VERSION`, an SDK bundle directory --- so a test exercises the same
 # filesystem evidence `Step::already_done` reads on a real machine.
+fail() { printf 'fake west: invalid or unsupported arguments: %s\n' "$*" >&2; exit 64; }
+value() {
+    [ "$#" -ge 2 ] && [ -n "$2" ] || fail "$@"
+    case "$2" in -*) fail "$@" ;; esac
+}
+original="$*"
 case "$1" in
+    espressif)
+        # hal_espressif's monitor extension, the only platform command used.
+        [ "$#" -eq 4 ] && [ "$2" = monitor ] && [ "$3" = -p ] && [ -n "$4" ] || fail "$@"
+        printf 'fake west: %s\n' "$original"
+        exit 0
+        ;;
+    build)
+        # scripts/west_commands/build.py: options precede the CMake '--'
+        # separator; at most one positional source directory.
+        shift
+        source_seen=0
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                -b|--board|-d|--build-dir|-t|--target|--shield)
+                    value "$@"; shift 2 ;;
+                --pristine=always|--pristine=auto|--pristine=never|--sysbuild|--no-sysbuild)
+                    shift ;;
+                --) shift; break ;;
+                -*) fail "$@" ;;
+                *) [ "$source_seen" -eq 0 ] && [ -n "$1" ] || fail "$@"
+                   source_seen=1; shift ;;
+            esac
+        done
+        printf 'fake west: %s\n' "$original"
+        exit 0
+        ;;
+    flash)
+        shift
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                -d|--build-dir|-r|--runner|--domain) value "$@"; shift 2 ;;
+                --skip-rebuild) shift ;;
+                *) fail "$@" ;;
+            esac
+        done
+        printf 'fake west: %s\n' "$original"
+        exit 0
+        ;;
     boards|shields)
         # `west boards` / `west shields` reproduced as they really behave,
         # which is the point of this arm: the default output is `{name}`
@@ -30,10 +73,10 @@ case "$1" in
         roots=0
         while [ $# -gt 0 ]; do
             case "$1" in
-                -f|--format) format=$2; shift 2 ;;
-                --board-root) roots=$((roots + 1)); shift 2 ;;
-                -n|--name) shift 2 ;;
-                *) shift ;;
+                -f|--format) value "$@"; format=$2; shift 2 ;;
+                --board-root) value "$@"; roots=$((roots + 1)); shift 2 ;;
+                -n|--name) value "$@"; shift 2 ;;
+                *) fail "$@" ;;
             esac
         done
 
@@ -88,6 +131,7 @@ ttgo_grove|lilygo|TTGO Grove expansion"
         exit 0
         ;;
     init)
+        [ "$#" -eq 4 ] && [ "$2" = -m ] && [ -n "$3" ] && [ "$4" = . ] || fail "$@"
         # `west init -m URL .` --- the workspace marker plus the manifest
         # path the real `.west/config` carries.
         mkdir -p .west
@@ -96,6 +140,7 @@ ttgo_grove|lilygo|TTGO Grove expansion"
         exit 0
         ;;
     update)
+        [ "$#" -eq 1 ] || fail "$@"
         # The manifest checkout, with the VERSION file that tells the
         # installer (and `Workspace::zephyr_version`) the update landed.
         mkdir -p zephyr
@@ -108,10 +153,12 @@ ttgo_grove|lilygo|TTGO Grove expansion"
         exit 0
         ;;
     packages)
+        [ "$#" -eq 3 ] && [ "$2" = pip ] && [ "$3" = --install ] || fail "$@"
         printf 'Successfully installed pyelftools-0.31\n'
         exit 0
         ;;
     zephyr-export)
+        [ "$#" -eq 1 ] || fail "$@"
         printf 'Zephyr (%s/zephyr/share/zephyr-package/cmake)\n' "$PWD"
         printf 'has been added to the user package registry in:\n'
         exit 0
@@ -119,6 +166,7 @@ ttgo_grove|lilygo|TTGO Grove expansion"
     sdk)
         case "$2" in
             list)
+                [ "$#" -eq 2 ] || fail "$@"
                 # The real `west sdk list` reads the CMake user package
                 # registry and dies when no SDK is installed --- it lists
                 # what is *installed*, never what is available. Reproducing
@@ -150,24 +198,30 @@ ttgo_grove|lilygo|TTGO Grove expansion"
                 toolchains=""
                 while [ $# -gt 0 ]; do
                     case "$1" in
-                        -b|--install-base) base="$2"; shift 2 ;;
+                        -b|--install-base) value "$@"; base="$2"; shift 2 ;;
                         -d|--install-dir)
                             printf 'FileNotFoundError: %s/setup.sh\n' "$2" >&2
                             exit 1
                             ;;
-                        # `-t` is nargs="+": one flag, then every name until
-                        # the end of the line. A repeated `-t` would keep
-                        # only the last name.
-                        -t) shift
+                        # sdk.py's nargs="+" stops at the next option.
+                        # argparse's store action REPLACES a repeated -t.
+                        -t|--gnu-toolchains|--toolchains)
+                            value "$@"; shift; toolchains=""
                             while [ $# -gt 0 ]; do
+                                case "$1" in -*) break ;; esac
+                                case "$1" in
+                                    *-elf|*-eabi) ;;
+                                    *) fail "unknown toolchain $1" ;;
+                                esac
                                 toolchains="$toolchains $1"
                                 shift
                             done
                             ;;
-                        *) shift ;;
+                        *) fail "$@" ;;
                     esac
                 done
-                [ -n "$base" ] || base="$HOME"
+                # This fixture may only write into the test's explicit base.
+                [ -n "$base" ] || fail "SDK fixture requires an explicit -b base"
                 sdk="$base/zephyr-sdk-0.17.0"
                 mkdir -p "$sdk"
                 # `setup.sh -t NAME` unpacks one toolchain into gnu/, and
@@ -191,5 +245,4 @@ ttgo_grove|lilygo|TTGO Grove expansion"
         esac
         ;;
 esac
-printf 'fake west: %s\n' "$*"
-exit 0
+fail "$@"

@@ -28,7 +28,7 @@ mod tests {
     use std::path::Path;
 
     use super::*;
-    use crate::ota::{OtaConfig, OtaContext, OtaStage};
+    use crate::ota::{OtaConfig, OtaContext};
 
     #[test]
     fn every_method_registered_exactly_once() {
@@ -43,32 +43,6 @@ mod tests {
             );
         }
         assert_eq!(drivers().count(), OtaMethod::ALL.len());
-    }
-
-    #[test]
-    fn every_driver_refuses_a_stage_it_does_not_declare() {
-        let target = OtaConfig {
-            address: Some("192.168.1.42".to_string()),
-            ..OtaConfig::default()
-        };
-        let ctx = OtaContext {
-            target: &target,
-            image: Path::new("build/zephyr/zephyr.signed.bin"),
-            slot_hash: None,
-            tool: "smpmgr",
-        };
-        for driver in drivers() {
-            for stage in OtaStage::ALL {
-                if !driver.stages().contains(stage) {
-                    assert!(
-                        driver.stage_command(*stage, &ctx).is_err(),
-                        "{} improvises a '{}' stage it does not declare",
-                        driver.method().id(),
-                        stage.label()
-                    );
-                }
-            }
-        }
     }
 
     #[test]

@@ -479,6 +479,9 @@ pub struct App {
     /// seam that keeps the suite off the developer's real shell (the same
     /// role `Browser::set_tool_path` plays for mpremote).
     terminal_tool: Option<crate::process::Command>,
+    /// Tool overrides retained across lazy creation of device panels. Like
+    /// their panels' setters, these let startup tests avoid tools on PATH.
+    device_tool_paths: Option<(String, String)>,
 
     /// Active or last-finished `mpremote run` session, shown in the Monitor
     /// tab under [`MonitorSource::Run`]. Spawned in a PTY so Ctrl+C can
@@ -704,6 +707,7 @@ impl App {
             terminal_detached: false,
             terminal_shell_env: Vec::new(),
             terminal_tool: None,
+            device_tool_paths: None,
             run_process: None,
             run_output: Vec::new(),
             run_console: LineConsole::new(),
@@ -1511,7 +1515,10 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_c_quits_from_any_context() {
+    fn ctrl_c_quits_immediately_when_no_commands_are_running() {
+        // The contract's other half --- the *first* press asking first when
+        // commands are running --- is `tests/ui_render.rs`'s
+        // `quitting_with_commands_running_asks_first`.
         for overlay in [
             None,
             Some(OVERLAY_HELP),
@@ -2371,7 +2378,9 @@ mod tests {
         app.handle(chord(KeyCode::Left));
         assert_eq!(app.log_tab, LogTab::Log);
 
-        // The plain arrows no longer switch any strip: row 3's included.
+        // Plain arrows switch no strip anywhere --- row 3's included; the
+        // ctrl chord is the one tab key (see also `ui_render.rs`'s
+        // `the_log_and_monitor_tabs_live_on_the_panes_border_row`).
         app.handle(key(KeyCode::Right));
         assert_eq!(app.log_tab, LogTab::Log);
 
@@ -2384,10 +2393,10 @@ mod tests {
 
     #[test]
     fn ctrl_arrows_switch_the_log_tab_too() {
-        // Row 3 keeps its plain arrows (nothing competes with them there)
-        // and answers the ctrl chord as well: one key means "switch tabs"
-        // wherever a pane has a strip, so the device pane's chord works
-        // here by reflex.
+        // The pane answers the ctrl chord as well: one key means "switch
+        // tabs" wherever a pane has a strip, so the device pane's chord
+        // works here by reflex. (Plain arrows switch nothing anywhere ---
+        // see `the_chord_switches_the_log_tab_only_while_logs_is_focused`.)
         let mut app = App::new(std::env::temp_dir());
         app.detect();
         app.manager.set_override(Some(BackendKind::MicroPython));

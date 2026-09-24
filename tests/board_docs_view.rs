@@ -10,8 +10,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use chiptui::app::{App, DocsFocus, Overlay};
-use chiptui::backend::zephyr::workspace::{Workspace, WorkspaceOrigin};
 use chiptui::backend::BackendKind;
+use chiptui::backend::zephyr::workspace::{Workspace, WorkspaceOrigin};
 use chiptui::board_docs::{DocsEvent, IndexState};
 use chiptui::event::AppEvent;
 use ratatui::crossterm::event::KeyCode;

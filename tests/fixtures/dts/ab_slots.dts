@@ -1,0 +1,18 @@
+/* node '/soc/flash@0/partitions' defined in board.dtsi:10 */
+partitions {
+        /* node '/soc/flash@0/partitions/partition@0' defined in board.dtsi:13 */
+        boot_partition: partition@0 {
+                label = "mcuboot";
+                reg = < 0x0 0x10000 >;
+        };
+        /* node '/soc/flash@0/partitions/partition@20000' defined in board.dtsi:25 */
+        slot0_partition: partition@20000 {
+                label = "image-0";
+                reg = < 0x20000 0x1c0000 >;
+        };
+        /* node '/soc/flash@0/partitions/partition@1e0000' defined in board.dtsi:31 */
+        slot1_partition: partition@1e0000 {
+                label = "image-1";
+                reg = < 0x1e0000 0x1c0000 >;
+        };
+};

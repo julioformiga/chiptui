@@ -12,7 +12,7 @@ use chiptui::build::BuildAction;
 use ratatui::crossterm::event::KeyCode;
 
 mod common;
-use common::{ctrl, enter_project_pane, fake, key, pump_until, render};
+use common::{ctrl, enter_project_pane, fake, find_cell, key, pump_until, render};
 
 /// A Zephyr app in a temp directory: a real project layout so the panel has
 /// a root, with a CMakeCache claiming a board when the test wants one.
@@ -170,14 +170,15 @@ fn enter_builds_and_streams_into_the_monitor_tab() {
     // The build directory exists in the fixture, so the command is the
     // incremental `west build` --- no `-b`, the cache already carries it.
     // (The tool path leads the line: the override pointing at the fake.)
-    assert!(app
-        .build
-        .as_ref()
-        .unwrap()
-        .output
-        .front()
-        .unwrap()
-        .ends_with("west build"));
+    assert!(
+        app.build
+            .as_ref()
+            .unwrap()
+            .output
+            .front()
+            .unwrap()
+            .ends_with("west build")
+    );
 
     let finished = pump_until(
         &mut app,
@@ -286,14 +287,15 @@ fn clean_asks_before_running() {
         Some(chiptui::build::BuildAction::Build(BuildKind::Build)),
         "a running clean parks the cursor on Build"
     );
-    assert!(app
-        .build
-        .as_ref()
-        .unwrap()
-        .output
-        .front()
-        .unwrap()
-        .ends_with("west build -t clean"));
+    assert!(
+        app.build
+            .as_ref()
+            .unwrap()
+            .output
+            .front()
+            .unwrap()
+            .ends_with("west build -t clean")
+    );
 
     // Declining leaves nothing running.
     let mut app2 = app_with_west("clean-decline", "west");
@@ -316,14 +318,15 @@ fn rebuild_is_pristine_and_pins_the_cached_board() {
         app.build.as_ref().unwrap().is_busy(),
         "rebuild is not destructive: no confirm, straight to running"
     );
-    assert!(app
-        .build
-        .as_ref()
-        .unwrap()
-        .output
-        .front()
-        .unwrap()
-        .ends_with("west build --pristine=always -b nrf52840dk/nrf52840"));
+    assert!(
+        app.build
+            .as_ref()
+            .unwrap()
+            .output
+            .front()
+            .unwrap()
+            .ends_with("west build --pristine=always -b nrf52840dk/nrf52840")
+    );
     let _ = pump_until(
         &mut app,
         |app| app.build.as_ref().unwrap().last.is_some(),
@@ -1429,8 +1432,10 @@ fn flash_is_listed_confirms_and_runs_through_west() {
     let (mut app, _root) = app_with_west_and_board("flash", "west");
     app.focus = Focus::Build;
 
-    // Flash sits last: Update Zephyr, SDK List, Menuconfig, Clean, Build,
-    // Rebuild, then it.
+    // Flash sits last on the six-action stack: Update Zephyr, Menuconfig,
+    // Clean, Build, Rebuild, then it. Six `Down`s saturate there either
+    // way --- the walk is deliberate insurance against a longer list
+    // pushing Flash off.
     for _ in 0..6 {
         app.handle(key(KeyCode::Down));
     }
@@ -1471,14 +1476,15 @@ fn flash_is_listed_confirms_and_runs_through_west() {
     app.handle(key(KeyCode::Char('y')));
     assert!(app.build.as_ref().unwrap().is_busy());
     assert_eq!(app.monitor_source, MonitorSource::Build);
-    assert!(app
-        .build
-        .as_ref()
-        .unwrap()
-        .output
-        .front()
-        .unwrap()
-        .ends_with("west flash"));
+    assert!(
+        app.build
+            .as_ref()
+            .unwrap()
+            .output
+            .front()
+            .unwrap()
+            .ends_with("west flash")
+    );
 
     let finished = pump_until(
         &mut app,
@@ -1584,13 +1590,14 @@ fn the_workspace_pane_resolves_from_project_config_and_runs_update() {
     );
     // The venv's west is what every command runs, and the environment says
     // which workspace it belongs to.
-    assert!(app
-        .build
-        .as_ref()
-        .unwrap()
-        .tool_path()
-        .unwrap()
-        .starts_with(ws.join(".venv/bin/west").to_str().unwrap()));
+    assert!(
+        app.build
+            .as_ref()
+            .unwrap()
+            .tool_path()
+            .unwrap()
+            .starts_with(ws.join(".venv/bin/west").to_str().unwrap())
+    );
 
     let frame = render(&mut app, 100, 32);
     assert!(frame.contains("Files"), "the pane renders:\n{frame}");
@@ -1946,13 +1953,14 @@ fn startup_asks_where_the_installation_is_when_nothing_is_configured() {
     // build panel's commands point at the venv's west.
     let panel = app.workspace.as_ref().unwrap();
     assert_eq!(panel.dir(), Some(&ws));
-    assert!(app
-        .build
-        .as_ref()
-        .unwrap()
-        .tool_path()
-        .unwrap()
-        .starts_with(ws.join(".venv/bin/west").to_str().unwrap()));
+    assert!(
+        app.build
+            .as_ref()
+            .unwrap()
+            .tool_path()
+            .unwrap()
+            .starts_with(ws.join(".venv/bin/west").to_str().unwrap())
+    );
 }
 
 #[test]
@@ -2062,16 +2070,11 @@ fn menuconfig_hands_the_terminal_over_instead_of_piping() {
     assert!(app.take_pending_command().is_none(), "consumed once");
 }
 
-/// Two configured build directories are two variants, discovered with no
-/// configuration at all, and picking one moves the board, the shield and
-/// the build directory together --- which is the whole point of the
-/// variant being one answer instead of three.
-/// A project that keeps a host target beside its board is asked, on every
-/// Build, where the build runs --- and the answer moves the board, the
-/// shield and the build directory together, which is the whole reason the
-/// question is one question.
+/// Two configured directories are discovered variants. Each build asks which
+/// to use; its board reaches the build command while the project's board
+/// answer and Flash stay on the hardware target.
 #[test]
-fn build_asks_where_it_runs_and_the_answer_moves_the_whole_target() {
+fn build_target_moves_the_build_directory_without_changing_the_projects_board() {
     let (mut app, root) = zephyr_app("asktarget", Some("nrf52840dk/nrf52840"));
     app.build.as_mut().unwrap().set_tool_path(fake("west"));
     // `build/` already exists with the board `zephyr_app` cached; give it a
@@ -2443,13 +2446,6 @@ fn the_wheel_steps_the_listing_under_the_pointer_without_taking_focus() {
     };
     // The drawn row and column of `needle`'s first cell; byte offsets are
     // not columns (multi-byte borders).
-    let find_cell = |frame: &str, needle: &str| {
-        frame.lines().enumerate().find_map(|(row, line)| {
-            line.find(needle)
-                .map(|byte| (row as u16, line[..byte].chars().count() as u16))
-        })
-    };
-
     let (mut app, root) = zephyr_app("wheel", None);
     for i in 0..5 {
         std::fs::write(root.join(format!("f0{i}.c")), "int x;\n").unwrap();

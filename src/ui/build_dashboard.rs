@@ -20,14 +20,14 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, List, ListItem, ListState, Paragraph, Tabs};
-use ratatui::{symbols, Frame};
+use ratatui::{Frame, symbols};
 
 use crate::app::{App, DocsFocus};
 use crate::build_dashboard::{DashboardTab, DetailLine, Marker, Row};
 use crate::ui::Palette;
 use crate::ui::{draw_scrollbar, muted_style, selection_style};
 
-use super::button::{render_stack, Button};
+use super::button::{Button, render_stack};
 use super::overlay::{labelled, pane, wrap_words};
 
 /// How many rows the Generate button stack costs at the top of the Memory

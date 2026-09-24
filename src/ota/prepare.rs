@@ -1215,6 +1215,41 @@ mod tests {
     }
 
     #[test]
+    fn the_kconfig_tiers_carry_their_transports_dependencies() {
+        // Serial: the driver and the framing the transport is made of. Nothing
+        // does `select UART_MCUMGR`, so without these the symbol drops.
+        let serial = kconfig_body(Transport::Serial);
+        for symbol in [
+            "CONFIG_MCUMGR_TRANSPORT_UART=y",
+            "CONFIG_UART_MCUMGR=y",
+            "CONFIG_BASE64=y",
+            "CONFIG_CONSOLE=y",
+        ] {
+            assert!(serial.contains(symbol), "serial needs {symbol}:\n{serial}");
+        }
+
+        // BLE already did this, and is the precedent the serial tier follows.
+        let ble = kconfig_body(Transport::Ble);
+        assert!(ble.contains("CONFIG_BT_PERIPHERAL=y"));
+
+        // UDP deliberately does *not* choose a network stack --- which one, and
+        // DHCP versus static, is the application's architecture. It says so
+        // instead, and nothing it emits is an uncommented networking symbol.
+        let udp = kconfig_body(Transport::Udp);
+        assert!(udp.contains("CONFIG_MCUMGR_TRANSPORT_UDP=y"));
+        assert!(
+            udp.contains("bring your own"),
+            "the header states the boundary:\n{udp}"
+        );
+        for uncommitted in ["CONFIG_NETWORKING=y", "CONFIG_NET_UDP=y", "CONFIG_WIFI=y"] {
+            assert!(
+                !udp.lines().any(|line| line.trim() == uncommitted),
+                "{uncommitted} is the project's decision, not ours:\n{udp}"
+            );
+        }
+    }
+
+    #[test]
     fn has_symbol_reads_assignments_not_mentions() {
         assert!(has_symbol("CONFIG_X=y\n", "CONFIG_X"));
         assert!(has_symbol("CONFIG_X = y\n", "CONFIG_X"));
@@ -1259,28 +1294,9 @@ mod tests {
     /// A `zephyr.dts` with the three nodes an A/B layout needs, in the
     /// shape `devicetree::parse` reads --- the `/* node '<path>' */`
     /// annotations are what the parser builds paths from, and only a node
-    /// under a `partitions` path counts. The full fixture with and without
-    /// them lives in `tests/ota_prepare.rs`.
-    const DTS_WITH_SLOTS: &str = "\
-/* node '/soc/flash@0/partitions' defined in board.dtsi:10 */
-partitions {
-        /* node '/soc/flash@0/partitions/partition@0' defined in board.dtsi:13 */
-        boot_partition: partition@0 {
-                label = \"mcuboot\";
-                reg = < 0x0 0x10000 >;
-        };
-        /* node '/soc/flash@0/partitions/partition@20000' defined in board.dtsi:25 */
-        slot0_partition: partition@20000 {
-                label = \"image-0\";
-                reg = < 0x20000 0x1c0000 >;
-        };
-        /* node '/soc/flash@0/partitions/partition@1e0000' defined in board.dtsi:31 */
-        slot1_partition: partition@1e0000 {
-                label = \"image-1\";
-                reg = < 0x1e0000 0x1c0000 >;
-        };
-};
-";
+    /// under a `partitions` path counts. The fixture is shared with
+    /// `tests/ota_prepare.rs` and `tests/ota_view.rs`.
+    const DTS_WITH_SLOTS: &str = include_str!("../../tests/fixtures/dts/ab_slots.dts");
 
     #[test]
     fn the_slot_check_has_three_honest_states() {

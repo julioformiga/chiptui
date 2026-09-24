@@ -20,11 +20,11 @@ use std::time::{Duration, Instant};
 
 use chiptui::app::App;
 use chiptui::event::AppEvent;
+use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{
     KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
-use ratatui::Terminal;
 
 /// The absolute path of a fake tool in `tests/fixtures/bin/`.
 ///
@@ -34,12 +34,58 @@ pub fn fake(tool: &str) -> String {
     format!("{}/tests/fixtures/bin/{tool}", env!("CARGO_MANIFEST_DIR"))
 }
 
+/// A temp directory that removes itself on `Drop`.
+///
+/// A bare `remove_dir_all` at the end of a test body is skipped by the very
+/// panic that made the test interesting; this guard cleans up on every exit
+/// path (the pattern `process.rs` first introduced as its `Scratch`).
+pub struct TempDir(std::path::PathBuf);
+
+impl TempDir {
+    /// Creates an exclusively owned directory, even for repeated tags.
+    pub fn new(tag: &str) -> Self {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNT: AtomicU64 = AtomicU64::new(0);
+        assert!(!tag.contains(['/', '\\']), "a temp tag is not a path");
+        let dir = std::env::temp_dir().join(format!(
+            "chiptui-{tag}-{}-{}",
+            std::process::id(),
+            COUNT.fetch_add(1, Ordering::Relaxed)
+        ));
+        // Refuse a collision rather than deleting a directory we do not own.
+        std::fs::create_dir(&dir).expect("create exclusive test directory");
+        Self(dir)
+    }
+
+    pub fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+impl std::ops::Deref for TempDir {
+    type Target = std::path::Path;
+
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
 pub fn fake_mpremote() -> String {
     fake("mpremote")
 }
 
 pub fn fake_mpremote_second_board() -> String {
     fake("mpremote-second-board")
+}
+
+pub fn fake_esptool() -> String {
+    fake("esptool")
 }
 
 pub fn fake_curl() -> String {
@@ -132,8 +178,19 @@ pub fn hermetic_app(root: impl Into<PathBuf>, prefix: &str) -> App {
         std::process::id(),
         COUNT.fetch_add(1, Ordering::Relaxed)
     ));
+    app.set_serial_dir(home.join("dev"));
     app.set_home_dir(home);
+    // No device is the default; board-specific tests opt into their fixture.
+    app.set_device_tool_paths(fake("mpremote-no-devices"), fake_esptool());
     app
+}
+
+/// A scan-only tool recording each invocation beside its private executable.
+#[cfg(unix)]
+pub fn recording_mpremote(dir: &std::path::Path) -> String {
+    let executable = dir.join("mpremote");
+    std::fs::copy(fake("mpremote-record-scan"), &executable).unwrap();
+    executable.to_string_lossy().into_owned()
 }
 
 /// The Environment pane's way in: the shortcuts overlay (`ctrl+k`), then its
@@ -148,4 +205,16 @@ pub fn log_mentions(app: &App, needle: &str) -> bool {
     app.logs
         .visible(usize::MAX)
         .any(|entry| entry.message.contains(needle))
+}
+
+/// The drawn row and column of `needle`'s first cell.
+///
+/// Byte offsets are not columns --- the frame is full of multi-byte
+/// borders --- so the search is per rendered line and the offset is
+/// counted in chars.
+pub fn find_cell(frame: &str, needle: &str) -> Option<(u16, u16)> {
+    frame.lines().enumerate().find_map(|(row, line)| {
+        line.find(needle)
+            .map(|byte| (row as u16, line[..byte].chars().count() as u16))
+    })
 }

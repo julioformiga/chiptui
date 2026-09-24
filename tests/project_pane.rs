@@ -19,7 +19,8 @@ use ratatui::crossterm::event::KeyCode;
 
 mod common;
 use common::{
-    click, enter_project_pane, fake_curl, fake_mpremote, fake_mpremote_second_board, key, render,
+    click, enter_project_pane, fake_curl, fake_mpremote, fake_mpremote_second_board, find_cell,
+    key, render,
 };
 
 /// A board holding the same two boot files the project does: `main.py`
@@ -991,17 +992,4 @@ fn a_click_in_the_manager_selects_without_installing() {
     let (row, column) = find_cell(&frame, "Details").expect("the pane is drawn");
     app.handle(AppEvent::Mouse(click(column, row + 2)));
     assert_eq!(app.packages_state().focus, chiptui::app::DocsFocus::Details);
-}
-
-/// The drawn row and column of `needle`'s first cell. Byte offsets are not
-/// columns --- the frame is full of multi-byte borders --- so the search is
-/// per rendered line.
-fn find_cell(frame: &str, needle: &str) -> Option<(u16, u16)> {
-    for (row, line) in frame.lines().enumerate() {
-        if let Some(byte) = line.find(needle) {
-            let column = line[..byte].chars().count() as u16;
-            return Some((row as u16, column));
-        }
-    }
-    None
 }

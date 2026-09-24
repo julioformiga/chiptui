@@ -42,6 +42,17 @@ impl MonitorFacts {
 }
 
 impl App {
+    /// Overrides device tools before discovery can lazily create its panels.
+    pub fn set_device_tool_paths(&mut self, mpremote: String, esptool: String) {
+        if let Some(browser) = &mut self.browser {
+            browser.set_tool_path(&mpremote);
+        }
+        if let Some(flash) = &mut self.flash {
+            flash.set_tool_path(&esptool);
+        }
+        self.device_tool_paths = Some((mpremote, esptool));
+    }
+
     /// Ensures row 2's panes exist and the right scans start, without
     /// waiting for the user to move focus onto them: the browser for a
     /// backend that browses files (its device scan under
@@ -204,7 +215,11 @@ impl App {
             .manager
             .root()
             .map_or_else(|| self.manager.start_dir().to_path_buf(), Path::to_path_buf);
-        self.browser = Some(Browser::new(Self::initial_local_dir(root)));
+        let mut browser = Browser::new(Self::initial_local_dir(root));
+        if let Some((mpremote, _)) = &self.device_tool_paths {
+            browser.set_tool_path(mpremote);
+        }
+        self.browser = Some(browser);
         if self.manager.capabilities().contains(Capability::Filesystem) {
             self.scan_devices();
         }

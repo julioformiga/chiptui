@@ -1912,14 +1912,18 @@ mod tests {
         panel.set_picked("nrf52840dk/nrf52840");
 
         let mut processes = ProcessManager::new();
-        assert!(panel.start(
-            BuildKind::Build.label(),
-            true,
-            BuildAction::Build(BuildKind::Build),
-            crate::process::Command::new(fake("west")),
-            &mut processes,
-            &crate::backend::Capabilities::from_slice(&[crate::backend::Capability::Build]),
-        ));
+        assert!(
+            panel.start(
+                BuildKind::Build.label(),
+                true,
+                BuildAction::Build(BuildKind::Build),
+                crate::process::Command::new(fake("west"))
+                    .arg("build")
+                    .current_dir(&dir),
+                &mut processes,
+                &crate::backend::Capabilities::from_slice(&[crate::backend::Capability::Build]),
+            )
+        );
         let deadline = Instant::now() + Duration::from_secs(10);
         while Instant::now() < deadline {
             for event in processes.drain() {
@@ -1961,14 +1965,18 @@ mod tests {
         ]);
 
         let mut processes = ProcessManager::new();
-        assert!(panel.start(
-            "Update Zephyr",
-            false,
-            BuildAction::UpdateZephyr,
-            crate::process::Command::new(fake("west")),
-            &mut processes,
-            &caps,
-        ));
+        assert!(
+            panel.start(
+                "Update Zephyr",
+                false,
+                BuildAction::UpdateZephyr,
+                crate::process::Command::new(fake("west"))
+                    .arg("update")
+                    .current_dir(&dir),
+                &mut processes,
+                &caps,
+            )
+        );
         let deadline = Instant::now() + Duration::from_secs(10);
         while Instant::now() < deadline {
             for event in processes.drain() {
@@ -2004,14 +2012,18 @@ mod tests {
         ]);
 
         let mut processes = ProcessManager::new();
-        assert!(panel.start(
-            BuildKind::Clean.label(),
-            false,
-            BuildAction::Build(BuildKind::Clean),
-            crate::process::Command::new(fake("west")),
-            &mut processes,
-            &caps,
-        ));
+        assert!(
+            panel.start(
+                BuildKind::Clean.label(),
+                false,
+                BuildAction::Build(BuildKind::Clean),
+                crate::process::Command::new(fake("west"))
+                    .args(["build", "-t", "clean"])
+                    .current_dir(&dir),
+                &mut processes,
+                &caps,
+            )
+        );
         let deadline = Instant::now() + Duration::from_secs(10);
         while Instant::now() < deadline {
             for event in processes.drain() {

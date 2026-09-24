@@ -1,0 +1,5 @@
+#!/bin/sh
+# Copied into a test-owned directory; no shared log or global environment.
+[ "$#" -eq 1 ] && [ "$1" = devs ] || exit 64
+printf 'devs\n' >> "$(dirname "$0")/calls"
+# An empty bus ends discovery without probing any port.

@@ -809,7 +809,7 @@ fn startup_scans_for_a_device_without_opening_the_browser() {
 }
 
 #[test]
-fn startup_ensures_a_browser_and_a_serial_scan_without_a_filesystem() {
+fn startup_creates_build_panes_and_scans_serial_without_a_filesystem() {
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     let key = |code: KeyCode| AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE));
 
@@ -890,59 +890,40 @@ fn opening_the_browser_starts_on_src_when_it_exists() {
 
 #[test]
 fn a_second_scan_request_does_not_rescan_an_existing_browser() {
-    let mut app = hermetic_app(std::env::temp_dir());
+    let dir = common::TempDir::new("single-scan");
+    let mut app = hermetic_app(dir.path());
+    app.set_device_tool_paths(
+        common::recording_mpremote(dir.path()),
+        common::fake_esptool(),
+    );
     app.bootstrap();
     app.manager.set_override(Some(BackendKind::MicroPython));
 
     app.maybe_scan_devices();
     assert!(app.browser.is_some());
-    let discovery_before = app.devices.discovery;
 
     // apply_picker/apply_project_setup call maybe_scan_devices() on every
     // backend change; it must not re-issue a scan once a browser exists.
     app.focus = Focus::FilesLocal;
     app.maybe_scan_devices();
 
-    assert_eq!(app.devices.discovery, discovery_before, "no duplicate scan");
-}
-
-#[test]
-fn applying_a_filesystem_backend_in_the_config_screen_scans_for_a_device() {
-    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-
-    let root = std::env::temp_dir().join(format!("chiptui-files-setup-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(root.join("home")).unwrap();
-
-    let mut app = hermetic_app(&root);
-    // Answering the prompt records the project in the user config, so the
-    // home must be redirected before it is answered.
-    app.set_home_dir(root.join("home"));
-    app.bootstrap();
-    assert!(
-        app.browser.is_none(),
-        "an unrecognized project has no filesystem to scan for yet"
+    assert!(common::pump_until(
+        &mut app,
+        |app| !app.browser.as_ref().unwrap().is_busy(),
+        20
+    ));
+    // Repeat after completion too: a duplicate could leave Scanning unchanged
+    // when requested in-flight, or be deferred until the first scan ends.
+    app.maybe_scan_devices();
+    assert!(common::pump_until(
+        &mut app,
+        |app| !app.browser.as_ref().unwrap().is_busy(),
+        20
+    ));
+    assert_eq!(
+        std::fs::read_to_string(dir.join("calls")).unwrap(),
+        "devs\n"
     );
-
-    // The configuration window opens on the backend cards; MicroPython is
-    // the first of them, and applying is what makes the answer real.
-    let key = |code| AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE));
-    app.maybe_open_project_config();
-    app.handle(key(KeyCode::Right)); // MicroPython
-    app.handle(AppEvent::Key(KeyEvent::new(
-        KeyCode::Char('s'),
-        KeyModifiers::CONTROL,
-    )));
-    app.handle(key(KeyCode::Char('y')));
-
-    assert_eq!(app.manager.override_kind(), Some(BackendKind::MicroPython));
-    assert!(
-        app.browser.is_some(),
-        "answering a backend with Capability::Filesystem should scan immediately, \
-         not wait for 'f'"
-    );
-
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -1173,24 +1154,7 @@ fn ctrl_arrows_step_focus_between_the_browser_columns() {
 /// `draw_device_tabs`/`draw_log_tabs`).
 #[test]
 fn strip_clicks_land_on_the_tab_they_name() {
-    use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
-
-    let click = |column: u16, row: u16| {
-        AppEvent::Mouse(MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column,
-            row,
-            modifiers: KeyModifiers::NONE,
-        })
-    };
-    // The drawn row and column of `needle`'s first cell; byte offsets are
-    // not columns (multi-byte borders).
-    let find_cell = |frame: &str, needle: &str| {
-        frame.lines().enumerate().find_map(|(row, line)| {
-            line.find(needle)
-                .map(|byte| (row as u16, line[..byte].chars().count() as u16))
-        })
-    };
+    use common::click;
 
     let project = Project::new("strip-click");
     let mut app = app_in_browser(&project);
@@ -1203,8 +1167,9 @@ fn strip_clicks_land_on_the_tab_they_name() {
     assert!(app.device_actions_tab_active(), "`x` opens the actions tab");
 
     let frame = render(&mut app, 132, 32);
-    let (row, column) = find_cell(&frame, "▣ Device Files").expect("the files tab is drawn");
-    app.handle(click(column, row));
+    let (row, column) =
+        common::find_cell(&frame, "▣ Device Files").expect("the files tab is drawn");
+    app.handle(AppEvent::Mouse(click(column, row)));
     assert!(
         !app.device_actions_tab_active(),
         "the click on the Device Files label switches back to the files tab"
@@ -1212,8 +1177,8 @@ fn strip_clicks_land_on_the_tab_they_name() {
 
     // Row 3's strip answers the same way: the Monitor label switches the
     // row to its feed.
-    let (row, column) = find_cell(&frame, "◉ Monitor").expect("the monitor tab is drawn");
-    app.handle(click(column, row));
+    let (row, column) = common::find_cell(&frame, "◉ Monitor").expect("the monitor tab is drawn");
+    app.handle(AppEvent::Mouse(click(column, row)));
     assert_eq!(
         app.log_tab,
         chiptui::app::LogTab::Monitor,
@@ -1530,6 +1495,11 @@ fn left_closes_the_action_dialog_like_esc() {
 fn right_runs_the_highlighted_action_like_enter() {
     use ratatui::crossterm::event::KeyCode;
 
+    // Menu grammar: in a picker like `FileActions`, `→` is "run the
+    // highlighted row", the same as `Enter`. Confirm dialogs differ ---
+    // there `→` only moves the highlight and `Enter` commits (see
+    // `arrow_keys_toggle_the_restart_prompt_s_highlighted_button` below);
+    // a destructive confirm must not be one gesture from firing.
     let project = Project::new("dialog-right-confirm");
     let mut app = app_in_browser(&project);
     // Sorted order: lib/, diff.py, local_only.py, same.py.
@@ -2493,6 +2463,10 @@ fn enter_on_the_restart_prompt_defaults_to_no() {
 fn arrow_keys_toggle_the_restart_prompt_s_highlighted_button() {
     use ratatui::crossterm::event::KeyCode;
 
+    // Confirm grammar: `→` moves the highlight and `Enter` commits --- a
+    // destructive confirm is never one gesture from firing. Pickers
+    // differ: there `→` runs the highlighted row like `Enter` (see
+    // `right_runs_the_highlighted_action_like_enter` above).
     let project = Project::new("restart-toggle");
     let mut app = app_in_browser(&project);
     app.overlay = Some(Overlay::ConfirmRestartDevice { confirm: false });
@@ -2780,19 +2754,12 @@ fn the_wheel_steps_the_browser_pane_under_the_pointer() {
             modifiers: KeyModifiers::NONE,
         })
     };
-    let find_cell = |frame: &str, needle: &str| {
-        frame.lines().enumerate().find_map(|(row, line)| {
-            line.find(needle)
-                .map(|byte| (row as u16, line[..byte].chars().count() as u16))
-        })
-    };
-
     let project = Project::new("wheel");
     let mut app = app_in_browser(&project);
     app.set_mouse_enabled(true);
 
     let frame = render(&mut app, 132, 32);
-    let (row, column) = find_cell(&frame, "local_only.py").expect("a local row is drawn");
+    let (row, column) = common::find_cell(&frame, "local_only.py").expect("a local row is drawn");
     app.handle(wheel(MouseEventKind::ScrollDown, column, row));
     app.handle(wheel(MouseEventKind::ScrollDown, column, row));
     assert_eq!(
@@ -2803,7 +2770,7 @@ fn the_wheel_steps_the_browser_pane_under_the_pointer() {
 
     // The device pane steps its own cursor while focus stays on the local
     // pane: scrolling past a pane is not pointing at it.
-    let (row, column) = find_cell(&frame, "device_only.py").expect("a device row is drawn");
+    let (row, column) = common::find_cell(&frame, "device_only.py").expect("a device row is drawn");
     app.handle(wheel(MouseEventKind::ScrollDown, column, row));
     assert_eq!(
         app.browser.as_ref().unwrap().device_cursor,

@@ -209,7 +209,8 @@ fn the_checklist_reports_every_prerequisite_and_the_python_row_only_warns() {
         "an off-series system Python must not block the installation"
     );
     // The other gate is separate and still open here --- see
-    // `the_sdk_step_never_downloads_everything_by_omission`.
+    // `the_toolchain_pick_reaches_the_sdk_command`, which refuses to start
+    // the step without a pick.
     assert!(!installer.sdk_ready());
 
     let frame = render(&mut app, 100, 40);

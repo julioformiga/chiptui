@@ -902,6 +902,61 @@ fn group_alive(_pid: u32) -> bool {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    #[test]
+    fn natural_exit_finishes_once_after_all_output_producers_close() {
+        let mut processes = ProcessManager::new();
+        let id = processes.spawn(
+            Command::new(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/bin/bursty"
+            )),
+            Duration::from_secs(10),
+        );
+        // Drop only the manager's sender. Disconnection now proves that the
+        // supervisor AND both output readers have released their senders;
+        // stopping at the first Finished would make these assertions circular.
+        let (unused, _) = std::sync::mpsc::channel();
+        processes.tx = unused;
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut events = Vec::new();
+        loop {
+            match processes
+                .rx
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            {
+                Ok(event) => events.push(event),
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(error) => panic!("event producers never closed: {error}"),
+            }
+        }
+        // drain() normally forgets it on Finished; the direct receiver above
+        // deliberately bypasses drain so it can observe channel closure.
+        processes.running.remove(&id);
+        assert!(matches!(events.first(), Some(ProcessEvent::Started { .. })));
+        assert!(matches!(
+            events.last(),
+            Some(ProcessEvent::Finished {
+                outcome: Outcome::Success,
+                ..
+            })
+        ));
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, ProcessEvent::Finished { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, ProcessEvent::Line { .. }))
+                .count(),
+            500
+        );
+    }
+
     #[test]
     fn a_pty_command_is_its_program_and_arguments() {
         let builder = pty_command(&Command::new("/bin/sh").arg("-c").arg("true"));

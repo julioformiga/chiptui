@@ -13,10 +13,10 @@ use std::path::{Path, PathBuf};
 
 use chiptui::app::{App, AppEvent, Overlay};
 use chiptui::backend::{BackendKind, BackendRegistry};
-use chiptui::project::{config, DetectionSource, ProjectManager};
+use chiptui::project::{DetectionSource, ProjectManager, config};
 use chiptui::project_config::{Cursor, ProjectConfigRow};
 use chiptui::settings::{self, ProjectRegistry};
-use chiptui::startup::{route, Route};
+use chiptui::startup::{Route, route};
 use ratatui::crossterm::event::KeyCode;
 
 mod common;
@@ -73,6 +73,8 @@ impl TempDir {
     fn app(&self) -> App {
         let mut app = App::new(&self.path);
         app.set_home_dir(&self.home);
+        app.set_serial_dir(self.home.join("dev"));
+        app.set_device_tool_paths(common::fake("mpremote-no-devices"), common::fake_esptool());
         app
     }
 
@@ -249,12 +251,13 @@ fn udp_address_uses_an_ipv4_mask_and_validation() {
         app.project_config.as_ref().unwrap().editing().is_some(),
         "an out-of-range IPv4 octet remains editable"
     );
-    assert!(app
-        .project_config
-        .as_ref()
-        .unwrap()
-        .error()
-        .is_some_and(|error| error.contains("valid IPv4")));
+    assert!(
+        app.project_config
+            .as_ref()
+            .unwrap()
+            .error()
+            .is_some_and(|error| error.contains("valid IPv4"))
+    );
     app.handle(key(KeyCode::Delete));
     for ch in "192.168.1.42".chars() {
         app.handle(key(KeyCode::Char(ch)));
@@ -291,12 +294,16 @@ fn apply(app: &mut App) {
     app.handle(key(KeyCode::Char('y')));
 }
 
+/// A board-module root the registry already names routes to the dashboard
+/// and is **never asked** --- the registry is the answer, the same contract
+/// `a_project_the_registry_already_names_is_never_asked` fixes for an
+/// ordinary directory. What is module-specific here is the routing: the
+/// module root scores too low to open on its own, so it must be recorded
+/// before routing.
 #[test]
-fn a_zephyr_module_root_opens_the_window_on_the_backend_cards() {
+fn a_registered_module_root_opens_without_asking() {
     let dir = TempDir::new("module").into_board_module();
 
-    // The module root scores too low to open on its own, so it must be
-    // recorded before routing and before the app loads its registry.
     settings::record_project(
         &settings::user_config_path(&dir.config_dir()),
         settings::ProjectEntry::new(&dir.path, BackendKind::Zephyr).opened_now(),
@@ -312,15 +319,11 @@ fn a_zephyr_module_root_opens_the_window_on_the_backend_cards() {
     let mut app = dir.app();
     app.bootstrap();
     app.maybe_open_project_config();
-    assert_eq!(app.overlay, Some(Overlay::ProjectConfig));
-    let panel = app.project_config.as_ref().unwrap();
     assert_eq!(
-        panel.cursor(),
-        Cursor::Cards,
-        "the window opens on the question it exists to ask"
+        app.overlay, None,
+        "the registry already answered; the config window is not the ask"
     );
-    assert_eq!(panel.chosen(), None);
-    assert!(!panel.file_exists(), "nothing written by opening it");
+    assert_eq!(app.manager.selected_kind(), Some(BackendKind::Zephyr));
 }
 
 #[test]
@@ -648,10 +651,14 @@ fn a_workspace_without_samples_falls_back_to_the_minimal_layout() {
 }
 
 #[test]
+#[cfg(unix)]
 fn a_micropython_answer_scans_for_a_device() {
     let dir = TempDir::new("scan");
     let mut app = dir.app();
+    let tool = common::recording_mpremote(&dir.home);
+    app.set_device_tool_paths(tool, common::fake_esptool());
     app.bootstrap();
+    assert!(app.browser.is_none());
     app.maybe_open_project_config();
     app.handle(key(KeyCode::Right)); // MicroPython, the first card
     apply(&mut app);
@@ -660,6 +667,15 @@ fn a_micropython_answer_scans_for_a_device() {
     assert!(
         app.browser.is_some(),
         "a scan needs somewhere to land its result"
+    );
+    assert!(common::pump_until(
+        &mut app,
+        |app| !app.browser.as_ref().unwrap().is_busy(),
+        20
+    ));
+    assert_eq!(
+        std::fs::read_to_string(dir.home.join("calls")).unwrap(),
+        "devs\n"
     );
 }
 
@@ -1277,7 +1293,9 @@ fn the_details_pane_lists_the_session_build_variants() {
         assert!(frame.contains(expected), "missing {expected:?}:\n{frame}");
     }
     // A fresh session starts on the *board* variant, so it carries the
-    // Current block's winner mark; the others keep the option mark.
+    // Current block's winner mark; the others keep the option mark. The
+    // search is anchored to a variant row --- a bare '○' also matches the
+    // header's device mark, which sorts first in the frame.
     let board = frame
         .lines()
         .find(|line| line.contains("chiptui.toml") && line.contains("board"))
@@ -1285,7 +1303,7 @@ fn the_details_pane_lists_the_session_build_variants() {
     assert!(board.contains('▸'), "the built variant is marked:\n{frame}");
     let sim = frame
         .lines()
-        .find(|line| line.contains("discovered") || line.contains('○'))
+        .find(|line| line.contains("sim") && (line.contains("discovered") || line.contains('○')))
         .expect("the other variant is drawn");
     assert!(sim.contains("sim"), "the idle variant is named:\n{frame}");
 }

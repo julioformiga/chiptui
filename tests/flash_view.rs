@@ -11,8 +11,8 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use chiptui::app::{App, Focus, LogTab, MonitorSource, Overlay, View};
-use chiptui::backend::esptool::ChipFamily;
 use chiptui::backend::BackendKind;
+use chiptui::backend::esptool::ChipFamily;
 use chiptui::browser::Browser;
 use chiptui::device::{DeviceInfo, ScriptState};
 use chiptui::event::AppEvent;
@@ -20,11 +20,7 @@ use chiptui::flash::{FlashAction, FlashPanel, FlashScreen, RunState};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 mod common;
-use common::{fake_curl, fake_mpremote, key, render};
-
-fn fake_esptool() -> String {
-    format!("{}/tests/fixtures/bin/esptool", env!("CARGO_MANIFEST_DIR"))
-}
+use common::{fake_curl, fake_esptool, fake_mpremote, key, pump_until, render};
 
 fn fake_esptool_progress_slow() -> String {
     format!(
@@ -84,22 +80,6 @@ fn settle(app: &mut App) {
         |app| app.flash.as_ref().is_some_and(|flash| flash.is_busy()),
         "esptool command",
     );
-}
-
-/// Drives the app until `done` holds or time runs out --- for asserting on
-/// an in-flight state (`settle` above only ever waits for the *end*).
-fn pump_until(app: &mut App, mut done: impl FnMut(&App) -> bool, secs: u64) -> bool {
-    let deadline = Instant::now() + Duration::from_secs(secs);
-    while Instant::now() < deadline {
-        for event in app.processes.drain() {
-            app.handle(AppEvent::Process(event));
-        }
-        if done(app) {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    done(app)
 }
 
 #[test]
@@ -862,10 +842,11 @@ fn a_query_with_no_matching_boards_keeps_the_search_window_open() {
     let flash = app.flash.as_ref().unwrap();
     assert_eq!(flash.screen, FlashScreen::OnlineBoards);
     assert!(flash.online_boards.is_empty());
-    assert!(app
-        .logs
-        .visible(10)
-        .any(|entry| entry.message.contains("no boards found")));
+    assert!(
+        app.logs
+            .visible(10)
+            .any(|entry| entry.message.contains("no boards found"))
+    );
 }
 
 fn device(port: &str) -> DeviceInfo {
@@ -1257,7 +1238,7 @@ fn the_search_button_opens_the_online_window_as_a_dialog() {
 }
 
 #[test]
-fn a_device_becoming_known_at_startup_queries_it_with_esptool_in_the_background() {
+fn selecting_a_device_queries_its_identity_only_after_confirmation() {
     // Mirrors how `App::maybe_scan_devices` finds an mpremote scan already
     // resolved to a single board: the device panel should not need the user
     // to open the Flash view by hand to learn what is connected --- but the
@@ -1303,6 +1284,14 @@ fn a_device_becoming_known_at_startup_queries_it_with_esptool_in_the_background(
         "the accepted answer must kick off a background flash-id query without \
          opening the Flash view"
     );
+    assert!(pump_until(
+        &mut app,
+        |app| app
+            .flash
+            .as_ref()
+            .is_some_and(|flash| flash.details.family.is_some()),
+        20
+    ));
 }
 
 #[test]
@@ -1662,6 +1651,10 @@ fn v_verifies_the_flash_from_the_actions_tab() {
 /// assertion; the guard now lives at the same place, the door.
 #[test]
 fn a_dimmed_flash_button_refuses_instead_of_asking() {
+    // Like `a_running_write_flash_reports_esptools_percentage`, this
+    // pre-arms firmware and offset so `Enter` takes the straight-to-confirm
+    // branch: the "Enter opens Options as a dialog" gap documented there is
+    // load-bearing here too, and closing it means reworking both tests.
     let project = Project::new("dimmed-refuses");
     project.write_firmware("app.bin");
     let mut app = hermetic_app(&project.root);

@@ -2,9 +2,9 @@
 //! through a fixture `smpmgr`, the five writes, what each file holds
 //! afterwards, and that a re-run is a no-op.
 //!
-//! Driven the way `tests/zephyr_install.rs` drives the installer, except
-//! that the panel is not wired into `App` yet (that is M5's modal), so the
-//! tests hold the `Prepare` and its `ProcessManager` directly.
+//! Driven the way `tests/zephyr_install.rs` drives the installer: the tests
+//! hold the `Prepare` and its `ProcessManager` directly --- the `App`-level
+//! wiring (the modal, its keys and its rendering) is `ota_view.rs`'s.
 
 #![cfg(unix)]
 
@@ -65,27 +65,9 @@ fn read(root: &Path, relative: &str) -> String {
 
 /// A `zephyr.dts` carrying the three nodes an A/B layout needs, in the
 /// shape `devicetree::parse` reads (the path annotations are load-bearing:
-/// only a node under `/partitions/` counts).
-const DTS_WITH_SLOTS: &str = "\
-/* node '/soc/flash@0/partitions' defined in board.dtsi:10 */
-partitions {
-        /* node '/soc/flash@0/partitions/partition@0' defined in board.dtsi:13 */
-        boot_partition: partition@0 {
-                label = \"mcuboot\";
-                reg = < 0x0 0x10000 >;
-        };
-        /* node '/soc/flash@0/partitions/partition@20000' defined in board.dtsi:25 */
-        slot0_partition: partition@20000 {
-                label = \"image-0\";
-                reg = < 0x20000 0x1c0000 >;
-        };
-        /* node '/soc/flash@0/partitions/partition@1e0000' defined in board.dtsi:31 */
-        slot1_partition: partition@1e0000 {
-                label = \"image-1\";
-                reg = < 0x1e0000 0x1c0000 >;
-        };
-};
-";
+/// only a node under `/partitions/` counts). Shared with `tests/ota_view.rs`
+/// and the `src/ota::prepare` unit tests.
+const DTS_WITH_SLOTS: &str = include_str!("fixtures/dts/ab_slots.dts");
 
 fn built_with_slots(root: &Path, dts: &str) {
     let dir = root.join("build/zephyr");
@@ -614,45 +596,6 @@ fn the_transport_check_reads_the_built_config_back() {
     // user's to fix, and `p` proves the answer in a second either way.
     assert!(!panel.transport.blocks());
     let _ = std::fs::remove_dir_all(&root);
-}
-
-/// The template carries each transport's *own* dependencies, and stops
-/// exactly where the application's architecture begins.
-#[test]
-fn the_kconfig_tiers_carry_their_transports_dependencies() {
-    use chiptui::ota::prepare::kconfig_body;
-
-    // Serial: the driver and the framing the transport is made of. Nothing
-    // does `select UART_MCUMGR`, so without these the symbol drops.
-    let serial = kconfig_body(Transport::Serial);
-    for symbol in [
-        "CONFIG_MCUMGR_TRANSPORT_UART=y",
-        "CONFIG_UART_MCUMGR=y",
-        "CONFIG_BASE64=y",
-        "CONFIG_CONSOLE=y",
-    ] {
-        assert!(serial.contains(symbol), "serial needs {symbol}:\n{serial}");
-    }
-
-    // BLE already did this, and is the precedent the serial tier follows.
-    let ble = kconfig_body(Transport::Ble);
-    assert!(ble.contains("CONFIG_BT_PERIPHERAL=y"));
-
-    // UDP deliberately does *not* choose a network stack --- which one, and
-    // DHCP versus static, is the application's architecture. It says so
-    // instead, and nothing it emits is an uncommented networking symbol.
-    let udp = kconfig_body(Transport::Udp);
-    assert!(udp.contains("CONFIG_MCUMGR_TRANSPORT_UDP=y"));
-    assert!(
-        udp.contains("bring your own"),
-        "the header states the boundary:\n{udp}"
-    );
-    for uncommitted in ["CONFIG_NETWORKING=y", "CONFIG_NET_UDP=y", "CONFIG_WIFI=y"] {
-        assert!(
-            !udp.lines().any(|line| line.trim() == uncommitted),
-            "{uncommitted} is the project's decision, not ours:\n{udp}"
-        );
-    }
 }
 
 /// A sysbuild build's *application domain* is the authority, and the top

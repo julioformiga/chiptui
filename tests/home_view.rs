@@ -120,6 +120,13 @@ fn a_click_on_a_project_row_opens_it() {
         Some(chiptui::home::HomeOutcome::Open(blinky)),
         "a click on a launcher row selects and accepts it, like Enter"
     );
+    // Not every surface shares this grammar: pickers like the package
+    // manager select only (`project_pane.rs`'s
+    // `a_click_in_the_manager_selects_without_installing`), and config
+    // rows need a second gesture (`project_config.rs`'s
+    // `a_click_picks_a_card_selects_a_row_and_one_outside_closes_the_window`).
+    // A launcher row is a destination, not a dangerous action, so acting
+    // on click is safe here and nowhere else.
 }
 
 #[test]

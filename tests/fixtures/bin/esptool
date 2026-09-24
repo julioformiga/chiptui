@@ -55,6 +55,44 @@ case "$args" in
         ;;
 
     *"write-flash"*)
+        # esptool v5.3.1 cli_util.py: AddrFilenamePairType preserves argv,
+        # requires pairs, and parses addresses with int(value, 0).
+        # Validate the options ChipTUI uses, rather than accepting a filename
+        # containing "0x" as proof of an address.
+        python3 - "$@" <<'PY' || exit 64
+import sys
+
+args = sys.argv[1:]
+try:
+    while args and args[0] in ("--port", "--chip"):
+        option = args.pop(0)
+        if not args or not args.pop(0):
+            raise ValueError(f"missing value for {option}")
+    if not args or args.pop(0) != "write-flash":
+        raise ValueError("unexpected global option or command")
+    pairs = []
+    while args:
+        value = args.pop(0)
+        if value in ("--flash-mode", "-fm", "--flash-freq", "-ff", "--flash-size", "-fs"):
+            if not args or not args[0] or args[0].startswith("-"):
+                raise ValueError(f"missing value for {value}")
+            args.pop(0)
+        elif value in ("--compress", "--no-compress", "--erase-all", "--force"):
+            pass
+        elif value.startswith("--"):
+            raise ValueError(f"unsupported option {value}")
+        else:
+            pairs.append(value)
+    if not pairs or len(pairs) % 2:
+        raise ValueError("write-flash needs OFFSET FILE pairs")
+    for offset, filename in zip(pairs[::2], pairs[1::2]):
+        int(offset, 0)
+        with open(filename, "rb"):
+            pass
+except (ValueError, OSError) as error:
+    print(f"esptool: {error}", file=sys.stderr)
+    sys.exit(64)
+PY
         case "$args" in
             *"missing.bin"*)
                 echo "esptool: [Errno 2] No such file or directory: 'missing.bin'" >&2

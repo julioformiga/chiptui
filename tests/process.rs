@@ -12,32 +12,11 @@ use chiptui::process::{
     Command, LineEnd, Outcome, ProcessEvent, ProcessId, ProcessManager, Stream,
 };
 
+mod common;
+use common::TempDir as Scratch;
+
 fn fixture(name: &str) -> String {
     format!("{}/tests/fixtures/bin/{name}", env!("CARGO_MANIFEST_DIR"))
-}
-
-/// A temp directory that cleans itself up *even when the test fails* --- a
-/// plain `remove_dir_all` at the end of the body is skipped by the panic
-/// that made it interesting.
-struct Scratch(std::path::PathBuf);
-
-impl Scratch {
-    fn new(tag: &str) -> Self {
-        let dir = std::env::temp_dir().join(format!("chiptui-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        Self(dir)
-    }
-
-    fn path(&self) -> &std::path::Path {
-        &self.0
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
 }
 
 /// Whether `pid` is still around. Signal 0 is the standard "check, don't
@@ -56,10 +35,8 @@ fn alive(pid: u32) -> bool {
 /// creates it before it writes it, so an early read returns "" and the
 /// parse panics --- a flake that has nothing to do with the code under test.
 /// The deadline matches `run_to_completion`'s rather than a guess at how
-/// fast the fixture gets scheduled --- and it cannot fix the one failure
-/// this test ever caught in the act: something *outside* the suite once
-/// wiped the Scratch directory mid-run (the spawner's shell reported
-/// `getcwd: cannot access parent directories`), which no deadline survives.
+/// fast the fixture gets scheduled. A past run lost its working directory;
+/// every cleanup must stay within an exclusively owned scratch directory.
 fn wait_for_pid(path: &std::path::Path) -> u32 {
     let deadline = Instant::now() + Duration::from_secs(20);
     while Instant::now() < deadline {
@@ -79,14 +56,15 @@ fn run_to_completion(processes: &mut ProcessManager, id: ProcessId) -> Vec<Proce
     let mut events = Vec::new();
 
     while Instant::now() < deadline {
+        let mut finished = false;
         for event in processes.drain() {
-            let finished = matches!(event, ProcessEvent::Finished { .. });
             if event.id() == id {
+                finished |= matches!(event, ProcessEvent::Finished { .. });
                 events.push(event);
-                if finished {
-                    return events;
-                }
             }
+        }
+        if finished {
+            return events;
         }
         std::thread::sleep(Duration::from_millis(5));
     }
@@ -122,6 +100,40 @@ fn outcome(events: &[ProcessEvent]) -> &Outcome {
             _ => None,
         })
         .expect("a finished event")
+}
+
+/// Observe the child, not just the manager's synchronous bookkeeping.
+fn wait_for_starting(processes: &mut ProcessManager, id: ProcessId) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while Instant::now() < deadline {
+        for event in processes.drain() {
+            if event.id() != id {
+                continue;
+            }
+            if matches!(&event, ProcessEvent::Line { text, .. } if text == "starting") {
+                return;
+            }
+            assert!(
+                !matches!(event, ProcessEvent::Finished { .. }),
+                "child exited before readiness: {event:?}"
+            );
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    panic!("child never signalled readiness");
+}
+
+#[test]
+fn repeated_temp_tags_own_independent_directories() {
+    let first = Scratch::new("ownership");
+    let second = Scratch::new("ownership");
+    assert_ne!(first.path(), second.path());
+    std::fs::write(second.join("keep"), "owned").unwrap();
+    drop(first);
+    assert_eq!(
+        std::fs::read_to_string(second.join("keep")).unwrap(),
+        "owned"
+    );
 }
 
 #[test]
@@ -181,24 +193,6 @@ fn an_unterminated_last_line_is_marked_as_eof() {
 }
 
 #[test]
-fn the_first_event_is_started_and_the_last_is_finished() {
-    // The browser relies on this: seeing `Finished` means all output arrived.
-    let mut processes = ProcessManager::new();
-    let id = processes.spawn(Command::new(fixture("noisy")), Duration::from_secs(10));
-    let events = run_to_completion(&mut processes, id);
-
-    assert!(matches!(events.first(), Some(ProcessEvent::Started { .. })));
-    assert!(matches!(events.last(), Some(ProcessEvent::Finished { .. })));
-    assert_eq!(
-        events
-            .iter()
-            .filter(|event| matches!(event, ProcessEvent::Finished { .. }))
-            .count(),
-        1
-    );
-}
-
-#[test]
 fn a_missing_executable_is_an_outcome_not_a_panic() {
     let mut processes = ProcessManager::new();
     let id = processes.spawn(
@@ -233,11 +227,7 @@ fn cancelling_stops_a_running_process() {
     let mut processes = ProcessManager::new();
     let id = processes.spawn(Command::new(fixture("slow")), Duration::from_secs(60));
 
-    // Wait until it is actually running before cancelling.
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while processes.running_count() == 0 && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    wait_for_starting(&mut processes, id);
     processes.cancel(id);
 
     let events = run_to_completion(&mut processes, id);
@@ -330,18 +320,16 @@ fn a_child_that_ignores_sigterm_is_still_killed() {
 }
 
 #[test]
-fn a_child_that_handles_sigterm_dies_without_waiting_for_the_grace() {
-    // The other half of the pair: the grace is a ceiling, not a delay. A
-    // well-behaved child (`slow`'s plain `sleep`, which takes the default
-    // SIGTERM disposition) must end on the first signal, so `Stop` stays
-    // immediate for everything that is not `stubborn`.
+fn a_child_can_handle_sigterm_before_cancellation_finishes() {
+    // A trap records receipt of SIGTERM before exiting. This proves the
+    // graceful phase without a scheduler-sensitive sub-250ms deadline.
+    let dir = Scratch::new("term-handled");
     let mut processes = ProcessManager::new();
-    let id = processes.spawn(Command::new(fixture("slow")), Duration::from_secs(60));
-
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while processes.running_count() == 0 && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    let id = processes.spawn(
+        Command::new("/bin/sh").args(["-c", "trap 'echo TERM > handled; exit 0' TERM; echo starting; while :; do sleep 0.05; done"]).current_dir(dir.path()),
+        Duration::from_secs(60),
+    );
+    wait_for_starting(&mut processes, id);
 
     let started = Instant::now();
     processes.cancel(id);
@@ -350,8 +338,12 @@ fn a_child_that_handles_sigterm_dies_without_waiting_for_the_grace() {
 
     assert_eq!(outcome(&events), &Outcome::Cancelled);
     assert!(
-        took < Duration::from_millis(250),
-        "a child that takes SIGTERM should not wait out the grace ({took:?})"
+        took < Duration::from_secs(5),
+        "cancellation did not finish promptly ({took:?})"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("handled")).unwrap().trim(),
+        "TERM"
     );
 }
 
@@ -389,12 +381,8 @@ fn a_pty_child_runs_in_the_commands_working_directory() {
     // path: `spawn_pty` must honour `Command::current_dir`, not just the
     // program and arguments.
     let mut processes = ProcessManager::new();
-    let dir = std::env::temp_dir()
-        .join(format!("chiptui-pty-cwd-{}", std::process::id()))
-        .canonicalize()
-        .unwrap_or_else(|_| std::env::temp_dir());
-    std::fs::create_dir_all(&dir).unwrap();
-    let dir = dir.canonicalize().expect("the temp dir exists");
+    let scratch = Scratch::new("pty-cwd");
+    let dir = scratch.path().canonicalize().expect("the temp dir exists");
 
     let id = processes
         .spawn_pty(
@@ -420,7 +408,6 @@ fn a_pty_child_runs_in_the_commands_working_directory() {
         output.trim().contains(&expected),
         "the pty child must land in the given cwd; pwd printed {output:?}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

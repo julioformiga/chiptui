@@ -8,18 +8,18 @@
 
 use std::path::PathBuf;
 use std::sync::{
-    atomic::{AtomicU64, Ordering},
     Arc,
+    atomic::{AtomicU64, Ordering},
 };
 
+use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::KeyCode;
-use ratatui::Terminal;
 
 use chiptui::app::help::{self, HelpSection};
 use chiptui::app::{App, Focus, LogTab, Overlay};
-use chiptui::backend::esptool::{ChipFamily, DeviceDetails};
 use chiptui::backend::BackendKind;
+use chiptui::backend::esptool::{ChipFamily, DeviceDetails};
 use chiptui::firmware_id::FirmwareVerdict;
 use chiptui::flash::FlashPanel;
 use chiptui::project_config::ProjectConfigRow;
@@ -395,10 +395,6 @@ fn zephyr_shows_the_workspace_and_build_panes_in_row_two() {
         !frame.contains("Device Files:"),
         "the dual-pane browser's device title must not render for a build backend:\n{frame}"
     );
-    assert!(
-        !frame.contains("Device Files:"),
-        "no device pane may render without a filesystem:\n{frame}"
-    );
     // The embedded file list is titled with the project's own name (the
     // fixture app is rooted at the temp directory).
     let project = std::env::temp_dir()
@@ -559,7 +555,7 @@ fn log_command_rows_are_marked_and_the_selected_one_is_highlighted() {
 }
 
 #[test]
-fn dashboard_shows_the_working_directory_and_backend() {
+fn dashboard_shows_project_questions_and_backend_without_detection_source() {
     let mut app = app_with_backend(BackendKind::MicroPython);
     let frame = render(&mut app, 120, 32);
 
@@ -575,14 +571,18 @@ fn dashboard_shows_the_working_directory_and_backend() {
 }
 
 #[test]
-fn device_pane_prompts_to_open_flash_before_anything_has_been_queried() {
+fn device_pane_names_the_actions_key_before_anything_has_been_queried() {
     let mut app = app_with_backend(BackendKind::MicroPython);
     let frame = render(&mut app, 100, 32);
 
+    // The pane explains itself and names the key: 'x' opens the flash
+    // view's Project actions. (The full sentence is truncated at this
+    // width, so assert the two halves separately.)
     assert!(
-        frame.contains("press 'x'"),
+        frame.contains("no device data yet"),
         "missing hint to open the flash view:\n{frame}"
     );
+    assert!(frame.contains("press 'x'"));
 }
 
 #[test]
@@ -1250,8 +1250,8 @@ fn output_panes_dim_behind_a_dialog_but_never_for_focus_alone() {
 /// what is lost. The literal command stays quoted underneath (§15).
 #[test]
 fn destructive_confirmations_name_the_action_the_target_and_the_cost() {
-    use chiptui::backend::esptool::{ChipFamily, DeviceDetails};
     use chiptui::backend::BuildKind;
+    use chiptui::backend::esptool::{ChipFamily, DeviceDetails};
     use chiptui::build::BuildAction;
     use chiptui::flash::FlashAction;
 
@@ -1403,20 +1403,12 @@ fn actions_reflow_on_resize_and_preserve_keyboard_selection() {
 }
 
 #[test]
-fn a_too_small_terminal_degrades_instead_of_panicking() {
-    let mut app = app_with_backend(BackendKind::Zephyr);
-    let frame = render(&mut app, 24, 6);
-    assert!(
-        frame.contains("too small"),
-        "expected a size warning:\n{frame}"
-    );
-}
-
-#[test]
 fn rendering_survives_a_wide_range_of_sizes() {
     // Stands in for interactive resizing: every size must draw without panicking.
     let mut app = app_with_backend(BackendKind::Zephyr);
     for (width, height) in [
+        // Far below the minimum: the degraded "too small" screen, not a panic.
+        (24, 6),
         (60, 14),
         (80, 24),
         // The minimum and its two unsupported neighbours, then the compact

@@ -361,6 +361,10 @@ fn a_missing_memory_report_is_a_named_state() {
         frame.contains("enter generates the report"),
         "and the hint names the key:\n{frame}"
     );
+    assert!(
+        frame.contains("size_report"),
+        "and the details name what it runs:\n{frame}"
+    );
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -386,15 +390,12 @@ fn the_elf_tab_says_which_bucket_a_section_counts_toward() {
 }
 
 /// The column a label starts at in the drawn frame --- byte offsets are not
-/// columns, the borders being multi-byte.
+/// columns, the borders being multi-byte. Panics when the label is not
+/// drawn, since every caller here needs the coordinates to click.
 fn find_label(frame: &str, needle: &str) -> (u16, u16) {
-    for (row, line) in frame.lines().enumerate() {
-        if let Some(at) = line.find(needle) {
-            let column = line[..at].chars().count() as u16;
-            return (column, row as u16);
-        }
-    }
-    panic!("{needle:?} is not drawn:\n{frame}");
+    let (row, column) = common::find_cell(frame, needle)
+        .unwrap_or_else(|| panic!("{needle:?} is not drawn:\n{frame}"));
+    (column, row)
 }
 
 /// A click on a strip label switches to that tab --- the strip is walked by
@@ -548,28 +549,10 @@ fn app_with_interpreter(tag: &str, interpreter: &str) -> (App, std::path::PathBu
     (app, root)
 }
 
-/// With no report on disk the Memory tab leads with a button that offers
-/// to make one, and says what that costs.
-#[test]
-fn the_memory_tab_offers_to_generate_a_missing_report() {
-    let (mut app, root) = dashboard_app("prompt");
-    std::fs::remove_file(root.join("build/dashboard/all_report.json")).unwrap();
-    app.build_dashboard.invalidate_memory();
-    app.handle(chord(KeyCode::Right));
-    let frame = wide(&mut app);
-    assert!(
-        frame.contains("Generate"),
-        "the tab offers the run:\n{frame}"
-    );
-    assert!(
-        frame.contains("size_report"),
-        "and the details name what it runs:\n{frame}"
-    );
-    let _ = std::fs::remove_dir_all(&root);
-}
-
 /// `Enter` on that row closes the window, runs the command through the build
 /// panel's one process slot, and re-opens on Memory with the fresh report.
+/// (That the row offers the run at all --- the `Generate` button, the hint,
+/// the `size_report` name --- is `a_missing_memory_report_is_a_named_state`.)
 #[test]
 fn generating_the_report_closes_the_window_and_brings_it_back() {
     let (mut app, root) = app_with_report_tool("generate");
@@ -935,6 +918,23 @@ fn a_failed_report_run_empties_the_queue() {
         !root.join("build/dashboard/SRAM1_report.json").is_file(),
         "no region run happened"
     );
+
+    // The failure is explained, not silent: the child's stderr reaches the
+    // Monitor, and the panel records the run as a failed (not cancelled)
+    // memory report.
+    let frame = wide(&mut app);
+    assert!(
+        frame.contains("MemoryError"),
+        "the child's stderr reaches the Monitor:\n{frame}"
+    );
+    let report = app
+        .build
+        .as_ref()
+        .and_then(|panel| panel.last.clone())
+        .expect("the panel records the run");
+    assert_eq!(report.what, "Memory report");
+    assert!(!report.ok, "and records it as a failure");
+    assert!(!report.cancelled, "which is not the same as a stop");
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -976,48 +976,5 @@ fn generating_without_a_workspace_is_a_named_refusal() {
         "nothing runs"
     );
     assert!(app.logs.len() > before, "and the log says why");
-    let _ = std::fs::remove_dir_all(&root);
-}
-
-/// A failed run does **not** bring the window back: the Monitor holds the
-/// explanation, and a modal over it would hide exactly what the reader
-/// needs. The panel reports the failure in the log either way.
-#[test]
-fn a_failed_report_leaves_the_monitor_showing_instead_of_reopening() {
-    let (mut app, root) = app_with_interpreter("generate-fails", "size-report-fails");
-    std::fs::remove_file(root.join("build/dashboard/all_report.json")).unwrap();
-    app.build_dashboard.invalidate_memory();
-    app.handle(chord(KeyCode::Right));
-    assert!(app.build_dashboard.selected_is_prompt());
-
-    app.handle(key(KeyCode::Enter));
-    assert!(app.overlay.is_none());
-    settle_while(
-        &mut app,
-        |app| app.build.as_ref().is_some_and(|panel| panel.is_busy()),
-        "the failing memory report",
-    );
-    for event in app.processes.drain() {
-        app.handle(AppEvent::Process(event));
-    }
-
-    assert!(
-        app.overlay.is_none(),
-        "a failure must not cover the Monitor with the window"
-    );
-    // The run's own output is what explains it, and the log says where.
-    let frame = wide(&mut app);
-    assert!(
-        frame.contains("MemoryError"),
-        "the child's stderr reaches the Monitor:\n{frame}"
-    );
-    let report = app
-        .build
-        .as_ref()
-        .and_then(|panel| panel.last.clone())
-        .expect("the panel records the run");
-    assert_eq!(report.what, "Memory report");
-    assert!(!report.ok, "and records it as a failure");
-    assert!(!report.cancelled, "which is not the same as a stop");
     let _ = std::fs::remove_dir_all(&root);
 }

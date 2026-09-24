@@ -675,6 +675,9 @@ impl App {
             } else {
                 self.flash = Some(FlashPanel::new(root));
             }
+            if let Some((_, esptool)) = &self.device_tool_paths {
+                self.flash.as_mut().unwrap().set_tool_path(esptool);
+            }
         }
         true
     }

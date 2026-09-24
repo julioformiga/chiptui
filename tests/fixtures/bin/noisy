@@ -1,5 +1,14 @@
 #!/bin/sh
 # Writes to both streams and exits non-zero.
+# Spawned bare (as a plain command) or as a workspace's `west` (where the
+# panel's first argument is `build`); anything else is a caller bug.
+case $# in
+    0) ;;
+    *) [ "$1" = "build" ] || {
+        echo "noisy: expected no arguments or 'west build ...', got: $*" >&2
+        exit 64
+    } ;;
+esac
 echo "line one"
 echo "warning on stderr" >&2
 echo "line two"

@@ -116,12 +116,16 @@ fn browsing_outside_the_project_list_keeps_validation_and_cancel_restores_the_li
     let _ = std::fs::remove_dir_all(root);
 }
 
-/// The `Build` button --- fifth row of the panel's list (Update Zephyr,
-/// SDK List, Menuconfig, Clean, Build, ...) now that the workspace pair
-/// leads and the questions live in the workspace pane.
+/// Presses the panel's `Build` action wherever the list currently shows
+/// it --- found by identity, not by index, so the list may grow or shed
+/// rows without silently pressing a neighbour instead.
 fn press_build(app: &mut App) {
     app.focus = Focus::Build;
-    app.build.as_mut().unwrap().cursor = 4;
+    let caps = app.manager.capabilities();
+    app.build.as_mut().unwrap().focus_action(
+        &caps,
+        chiptui::build::BuildAction::Build(chiptui::backend::BuildKind::Build),
+    );
     app.handle(key(KeyCode::Enter));
 }
 

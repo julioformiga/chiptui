@@ -30,31 +30,11 @@ use common::{click, fake, key, pump_until, render};
 /// and `the_cycle_halts_unconfirmed_and_confirms_on_a_separate_yes` then
 /// waits fifteen seconds for a halt that happened before it started. The
 /// pid is what makes each run's boards its own.
-/// A `zephyr.dts` carrying the three nodes an A/B layout needs, in the
-/// shape `devicetree::parse` reads --- the same fixture
-/// `tests/ota_prepare.rs` uses, and for the same reason: the path
-/// annotations are load-bearing, since only a node under `/partitions/`
-/// counts.
-const DTS_WITH_SLOTS: &str = "\
-/* node '/soc/flash@0/partitions' defined in board.dtsi:10 */
-partitions {
-        /* node '/soc/flash@0/partitions/partition@0' defined in board.dtsi:13 */
-        boot_partition: partition@0 {
-                label = \"mcuboot\";
-                reg = < 0x0 0x10000 >;
-        };
-        /* node '/soc/flash@0/partitions/partition@20000' defined in board.dtsi:25 */
-        slot0_partition: partition@20000 {
-                label = \"image-0\";
-                reg = < 0x20000 0x1c0000 >;
-        };
-        /* node '/soc/flash@0/partitions/partition@1e0000' defined in board.dtsi:31 */
-        slot1_partition: partition@1e0000 {
-                label = \"image-1\";
-                reg = < 0x1e0000 0x1c0000 >;
-        };
-};
-";
+///
+/// The slot fixture is shared: `tests/fixtures/dts/ab_slots.dts`, included
+/// by `tests/ota_prepare.rs` and the `src/ota::prepare` unit tests too, so
+/// a change to the DTS shape lands in all three at once.
+const DTS_WITH_SLOTS: &str = include_str!("fixtures/dts/ab_slots.dts");
 
 fn address(tag: &str) -> String {
     let octet = tag.bytes().fold(7u32, |acc, byte| {
@@ -499,7 +479,7 @@ fn the_cycle_halts_unconfirmed_and_confirms_on_a_separate_yes() {
         app.handle(key(KeyCode::Char(ch)));
     }
     app.handle(key(KeyCode::Enter));
-    // A real swap's 45 s settle is not a test's to wait.
+    // A real swap's 90 s settle is not a test's to wait.
     app.ota
         .as_mut()
         .unwrap()

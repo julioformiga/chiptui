@@ -295,6 +295,11 @@ fn the_footer_advertises_the_fullscreen_toggle_while_a_terminal_session_is_activ
 
     let keys: Vec<&str> = app.shortcuts().iter().map(|(k, _)| *k).collect();
     app.processes.cancel(id);
+    // Exact equality on purpose: while the shell owns the keyboard the
+    // footer is the only map of what still reaches the app, so a new
+    // binding must be added here explicitly. The unit tests in `src/app.rs`
+    // (`the_footer_names_the_terminal_sessions_escapes`) assert the looser
+    // containment contract for the same list.
     assert_eq!(
         keys,
         vec!["ctrl+d", "ctrl+]", "ctrl+f", "shift+pgup"],

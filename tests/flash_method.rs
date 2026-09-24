@@ -21,16 +21,14 @@ use chiptui::build::BuildAction;
 use ratatui::crossterm::event::KeyCode;
 
 mod common;
-use common::{click, fake, key, render};
+use common::{TempDir, click, fake, find_cell, key, render};
 
 /// A buildable Zephyr project with a board answer, its own `/dev` and its
 /// own `$HOME`, so neither the serial scan nor workspace discovery can see
-/// the developer's machine.
-fn zephyr_app(tag: &str, ota: Option<&str>) -> (App, std::path::PathBuf) {
-    let root =
-        std::env::temp_dir().join(format!("chiptui-flashmethod-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).unwrap();
+/// the developer's machine. The root removes itself on drop, even through
+/// a test's panic.
+fn zephyr_app(tag: &str, ota: Option<&str>) -> (App, TempDir) {
+    let root = TempDir::new(&format!("flashmethod-{tag}"));
     std::fs::write(
         root.join("CMakeLists.txt"),
         "find_package(Zephyr REQUIRED)\n",
@@ -51,7 +49,7 @@ fn zephyr_app(tag: &str, ota: Option<&str>) -> (App, std::path::PathBuf) {
     }
     std::fs::create_dir_all(root.join("dev")).unwrap();
     std::fs::create_dir_all(root.join("home")).unwrap();
-    let mut app = App::new(&root);
+    let mut app = App::new(root.path());
     app.set_serial_dir(root.join("dev"));
     app.set_home_dir(root.join("home"));
     app.bootstrap();
@@ -81,14 +79,6 @@ fn press_flash(app: &mut App) {
         .position(|action| *action == BuildAction::Flash)
         .expect("Flash is in the action list");
     app.handle(key(KeyCode::Enter));
-}
-
-/// The drawn row and column of `needle`'s first cell.
-fn find_cell(frame: &str, needle: &str) -> Option<(u16, u16)> {
-    frame.lines().enumerate().find_map(|(row, line)| {
-        line.find(needle)
-            .map(|byte| (row as u16, line[..byte].chars().count() as u16))
-    })
 }
 
 #[test]
@@ -130,7 +120,6 @@ fn flash_asks_which_way_before_it_writes_anything() {
         frame.contains("west flash"),
         "the confirm still quotes the command:\n{frame}"
     );
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 /// The menu opens even when only one row can run --- that is the whole
@@ -138,7 +127,7 @@ fn flash_asks_which_way_before_it_writes_anything() {
 /// the user reads why the other way is unavailable.
 #[test]
 fn an_empty_usb_bus_dims_the_wired_row_and_says_why() {
-    let (mut app, root) = zephyr_app("no-device", None);
+    let (mut app, _root) = zephyr_app("no-device", None);
 
     press_flash(&mut app);
     let frame = render(&mut app, 100, 32);
@@ -159,7 +148,6 @@ fn an_empty_usb_bus_dims_the_wired_row_and_says_why() {
         "the OTA row opens the modal: {:?}",
         app.overlay
     );
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 /// The one row whose availability reads the project's configuration: a
@@ -200,7 +188,6 @@ fn a_serial_transport_dims_the_ota_row_too() {
         "with the cable there, the serial transport is a real answer: {:?}",
         app.overlay
     );
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 /// The drawn count and the walked count are one number (`flash_method::
@@ -231,7 +218,6 @@ fn the_cursor_walks_exactly_the_rows_that_are_drawn() {
     // here, so it is free to.
     app.handle(key(KeyCode::Char('q')));
     assert_eq!(app.overlay, None);
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 /// The click grammar, including the bug family this menu inherits: a
@@ -263,7 +249,6 @@ fn a_click_presses_a_row_and_one_outside_the_box_closes_it() {
         "the click opens what the row leads to: {:?}",
         app.overlay
     );
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 /// A dimmed row refuses a click for the same reason it refuses `Enter`, and
@@ -271,7 +256,7 @@ fn a_click_presses_a_row_and_one_outside_the_box_closes_it() {
 /// gate, not two.
 #[test]
 fn a_click_on_a_dimmed_row_does_nothing() {
-    let (mut app, root) = zephyr_app("click-dim", None);
+    let (mut app, _root) = zephyr_app("click-dim", None);
     app.set_mouse_enabled(true);
 
     press_flash(&mut app);
@@ -284,5 +269,4 @@ fn a_click_on_a_dimmed_row_does_nothing() {
         app.overlay
     );
     assert!(!app.build.as_ref().unwrap().is_busy());
-    let _ = std::fs::remove_dir_all(&root);
 }

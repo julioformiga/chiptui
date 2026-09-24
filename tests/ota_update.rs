@@ -1,7 +1,8 @@
 //! The OTA update cycle end to end, against the fixture `smpmgr`: the
 //! stages run in the driver's declared order, the hash the read answers is
 //! what the mark names, the runner halts in front of `Confirm` with the
-//! revert named, a failed stage stops and offers `Retry`, `Stop` mid-upload
+//! revert named, a failed stage stops and offers the retry the action
+//! itself names (`Update`, not a separate `Retry` label), `Stop` mid-upload
 //! cancels, and a verify that reports the *old* hash is a named failure ---
 //! never a silent pass.
 //!

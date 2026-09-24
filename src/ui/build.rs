@@ -11,18 +11,18 @@
 //! Below 32 terminal rows, the buttons and footer each take one line
 //! (`button::ActionLayout`); the state and Stop still share the footer.
 
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use ratatui::Frame;
 
 use super::button::{self, Button};
 use super::workspace::label;
 use crate::app::{App, Focus};
 use crate::build::{BuildPanel, BuildReport};
 use crate::ui::{
-    dashboard_focused, numbered_title, pane_block, render_pane, shortcut_letter, Palette,
+    Palette, dashboard_focused, numbered_title, pane_block, render_pane, shortcut_letter,
 };
 
 pub fn draw(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
