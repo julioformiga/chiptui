@@ -607,6 +607,16 @@ fn a_failed_command_reports_and_keeps_the_panel_usable() {
     assert!(finished);
     let last = app.build.as_ref().unwrap().last.as_ref().unwrap();
     assert!(!last.ok, "a non-zero exit must be a failure");
+    let entries: Vec<_> = app.logs.visible(1_000).collect();
+    assert!(entries.iter().any(|entry| entry.message == "line one"));
+    assert!(entries.iter().any(|entry| entry.message == "line two"));
+    assert!(entries.iter().any(|entry| {
+        entry.message == "warning on stderr" && entry.level == chiptui::logs::Level::Warn
+    }));
+    assert!(entries.iter().any(|entry| {
+        entry.message.contains("Build failed (exit code 3)")
+            && entry.level == chiptui::logs::Level::Error
+    }));
 
     // The panel is idle again, the cursor fell back on Build (the retry),
     // and that retry is one Enter away.

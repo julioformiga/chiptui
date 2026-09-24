@@ -1008,6 +1008,14 @@ Build output should stream into a log pane and show:
 -   success/failure;
 -   exit code.
 
+Build, clean, rebuild and wired-flash commands also retain their stdout and
+stderr diagnostics in the Log tab, alongside the command and final outcome;
+the Monitor tab continues to show live output. Carriage-return progress
+updates do not create a separate log entry for every redraw.
+The full-screen interactive `menuconfig` retains the real terminal: its
+command and outcome (including failures to start and non-zero exit status)
+are logged, but its terminal screen is not recorded as text in the Log tab.
+
 ### Build variants
 
 A Zephyr application routinely has more than one target: the real board

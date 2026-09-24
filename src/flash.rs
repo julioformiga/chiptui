@@ -1140,6 +1140,16 @@ impl FlashPanel {
         let ok = failure.is_none();
         match failure {
             Some(error) => {
+                // The parsed explanation is concise, but esptool (and its
+                // wrappers) can put the actionable detail on either stream.
+                // Keep the original lines ahead of the summary so a failed
+                // erase/write can be diagnosed from the Log tab alone.
+                for line in running.stdout.lines().filter(|line| !line.is_empty()) {
+                    update.notices.push((Level::Info, line.to_string()));
+                }
+                for line in running.stderr.lines().filter(|line| !line.is_empty()) {
+                    update.notices.push((Level::Warn, line.to_string()));
+                }
                 self.state = RunState::Failed(error.clone());
                 update
                     .notices
@@ -1599,6 +1609,51 @@ fn cycle<T: Copy + PartialEq>(all: &[T], current: Option<T>, forward: bool) -> T
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_flash_preserves_both_streams_in_log_notices() {
+        let fixture = Fixture::new("failed-log-output");
+        let mut panel = FlashPanel::new(&fixture.root);
+        let mut processes = ProcessManager::new();
+        let id = processes.spawn(
+            crate::process::Command::new("/bin/true"),
+            Duration::from_secs(10),
+        );
+        let running = RunningCommand {
+            id,
+            action: FlashAction::WriteFlash,
+            background: false,
+            probe_dest: None,
+            hunt_version: false,
+            started: Instant::now(),
+            stdout: "connection lost\n".into(),
+            stderr: "write failed\n".into(),
+            progress: None,
+        };
+        let mut update = FlashUpdate::default();
+        panel.complete(
+            running,
+            &Outcome::Failed { code: Some(2) },
+            Duration::from_secs(1),
+            &mut update,
+        );
+        assert!(
+            update
+                .notices
+                .contains(&(Level::Info, "connection lost".into()))
+        );
+        assert!(
+            update
+                .notices
+                .contains(&(Level::Warn, "write failed".into()))
+        );
+        assert!(
+            update
+                .notices
+                .iter()
+                .any(|(level, _)| *level == Level::Error)
+        );
+    }
 
     struct Fixture {
         root: PathBuf,

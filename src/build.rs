@@ -18,7 +18,7 @@ use time::{OffsetDateTime, UtcOffset};
 
 use crate::backend::{BuildKind, Capabilities};
 use crate::logs::Level;
-use crate::process::{LineEnd, Outcome, ProcessEvent, ProcessId, ProcessManager};
+use crate::process::{LineEnd, Outcome, ProcessEvent, ProcessId, ProcessManager, Stream};
 
 /// A Zephyr build from scratch is minutes, not seconds (`FLASH_TIMEOUT`'s
 /// 180s would kill a legitimate first build). Half an hour accommodates a
@@ -464,6 +464,8 @@ pub struct BuildPanel {
     /// The visible tail ended with a bare carriage return, so the next chunk
     /// redraws that row instead of appending another one.
     output_replaces_last: bool,
+    /// Latest progress redraw awaiting a real line ending (or process exit).
+    pending_log_line: Option<(Stream, String)>,
     /// The project's build variants --- its parallel configurations, each a
     /// board, an optional shield and a build directory of its own. Empty
     /// for a project with a single target, which is the common case and
@@ -555,6 +557,7 @@ impl BuildPanel {
             last: None,
             output: VecDeque::new(),
             output_replaces_last: false,
+            pending_log_line: None,
             variants: Vec::new(),
             variant: None,
             remembered_simulator: false,
@@ -1419,6 +1422,7 @@ impl BuildPanel {
         self.output.clear();
         self.output.push_back(format!("$ {command}"));
         self.output_replaces_last = false;
+        self.pending_log_line = None;
         let id = processes.spawn(command, BUILD_TIMEOUT);
         self.running = Some(Running {
             id,
@@ -1482,7 +1486,12 @@ impl BuildPanel {
             // Raw PTY bytes belong to the Terminal tab's emulator alone;
             // build commands are piped.
             ProcessEvent::Bytes { .. } => Vec::new(),
-            ProcessEvent::Line { id, text, end, .. } => {
+            ProcessEvent::Line {
+                id,
+                stream,
+                text,
+                end,
+            } => {
                 if self
                     .running
                     .as_ref()
@@ -1507,6 +1516,28 @@ impl BuildPanel {
                         running.progress = Some(progress);
                     }
                     self.push_process_output(text.clone(), *end);
+                    // A bare CR redraws progress in place. Publish only its
+                    // final value, while keeping newline/EOF diagnostics in
+                    // the log even when the command eventually succeeds.
+                    let notice = match end {
+                        LineEnd::CarriageReturn => {
+                            self.pending_log_line = Some((*stream, text.clone()));
+                            None
+                        }
+                        LineEnd::Newline | LineEnd::Eof => {
+                            let pending = self.pending_log_line.take();
+                            if text.is_empty() {
+                                pending
+                            } else {
+                                Some((*stream, text.clone()))
+                            }
+                        }
+                    };
+                    return notice
+                        .filter(|(_, line)| !line.is_empty())
+                        .map(|(stream, line)| (Self::output_level(stream), line))
+                        .into_iter()
+                        .collect();
                 } else {
                     self.boards.on_line(*id, text);
                     self.shields.on_line(*id, text);
@@ -1538,9 +1569,25 @@ impl BuildPanel {
                     self.running = Some(running);
                     return Vec::new();
                 }
-                self.finish(running, outcome, *duration, caps)
+                let mut notices = Vec::new();
+                if let Some((stream, line)) = self.pending_log_line.take()
+                    && !line.is_empty()
+                {
+                    notices.push((Self::output_level(stream), line));
+                }
+                notices.extend(self.finish(running, outcome, *duration, caps));
+                notices
             }
             ProcessEvent::Started { .. } | ProcessEvent::Output { .. } => Vec::new(),
+        }
+    }
+
+    fn output_level(stream: Stream) -> Level {
+        match stream {
+            Stream::Stdout => Level::Info,
+            // stderr is not necessarily a failure; the exit outcome decides
+            // whether the command failed.
+            Stream::Stderr => Level::Warn,
         }
     }
 
@@ -1860,6 +1907,107 @@ fn parse_entries(text: &str, fields: usize) -> Vec<Vec<String>> {
 mod tests {
     use super::*;
     use crate::backend::zephyr::ZephyrBackend;
+
+    #[test]
+    fn active_command_logs_both_streams_and_only_the_last_progress_redraw() {
+        let mut panel = BuildPanel::new("/tmp/unused", UtcOffset::UTC);
+        let caps = Capabilities::empty();
+        let mut processes = ProcessManager::new();
+        let id = processes.spawn(crate::process::Command::new("/bin/true"), BUILD_TIMEOUT);
+        panel.running = Some(Running {
+            id,
+            what: "Clean".into(),
+            updates_board: false,
+            action: BuildAction::Build(BuildKind::Clean),
+            started: Instant::now(),
+            progress: None,
+        });
+        let line = |stream, text: &str, end| ProcessEvent::Line {
+            id,
+            stream,
+            text: text.into(),
+            end,
+        };
+        let other = processes.spawn(crate::process::Command::new("/bin/true"), BUILD_TIMEOUT);
+        assert!(
+            panel
+                .on_process(
+                    &ProcessEvent::Line {
+                        id: other,
+                        stream: Stream::Stderr,
+                        text: "unrelated failure".into(),
+                        end: LineEnd::Newline,
+                    },
+                    &caps,
+                )
+                .is_empty()
+        );
+        assert!(
+            panel
+                .on_process(&line(Stream::Stdout, "10%", LineEnd::CarriageReturn), &caps)
+                .is_empty()
+        );
+        assert!(
+            panel
+                .on_process(&line(Stream::Stdout, "20%", LineEnd::CarriageReturn), &caps)
+                .is_empty()
+        );
+        assert_eq!(
+            panel.on_process(&line(Stream::Stdout, "done", LineEnd::Newline), &caps),
+            vec![(Level::Info, "done".into())]
+        );
+        assert_eq!(
+            panel.on_process(&line(Stream::Stderr, "failure detail", LineEnd::Eof), &caps),
+            vec![(Level::Warn, "failure detail".into())]
+        );
+        let finished = panel.on_process(
+            &ProcessEvent::Finished {
+                id,
+                outcome: Outcome::Failed { code: Some(3) },
+                duration: Duration::from_secs(1),
+            },
+            &caps,
+        );
+        assert_eq!(finished.len(), 1);
+        assert_eq!(finished[0].0, Level::Error);
+        assert!(finished[0].1.contains("Clean failed (exit code 3)"));
+    }
+
+    #[test]
+    fn progress_only_failure_keeps_last_redraw_before_outcome() {
+        let mut panel = BuildPanel::new("/tmp/unused", UtcOffset::UTC);
+        let caps = Capabilities::empty();
+        let mut processes = ProcessManager::new();
+        let id = processes.spawn(crate::process::Command::new("/bin/true"), BUILD_TIMEOUT);
+        panel.running = Some(Running {
+            id,
+            what: "Flash".into(),
+            updates_board: false,
+            action: BuildAction::Flash,
+            started: Instant::now(),
+            progress: None,
+        });
+        let notices = panel.on_process(
+            &ProcessEvent::Line {
+                id,
+                stream: Stream::Stderr,
+                text: "flash failed at 20%".into(),
+                end: LineEnd::CarriageReturn,
+            },
+            &caps,
+        );
+        assert!(notices.is_empty());
+        let notices = panel.on_process(
+            &ProcessEvent::Finished {
+                id,
+                outcome: Outcome::Failed { code: Some(2) },
+                duration: Duration::from_secs(1),
+            },
+            &caps,
+        );
+        assert_eq!(notices[0], (Level::Warn, "flash failed at 20%".into()));
+        assert_eq!(notices[1].0, Level::Error);
+    }
 
     fn fixture_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("chiptui-build-{tag}-{}", std::process::id()));

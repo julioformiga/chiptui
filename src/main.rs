@@ -375,8 +375,8 @@ fn run_interactive(
             app.logs.info(format!("{label} closed"));
         }
         Ok(status) => {
-            app.logs.warn(format!(
-                "{label} exited with {status} (changes may be partial)"
+            app.logs.error(format!(
+                "menuconfig: {label} exited with {status} (changes may be partial; review the terminal output above)"
             ));
         }
         Err(source) => {
