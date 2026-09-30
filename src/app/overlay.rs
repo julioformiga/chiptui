@@ -474,7 +474,10 @@ impl App {
                     .unwrap_or(0)
                     .max(1);
                 match key.code {
-                    KeyCode::Esc | KeyCode::Char('q') => self.overlay = purpose.return_overlay(),
+                    // `Esc` only: the filter takes every printable char ---
+                    // a `q` here is a letter someone is typing ("t-qt"),
+                    // not a quit.
+                    KeyCode::Esc => self.overlay = purpose.return_overlay(),
                     KeyCode::Backspace => {
                         let mut input = input;
                         input.pop();
@@ -586,7 +589,9 @@ impl App {
                     .map(|panel| panel.filtered_shields_count(&input) + 1)
                     .unwrap_or(1);
                 match key.code {
-                    KeyCode::Esc | KeyCode::Char('q') => self.overlay = purpose.return_overlay(),
+                    // `Esc` only, like the board picker: the filter takes
+                    // every printable char, so `q` is filter text.
+                    KeyCode::Esc => self.overlay = purpose.return_overlay(),
                     KeyCode::Backspace => {
                         let mut input = input;
                         input.pop();

@@ -591,3 +591,46 @@ fn without_a_transport_the_picker_stays_fully_offline() {
         "the west list works regardless:\n{frame}"
     );
 }
+
+/// `q` is filter text, not a quit --- the field takes every printable
+/// char ("t-qt" is a filter someone actually types) --- so only `Esc`
+/// closes the picker.
+#[test]
+fn typing_q_filters_and_only_esc_closes_the_board_picker() {
+    let mut app = picker_app("q-filter");
+    open_board_picker(&mut app);
+    for c in ['t', '-', 'q', 't'] {
+        app.handle(key(KeyCode::Char(c)));
+    }
+    assert!(
+        matches!(
+            app.overlay,
+            Some(Overlay::BoardPicker { ref input, .. }) if input == "t-qt"
+        ),
+        "the q must land in the filter, not close the picker"
+    );
+
+    app.handle(key(KeyCode::Esc));
+    assert!(app.overlay.is_none(), "esc is the way out");
+}
+
+/// The shield picker shares the board picker's free-text grammar, so it
+/// shares the rule: `q` filters, `Esc` alone closes.
+#[test]
+fn typing_q_filters_and_only_esc_closes_the_shield_picker() {
+    let mut app = picker_app("q-shield");
+    open_shield_picker(&mut app);
+    for c in ['e', 't', 'h', 'q'] {
+        app.handle(key(KeyCode::Char(c)));
+    }
+    assert!(
+        matches!(
+            app.overlay,
+            Some(Overlay::ShieldPicker { ref input, .. }) if input == "ethq"
+        ),
+        "the q must land in the filter, not close the picker"
+    );
+
+    app.handle(key(KeyCode::Esc));
+    assert!(app.overlay.is_none(), "esc is the way out");
+}
