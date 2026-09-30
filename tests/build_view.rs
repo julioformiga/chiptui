@@ -2174,6 +2174,37 @@ fn build_target_moves_the_build_directory_without_changing_the_projects_board() 
     ));
 }
 
+/// A declared device variant that leaves the board open --- the shape the
+/// simulator preparation writes (`name = "hardware"` with no `board =`) ---
+/// builds with the project's Board answer (`BuildPanel::build_board` defers
+/// to it), so the Device button must name that answer, not a "?".
+#[test]
+fn an_open_device_variant_names_the_projects_board_on_the_button() {
+    let (mut app, root) = zephyr_app("opendevice", Some("nrf52840dk/nrf52840"));
+    std::fs::write(
+        root.join("chiptui.toml"),
+        "[[variant]]\nname = \"hardware\"\n\n[[variant]]\nname = \"sim\"\n\
+         board = \"native_sim/native/64\"\nbuild_dir = \"build_sim\"\n",
+    )
+    .unwrap();
+    app.refresh_variants();
+    let panel = app.build.as_ref().unwrap();
+    assert_eq!(
+        panel.device_variant().and_then(|v| v.board.as_deref()),
+        None,
+        "the declared device variant leaves the board open"
+    );
+    assert_eq!(panel.board_name(), Some("nrf52840dk/nrf52840"));
+
+    app.ask_build_target(BuildKind::Build);
+    let frame = render(&mut app, 80, 24);
+    assert!(
+        frame.contains("nrf52840dk/nrf52840 · build/"),
+        "the Device button names the project's board:\n{frame}"
+    );
+    assert!(!frame.contains("? · build/"), "{frame}");
+}
+
 /// After a host build, *everything the user reads about flashing* still
 /// names the board --- the checklist row, the confirm's target, and the
 /// command it quotes. The command alone was already right; the three

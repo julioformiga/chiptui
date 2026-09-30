@@ -2421,18 +2421,30 @@ fn draw_build_target(
     icons: crate::icons::IconSet,
     palette: Palette,
 ) {
-    let (device, simulator) = app
+    let (device, simulator, project_board) = app
         .build
         .as_ref()
-        .map(|panel| (panel.device_variant(), panel.simulator_variant()))
-        .unwrap_or((None, None));
-    let detail = |variant: Option<&crate::backend::zephyr::variants::Variant>| {
+        .map(|panel| {
+            (
+                panel.device_variant(),
+                panel.simulator_variant(),
+                panel.board_name().map(str::to_string),
+            )
+        })
+        .unwrap_or((None, None, None));
+    // A device variant that leaves the board open builds with the project's
+    // Board answer (`BuildPanel::build_board` defers to it), so the button
+    // names that answer instead of a "?" --- the target the command will
+    // take is what the user is confirming here. A simulator variant always
+    // names its own board, so it never needs the fallback.
+    let detail = |variant: Option<&crate::backend::zephyr::variants::Variant>,
+                  fallback: Option<&str>| {
         variant.map_or_else(
             || "no target".to_string(),
             |variant| {
                 format!(
                     "{} · {}/",
-                    variant.board.clone().unwrap_or_else(|| "?".to_string()),
+                    variant.board.as_deref().or(fallback).unwrap_or("?"),
                     variant.build_dir
                 )
             },
@@ -2442,11 +2454,11 @@ fn draw_build_target(
     let buttons = vec![
         super::button::Button::new("Device")
             .icon(icons.flash(), palette.warning)
-            .detail(detail(device))
+            .detail(detail(device, project_board.as_deref()))
             .selected(selected == 0),
         super::button::Button::new("Simulator")
             .icon(icons.play(), palette.success)
-            .detail(detail(simulator))
+            .detail(detail(simulator, None))
             .selected(selected == 1),
     ];
 
