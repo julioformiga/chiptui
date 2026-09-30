@@ -1011,7 +1011,10 @@ Build output should stream into a log pane and show:
 Build, clean, rebuild and wired-flash commands also retain their stdout and
 stderr diagnostics in the Log tab, alongside the command and final outcome;
 the Monitor tab continues to show live output. Carriage-return progress
-updates do not create a separate log entry for every redraw.
+updates do not create a separate log entry for every redraw --- and neither
+do esptool v5's piped progress bars, which reach the TUI as one full line
+per update (the in-place redraw needs a terminal) but are redrawn in place
+by the panel and logged once, as their final value.
 The full-screen interactive `menuconfig` retains the real terminal: its
 command and outcome (including failures to start and non-zero exit status)
 are logged, but its terminal screen is not recorded as text in the Log tab.

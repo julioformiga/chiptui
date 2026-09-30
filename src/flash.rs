@@ -285,6 +285,12 @@ pub struct FlashPanel {
     /// The visible tail ended with a bare carriage return, so the next chunk
     /// redraws that row instead of appending another one.
     output_replaces_last: bool,
+    /// The visible tail is esptool v5's piped progress bar
+    /// ([`crate::progress::is_bar_line`]). Unlike the carriage-return
+    /// redraws [`Self::output_replaces_last`] covers, those updates arrive
+    /// newline-terminated --- yet they all draw the same bar, so the next
+    /// one still redraws that row instead of appending another one.
+    output_progress_last: bool,
     pub state: RunState,
     /// The last finished user-started command, for the actions tab's
     /// state line (see [`FlashReport`]).
@@ -414,6 +420,7 @@ impl FlashPanel {
             options_focus: OptionsField::Chip,
             output: Vec::new(),
             output_replaces_last: false,
+            output_progress_last: false,
             state: RunState::default(),
             last: None,
             pending_action: None,
@@ -984,6 +991,7 @@ impl FlashPanel {
 
         let id = processes.spawn(command, FLASH_TIMEOUT);
         self.output_replaces_last = false;
+        self.output_progress_last = false;
         self.in_flight = Some(RunningCommand {
             id,
             action,
@@ -1058,7 +1066,11 @@ impl FlashPanel {
     }
 
     fn push_process_output(&mut self, line: String, end: LineEnd) {
-        if self.output_replaces_last
+        // esptool v5's piped bar arrives newline-terminated (see
+        // `crate::progress`), yet every update redraws the same bar: it
+        // follows the carriage-return rule and replaces the row in place.
+        let bar = crate::progress::is_bar_line(&line);
+        if (self.output_replaces_last || (self.output_progress_last && bar))
             && let Some(last) = self.output.last_mut()
         {
             *last = line;
@@ -1066,6 +1078,7 @@ impl FlashPanel {
             self.output.push(line);
         }
         self.output_replaces_last = end == LineEnd::CarriageReturn;
+        self.output_progress_last = bar;
     }
 
     fn complete(
@@ -1701,6 +1714,37 @@ mod tests {
         assert_eq!(
             panel.output,
             ["Writing at 0x9000... (100 %)", "Wrote 16384 bytes",]
+        );
+    }
+
+    /// esptool v5's piped bar reaches the panel one full newline-terminated
+    /// line per update (esp-pylib cannot redraw in place without a
+    /// terminal), so the panel must do the redrawing itself: one row that
+    /// keeps the latest update --- the same contract the `\r` redraws
+    /// already have.
+    #[test]
+    fn esptool_v5_piped_bar_redraws_one_row() {
+        let fixture = Fixture::new("progress-output-v5");
+        let mut panel = FlashPanel::new(&fixture.root);
+
+        for line in [
+            "Writing at 0x00060000 ━━━━━━━━━━━━━━━━━━━━━━   60.0% 245.76kB/406.39kB [3s]",
+            "Writing at 0x00064000 ━━━━━━━━━━━━━━━━━━━━━━   94.5% 384.00kB/406.39kB [5s]",
+            "Writing at 0x00065994 ━━━━━━━━━━━━━━━━━━━━━━  100.0% 406.39kB/406.39kB [5s]",
+        ] {
+            panel.push_process_output(line.to_string(), LineEnd::Newline);
+        }
+        panel.push_process_output(
+            "Wrote 406.39kB (compressed 289.11kB)".to_string(),
+            LineEnd::Newline,
+        );
+
+        assert_eq!(
+            panel.output,
+            [
+                "Writing at 0x00065994 ━━━━━━━━━━━━━━━━━━━━━━  100.0% 406.39kB/406.39kB [5s]",
+                "Wrote 406.39kB (compressed 289.11kB)",
+            ]
         );
     }
 

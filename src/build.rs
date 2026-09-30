@@ -464,6 +464,12 @@ pub struct BuildPanel {
     /// The visible tail ended with a bare carriage return, so the next chunk
     /// redraws that row instead of appending another one.
     output_replaces_last: bool,
+    /// The visible tail is esptool v5's piped progress bar
+    /// ([`crate::progress::is_bar_line`]). Unlike the carriage-return
+    /// redraws [`Self::output_replaces_last`] covers, those updates arrive
+    /// newline-terminated --- yet they all draw the same bar, so the next
+    /// one still redraws that row instead of appending another one.
+    output_progress_last: bool,
     /// Latest progress redraw awaiting a real line ending (or process exit).
     pending_log_line: Option<(Stream, String)>,
     /// The project's build variants --- its parallel configurations, each a
@@ -569,6 +575,7 @@ impl BuildPanel {
             last: None,
             output: VecDeque::new(),
             output_replaces_last: false,
+            output_progress_last: false,
             pending_log_line: None,
             variants: Vec::new(),
             variant: None,
@@ -1446,6 +1453,7 @@ impl BuildPanel {
         self.output.clear();
         self.output.push_back(format!("$ {command}"));
         self.output_replaces_last = false;
+        self.output_progress_last = false;
         self.pending_log_line = None;
         let id = processes.spawn(command, BUILD_TIMEOUT);
         self.running = Some(Running {
@@ -1540,27 +1548,37 @@ impl BuildPanel {
                         running.progress = Some(progress);
                     }
                     self.push_process_output(text.clone(), *end);
-                    // A bare CR redraws progress in place. Publish only its
-                    // final value, while keeping newline/EOF diagnostics in
-                    // the log even when the command eventually succeeds.
-                    let notice = match end {
-                        LineEnd::CarriageReturn => {
-                            self.pending_log_line = Some((*stream, text.clone()));
-                            None
-                        }
-                        LineEnd::Newline | LineEnd::Eof => {
-                            let pending = self.pending_log_line.take();
-                            if text.is_empty() {
-                                pending
-                            } else {
-                                Some((*stream, text.clone()))
-                            }
+                    // A bare CR redraws progress in place, and so does
+                    // esptool v5's piped bar --- a dozen `Writing at ...`
+                    // updates are one redraw, not a dozen log entries.
+                    // Hold both back and publish only the final value,
+                    // while keeping newline/EOF diagnostics in the log
+                    // even when the command eventually succeeds. A held
+                    // redraw publishes ahead of the line that follows it:
+                    // a `\r` redraw's final `\r\n` publishes it through the
+                    // empty line it leaves, but esptool v5's piped bar
+                    // never sends one, so this is where its final value
+                    // reaches the log.
+                    let held =
+                        *end == LineEnd::CarriageReturn || crate::progress::is_bar_line(text);
+                    let lines = if held {
+                        self.pending_log_line = Some((*stream, text.clone()));
+                        Vec::new()
+                    } else {
+                        let pending = self.pending_log_line.take();
+                        if text.is_empty() {
+                            pending.into_iter().collect()
+                        } else {
+                            pending
+                                .into_iter()
+                                .chain(std::iter::once((*stream, text.clone())))
+                                .collect()
                         }
                     };
-                    return notice
+                    return lines
+                        .into_iter()
                         .filter(|(_, line)| !line.is_empty())
                         .map(|(stream, line)| (Self::output_level(stream), line))
-                        .into_iter()
                         .collect();
                 } else {
                     self.boards.on_line(*id, text);
@@ -1778,7 +1796,11 @@ impl BuildPanel {
     }
 
     fn push_process_output(&mut self, line: String, end: LineEnd) {
-        if self.output_replaces_last
+        // esptool v5's piped bar arrives newline-terminated (see
+        // `crate::progress`), yet every update redraws the same bar: it
+        // follows the carriage-return rule and replaces the row in place.
+        let bar = crate::progress::is_bar_line(&line);
+        if (self.output_replaces_last || (self.output_progress_last && bar))
             && let Some(last) = self.output.back_mut()
         {
             *last = line;
@@ -1786,6 +1808,7 @@ impl BuildPanel {
             self.push_output(line);
         }
         self.output_replaces_last = end == LineEnd::CarriageReturn;
+        self.output_progress_last = bar;
     }
 }
 
@@ -1978,7 +2001,9 @@ mod tests {
         );
         assert_eq!(
             panel.on_process(&line(Stream::Stdout, "done", LineEnd::Newline), &caps),
-            vec![(Level::Info, "done".into())]
+            // The held progress redraw publishes ahead of the line that
+            // follows it --- its final value reaches the log once.
+            vec![(Level::Info, "20%".into()), (Level::Info, "done".into())]
         );
         assert_eq!(
             panel.on_process(&line(Stream::Stderr, "failure detail", LineEnd::Eof), &caps),
@@ -2067,6 +2092,99 @@ mod tests {
                 "$ west flash",
                 "Writing at 0x9000... (100 %)",
                 "Wrote 16384 bytes",
+            ]
+        );
+    }
+
+    /// esptool v5's piped bar reaches `west flash` one full
+    /// newline-terminated line per update (esp-pylib cannot redraw in place
+    /// without a terminal), so the panel must do the redrawing itself: one
+    /// row that keeps the latest update, and a log that sees only the final
+    /// value --- the same contract the `\r` redraws already have.
+    #[test]
+    fn esptool_v5_piped_bar_redraws_one_row_and_holds_its_log_line() {
+        let dir = fixture_dir("flash-progress-v5");
+        let mut panel = BuildPanel::new(&dir, UtcOffset::UTC);
+        panel.push_output("$ west flash".to_string());
+        let caps = Capabilities::empty();
+        let mut processes = ProcessManager::new();
+        let id = processes.spawn(crate::process::Command::new("/bin/true"), BUILD_TIMEOUT);
+        panel.running = Some(Running {
+            id,
+            what: "Flash".into(),
+            updates_board: false,
+            action: BuildAction::Flash,
+            started: Instant::now(),
+            progress: None,
+        });
+        let line = |text: &str| ProcessEvent::Line {
+            id,
+            stream: Stream::Stdout,
+            text: text.into(),
+            end: LineEnd::Newline,
+        };
+
+        assert!(
+            panel
+                .on_process(&line(
+                    "Writing at 0x00060000 ━━━━━━━━━━━━━━━━━━━━━━   60.0% 245.76kB/406.39kB [3s]"
+                ), &caps)
+                .is_empty()
+        );
+        assert!(
+            panel
+                .on_process(&line(
+                    "Writing at 0x00064000 ━━━━━━━━━━━━━━━━━━━━━━   94.5% 384.00kB/406.39kB [5s]"
+                ), &caps)
+                .is_empty()
+        );
+        // The state line carries esptool's percentage, rounded to an integer.
+        assert_eq!(
+            panel.progress(),
+            Some(crate::progress::Progress::Percent(95))
+        );
+        assert!(
+            panel
+                .on_process(&line(
+                    "Writing at 0x00065994 ━━━━━━━━━━━━━━━━━━━━━━  100.0% 406.39kB/406.39kB [5s]"
+                ), &caps)
+                .is_empty()
+        );
+
+        // One bar row, redrawing in place --- not three stacked updates.
+        assert_eq!(
+            panel.output,
+            [
+                "$ west flash",
+                "Writing at 0x00065994 ━━━━━━━━━━━━━━━━━━━━━━  100.0% 406.39kB/406.39kB [5s]",
+            ]
+        );
+
+        // The next real line publishes the held bar (its final value) ahead
+        // of itself --- once --- and nothing replaces the bar row.
+        assert_eq!(
+            panel.on_process(
+                &line("Wrote 406.39kB (compressed 289.11kB) at 0x00060000 in 5.4 seconds"),
+                &caps
+            ),
+            vec![
+                (
+                    Level::Info,
+                    "Writing at 0x00065994 ━━━━━━━━━━━━━━━━━━━━━━  100.0% 406.39kB/406.39kB [5s]"
+                        .to_string()
+                ),
+                (
+                    Level::Info,
+                    "Wrote 406.39kB (compressed 289.11kB) at 0x00060000 in 5.4 seconds".to_string()
+                ),
+            ]
+        );
+        assert_eq!(
+            panel.output,
+            [
+                "$ west flash",
+                "Writing at 0x00065994 ━━━━━━━━━━━━━━━━━━━━━━  100.0% 406.39kB/406.39kB [5s]",
+                "Wrote 406.39kB (compressed 289.11kB) at 0x00060000 in 5.4 seconds",
             ]
         );
     }

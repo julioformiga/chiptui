@@ -1,0 +1,36 @@
+#!/bin/sh
+# Fake `west flash` streaming esptool v5's *piped* progress bar --- what a
+# real ESP32 `west flash` (runner: esptool) prints when its stdout is not a
+# terminal, which is exactly how ChipTUI's build panel runs it: one full
+# newline-terminated line per update, never a `\r` redraw (esp-pylib's
+# in-place path needs a terminal). Same line shape as
+# `tests/fixtures/bin/esptool-v5-progress`, with the pauses
+# `tests/build_view.rs`'s v5 test needs to catch the panel mid-flash.
+[ "$1" = flash ] || {
+    echo "west-flash-v5: expected 'west flash ...', got: $*" >&2
+    exit 64
+}
+shift
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -d|--build-dir|-r|--runner|--domain)
+            [ "$#" -ge 2 ] && [ -n "$2" ] || {
+                echo "west-flash-v5: missing value for $1" >&2
+                exit 64
+            }
+            shift 2 ;;
+        --skip-rebuild) shift ;;
+        *)
+            echo "west-flash-v5: unexpected argument: $1" >&2
+            exit 64
+            ;;
+    esac
+done
+printf 'Writing at 0x00060000 ━━━━━━━━━━━━━━━━━         60.0%% 245.76kB/406.39kB [3s] \n'
+sleep 0.2
+printf 'Writing at 0x00064000 ━━━━━━━━━━━━━━━━━━━━━━━╸  94.5%% 384.00kB/406.39kB [5s] \n'
+sleep 0.2
+printf 'Writing at 0x00065994 ━━━━━━━━━━━━━━━━━━━━━━━━━━ 100.0%% 406.39kB/406.39kB [5s] \n'
+printf 'Wrote 406.39kB (compressed 289.11kB) at 0x00060000 in 5.4 seconds (effective 75.3 kB/s)\n'
+printf 'Hash of data verified.\n'
+exit 0

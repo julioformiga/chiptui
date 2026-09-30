@@ -29,6 +29,14 @@ fn fake_esptool_progress_slow() -> String {
     )
 }
 
+/// esptool v5.4+'s *piped* bar shape (see `tests/fixtures/bin/esptool-v5-progress`).
+fn fake_esptool_v5_progress() -> String {
+    format!(
+        "{}/tests/fixtures/bin/esptool-v5-progress",
+        env!("CARGO_MANIFEST_DIR")
+    )
+}
+
 struct Project {
     root: PathBuf,
 }
@@ -384,6 +392,104 @@ fn a_running_write_flash_reports_esptools_percentage() {
             .iter()
             .any(|line| line.contains("(10 %)") || line.contains("(50 %)")),
         "intermediate carriage-return updates must be overwritten: {:?}",
+        flash.output
+    );
+    assert!(
+        flash.progress().is_none(),
+        "progress must clear once the command is no longer running"
+    );
+}
+
+/// The same contract as [`a_running_write_flash_reports_esptools_percentage`]
+/// under esptool v5's piped bar: no terminal means esp-pylib prints one full
+/// newline-terminated line per update, so the panel must redraw them in
+/// place itself --- one `Writing at` row, the percentage on the state line,
+/// and the final value left standing when the command finishes.
+#[test]
+fn a_running_write_flash_collapses_esptool_v5s_piped_bar() {
+    let project = Project::new("write-progress-v5");
+    project.write_firmware("app.bin");
+    let mut app = hermetic_app(&project.root);
+    app.bootstrap();
+    app.manager.set_override(Some(BackendKind::MicroPython));
+    app.maybe_scan_devices();
+    app.handle(key(KeyCode::Char('x')));
+    assert!(
+        app.device_actions_tab_active(),
+        "the actions tab must be showing"
+    );
+    let flash = app.flash.as_mut().unwrap();
+    flash.set_tool_path(fake_esptool_v5_progress());
+    flash.discover_firmware();
+    assert!(flash.select_firmware(0));
+    flash.set_offset("0x1000".to_string());
+
+    for _ in 0..5 {
+        app.handle(key(KeyCode::Down)); // ... -> write / flash firmware
+    }
+    app.handle(key(KeyCode::Enter)); // firmware and offset already set: straight to confirm
+    match &app.overlay {
+        Some(Overlay::Confirm { message, .. }) => assert!(message.contains("write-flash")),
+        other => panic!("expected a confirmation overlay, got {other:?}"),
+    }
+    app.handle(key(KeyCode::Char('y'))); // confirm
+
+    assert!(app.flash.as_ref().unwrap().is_busy());
+    let caught_progress = pump_until(
+        &mut app,
+        |app| {
+            let flash = app.flash.as_ref().unwrap();
+            flash.progress().is_some()
+                && flash
+                    .output
+                    .iter()
+                    .filter(|l| l.starts_with("Writing at"))
+                    .count()
+                    == 1
+        },
+        10,
+    );
+    assert!(caught_progress, "no esptool v5 bar was ever parsed");
+    assert!(
+        matches!(
+            app.flash.as_ref().unwrap().progress(),
+            Some(chiptui::progress::Progress::Percent(10..=100))
+        ),
+        "the state line must carry esptool's percentage"
+    );
+
+    settle(&mut app);
+    let flash = app.flash.as_ref().unwrap();
+    assert!(
+        matches!(flash.state, RunState::Succeeded),
+        "state was {:?}",
+        flash.state
+    );
+    // One bar row --- the final update --- ahead of the write summary.
+    assert_eq!(
+        flash
+            .output
+            .iter()
+            .filter(|l| l.starts_with("Writing at"))
+            .count(),
+        1,
+        "intermediate bar updates must be overwritten: {:?}",
+        flash.output
+    );
+    assert!(
+        flash
+            .output
+            .iter()
+            .any(|l| l.starts_with("Writing at") && l.contains("100.0%")),
+        "the final progress row must remain visible: {:?}",
+        flash.output
+    );
+    assert!(
+        !flash
+            .output
+            .iter()
+            .any(|l| l.contains("10.0%") || l.contains("50.0%")),
+        "intermediate bar updates must be overwritten: {:?}",
         flash.output
     );
     assert!(

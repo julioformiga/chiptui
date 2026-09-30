@@ -1,0 +1,37 @@
+#!/bin/sh
+# Fake `esptool write-flash` streaming esptool v5's *piped* progress bar.
+#
+# From v5 on (via esp-pylib) esptool renders its bar through Rich: on a
+# terminal it redraws in place with a bare `\r`, but when stdout is not a
+# terminal --- exactly how ChipTUI runs every tool --- it prints ONE FULL
+# newline-terminated line per update:
+#
+#   Writing at 0x00060000 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 100.0% 406.39kB/406.39kB [5s]
+#
+# prefix, a 30-column bar (`_render_plain_bar`: filled glyphs padded with
+# spaces, so the suffix stays in one column), a 5-wide percentage, the
+# bar's M/N byte suffix, an elapsed tail, and a trailing space. Pauses
+# between lines so a test can catch the panel mid-flash and see progress
+# parsed and collapsed out of real streamed output (`src/progress.rs`,
+# `tests/flash_view.rs`'s v5 test) --- not just fed a canned string.
+args="$*"
+case "$args" in
+    *"write-flash"*) ;;
+    *)
+        echo "esptool-v5-progress: expected 'esptool ... write-flash ...', got: $*" >&2
+        exit 64
+        ;;
+esac
+printf 'esptool v5.4.0\n'
+printf 'Serial port /dev/ttyUSB0\n'
+printf 'Detecting chip type... ESP32\n'
+printf 'Chip is ESP32-D0WD (revision 3)\n'
+sleep 0.2
+printf 'Writing at 0x00001000 ━━━                           10.0%% 1.60kB/16.00kB [1s] \n'
+sleep 0.2
+printf 'Writing at 0x00001000 ━━━━━━━━━━━━━━━               50.0%% 8.00kB/16.00kB [2s] \n'
+sleep 0.2
+printf 'Writing at 0x00001000 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 100.0%% 16.00kB/16.00kB [3s] \n'
+printf 'Wrote 16384 bytes\n'
+printf 'Hash of data verified.\n'
+exit 0

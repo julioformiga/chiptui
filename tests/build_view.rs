@@ -1507,6 +1507,88 @@ fn flash_is_listed_confirms_and_runs_through_west() {
     assert_eq!(last.what, "Flash");
 }
 
+/// esptool v5 (via esp-pylib) prints its write bar as ONE full
+/// newline-terminated line per update whenever stdout is not a terminal ---
+/// which is exactly how the build panel runs `west flash`. The panel must
+/// redraw those updates in place (one `Writing at` row, not a stack), carry
+/// the percentage into the state line, and log only the final value.
+#[test]
+fn a_west_flash_collapses_esptool_v5s_piped_bar_into_one_row() {
+    let (mut app, _root) = app_with_west_and_board("flash-v5", "west-flash-v5");
+    app.focus = Focus::Build;
+
+    // Flash sits last on the six-action stack; six `Down`s saturate there.
+    for _ in 0..6 {
+        app.handle(key(KeyCode::Down));
+    }
+    app.handle(key(KeyCode::Enter)); // the flash-method question
+    app.handle(key(KeyCode::Enter)); // the wired row
+    app.handle(key(KeyCode::Char('y'))); // the destructive confirm
+    assert!(app.build.as_ref().unwrap().is_busy());
+
+    // Mid-flash: the bar updates collapse into a single redrawn row, and
+    // the running command carries esptool's percentage for the state line.
+    let caught = pump_until(
+        &mut app,
+        |app| {
+            let panel = app.build.as_ref().unwrap();
+            panel.progress().is_some()
+                && panel
+                    .output
+                    .iter()
+                    .filter(|l| l.starts_with("Writing at"))
+                    .count()
+                    == 1
+        },
+        20,
+    );
+    assert!(caught, "the piped bar never reached the panel");
+    let progress = app
+        .build
+        .as_ref()
+        .unwrap()
+        .progress()
+        .expect("progress was checked");
+    assert!(
+        matches!(progress, chiptui::progress::Progress::Percent(p) if (60..=100).contains(&p)),
+        "the state line must carry esptool's percentage, got {progress:?}"
+    );
+
+    let finished = pump_until(
+        &mut app,
+        |app| app.build.as_ref().unwrap().last.is_some(),
+        10,
+    );
+    assert!(finished);
+    let panel = app.build.as_ref().unwrap();
+    assert!(panel.last.as_ref().unwrap().ok);
+    // Still exactly one bar row --- the last update --- ahead of the write
+    // summary esptool prints once the bar completes.
+    assert_eq!(
+        panel
+            .output
+            .iter()
+            .filter(|l| l.starts_with("Writing at"))
+            .count(),
+        1,
+        "intermediate bar updates must be overwritten: {:?}",
+        panel.output
+    );
+    assert!(
+        panel.output.iter().any(|l| l.starts_with("Wrote")),
+        "the write summary must follow the bar: {:?}",
+        panel.output
+    );
+    // And the log saw the bar once --- its final value --- not once per
+    // update the way the piped shape would stack it.
+    let logged = app
+        .logs
+        .visible(usize::MAX)
+        .filter(|entry| entry.message.contains("Writing at"))
+        .count();
+    assert_eq!(logged, 1, "the bar must reach the log once, not per update");
+}
+
 #[test]
 fn x_routes_a_build_backend_to_west_flash_and_micropython_to_the_actions_tab() {
     // Zephyr: `x` reaches the build panel's flash question, not esptool's
