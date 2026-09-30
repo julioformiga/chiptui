@@ -7,14 +7,17 @@
 //! answers a key the file leaves empty, and everything that has to happen
 //! *around* a backend answer once it is applied.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
 use crate::app::{App, DevicePaneTab, Overlay};
+use crate::backend::zephyr::simulator;
 use crate::backend::{BackendKind, Capabilities};
 use crate::project::DetectionOutcome;
-use crate::project_config::{Destination, Pending, ProjectConfigPanel, ProjectConfigRow, RowKind};
+use crate::project_config::{
+    Destination, Pending, ProjectConfigPanel, ProjectConfigRow, RowKind, SimulatorChange,
+};
 
 impl App {
     /// The directory the configuration file belongs to: the detected
@@ -45,6 +48,7 @@ impl App {
     /// `read_to_string`s and can never disagree with what an editor did to
     /// them meanwhile.
     pub fn open_project_config(&mut self, from_startup: bool) {
+        self.cancel_simulator_probe();
         let root = self.project_config_root();
         let user = self.user_config_path();
         let backend = self.manager.selected_kind();
@@ -131,6 +135,14 @@ impl App {
         // Read before the panel borrow: paging the details pane moves by
         // the rows the last frame actually drew.
         let page = self.config_details_viewport.max(1) as isize;
+        if self
+            .project_config
+            .as_ref()
+            .is_some_and(|panel| panel.simulator_edit.is_some())
+        {
+            self.on_simulator_config_key(key);
+            return;
+        }
         let Some(panel) = &mut self.project_config else {
             self.overlay = None;
             return;
@@ -203,6 +215,9 @@ impl App {
                 // the arrows already mean here.
                 None => panel.step(1),
                 Some(row) => match row.kind() {
+                    RowKind::Action if row == ProjectConfigRow::Simulator => {
+                        self.open_simulator_config()
+                    }
                     _ if row.uses_target_picker() => self.open_config_target_picker(row),
                     RowKind::Text if row.picker_kind().is_some() => self.open_config_path(row),
                     RowKind::Text => panel.begin_edit(),
@@ -214,7 +229,271 @@ impl App {
         }
     }
 
+    fn open_simulator_config(&mut self) {
+        let Some(panel) = &mut self.project_config else {
+            return;
+        };
+        let declared = panel.variant_list();
+        let declared_empty = declared.is_empty();
+        let root = panel.root();
+        let app = panel
+            .value(ProjectConfigRow::ZephyrApp)
+            .map(|relative| root.join(relative))
+            .or_else(|| {
+                self.build
+                    .as_ref()
+                    .filter(|b| b.root == root)
+                    .and_then(|b| b.app_dir.clone())
+            })
+            .or_else(|| crate::backend::zephyr::projects::entry_child(root))
+            .unwrap_or_else(|| root.to_path_buf());
+        let variants = if declared_empty {
+            let catalogue: Vec<_> = self
+                .build
+                .as_ref()
+                .and_then(|b| match &b.boards.state {
+                    crate::build::ListState::Loaded(boards) => {
+                        Some(boards.iter().map(|b| b.name.clone()).collect())
+                    }
+                    _ => None,
+                })
+                .unwrap_or_default();
+            crate::backend::zephyr::variants::discover_all(root, Some(&app), &catalogue)
+        } else {
+            declared
+        };
+        panel.open_simulator(&variants);
+        if panel.sdl_probe.is_none() {
+            panel.sdl_status = "Checking SDL2 development files…".into();
+            panel.sdl_probe = Some(
+                self.processes.spawn(
+                    crate::process::Command::new(&panel.sdl_program)
+                        .args(["--exists", "sdl2"])
+                        .current_dir(panel.root()),
+                    std::time::Duration::from_secs(5),
+                ),
+            );
+        }
+        // Preserve fragment-only device variants too. The existing catalogue
+        // fetch is asynchronous; preparing waits for it instead of guessing
+        // qualified board names from filenames.
+        let has_fragments = app.join("boards").is_dir();
+        if declared_empty && has_fragments {
+            let backend = self.manager.backend();
+            if let (Some(backend), Some(build)) = (backend, &mut self.build)
+                && let Some(command) = build.boards_command(backend)
+            {
+                build.start_boards_fetch(command, &mut self.processes);
+            }
+        }
+    }
+
+    pub(super) fn on_simulator_config_key(&mut self, key: KeyEvent) {
+        let Some(editor) = self
+            .project_config
+            .as_mut()
+            .and_then(|p| p.simulator_edit.as_mut())
+        else {
+            return;
+        };
+        if editor.editing {
+            let value = &mut editor.values[editor.selected - 1];
+            match key.code {
+                KeyCode::Char(ch)
+                    if !key
+                        .modifiers
+                        .contains(ratatui::crossterm::event::KeyModifiers::CONTROL) =>
+                {
+                    value.push(ch)
+                }
+                KeyCode::Backspace => {
+                    value.pop();
+                }
+                KeyCode::Delete => value.clear(),
+                KeyCode::Enter => editor.editing = false,
+                KeyCode::Esc => editor.cancel_edit(),
+                _ => {}
+            }
+            return;
+        }
+        match key.code {
+            KeyCode::Esc => self.cancel_simulator_form(),
+            KeyCode::Up | KeyCode::BackTab | KeyCode::Char('k') => {
+                editor.selected = editor.selected.saturating_sub(1)
+            }
+            KeyCode::Down | KeyCode::Tab | KeyCode::Char('j') => {
+                editor.selected = (editor.selected + 1).min(6)
+            }
+            KeyCode::Left | KeyCode::Right if editor.selected == 0 => {
+                editor.step_choice(if key.code == KeyCode::Left { -1 } else { 1 })
+            }
+            KeyCode::Left | KeyCode::Right if editor.selected >= 4 => {
+                // Prepare / Remove / Cancel, cycling within the button row.
+                let step = if key.code == KeyCode::Left { 2 } else { 1 };
+                editor.selected = 4 + (editor.selected - 4 + step) % 3;
+            }
+            KeyCode::Enter => match editor.selected {
+                0 => editor.step_choice(1),
+                1..=3 => editor.begin_edit(),
+                4 => self.prepare_simulator_config(),
+                5 => self.remove_simulator_config(),
+                _ => self.cancel_simulator_form(),
+            },
+            _ => {}
+        }
+    }
+
+    fn cancel_simulator_form(&mut self) {
+        self.cancel_simulator_probe();
+        if let Some(panel) = &mut self.project_config {
+            panel.simulator_edit = None;
+        }
+    }
+
+    fn prepare_simulator_config(&mut self) {
+        let result = self.simulator_preparation();
+        if let Some(panel) = &mut self.project_config {
+            match result {
+                Ok(plan) => {
+                    panel.stage_simulator(SimulatorChange::Prepare(plan));
+                    self.request_apply_config();
+                }
+                Err(error) => {
+                    if let Some(editor) = &mut panel.simulator_edit {
+                        editor.error = Some(error);
+                    }
+                }
+            }
+        }
+    }
+
+    fn remove_simulator_config(&mut self) {
+        let result = (|| {
+            let panel = self
+                .project_config
+                .as_ref()
+                .ok_or("Project configuration is closed")?;
+            let editor = panel
+                .simulator_edit
+                .as_ref()
+                .ok_or("Simulator settings are closed")?;
+            if let Some(reason) = editor.remove_refusal() {
+                return Err(reason);
+            }
+            let variant = editor
+                .choices
+                .get(editor.choice)
+                .cloned()
+                .expect("the refusal covers a missing choice");
+            let declared = panel.variant_list();
+            let app = self.simulator_app_dir()?;
+            simulator::Removal::new(panel.root(), &app, &variant, &declared)
+        })();
+        match result {
+            Ok(removal) => {
+                if let Some(panel) = &mut self.project_config {
+                    panel.stage_simulator(SimulatorChange::Remove(removal));
+                }
+                self.request_apply_config();
+            }
+            Err(error) => {
+                if let Some(editor) = self
+                    .project_config
+                    .as_mut()
+                    .and_then(|panel| panel.simulator_edit.as_mut())
+                {
+                    editor.error = Some(error);
+                }
+            }
+        }
+    }
+
+    /// The application the simulator's fragments belong to --- shared by
+    /// preparation and removal, which must agree on where the variant's
+    /// files live.
+    fn simulator_app_dir(&self) -> Result<PathBuf, String> {
+        use crate::backend::zephyr::projects;
+        let panel = self
+            .project_config
+            .as_ref()
+            .ok_or("Project configuration is closed")?;
+        let root = panel.root();
+        if let Some(relative) = panel.value(ProjectConfigRow::ZephyrApp) {
+            let path = crate::project::scaffold::resolve(root, Path::new(&relative))
+                .map_err(|err| err.to_string())?;
+            if !projects::is_buildable(&path) {
+                return Err("Application folder is not a Zephyr application; correct it before preparing the simulator.".into());
+            }
+            Ok(path)
+        } else if crate::startup::is_empty_dir(root) || projects::is_buildable(root) {
+            Ok(root.to_path_buf())
+        } else if let Some(path) = self
+            .build
+            .as_ref()
+            .filter(|b| b.root == root)
+            .and_then(|b| b.app_dir.clone())
+            .or_else(|| projects::entry_child(root))
+        {
+            Ok(path)
+        } else {
+            Err("Choose the Application folder before preparing the simulator; existing project files will not be replaced.".into())
+        }
+    }
+
+    fn simulator_preparation(
+        &self,
+    ) -> Result<crate::backend::zephyr::simulator::Preparation, String> {
+        use crate::backend::zephyr::{simulator, variants, workspace};
+        let panel = self
+            .project_config
+            .as_ref()
+            .ok_or("Project configuration is closed")?;
+        let editor = panel
+            .simulator_edit
+            .as_ref()
+            .ok_or("Simulator settings are closed")?;
+        let project_settings = crate::settings::ZephyrSettings {
+            workspace: panel.value(ProjectConfigRow::ZephyrWorkspace),
+            sdk: panel.value(ProjectConfigRow::ZephyrSdk),
+            ..Default::default()
+        };
+        let user_settings = crate::settings::load_user(&self.config_dir);
+        let workspace = match workspace::resolve(&workspace::ResolveInput {
+            project_settings: Some(&project_settings), user_settings: user_settings.as_ref(), home: &self.home_dir,
+        }) {
+            workspace::Resolution::Single(workspace) => workspace,
+            _ => return Err("Choose a valid Workspace path in project configuration before preparing LVGL + SDL.".into()),
+        };
+        simulator::check_workspace(&workspace.zephyr_base)?;
+        let root = panel.root();
+        let app = self.simulator_app_dir()?;
+        let declared = panel.variant_list();
+        let catalogue: Vec<_> = self
+            .build
+            .as_ref()
+            .and_then(|b| match &b.boards.state {
+                crate::build::ListState::Loaded(boards) => {
+                    Some(boards.iter().map(|b| b.name.clone()).collect())
+                }
+                _ => None,
+            })
+            .unwrap_or_default();
+        if declared.is_empty() && app.join("boards").is_dir() && catalogue.is_empty() {
+            return Err("The board catalogue is needed to retain existing variants. Wait for the board scan, or apply the Zephyr backend and open the board picker, then prepare again.".into());
+        }
+        let discovered = variants::discover_all(root, Some(&app), &catalogue);
+        simulator::Preparation::new(
+            root,
+            &app,
+            editor.variant(),
+            editor.original_name(),
+            &declared,
+            discovered,
+        )
+    }
+
     fn step_config_card(&mut self, delta: isize) {
+        self.cancel_simulator_probe();
         let caps: Vec<(BackendKind, Capabilities)> = BackendKind::ALL
             .iter()
             .map(|kind| (*kind, self.capabilities_of(Some(*kind))))
@@ -230,6 +509,7 @@ impl App {
 
     /// A click on a backend card.
     pub(super) fn choose_config_backend(&mut self, kind: BackendKind) {
+        self.cancel_simulator_probe();
         let caps = self.capabilities_of(Some(kind));
         if let Some(panel) = &mut self.project_config {
             panel.select_cards();
@@ -262,6 +542,65 @@ impl App {
             return;
         }
         self.overlay = Some(Overlay::ConfirmApplyConfig { confirm: true });
+        self.project_config.as_mut().unwrap().review_scroll = 0;
+    }
+
+    pub(super) fn scroll_config_review(&mut self, code: KeyCode) -> bool {
+        let delta = match code {
+            KeyCode::Up => -1,
+            KeyCode::Down => 1,
+            KeyCode::PageUp => -8,
+            KeyCode::PageDown => 8,
+            _ => return false,
+        };
+        if let Some(panel) = &mut self.project_config {
+            panel.review_scroll = panel
+                .review_scroll
+                .saturating_add_signed(delta)
+                .min(panel.review_max_scroll);
+        }
+        true
+    }
+
+    pub(super) fn on_simulator_probe(&mut self, event: &crate::process::ProcessEvent) -> bool {
+        use crate::process::ProcessEvent;
+        let Some(panel) = &mut self.project_config else {
+            return false;
+        };
+        if panel.sdl_probe != Some(event.id()) {
+            return false;
+        }
+        match event {
+            ProcessEvent::Line { text, .. } => self.logs.info(text.clone()),
+            ProcessEvent::Finished { outcome, .. } => {
+                panel.sdl_probe = None;
+                panel.sdl_status = if outcome.is_success() {
+                    "SDL2 development files available".into()
+                } else {
+                    format!(
+                        "SDL2 check failed ({}); install pkg-config and SDL2 development files before Build.",
+                        outcome.summary()
+                    )
+                };
+                if outcome.is_success() {
+                    self.logs.success(&panel.sdl_status);
+                } else {
+                    self.logs.warn(&panel.sdl_status);
+                }
+            }
+            _ => {}
+        }
+        true
+    }
+
+    fn cancel_simulator_probe(&mut self) {
+        if let Some(id) = self
+            .project_config
+            .as_mut()
+            .and_then(|panel| panel.sdl_probe.take())
+        {
+            self.processes.cancel(id);
+        }
     }
 
     /// `Esc`: leaves, asking first when there is something to lose.
@@ -271,6 +610,7 @@ impl App {
             .as_ref()
             .is_some_and(ProjectConfigPanel::is_dirty);
         if dirty {
+            self.project_config.as_mut().unwrap().review_scroll = 0;
             self.overlay = Some(Overlay::ConfirmDiscardConfig { selected: 0 });
             return;
         }
@@ -327,6 +667,7 @@ impl App {
     /// the dashboard and nothing else, since throwing a directory picker
     /// over a screen they just dismissed answers nothing they asked.
     pub fn close_project_config(&mut self) {
+        self.cancel_simulator_probe();
         let from_startup = self
             .project_config
             .as_ref()
@@ -365,6 +706,7 @@ impl App {
             .map(|value| value.map(str::to_string));
         let target_changed = panel.pending_for(ProjectConfigRow::ZephyrBoard).is_some()
             || panel.pending_for(ProjectConfigRow::ZephyrShield).is_some();
+        let simulator_changed = panel.simulator_pending().is_some();
         let count = panel.change_count();
         // Asked before a single byte is written: `chiptui.toml` is not a
         // hidden entry, so the transaction's own first write is what would
@@ -379,7 +721,7 @@ impl App {
         }
 
         if backend_changed {
-            self.apply_project_type(chosen, was_empty);
+            self.apply_project_type(chosen, was_empty && !simulator_changed);
         }
         if let Some(name) = name {
             self.rename_project_entry(name);
@@ -388,8 +730,11 @@ impl App {
         // rather than holds, so re-resolving is all that is left.
         self.refresh_workspace_resolution();
         self.reload_mpy_projects();
-        if target_changed {
+        if target_changed || simulator_changed {
             self.refresh_config_target();
+        }
+        if simulator_changed {
+            self.refresh_variants();
         }
         self.report_tools();
 
@@ -667,6 +1012,9 @@ impl App {
         if panel.backend_changed() {
             push(panel.path().display().to_string());
         }
+        if panel.simulator_pending().is_some() {
+            push(panel.path().display().to_string());
+        }
         for change in panel.pending() {
             match change.row.destination() {
                 Destination::Project => push(panel.path().display().to_string()),
@@ -686,6 +1034,9 @@ impl App {
         let Some(panel) = &self.project_config else {
             return Vec::new();
         };
+        if panel.simulator_pending().is_some() {
+            return Vec::new(); // The simulator's own review names the actual layout.
+        }
         if !panel.backend_changed() || !crate::startup::is_empty_dir(panel.root()) {
             return Vec::new();
         }
@@ -748,6 +1099,19 @@ impl App {
                         let session = panel.session_variants();
                         (session > 0).then(|| (format!("{session} discovered"), "this session"))
                     })
+            }
+            ProjectConfigRow::Simulator => {
+                let panel = self.project_config.as_ref()?;
+                self.build
+                    .as_ref()
+                    .and_then(|b| {
+                        b.variants
+                            .iter()
+                            .find(|v| crate::backend::zephyr::simulator::is_graphical_target(v))
+                    })
+                    .map(|v| (format!("{} · LVGL + SDL", v.name), "discovered"))
+                    .or_else(|| panel.saved(row).map(|value| (value, "chiptui.toml")))
+                    .or_else(|| Some(("Not configured — Enter to add".into(), "default")))
             }
             ProjectConfigRow::Theme => {
                 Some((self.theme_choice().display_name().to_string(), "default"))
@@ -822,6 +1186,58 @@ impl App {
             None => "remove project_type".to_string(),
         });
         let mut lines = review_lines(panel.pending(), backend_line);
+        match panel.simulator_pending() {
+            Some(SimulatorChange::Prepare(plan)) => {
+                lines.push("simulator variant in chiptui.toml".into());
+                if let Some(name) = &plan.original_name {
+                    lines.push(format!("  update {name}"));
+                }
+                for variant in plan.retained.iter().chain(std::iter::once(&plan.variant)) {
+                    lines.push("  [[variant]]".into());
+                    lines.push(format!("  name = \"{}\"", variant.name));
+                    if let Some(board) = &variant.board {
+                        lines.push(format!("  board = \"{board}\""));
+                    }
+                    if let Some(shield) = &variant.shield {
+                        lines.push(format!("  shield = \"{shield}\""));
+                    }
+                    lines.push(format!("  build_dir = \"{}\"", variant.build_dir));
+                }
+                if !plan.retained.is_empty() {
+                    lines.push("device variants retained (declarations replace discovery)".into());
+                }
+                lines.push("LVGL + SDL scaffold".into());
+                for file in &plan.scaffold.files {
+                    let action = if panel.root().join(&file.path).exists() {
+                        "keep existing"
+                    } else {
+                        "create"
+                    };
+                    lines.push(format!("  {action}: {}", file.path.display()));
+                }
+                lines.push(crate::backend::zephyr::simulator::REQUIREMENTS.into());
+                lines.push(panel.sdl_status.clone());
+                lines.push(crate::backend::zephyr::simulator::GUIDANCE.into());
+            }
+            Some(SimulatorChange::Remove(removal)) => {
+                lines.push("remove simulator variant from chiptui.toml".into());
+                lines.push(format!("  name = \"{}\"", removal.name));
+                lines.push("kept on disk (nothing else is touched):".into());
+                for file in &removal.retained_files {
+                    lines.push(format!("  {}", file.display()));
+                }
+                if panel.root().join(&removal.build_dir).is_dir() {
+                    lines.push(format!("  {}/", removal.build_dir));
+                }
+                if removal.rediscovered {
+                    lines.push(
+                    "With no variants left declared, this target may reappear as discovered while its files remain."
+                        .into(),
+                );
+                }
+            }
+            None => {}
+        }
         let scaffold = self.config_scaffold();
         if !scaffold.is_empty() {
             lines.push(String::new());

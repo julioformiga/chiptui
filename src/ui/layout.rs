@@ -436,6 +436,57 @@ pub(crate) fn project_config(area: Rect) -> ProjectConfigAreas {
     }
 }
 
+pub(crate) struct SimulatorConfigAreas {
+    pub popup: Rect,
+    pub profile: Rect,
+    pub fields: [Rect; 4],
+    pub buttons: [Rect; 3],
+    pub info: Rect,
+    pub error: Rect,
+    pub footer: Rect,
+}
+
+pub(crate) fn simulator_config(area: Rect) -> SimulatorConfigAreas {
+    let popup = super::centered(area, 74, 20);
+    let inner = Rect {
+        x: popup.x + 2,
+        y: popup.y + 1,
+        width: popup.width.saturating_sub(4),
+        height: popup.height.saturating_sub(2),
+    };
+    let row = |offset, height| {
+        Rect {
+            y: inner.y + offset,
+            height,
+            ..inner
+        }
+        .intersection(inner)
+    };
+    let buttons = dialog_button_row(
+        Rect {
+            // dialog_button_row takes a whole dialog, including its borders.
+            // Five rows leave three for the bordered buttons themselves.
+            y: inner.y + 4,
+            height: 5,
+            ..popup
+        },
+        &["Prepare", "Remove", "Cancel"],
+    );
+    SimulatorConfigAreas {
+        popup,
+        profile: row(0, 1),
+        fields: [row(1, 1), row(2, 1), row(3, 1), row(4, 1)],
+        buttons: [
+            buttons[0].intersection(inner),
+            buttons[1].intersection(inner),
+            buttons[2].intersection(inner),
+        ],
+        info: row(8, 5),
+        error: row(13, 3),
+        footer: row(17, 1),
+    }
+}
+
 /// Where the package manager's panes sit inside `area`.
 ///
 /// The docs pickers' modal geometry ([`docs_picker`]) without the preview

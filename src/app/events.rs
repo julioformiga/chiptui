@@ -156,6 +156,9 @@ impl App {
         if let crate::process::ProcessEvent::Started { label, .. } = event {
             self.logs.command(label.clone());
         }
+        if self.on_simulator_probe(event) {
+            return;
+        }
         // The package index fetch owns its events before any subsystem:
         // curl shares the process pool with mpremote/esptool, and an
         // unrecognized id must still reach whoever it belongs to.

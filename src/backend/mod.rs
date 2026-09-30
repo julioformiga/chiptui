@@ -219,6 +219,8 @@ pub enum Capability {
     /// cable. Destructive: it overwrites the running firmware and reboots
     /// the board.
     OtaUpdate,
+    /// Explicit project preparation for a graphical host simulator.
+    SimulatorPrepare,
 }
 
 impl Capability {
@@ -242,6 +244,7 @@ impl Capability {
         Capability::WorkspaceSync,
         Capability::OtaPrepare,
         Capability::OtaUpdate,
+        Capability::SimulatorPrepare,
     ];
 
     const fn bit(self) -> u32 {
@@ -269,6 +272,7 @@ impl Capability {
             Self::WorkspaceSync => "sync workspace",
             Self::OtaPrepare => "prepare OTA",
             Self::OtaUpdate => "OTA update",
+            Self::SimulatorPrepare => "prepare simulator",
         }
     }
 

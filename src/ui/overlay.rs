@@ -24,16 +24,20 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
     // mouse hit-testing (`app::mouse`) --- the numbers used to be written
     // out on both sides and drifted apart.
     let popup = super::layout::overlay_popup(app, &overlay, area);
-    // A picker opened from the project configuration screen stacks: the
+    // A picker or confirmation from the project configuration screen stacks: the
     // configuration window stays drawn underneath, the way it will be
     // handed back when the picker closes. The state side lives on
-    // `picker_over_project_config`; the render cost is one extra in-memory
+    // `overlay_over_project_config`; the render cost is one extra in-memory
     // redraw of a screen that is already redrawn every frame when it is
     // open alone. Pickers opened anywhere else (workspace, install,
     // project browse) replace the view as before.
-    let over_project_config = app.picker_over_project_config(&overlay);
+    let over_project_config = app.overlay_over_project_config(&overlay);
     if over_project_config {
         super::project_config::draw(frame, area, app, palette);
+        frame.buffer_mut().set_style(
+            super::layout::project_config(area).popup,
+            Style::new().add_modifier(Modifier::DIM),
+        );
     }
     // Before anything is drawn: a two-cell glyph behind the popup's left
     // edge would otherwise eat the border column (see the helper). Runs
@@ -848,7 +852,7 @@ fn draw_confirm_delete(
 /// so the highlighted choice reads at a glance rather than needing the
 /// border colour alone to carry it (the same "never rely on colour alone"
 /// reasoning as the file panes' sync markers, `ui/files.rs`).
-fn draw_dialog_button(
+pub(super) fn draw_dialog_button(
     frame: &mut Frame,
     area: Rect,
     label: &str,
@@ -1709,7 +1713,7 @@ fn package_details(
 fn draw_confirm_apply_config(
     frame: &mut Frame,
     popup: Rect,
-    app: &App,
+    app: &mut App,
     confirm: bool,
     palette: Palette,
 ) {
@@ -1742,14 +1746,75 @@ fn draw_confirm_apply_config(
             );
         }
     }
-    draw_confirm_dialog(
-        frame,
-        popup,
-        "Apply these changes?",
-        lines,
-        confirm,
-        palette,
+    let block = modal("Apply these changes?", palette);
+    let inner = block.inner(popup);
+    frame.render_widget(Clear, popup);
+    frame.render_widget(block, popup);
+    let [message_area, _] = Layout::vertical([
+        Constraint::Length(popup.height.saturating_sub(5)),
+        Constraint::Length(3),
+    ])
+    .areas(inner);
+    draw_config_review(frame, message_area, lines, app, palette);
+    for (index, (rect, label)) in super::layout::dialog_button_row(popup, &["No", "Yes"])
+        .into_iter()
+        .zip(["No", "Yes"])
+        .enumerate()
+    {
+        draw_dialog_button(frame, rect, label, (index == 1) == confirm, palette);
+    }
+}
+
+/// Reviews can now include multiple variant blocks and a scaffold. Wrap and
+/// scroll the actual listing, never hide a file behind clipped text.
+fn draw_config_review(
+    frame: &mut Frame,
+    area: Rect,
+    lines: Vec<Line<'static>>,
+    app: &mut App,
+    palette: Palette,
+) {
+    let mut wrapped = Vec::new();
+    for line in lines {
+        let style = line.spans.first().map_or(Style::new(), |span| span.style);
+        let text: String = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        if text.is_empty() {
+            wrapped.push(Line::from(""));
+        } else {
+            wrapped.extend(
+                wrap_words(&text, area.width.saturating_sub(1) as usize)
+                    .into_iter()
+                    .map(|text| Line::from(Span::styled(text, style))),
+            );
+        }
+    }
+    let Some(panel) = &mut app.project_config else {
+        return;
+    };
+    let viewport = area.height.saturating_sub(1) as usize;
+    panel.review_max_scroll = wrapped.len().saturating_sub(viewport);
+    panel.review_scroll = panel.review_scroll.min(panel.review_max_scroll);
+    frame.render_widget(
+        Paragraph::new(wrapped).scroll((panel.review_scroll.min(u16::MAX as usize) as u16, 0)),
+        Rect {
+            height: viewport as u16,
+            ..area
+        },
     );
+    if panel.review_max_scroll > 0 {
+        frame.render_widget(
+            Paragraph::new("↑ ↓ / PgUp PgDn  review all changes").style(muted_style(palette)),
+            Rect {
+                y: area.y + viewport as u16,
+                height: 1,
+                ..area
+            },
+        );
+    }
 }
 
 /// The discard dialog's buttons, in drawn order: the choice that loses
@@ -1768,7 +1833,7 @@ pub(crate) const DISCARD_CHOICES: [&str; 3] =
 fn draw_confirm_discard_config(
     frame: &mut Frame,
     popup: Rect,
-    app: &App,
+    app: &mut App,
     selected: usize,
     palette: Palette,
 ) {
@@ -1819,12 +1884,7 @@ fn draw_confirm_discard_config(
         Constraint::Length(3),
     ])
     .areas(inner);
-    frame.render_widget(
-        Paragraph::new(lines)
-            .alignment(Alignment::Center)
-            .wrap(ratatui::widgets::Wrap { trim: false }),
-        message_area,
-    );
+    draw_config_review(frame, message_area, lines, app, palette);
     for (index, (rect, label)) in super::layout::dialog_button_row(popup, &DISCARD_CHOICES)
         .into_iter()
         .zip(DISCARD_CHOICES.iter())

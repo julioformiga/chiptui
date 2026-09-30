@@ -284,8 +284,8 @@ projects folder, `[ota]`'s transport and address. Rows are labelled with
 what the answer *does* ("Auto-confirm image"), not the key's spelling ---
 the literal key lives in the details pane and in the lines each will write,
 so the reader learns the file's vocabulary without having to decode the
-list. `[[variant]]` is shown as a count and not edited --- an array of
-tables is a shape the surgical writer cannot express (§13). A key the file
+list. `[[variant]]` is shown as a count; the separate **Simulator** row
+opens explicit preparation of a host variant (§10, §13). A key the file
 leaves empty shows what answers it instead and where that came from (the
 user config, the registry, the build directory, detection), because a key
 absent from the file is not an unanswered question --- it is one answered
@@ -1057,10 +1057,9 @@ simulator build.
 
 Variants come from two places, in this order:
 
-1.  the project's own `chiptui.toml`, when it declares any. Read, and not
-    written: variants are a description of how the user builds, which
-    ChipTUI has no answer of its own for, so the blocks are there because
-    the user committed them:
+1.  the project's own `chiptui.toml`, when it declares any. Variants describe
+    how the user builds; blocks are hand-written or created by the explicit
+    simulator preparation below:
 
     ``` toml
     [[variant]]
@@ -1159,6 +1158,52 @@ step with no decision in it, and running it again is that same `Build`
 (incremental, so it costs a link at most). The action stack is therefore
 the same six buttons whatever the last build targeted, which is what
 keeps the declared minimum terminal size (§11) where it was measured.
+
+### Graphical simulator preparation
+
+The **Simulator** row in Project configuration is offered through
+`SimulatorPrepare`. It carries the configured screen icon and opens
+**Simulator settings** above the still-visible parent window. The form
+selects an existing `native_sim` variant or a new one, its name, target
+(`native_sim/native/64` by default, or `native_sim/native`) and separate
+project-relative build directory. `Prepare` stages the answer, closes the
+form and opens the transaction's Apply review above Project configuration.
+Declining the review returns to the parent with the answer still pending;
+confirming writes it and returns to the settled parent. `Cancel` returns
+without staging the form. `Esc` inside a field cancels that edit.
+
+`Remove` stages the opposite answer for the declared simulator under the
+cursor: the same review, naming the `[[variant]]` block that leaves
+`chiptui.toml` and everything that stays --- the fragment files and the
+build directory are the user's files now, listed as kept and never deleted.
+The button is dim for a new simulator (nothing to remove) and for a
+discovered one (there is no declaration to remove; its build directory is
+the way, and the form says so). When the removal empties the declared list
+while the target's files remain, the review says the target may reappear
+as discovered.
+
+This profile is **LVGL + SDL**, with a 320 × 240 window and mouse input.
+Preparation checks the workspace's native_sim devices and LVGL 9 support.
+An asynchronous `pkg-config --exists sdl2` probe reports the development
+library requirement; missing SDL does not prevent preparing files. Building
+requires Linux, a graphical session, the target's host toolchain and SDL2
+development libraries (32-bit libraries for `native_sim/native`). Nothing
+is installed automatically.
+
+Only the parent window's confirmed Apply writes anything. Its scrollable
+review names the variant blocks and every file to create or retain. The
+preparation creates missing board-specific `.conf` and `.overlay` files
+inside the application directory. An empty project also gets the minimal
+Zephyr layout with an LVGL greeting. Existing sources, `prj.conf` and
+fragments are preserved; hardware-only configuration and peripheral access
+must be adapted by the user. Cancelling the transaction writes nothing.
+
+Introducing declarations retains discovered targets, including a lone
+device target; if none exists, a device variant with an unset board keeps
+the project's device workflow available. Build directories must not overlap
+another variant or reuse a cache for a different target. The device's board
+and shield answers stay separate. Build/Rebuild then use the existing
+target question and run the successful simulator build as described above.
 
 ### Out-of-tree boards
 
@@ -1775,16 +1820,15 @@ primarily for:
 
 -   backend override (`project_type`, editable in the configuration screen);
 -   board and shield;
--   `[[variant]]` blocks, the project's build variants (§10; read only);
+-   `[[variant]]` blocks, the project's build variants (§10);
 -   `[ota]`, the over-the-air mechanism, transport and device address
     (§10) --- written by the preparation action;
 -   project-specific tool options.
 
 What ChipTUI writes here today is `project_type`, the `[zephyr]` keys, the
 `[ota]` ones and `[micropython] projects` --- every scalar the file carries.
-Two things it does not: `[[variant]]`, whose array-of-tables shape needs a
-writer that does not exist, and anything it worked out on its own, which
-goes to the registry above.
+Simulator preparation additionally writes `[[variant]]` through a dedicated
+array-table writer. Passive discoveries still go only to the registry above.
 
 Three keys are the project's own answer to a question the user config also
 answers, and outrank it for the reason `project_type` outranks detection:
@@ -1801,8 +1845,10 @@ A write here carries the same guarantee as one into the user config, and by
 sharing its implementation rather than repeating it: `settings::upsert_key`
 merges the one key, `settings::write_config` replaces the file through a
 temporary and a rename, so a half-written `chiptui.toml` cannot replace a
-whole one. An array of tables (`[[variant]]`) is a different shape needing a
-different writer; nothing writes those, so no such writer exists.
+whole one. The simulator's array-table writer updates only the selected
+variant's known fields, preserving unrelated blocks, comments and unknown
+keys. Ambiguous input and an externally changed configuration are refused
+with an explanation rather than overwritten.
 
 Do not duplicate configuration already managed by the underlying
 framework.

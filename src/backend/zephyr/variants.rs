@@ -17,7 +17,7 @@
 //! instead of three.
 //!
 //! Nothing here writes anything. A project may declare its variants in its
-//! own `chiptui.toml` (read, never created --- `SPEC.md` §7), and a project
+//! own `chiptui.toml` (also written by explicit simulator preparation), and a project
 //! that declares none has them *discovered* from the two places the
 //! convention already leaves them: the build directories it has built
 //! before, and the fragments under `boards/`.
@@ -152,6 +152,13 @@ pub fn variants(
 /// with one board and one `build/` has no variants to choose between, and
 /// inventing a list of one would add a question where there is none.
 pub fn discover(root: &Path, app: Option<&Path>, catalogue: Catalogue<'_>) -> Vec<Variant> {
+    let found = discover_all(root, app, catalogue);
+    if found.len() < 2 { Vec::new() } else { found }
+}
+
+/// Preparation needs to retain a lone existing target too: introducing a
+/// declaration must not discard the target hidden by the single-target UI.
+pub fn discover_all(root: &Path, app: Option<&Path>, catalogue: Catalogue<'_>) -> Vec<Variant> {
     let mut found: Vec<Variant> = Vec::new();
 
     for build_dir in build_dirs(root) {
@@ -192,9 +199,6 @@ pub fn discover(root: &Path, app: Option<&Path>, catalogue: Catalogue<'_>) -> Ve
         });
     }
 
-    if found.len() < 2 {
-        return Vec::new();
-    }
     dedupe_names(&mut found);
     found
 }

@@ -1465,7 +1465,7 @@ fn overlays_draw_above_the_dashboard() {
         "Zephyr",
         "General",
         "Workspace path",
-        "Auto-confirm image",
+        "Simulator",
     ] {
         assert!(
             setup.contains(expected),
@@ -1476,6 +1476,10 @@ fn overlays_draw_above_the_dashboard() {
         setup.contains("No changes yet"),
         "the footer counts the transaction:\n{setup}"
     );
+    // The extra simulator row makes the last OTA answer scroll at this size.
+    let panel = app.project_config.as_mut().unwrap();
+    panel.select(panel.rows().len() - 1);
+    assert!(render(&mut app, 100, 34).contains("Auto-confirm image"));
 }
 
 /// The window's colour claim the text dump cannot show: the chosen

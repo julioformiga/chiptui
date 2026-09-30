@@ -11,6 +11,7 @@ pub mod flash_plan;
 pub mod projects;
 pub mod report;
 pub mod samples;
+pub mod simulator;
 pub mod variants;
 pub mod workspace;
 pub mod yaml;
@@ -95,6 +96,7 @@ impl Backend for ZephyrBackend {
             Capability::WorkspaceSync,
             Capability::OtaPrepare,
             Capability::OtaUpdate,
+            Capability::SimulatorPrepare,
         ])
     }
 

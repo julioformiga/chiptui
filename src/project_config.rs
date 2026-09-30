@@ -26,7 +26,8 @@ use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 
 use crate::app::{DocsFocus, ThemeChoice};
-use crate::backend::zephyr::variants::Variant;
+use crate::backend::zephyr::simulator::{self, Preparation};
+use crate::backend::zephyr::variants::{Variant, VariantOrigin};
 use crate::backend::{BackendKind, Capabilities, Capability};
 use crate::icons::IconSet;
 use crate::ota::{OtaMethod, Transport};
@@ -105,13 +106,14 @@ pub enum ProjectConfigRow {
     ZephyrApp,
     /// Extra arguments every configuration carries past `--`.
     ZephyrBuildArgs,
+    Simulator,
     OtaMethod,
     OtaTransport,
     OtaAddress,
     OtaAutoConfirm,
     MpyProjects,
-    /// How many `[[variant]]` blocks the file declares. A report: an array
-    /// of tables is a shape the surgical writer cannot express.
+    /// How many `[[variant]]` blocks the file declares. Editing a simulator
+    /// is offered separately through its preparation form.
     Variants,
 }
 
@@ -119,6 +121,7 @@ pub enum ProjectConfigRow {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RowKind {
     Heading,
+    Action,
     /// One of a fixed set of spellings. The empty answer is always the last
     /// stop of the cycle: a key ChipTUI has no answer for must be *absent*
     /// from the file, which is a different statement from an empty string.
@@ -164,7 +167,7 @@ impl ProjectConfigRow {
             Self::OtaAddress => Some((config::OTA_SECTION, "address")),
             Self::OtaAutoConfirm => Some((config::OTA_SECTION, "auto_confirm")),
             Self::MpyProjects => Some((config::MICROPYTHON_SECTION, "projects")),
-            Self::Heading(_) | Self::Name | Self::Root | Self::Variants => None,
+            Self::Heading(_) | Self::Name | Self::Root | Self::Variants | Self::Simulator => None,
         }
     }
 
@@ -212,6 +215,7 @@ impl ProjectConfigRow {
             Self::ZephyrShield => "Shield",
             Self::ZephyrApp => "Application folder",
             Self::ZephyrBuildArgs => "Extra build arguments",
+            Self::Simulator => "Simulator",
             Self::OtaMethod => "Mechanism",
             Self::OtaTransport => "Transport",
             Self::OtaAddress => "Board IP address",
@@ -228,6 +232,7 @@ impl ProjectConfigRow {
         match self {
             Self::Heading(_) => RowKind::Heading,
             Self::Root | Self::Variants => RowKind::Report,
+            Self::Simulator => RowKind::Action,
             Self::Theme => RowKind::Choice(
                 ThemeChoice::all()
                     .iter()
@@ -292,6 +297,9 @@ impl ProjectConfigRow {
                 "The folder the project picker lists this project's siblings from."
             }
             Self::Variants => "The parallel build configurations the file declares. Read only.",
+            Self::Simulator => {
+                "Prepare or configure a native_sim variant with LVGL + SDL. Enter opens its settings; files are written only when you apply the project configuration."
+            }
         }
     }
 }
@@ -356,6 +364,136 @@ struct Edit {
     input: String,
 }
 
+/// A nested form, still owned by the project configuration transaction.
+/// Field 0 chooses an existing simulator or a new one; fields 1..=3 edit
+/// its name/target/build directory; 4 prepares, 5 removes, 6 cancels.
+pub struct SimulatorEditor {
+    pub choices: Vec<Variant>,
+    pub choice: usize,
+    pub selected: usize,
+    pub editing: bool,
+    original_value: String,
+    pub values: [String; 3],
+    pub error: Option<String>,
+}
+
+impl SimulatorEditor {
+    pub fn new(variants: &[Variant], pending: Option<&SimulatorChange>) -> Self {
+        let choices: Vec<_> = variants
+            .iter()
+            .filter(|v| simulator::is_graphical_target(v))
+            .cloned()
+            .collect();
+        let pending_name = pending.and_then(|change| match change {
+            SimulatorChange::Prepare(plan) => plan.original_name.as_ref(),
+            SimulatorChange::Remove(removal) => Some(&removal.name),
+        });
+        let choice = pending_name
+            .and_then(|name| choices.iter().position(|v| &v.name == name))
+            .unwrap_or_else(|| {
+                if pending.is_some() || choices.is_empty() {
+                    choices.len()
+                } else {
+                    0
+                }
+            });
+        let variant = match pending {
+            Some(SimulatorChange::Prepare(plan)) => plan.variant.clone(),
+            _ => choices
+                .get(choice)
+                .cloned()
+                .unwrap_or_else(simulator::default_variant),
+        };
+        Self {
+            choices,
+            choice,
+            selected: 1,
+            editing: false,
+            original_value: String::new(),
+            values: [
+                variant.name,
+                variant
+                    .board
+                    .unwrap_or_else(|| simulator::DEFAULT_TARGET.into()),
+                variant.build_dir,
+            ],
+            error: None,
+        }
+    }
+
+    pub fn original_name(&self) -> Option<String> {
+        self.choices.get(self.choice).map(|v| v.name.clone())
+    }
+
+    pub fn begin_edit(&mut self) {
+        self.original_value = self.values[self.selected - 1].clone();
+        self.editing = true;
+        self.error = None;
+    }
+
+    pub fn cancel_edit(&mut self) {
+        self.values[self.selected - 1] = std::mem::take(&mut self.original_value);
+        self.editing = false;
+    }
+
+    pub fn variant(&self) -> Variant {
+        Variant {
+            name: self.values[0].trim().into(),
+            board: Some(self.values[1].trim().into()),
+            shield: None,
+            build_dir: self.values[2].trim().into(),
+            origin: crate::backend::zephyr::variants::VariantOrigin::Declared,
+        }
+    }
+
+    pub fn step_choice(&mut self, delta: isize) {
+        self.choice =
+            (self.choice as isize + delta).rem_euclid(self.choices.len() as isize + 1) as usize;
+        let variant = self
+            .choices
+            .get(self.choice)
+            .cloned()
+            .unwrap_or_else(simulator::default_variant);
+        self.values = [
+            variant.name,
+            variant
+                .board
+                .unwrap_or_else(|| simulator::DEFAULT_TARGET.into()),
+            variant.build_dir,
+        ];
+        self.error = None;
+    }
+
+    /// Why the Remove button is dim for the current choice, when it is.
+    pub fn remove_refusal(&self) -> Option<String> {
+        match self.choices.get(self.choice) {
+            None => Some("A new simulator has nothing to remove.".into()),
+            Some(variant) if variant.origin != VariantOrigin::Declared => Some(format!(
+                "'{}' is discovered from {}/ — remove the build directory instead.",
+                variant.name, variant.build_dir
+            )),
+            Some(_) => None,
+        }
+    }
+}
+
+/// What the simulator form staged: a preparation (write or update a
+/// variant, create its fragments) or a removal (drop its declaration;
+/// every file stays).
+pub enum SimulatorChange {
+    Prepare(Preparation),
+    Remove(simulator::Removal),
+}
+
+impl SimulatorChange {
+    pub fn variant_name(&self) -> &str {
+        match self {
+            Self::Prepare(plan) => &plan.variant.name,
+            Self::Remove(removal) => &removal.name,
+        }
+    }
+}
+
 /// The window.
 pub struct ProjectConfigPanel {
     root: PathBuf,
@@ -373,6 +511,14 @@ pub struct ProjectConfigPanel {
     rows: Vec<ProjectConfigRow>,
     cursor: Cursor,
     pending: Vec<Pending>,
+    pub simulator_edit: Option<SimulatorEditor>,
+    pub sdl_probe: Option<crate::process::ProcessId>,
+    pub sdl_status: String,
+    /// Absolute fixture override; never changes global PATH.
+    pub sdl_program: String,
+    pub review_scroll: usize,
+    pub review_max_scroll: usize,
+    simulator_pending: Option<SimulatorChange>,
     edit: Option<Edit>,
     error: Option<String>,
     notice: Option<Notice>,
@@ -416,6 +562,13 @@ impl ProjectConfigPanel {
             rows: Vec::new(),
             cursor: Cursor::Cards,
             pending: Vec::new(),
+            simulator_edit: None,
+            sdl_probe: None,
+            sdl_status: "SDL2 development files not checked".into(),
+            sdl_program: "pkg-config".into(),
+            review_scroll: 0,
+            review_max_scroll: 0,
+            simulator_pending: None,
             edit: None,
             error: None,
             notice: None,
@@ -470,6 +623,13 @@ impl ProjectConfigPanel {
                 ProjectConfigRow::Heading(Section::MicroPython),
                 ProjectConfigRow::MpyProjects,
             ]);
+        }
+        if caps.contains(Capability::SimulatorPrepare) {
+            let position = rows
+                .iter()
+                .position(|row| *row == ProjectConfigRow::ZephyrBuildArgs)
+                .map_or(rows.len(), |index| index + 1);
+            rows.insert(position, ProjectConfigRow::Simulator);
         }
         if caps.contains(Capability::OtaPrepare) {
             rows.extend([
@@ -576,12 +736,14 @@ impl ProjectConfigPanel {
     }
 
     pub fn is_dirty(&self) -> bool {
-        self.backend_changed() || !self.pending.is_empty()
+        self.backend_changed() || !self.pending.is_empty() || self.simulator_pending.is_some()
     }
 
     /// How many separate lines applying would write.
     pub fn change_count(&self) -> usize {
-        self.pending.len() + usize::from(self.backend_changed())
+        self.pending.len()
+            + usize::from(self.backend_changed())
+            + usize::from(self.simulator_pending.is_some())
     }
 
     /// The pending answer for `row`: `Some(Some(value))` sets it,
@@ -595,6 +757,13 @@ impl ProjectConfigPanel {
 
     /// The value on disk for `row`, from whichever file owns it.
     pub fn saved(&self, row: ProjectConfigRow) -> Option<String> {
+        if row == ProjectConfigRow::Simulator {
+            return self
+                .variant_list()
+                .into_iter()
+                .find(simulator::is_graphical_target)
+                .map(|v| format!("{} · LVGL + SDL", v.name));
+        }
         let (section, key) = row.slot()?;
         let text = match row.destination() {
             Destination::User => &self.user_text,
@@ -640,6 +809,24 @@ impl ProjectConfigPanel {
     /// drawn list's fallback while the session has resolved none.
     pub fn variant_list(&self) -> Vec<Variant> {
         config::parse_variants(&self.text)
+    }
+
+    pub fn simulator_pending(&self) -> Option<&SimulatorChange> {
+        self.simulator_pending.as_ref()
+    }
+
+    pub fn open_simulator(&mut self, variants: &[Variant]) {
+        self.simulator_edit = Some(SimulatorEditor::new(
+            variants,
+            self.simulator_pending.as_ref(),
+        ));
+    }
+
+    pub fn stage_simulator(&mut self, change: SimulatorChange) {
+        self.simulator_pending = Some(change);
+        self.simulator_edit = None;
+        self.error = None;
+        self.notice = None;
     }
 
     fn first_selectable(&self) -> usize {
@@ -732,11 +919,13 @@ impl ProjectConfigPanel {
         self.edit = None;
         self.error = None;
         self.details_scroll = 0;
-        let before = self.pending.len();
+        let before = self.pending.len() + usize::from(self.simulator_pending.is_some());
         let general = |row: ProjectConfigRow| {
             matches!(row.destination(), Destination::User | Destination::Registry)
         };
         self.pending.retain(|change| general(change.row));
+        self.simulator_pending = None;
+        self.simulator_edit = None;
         let dropped = before - self.pending.len();
         self.notice = (dropped > 0).then(|| {
             Notice::Lost(format!(
@@ -849,6 +1038,16 @@ impl ProjectConfigPanel {
     /// Rejects an apply that would pair UDP with an existing non-IPv4
     /// address, including one inherited from the configuration file.
     pub fn validate(&self) -> Result<(), String> {
+        match &self.simulator_pending {
+            Some(SimulatorChange::Prepare(plan)) => {
+                plan.preflight(&self.root)?;
+                plan.config_text(&self.text)?;
+            }
+            Some(SimulatorChange::Remove(removal)) => {
+                removal.config_text(&self.text)?;
+            }
+            None => {}
+        }
         if self.ota_transport() != Transport::Udp {
             return Ok(());
         }
@@ -889,7 +1088,14 @@ impl ProjectConfigPanel {
     /// `Del`: clears the selected row's key.
     pub fn clear_selected(&mut self) {
         let Some(row) = self.selected() else { return };
-        if matches!(row.kind(), RowKind::Heading | RowKind::Report) {
+        if row == ProjectConfigRow::Simulator {
+            self.simulator_pending = None;
+            return;
+        }
+        if matches!(
+            row.kind(),
+            RowKind::Heading | RowKind::Report | RowKind::Action
+        ) {
             return;
         }
         self.record(row, None);
@@ -911,6 +1117,8 @@ impl ProjectConfigPanel {
     /// Drops every unapplied answer, the backend choice included.
     pub fn discard(&mut self, caps_for: impl Fn(Option<BackendKind>) -> Capabilities) {
         self.pending.clear();
+        self.simulator_pending = None;
+        self.simulator_edit = None;
         self.edit = None;
         self.error = None;
         self.notice = None;
@@ -930,6 +1138,29 @@ impl ProjectConfigPanel {
     /// pending, so a failed apply can be read and retried rather than
     /// half-forgotten.
     pub fn write_files(&mut self) -> Result<(), String> {
+        if let Some(change) = &self.simulator_pending {
+            let write = (|| {
+                let current = match std::fs::read_to_string(&self.path) {
+                    Ok(text) => text,
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+                    Err(err) => return Err(format!("Cannot read {}: {err}", self.path.display())),
+                };
+                if current != self.text {
+                    return Err("chiptui.toml changed outside this window; reopen configuration before preparing the simulator.".into());
+                }
+                match change {
+                    SimulatorChange::Prepare(plan) => {
+                        plan.config_text(&current)?;
+                        plan.preflight(&self.root)
+                    }
+                    SimulatorChange::Remove(removal) => removal.config_text(&current).map(|_| ()),
+                }
+            })();
+            if let Err(message) = write {
+                self.error = Some(message.clone());
+                return Err(message);
+            }
+        }
         let changes: Vec<Pending> = self
             .pending
             .iter()
@@ -959,6 +1190,43 @@ impl ProjectConfigPanel {
                 return Err(message);
             }
             self.pending.retain(|other| other.row != change.row);
+            if change.row.destination() == Destination::Project {
+                self.text = std::fs::read_to_string(&self.path).map_err(|err| {
+                    let message =
+                        format!("Cannot reload {} after writing: {err}", self.path.display());
+                    self.error = Some(message.clone());
+                    message
+                })?;
+            }
+        }
+        // Keep preparation pending until all scalar writes succeed. Otherwise
+        // a failed user-config write loses the refresh of the simulator and
+        // leaves the panel's snapshot older than the variants it just wrote.
+        if let Some(change) = &self.simulator_pending {
+            let write: Result<String, String> = (|| match change {
+                SimulatorChange::Prepare(plan) => {
+                    let updated = plan.config_text(&self.text)?;
+                    plan.create_files(&self.root)?;
+                    crate::settings::write_config(&self.path, &updated).map_err(|err| {
+                            format!("Cannot write {}: {err}. Generated files were retained; resolve the error and retry.", self.path.display())
+                        })?;
+                    Ok(updated)
+                }
+                SimulatorChange::Remove(removal) => {
+                    let updated = removal.config_text(&self.text)?;
+                    crate::settings::write_config(&self.path, &updated)
+                        .map_err(|err| format!("Cannot write {}: {err}", self.path.display()))?;
+                    Ok(updated)
+                }
+            })();
+            match write {
+                Ok(updated) => self.text = updated,
+                Err(message) => {
+                    self.error = Some(message.clone());
+                    return Err(message);
+                }
+            }
+            self.simulator_pending = None;
         }
         Ok(())
     }
@@ -970,6 +1238,8 @@ impl ProjectConfigPanel {
         self.backend = backend;
         self.chosen = backend;
         self.pending.clear();
+        self.simulator_pending = None;
+        self.simulator_edit = None;
         self.edit = None;
     }
 

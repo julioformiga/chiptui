@@ -37,14 +37,17 @@ impl TargetPickerPurpose {
 }
 
 impl App {
-    /// Whether a picker overlay was opened from the project configuration
+    /// Whether an overlay belongs to the project configuration
     /// screen and so draws stacked on top of it (`ui::overlay`), rather
     /// than replacing the view. The state side of the fact is
     /// `picker_return` for the path pickers and the purpose for the
     /// board/shield ones --- the same places that hand the configuration
     /// window back when the picker closes.
-    pub(crate) fn picker_over_project_config(&self, overlay: &Overlay) -> bool {
+    pub(crate) fn overlay_over_project_config(&self, overlay: &Overlay) -> bool {
         match overlay {
+            Overlay::ConfirmApplyConfig { .. } | Overlay::ConfirmDiscardConfig { .. } => {
+                self.project_config.is_some()
+            }
             Overlay::DirPicker { .. } | Overlay::FilePicker { .. } => {
                 self.picker_return.as_ref() == Some(&Overlay::ProjectConfig)
             }
@@ -317,6 +320,9 @@ impl App {
             // Both hand the window back on either answer: the slot is one
             // deep, so a dialog that covered it has to put it back itself.
             Overlay::ConfirmApplyConfig { confirm } => {
+                if self.scroll_config_review(key.code) {
+                    return;
+                }
                 self.dispatch_confirm(
                     key.code,
                     confirm,
@@ -335,6 +341,9 @@ impl App {
             // rule, since applying checks `overlay.is_none()` to decide
             // whether to hand the window back.
             Overlay::ConfirmDiscardConfig { selected } => {
+                if self.scroll_config_review(key.code) {
+                    return;
+                }
                 const COUNT: usize = crate::ui::DISCARD_CHOICES.len();
                 match key.code {
                     KeyCode::Left | KeyCode::BackTab | KeyCode::Char('h') => {

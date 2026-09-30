@@ -1236,6 +1236,14 @@ impl App {
             Some(Overlay::ProjectConfig) => {
                 let areas = layout::project_config(frame);
                 if let Some(panel) = &mut self.project_config {
+                    if let Some(editor) = &mut panel.simulator_edit {
+                        if !editor.editing && contains(layout::simulator_config(frame).popup, point)
+                        {
+                            editor.selected =
+                                editor.selected.saturating_add_signed(direction).min(6);
+                        }
+                        return;
+                    }
                     if contains(areas.details, point) {
                         panel.scroll_details(direction);
                     } else if contains(areas.list, point) {
@@ -1377,6 +1385,42 @@ impl App {
         let Some(frame) = self.frame_area else {
             return;
         };
+        if self
+            .project_config
+            .as_ref()
+            .is_some_and(|p| p.simulator_edit.is_some())
+        {
+            let areas = crate::ui::layout::simulator_config(frame);
+            let selected = areas
+                .fields
+                .iter()
+                .position(|rect| contains(*rect, point))
+                .or_else(|| {
+                    areas
+                        .buttons
+                        .iter()
+                        .position(|rect| contains(*rect, point))
+                        .map(|index| index + 4)
+                });
+            if let Some(index) = selected {
+                let editor = self
+                    .project_config
+                    .as_mut()
+                    .unwrap()
+                    .simulator_edit
+                    .as_mut()
+                    .unwrap();
+                if !editor.editing && editor.selected == index {
+                    self.on_simulator_config_key(ratatui::crossterm::event::KeyEvent::new(
+                        KeyCode::Enter,
+                        KeyModifiers::NONE,
+                    ));
+                } else if !editor.editing {
+                    editor.selected = index;
+                }
+            }
+            return;
+        }
         let areas = crate::ui::layout::project_config(frame);
         for (index, rect) in areas.cards.iter().enumerate() {
             if contains(*rect, point)

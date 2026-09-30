@@ -36,16 +36,14 @@ pub const FILE_NAME: &str = "chiptui.toml";
 /// same tolerance every other hand-rolled parser here has, since a file a
 /// newer ChipTUI wrote must not break an older one.
 ///
-/// ChipTUI never writes *these blocks* (`SPEC.md` §13): an array of tables
-/// is a shape [`set_key`] cannot express, so they are here because the user
-/// put them here, typically to commit them so the team shares the
-/// variants. A project that declares none has them discovered instead
+/// Simulator preparation writes these through [`upsert_variant`], not the
+/// scalar [`set_key`] writer. A project that declares none has them discovered instead
 /// ([`crate::backend::zephyr::variants::discover`]).
 pub fn parse_variants(text: &str) -> Vec<Variant> {
     let mut variants: Vec<Variant> = Vec::new();
     let mut pending: Option<PendingVariant> = None;
     for line in text.lines() {
-        let line = line.split('#').next().unwrap_or("").trim();
+        let line = variant_code(line).trim();
         if line.is_empty() {
             continue;
         }
@@ -73,6 +71,214 @@ pub fn parse_variants(text: &str) -> Vec<Variant> {
     }
     variants.extend(pending.and_then(PendingVariant::finish));
     variants
+}
+
+/// Byte ranges of the file's `[[variant]]` blocks --- the scan
+/// [`upsert_variant`] and [`remove_variant`] share so the two cannot
+/// disagree about where a block lives.
+fn variant_block_ranges(text: &str) -> Vec<std::ops::Range<usize>> {
+    let mut blocks = Vec::new();
+    let mut start = None;
+    let mut offset = 0;
+    for line in text.split_inclusive('\n') {
+        let stripped = variant_code(line).trim();
+        if stripped.starts_with('[') {
+            if let Some(begin) = start.take() {
+                blocks.push(begin..offset);
+            }
+            if stripped == "[[variant]]" {
+                start = Some(offset);
+            }
+        }
+        offset += line.len();
+    }
+    if let Some(begin) = start {
+        blocks.push(begin..text.len());
+    }
+    blocks
+}
+
+/// Removes the one `[[variant]]` block named `name`, leaving every other
+/// byte alone --- the removal half of [`upsert_variant`], with the same
+/// refusals: a name that is absent or duplicated is an error, never a
+/// guess. A block that was appended at the file's end behind a blank line
+/// (the shape [`upsert_variant`] writes) takes that blank line with it, so
+/// add-then-remove restores the file.
+pub fn remove_variant(text: &str, name: &str) -> Result<String, String> {
+    if text.contains("\"\"\"") || text.contains("'''") {
+        return Err("Cannot safely edit variants in a configuration with multiline strings; edit chiptui.toml manually.".into());
+    }
+    let mut selected = None;
+    for range in variant_block_ranges(text) {
+        let parsed = parse_variants(&text[range.clone()]);
+        if let Some(existing) = parsed.first()
+            && existing.name == name
+            && selected.replace(range).is_some()
+        {
+            return Err(format!(
+                "More than one variant is named '{name}'; resolve this in chiptui.toml first."
+            ));
+        }
+    }
+    let Some(range) = selected else {
+        return Err(format!("Variant '{name}' is not declared in chiptui.toml."));
+    };
+    let mut before = &text[..range.start];
+    let after = &text[range.end..];
+    if after.trim().is_empty() && before.ends_with("\n\n") {
+        before = &before[..before.len() - 1];
+    }
+    Ok(format!("{before}{after}"))
+}
+
+/// Updates only the selected array-table's known fields. Other blocks,
+/// comments, unknown keys and blank lines remain byte-for-byte intact.
+/// Ambiguous/unsupported input is refused rather than rewritten wholesale.
+pub fn upsert_variant(
+    text: &str,
+    original_name: Option<&str>,
+    variant: &Variant,
+) -> Result<String, String> {
+    if text.contains("\"\"\"") || text.contains("'''") {
+        return Err("Cannot safely edit variants in a configuration with multiline strings; edit chiptui.toml manually.".into());
+    }
+    let blocks = variant_block_ranges(text);
+    let mut selected = None;
+    for range in &blocks {
+        let parsed = parse_variants(&text[range.clone()]);
+        if let Some(existing) = parsed.first() {
+            if Some(existing.name.as_str()) == original_name {
+                if selected.replace(range.clone()).is_some() {
+                    return Err(format!(
+                        "More than one variant is named '{}'; resolve this in chiptui.toml first.",
+                        existing.name
+                    ));
+                }
+            } else if existing.name == variant.name {
+                return Err(format!(
+                    "Variant '{}' already exists; choose another name.",
+                    variant.name
+                ));
+            }
+        }
+    }
+    if original_name.is_some() && selected.is_none() {
+        return Err(
+            "The selected variant is no longer present; reopen project configuration.".into(),
+        );
+    }
+    let fields = [
+        ("name", Some(variant.name.as_str())),
+        ("board", variant.board.as_deref()),
+        ("shield", variant.shield.as_deref()),
+        ("build_dir", Some(variant.build_dir.as_str())),
+    ];
+    let quote = |value: &str| {
+        format!(
+            "\"{}\"",
+            value
+                .replace('\\', "\\\\")
+                .replace('"', "\\\"")
+                .replace('\n', "\\n")
+                .replace('\r', "\\r")
+        )
+    };
+    let Some(range) = selected else {
+        let mut out = text.to_string();
+        if !out.is_empty() {
+            if !out.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push('\n');
+        }
+        out.push_str("[[variant]]\n");
+        for (key, value) in fields {
+            if let Some(value) = value {
+                out.push_str(&format!("{key} = {}\n", quote(value)));
+            }
+        }
+        return Ok(out);
+    };
+    let mut seen = [false; 4];
+    let mut updated = String::new();
+    for line in text[range.clone()].split_inclusive('\n') {
+        let body = line.trim_end_matches(['\r', '\n']);
+        let stripped = variant_code(body);
+        let found = stripped
+            .split_once('=')
+            .and_then(|(key, _)| fields.iter().position(|(name, _)| *name == key.trim()));
+        let Some(index) = found else {
+            updated.push_str(line);
+            continue;
+        };
+        if seen[index] {
+            return Err(format!(
+                "Duplicate '{}' in the selected variant; fix chiptui.toml first.",
+                fields[index].0
+            ));
+        }
+        seen[index] = true;
+        let comment = (stripped.len() < body.len()).then(|| &body[stripped.len()..]);
+        match fields[index].1 {
+            Some(value) => {
+                let (_, old) = stripped.split_once('=').unwrap();
+                if unquote(old.trim()) == value {
+                    updated.push_str(line);
+                } else {
+                    let prefix = &body[..body.find('=').unwrap() + 1];
+                    updated.push_str(&format!("{prefix} {}", quote(value)));
+                    if let Some(comment) = comment {
+                        updated.push_str(&format!(" {comment}"));
+                    }
+                    updated.push_str(if line.ends_with("\r\n") { "\r\n" } else { "\n" });
+                }
+            }
+            None => {
+                if let Some(comment) = comment {
+                    updated.push_str(comment);
+                    updated.push('\n');
+                }
+            }
+        }
+    }
+    for (index, (key, value)) in fields.iter().enumerate() {
+        if !seen[index]
+            && let Some(value) = value
+        {
+            if !updated.ends_with('\n') {
+                updated.push('\n');
+            }
+            updated.push_str(&format!("{key} = {}\n", quote(value)));
+        }
+    }
+    Ok(format!(
+        "{}{}{}",
+        &text[..range.start],
+        updated,
+        &text[range.end..]
+    ))
+}
+
+/// A hash inside a quoted value is data, not an inline comment.
+fn variant_code(line: &str) -> &str {
+    let mut quote = None;
+    let mut escaped = false;
+    for (index, ch) in line.char_indices() {
+        if escaped {
+            escaped = false;
+        } else if quote == Some('"') && ch == '\\' {
+            escaped = true;
+        } else if quote == Some(ch) {
+            quote = None;
+        } else if quote.is_none() {
+            match ch {
+                '\'' | '"' => quote = Some(ch),
+                '#' => return &line[..index],
+                _ => {}
+            }
+        }
+    }
+    line
 }
 
 /// A `[[variant]]` block being read; becomes a [`Variant`] only if it
@@ -601,6 +807,28 @@ something = \"a newer chiptui wrote this\"
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
 
         assert_eq!(parse_ota(&text), Some(OtaConfig::default()));
+    }
+
+    #[test]
+    fn remove_variant_drops_only_the_named_block() {
+        let text = "# lead\n[[variant]]\nname = 'hardware'\ncustom = 42\n\n[[variant]] # simulator\nname = 'sim' # short name\nbuild_dir = 'build_sim'\n\n[future]\nunknown = true\n";
+        let removed = remove_variant(text, "sim").unwrap();
+        assert_eq!(
+            removed,
+            "# lead\n[[variant]]\nname = 'hardware'\ncustom = 42\n\n[future]\nunknown = true\n"
+        );
+        // A block upsert appended at the end takes its blank line with it,
+        // so add-then-remove is a round trip.
+        let text = "project_type = \"zephyr\"\n";
+        let added = upsert_variant(
+            text,
+            None,
+            &crate::backend::zephyr::simulator::default_variant(),
+        )
+        .unwrap();
+        assert_eq!(remove_variant(&added, "sim").unwrap(), text);
+        assert!(remove_variant(text, "sim").is_err());
+        assert!(remove_variant(&format!("{added}\n[[variant]]\nname = 'sim'\n"), "sim").is_err());
     }
 
     #[test]

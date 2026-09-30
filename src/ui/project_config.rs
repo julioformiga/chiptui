@@ -58,6 +58,16 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palett
     draw_rows(frame, &areas, app, palette);
     draw_details(frame, &areas, app, palette);
     draw_footer(frame, &areas, app, palette);
+    if app
+        .project_config
+        .as_ref()
+        .is_some_and(|panel| panel.simulator_edit.is_some())
+    {
+        frame
+            .buffer_mut()
+            .set_style(areas.popup, Style::new().add_modifier(Modifier::DIM));
+        draw_simulator(frame, area, app, palette);
+    }
 }
 
 /// The file being edited, and one line of state under it: the error if
@@ -259,7 +269,8 @@ fn row_line(app: &App, row: ProjectConfigRow, width: usize, palette: Palette) ->
         let title = format!(" {} ", section.title());
         let (total, answered) = panel.map_or((0, 0), |panel| {
             let rows = panel.rows().iter().filter(|member| {
-                !matches!(member, ProjectConfigRow::Heading(_)) && member.section() == section
+                !matches!(member.kind(), RowKind::Heading | RowKind::Action)
+                    && member.section() == section
             });
             let mut total = 0;
             let mut answered = 0;
@@ -310,6 +321,7 @@ fn row_line(app: &App, row: ProjectConfigRow, width: usize, palette: Palette) ->
                 Some((icons.file(), matches!(icons, crate::icons::IconSet::Nerd)))
             }
             None if row.uses_target_picker() => Some((icons.microchip(), true)),
+            None if row == ProjectConfigRow::Simulator => Some((icons.screen(), true)),
             None if matches!(row.kind(), RowKind::Choice(_)) => Some((icons.choice(), true)),
             None if matches!(row.kind(), RowKind::Text) => Some((icons.text_edit(), true)),
             None => None,
@@ -335,6 +347,23 @@ fn row_line(app: &App, row: ProjectConfigRow, width: usize, palette: Palette) ->
         Style::new().fg(palette.fg),
     ));
     let budget = width.saturating_sub(KEY_WIDTH + 5);
+    if row == ProjectConfigRow::Simulator
+        && let Some(change) = panel.and_then(|p| p.simulator_pending())
+    {
+        let text = match change {
+            crate::project_config::SimulatorChange::Prepare(plan) => {
+                format!("{} · LVGL + SDL (pending)", plan.variant.name)
+            }
+            crate::project_config::SimulatorChange::Remove(removal) => {
+                format!("remove {} (pending)", removal.name)
+            }
+        };
+        spans.push(Span::styled(
+            super::overlay::shorten_tail(&text, budget),
+            Style::new().fg(palette.warning),
+        ));
+        return Line::from(spans);
+    }
 
     // A row being typed into shows the buffer with a block cursor after it
     // --- the one-line-input grammar the rename and address dialogs use.
@@ -783,6 +812,7 @@ fn draw_footer(frame: &mut Frame, areas: &ProjectConfigAreas, app: &App, palette
                 "enter  browse     ctrl+e  type     del  clear     "
             }
             Some(RowKind::Text) => "enter  edit     del  clear     ",
+            Some(RowKind::Action) => "enter  configure     del  undo pending     ",
             _ => "",
         };
         let close = if count > 0 {
@@ -802,6 +832,103 @@ fn draw_footer(frame: &mut Frame, areas: &ProjectConfigAreas, app: &App, palette
             Span::raw(" ".repeat(gap)),
             Span::styled(keys, muted_style(palette)),
         ])),
+        areas.footer,
+    );
+}
+
+fn draw_simulator(frame: &mut Frame, area: Rect, app: &App, palette: Palette) {
+    let Some(editor) = app
+        .project_config
+        .as_ref()
+        .and_then(|p| p.simulator_edit.as_ref())
+    else {
+        return;
+    };
+    let areas = super::layout::simulator_config(area);
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .style(Style::new().fg(palette.fg).bg(palette.bg))
+        .border_style(Style::new().fg(palette.accent))
+        .title(" Simulator settings ");
+    frame.render_widget(Clear, areas.popup);
+    frame.render_widget(block, areas.popup);
+    frame.render_widget(
+        Paragraph::new("Profile                LVGL + SDL · 320 × 240"),
+        areas.profile,
+    );
+    let choice = editor
+        .original_name()
+        .unwrap_or_else(|| "(new simulator)".into());
+    let values = [
+        &choice,
+        &editor.values[0],
+        &editor.values[1],
+        &editor.values[2],
+    ];
+    for (index, label) in ["Variant (←/→)", "Name", "Target", "Build directory"]
+        .iter()
+        .enumerate()
+    {
+        let cursor = if editor.selected == index && editor.editing {
+            "█"
+        } else {
+            ""
+        };
+        let value = super::overlay::shorten_tail(
+            values[index],
+            areas.fields[index].width.saturating_sub(24) as usize,
+        );
+        let text = format!("{label:<22} {value}{cursor}");
+        frame.render_widget(
+            Paragraph::new(text).style(if editor.selected == index {
+                selection_style(palette)
+            } else {
+                Style::new().fg(palette.fg)
+            }),
+            areas.fields[index],
+        );
+    }
+    for (index, label) in ["Prepare", "Remove", "Cancel"].iter().enumerate() {
+        let selected = editor.selected == index + 4;
+        // Remove is the destructive-shaped one: dim unless the current
+        // choice is a declared variant, with the reason beside it.
+        let active = selected && (index != 1 || editor.remove_refusal().is_none());
+        super::overlay::draw_dialog_button(frame, areas.buttons[index], label, active, palette);
+    }
+    frame.render_widget(
+        Paragraph::new(format!(
+            "{}\n{}\nPrepare opens the review; confirm it to write files.",
+            app.project_config.as_ref().unwrap().sdl_status,
+            crate::backend::zephyr::simulator::REQUIREMENTS
+        ))
+        .style(muted_style(palette))
+        .wrap(Wrap { trim: false }),
+        areas.info,
+    );
+    if let Some(error) = &editor.error {
+        frame.render_widget(
+            Paragraph::new(error.as_str())
+                .style(Style::new().fg(palette.error))
+                .wrap(Wrap { trim: false }),
+            areas.error,
+        );
+    } else if editor.selected == 5
+        && let Some(reason) = editor.remove_refusal()
+    {
+        frame.render_widget(
+            Paragraph::new(reason)
+                .style(Style::new().fg(palette.warning))
+                .wrap(Wrap { trim: false }),
+            areas.error,
+        );
+    }
+    frame.render_widget(
+        Paragraph::new(if editor.editing {
+            "enter  finish field · del  clear · esc  cancel edit"
+        } else {
+            "↑ ↓  select · enter  edit/activate · esc  cancel"
+        })
+        .style(muted_style(palette)),
         areas.footer,
     );
 }

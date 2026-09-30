@@ -1,0 +1,4 @@
+#!/bin/sh
+# Mirrors the quiet success of pkg-config --exists sdl2; refuses other flags.
+[ "$#" -eq 2 ] && [ "$1" = --exists ] && [ "$2" = sdl2 ] || exit 64
+exit 0
