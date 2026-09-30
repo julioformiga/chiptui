@@ -597,6 +597,12 @@ impl App {
     /// The walk stops at the configured projects folder when there is one:
     /// a module *above* the projects base is somebody else's, and climbing
     /// to `$HOME` looking for one would be a search, not a resolution.
+    ///
+    /// Two answers come out of the one walk: the configure roots
+    /// ([`crate::backend::zephyr::variants::board_roots`], module
+    /// manifests only) and the wider listing roots
+    /// ([`crate::backend::zephyr::variants::board_list_roots`], which add
+    /// the project's own root when its `boards/` tree defines a board).
     pub fn refresh_board_roots(&mut self) {
         let Some(panel) = &self.build else {
             return;
@@ -606,8 +612,11 @@ impl App {
             .as_ref()
             .and_then(|workspace| workspace.projects.clone());
         let roots = crate::backend::zephyr::variants::board_roots(&panel.root, stop_at.as_deref());
+        let listing =
+            crate::backend::zephyr::variants::board_list_roots(&panel.root, stop_at.as_deref());
         if let Some(panel) = &mut self.build {
             panel.set_board_roots(roots);
+            panel.set_list_roots(listing);
         }
     }
 

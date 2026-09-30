@@ -486,15 +486,27 @@ pub struct BuildPanel {
     /// build cannot erase a directory this session never mentioned. The
     /// remembered answer moves a cursor; it does not move the target.
     pub remembered_simulator: bool,
-    /// Extra board search roots for the *list* commands: directories a
-    /// project-local Zephyr module contributes
-    /// ([`crate::backend::zephyr::variants::board_roots`]). Empty for a
-    /// project that defines no board of its own.
+    /// Extra board search roots the project's Zephyr modules contribute
+    /// ([`crate::backend::zephyr::variants::board_roots`]), riding a
+    /// configuration's `-DBOARD_ROOT` --- see [`Self::cmake_args`] for why
+    /// the build needs telling. Empty for a project that declares no
+    /// module with a board root.
     ///
-    /// They reach the list commands and, through [`Self::cmake_args`], a
-    /// configuration's `-DBOARD_ROOT` --- see there for why the build
-    /// needs telling as well.
+    /// These are *not* what the board and shield lists search --- see
+    /// [`Self::list_roots`] for why the two answers differ.
     pub board_roots: Vec<PathBuf>,
+    /// Extra board search roots for the *list* commands: everything
+    /// [`Self::board_roots`] holds plus the project's own root when its
+    /// `boards/` tree defines a board itself
+    /// ([`crate::backend::zephyr::variants::board_list_roots`]).
+    ///
+    /// The lists search wider than a configuration configures on purpose.
+    /// An application that owns its board through
+    /// `list(APPEND BOARD_ROOT ...)` in its own `CMakeLists.txt` needs no
+    /// injected `-D` --- one could replace CMake's default and hide the
+    /// stock boards --- but `west boards` still has to see the board to
+    /// offer it in the picker.
+    pub list_roots: Vec<PathBuf>,
     /// Extra CMake arguments the project's own `chiptui.toml` declares
     /// (`[zephyr] build_args`), already split into words. They ride every
     /// configuration, *after* the roots this panel derives, so a
@@ -562,6 +574,7 @@ impl BuildPanel {
             variant: None,
             remembered_simulator: false,
             board_roots: Vec::new(),
+            list_roots: Vec::new(),
             build_args: Vec::new(),
             boards: ListFetch::default(),
             shields: ListFetch::default(),
@@ -576,15 +589,26 @@ impl BuildPanel {
         }
     }
 
-    /// Sets the extra board search roots (see [`Self::board_roots`]).
-    /// A change drops the cached board and shield lists: they were fetched
-    /// against the old roots, and the whole point of a root is that it adds
-    /// entries the previous answer could not have held.
+    /// Sets the module-contributed board roots (see [`Self::board_roots`]).
+    ///
+    /// No fetch is invalidated here: the board and shield lists search
+    /// [`Self::list_roots`], which is derived from the same walk and set
+    /// alongside this one, so a change that matters to the lists already
+    /// invalidates through [`Self::set_list_roots`].
     pub fn set_board_roots(&mut self, roots: Vec<PathBuf>) {
-        if self.board_roots == roots {
+        self.board_roots = roots;
+    }
+
+    /// Sets the extra roots the board and shield lists search (see
+    /// [`Self::list_roots`]). A change drops the cached board and shield
+    /// lists: they were fetched against the old roots, and the whole point
+    /// of a root is that it adds entries the previous answer could not
+    /// have held.
+    pub fn set_list_roots(&mut self, roots: Vec<PathBuf>) {
+        if self.list_roots == roots {
             return;
         }
-        self.board_roots = roots;
+        self.list_roots = roots;
         self.boards.invalidate();
         self.shields.invalidate();
     }
@@ -1121,7 +1145,7 @@ impl BuildPanel {
         &self,
         backend: &dyn crate::backend::Backend,
     ) -> Option<crate::process::Command> {
-        let command = backend.board_list_command(&self.board_roots)?;
+        let command = backend.board_list_command(&self.list_roots)?;
         Some(self.decorated(backend, command.current_dir(&self.root)))
     }
 
@@ -1131,7 +1155,7 @@ impl BuildPanel {
         &self,
         backend: &dyn crate::backend::Backend,
     ) -> Option<crate::process::Command> {
-        let command = backend.shield_list_command(&self.board_roots)?;
+        let command = backend.shield_list_command(&self.list_roots)?;
         Some(self.decorated(backend, command.current_dir(&self.root)))
     }
 
@@ -2350,6 +2374,38 @@ mod tests {
         );
         let boards = panel.boards_command(&ZephyrBackend).unwrap();
         assert!(boards.to_string().starts_with("west boards"));
+    }
+
+    /// A board the application defines in its own `boards/` tree reaches
+    /// the picker but never the configure: the listing roots carry the
+    /// project root, the CMake arguments carry no `-DBOARD_ROOT` at all ---
+    /// the application's own `CMakeLists.txt` owns that variable.
+    #[test]
+    fn a_project_local_board_root_reaches_the_lists_but_not_the_configure() {
+        let dir = fixture_dir("local-root");
+        let mut panel = BuildPanel::new(&dir, UtcOffset::UTC);
+        assert!(panel.cmake_args().is_empty(), "no module, no -D");
+        panel.set_list_roots(vec![dir.clone()]);
+
+        let board_flag = format!("--board-root {}", dir.display());
+        let boards = panel.boards_command(&ZephyrBackend).unwrap();
+        assert!(
+            boards.to_string().ends_with(&board_flag),
+            "the project root is searched for the listing: {boards}"
+        );
+        let shields = panel.shields_command(&ZephyrBackend).unwrap();
+        assert!(
+            shields.to_string().ends_with(&board_flag),
+            "shields search the same roots: {shields}"
+        );
+        assert!(
+            !panel
+                .cmake_args()
+                .iter()
+                .any(|arg| arg.starts_with("-DBOARD_ROOT")),
+            "the configure stays the application's own declaration: {:?}",
+            panel.cmake_args()
+        );
     }
 
     #[test]

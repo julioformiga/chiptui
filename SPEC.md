@@ -1235,6 +1235,20 @@ loading the application, so its `ZEPHYR_EXTRA_MODULES` cannot supply the
 root in time. An incremental build does not reconfigure and receives no
 CMake arguments. No root is invented when the module declares none.
 
+A board can also live in the application's own `boards/` tree, pulled in by
+`list(APPEND BOARD_ROOT ${CMAKE_CURRENT_SOURCE_DIR})` in the application's
+`CMakeLists.txt` --- no module manifest anywhere. `west build` finds it that
+way, but `west boards` does not, so the board list also searches the
+project's own root when its `boards/` directory holds a real board
+definition (a `board.yml` in a subdirectory; the per-target
+`boards/<stem>.conf`/`.overlay` fragments are not boards). That root joins
+the **listing only**: the configure's `-DBOARD_ROOT` stays what the project
+itself declared, because an invented root there could replace CMake's
+default and hide the stock boards, while the application's own declaration
+already covers the build. A project that is its own module is not added
+twice, and an ancestor's bare `boards/` tree (no manifest) is somebody
+else's and stays out.
+
 The application being a subdirectory is part of this layout, so the
 project picker looks one level deeper through a directory that is not
 itself an application. A module hook's `CMakeLists.txt` is a comment and

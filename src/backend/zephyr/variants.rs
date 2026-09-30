@@ -431,6 +431,55 @@ pub fn board_roots(root: &Path, stop_at: Option<&Path>) -> Vec<PathBuf> {
     roots
 }
 
+/// The extra roots the *list* commands search: everything
+/// [`board_roots`] answers plus, when the project itself defines
+/// boards, the project's own root.
+///
+/// The other way a board reaches a build has no manifest at all: a
+/// `boards/` tree inside the application, pulled in by its
+/// `CMakeLists.txt` with `list(APPEND BOARD_ROOT
+/// ${CMAKE_CURRENT_SOURCE_DIR})`. A plain `west build` finds the board
+/// that way, but `west boards` still does not, so the picker would
+/// offer everything *except* the board the project exists to support.
+/// The project root joins the listing for that case.
+///
+/// It joins the **listing only**. The configure's `-DBOARD_ROOT`
+/// ([`board_roots`]) stays what the project itself declared: a root
+/// this function invents could replace CMake's default there and hide
+/// every stock board an application that never touched `BOARD_ROOT`
+/// still builds for --- while the application's own declaration, when
+/// it exists, already covers the build.
+///
+/// A root [`board_roots`] already answered (the application is its own
+/// module, or a parent's manifest points here) is not added twice.
+pub fn board_list_roots(root: &Path, stop_at: Option<&Path>) -> Vec<PathBuf> {
+    let mut roots = board_roots(root, stop_at);
+    if !roots.iter().any(|known| known == root) && local_boards(root) {
+        roots.insert(0, root.to_path_buf());
+    }
+    roots
+}
+
+/// Whether the project's own `boards/` directory holds a real board.
+///
+/// The directory carries the per-target fragments too
+/// ([`fragment_path`]'s home), which are not boards, so the test looks
+/// for the one file every board definition of the current format
+/// carries: a `board.yml` inside a subdirectory, one or two levels
+/// down (`boards/<board>/` and `boards/<vendor>/<board>/`).
+fn local_boards(root: &Path) -> bool {
+    let Ok(vendors) = std::fs::read_dir(root.join("boards")) else {
+        return false;
+    };
+    vendors.flatten().any(|vendor| {
+        std::fs::read_dir(vendor.path()).is_ok_and(|boards| {
+            boards
+                .flatten()
+                .any(|board| board.path().join("board.yml").is_file())
+        })
+    })
+}
+
 /// The board root `dir`'s module manifest declares, resolved against the
 /// module directory. `None` when `dir` is not a module, or is one that
 /// contributes no board root.
@@ -546,6 +595,73 @@ mod tests {
         let dir = fixture("plain");
         std::fs::create_dir_all(dir.join("boards")).unwrap();
         assert!(board_roots(&dir, None).is_empty());
+    }
+
+    /// The soil-meter shape: the application defines its board in its own
+    /// `boards/` tree --- `list(APPEND BOARD_ROOT ...)` in the
+    /// `CMakeLists.txt`, no module manifest anywhere --- next to the
+    /// per-target fragments the same directory carries. The listing must
+    /// offer the board; the configure roots must not move, because the
+    /// application's own CMake owns `BOARD_ROOT`.
+    #[test]
+    fn a_project_local_boards_tree_joins_the_listing() {
+        let dir = fixture("local");
+        std::fs::create_dir_all(dir.join("boards/lilygo/t_qt_pro")).unwrap();
+        std::fs::write(dir.join("boards/lilygo/t_qt_pro/board.yml"), "").unwrap();
+        std::fs::write(dir.join("boards/native_sim_native_64.conf"), "").unwrap();
+
+        assert_eq!(
+            board_list_roots(&dir, None),
+            vec![dir.clone()],
+            "the project root is the board root"
+        );
+        assert!(
+            board_roots(&dir, None).is_empty(),
+            "the listing is the only consumer of the local root"
+        );
+    }
+
+    /// Fragments are not boards: a `boards/` directory holding only the
+    /// per-target `.conf`/`.overlay` files --- or subdirectories without a
+    /// `board.yml` --- contributes no root, or every fragment-style
+    /// project would grow a listing root that adds nothing.
+    #[test]
+    fn a_boards_tree_without_a_board_definition_is_not_a_root() {
+        let dir = fixture("fragments-only");
+        std::fs::create_dir_all(dir.join("boards/lilygo/t_qt_pro")).unwrap();
+        std::fs::write(dir.join("boards/native_sim_native_64.conf"), "").unwrap();
+        std::fs::write(dir.join("boards/lilygo/t_qt_pro/Kconfig"), "").unwrap();
+        assert!(board_list_roots(&dir, None).is_empty());
+    }
+
+    /// The application that is its own module already contributed its root
+    /// through the manifest; the listing must not carry it twice.
+    #[test]
+    fn an_app_that_is_its_own_module_is_not_added_twice() {
+        let dir = fixture("self-module");
+        std::fs::create_dir_all(dir.join("zephyr")).unwrap();
+        std::fs::create_dir_all(dir.join("boards/lilygo/t_qt_pro")).unwrap();
+        std::fs::write(dir.join("boards/lilygo/t_qt_pro/board.yml"), "").unwrap();
+        std::fs::write(
+            dir.join(MODULE_MANIFEST),
+            "name: acme\nbuild:\n  settings:\n    board_root: .\n",
+        )
+        .unwrap();
+
+        assert_eq!(board_list_roots(&dir, None), vec![dir.clone()]);
+        assert_eq!(board_roots(&dir, None), vec![dir.clone()]);
+    }
+
+    /// An ancestor holding a bare `boards/` tree --- no module manifest ---
+    /// stays out: the local treatment is for the project's own directory,
+    /// and a parent's tree is somebody else's.
+    #[test]
+    fn a_parent_with_a_bare_boards_tree_is_not_a_root() {
+        let repo = fixture("parent");
+        std::fs::create_dir_all(repo.join("boards/lilygo/t_qt_pro")).unwrap();
+        std::fs::write(repo.join("boards/lilygo/t_qt_pro/board.yml"), "").unwrap();
+        std::fs::create_dir_all(repo.join("app")).unwrap();
+        assert!(board_list_roots(&repo.join("app"), None).is_empty());
     }
 
     /// Writes a configured build directory: the two cache entries `west
