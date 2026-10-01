@@ -174,7 +174,10 @@ than assumptions about it: verify load-bearing CLI flags against the tool,
 and make the fake reject incorrect invocations. Use absolute fixture paths
 instead of changing global `PATH`, so tests remain parallel-safe.
 
-Hardware tests should be separate and explicitly documented.
+Hardware tests should be separate and explicitly documented. The one
+validation that needs a person at a terminal with a board — the OTA modal
+walked end to end against real hardware — lives in
+`docs/ota-hardware-walk.md`.
 
 ## Dependencies
 
