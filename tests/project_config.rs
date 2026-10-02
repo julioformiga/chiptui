@@ -13,10 +13,10 @@ use std::path::{Path, PathBuf};
 
 use chiptui::app::{App, AppEvent, Overlay};
 use chiptui::backend::{BackendKind, BackendRegistry};
-use chiptui::project::{DetectionSource, ProjectManager, config};
+use chiptui::project::{config, DetectionSource, ProjectManager};
 use chiptui::project_config::{Cursor, ProjectConfigRow};
 use chiptui::settings::{self, ProjectRegistry};
-use chiptui::startup::{Route, route};
+use chiptui::startup::{route, Route};
 use ratatui::crossterm::event::KeyCode;
 
 mod common;
@@ -251,13 +251,12 @@ fn udp_address_uses_an_ipv4_mask_and_validation() {
         app.project_config.as_ref().unwrap().editing().is_some(),
         "an out-of-range IPv4 octet remains editable"
     );
-    assert!(
-        app.project_config
-            .as_ref()
-            .unwrap()
-            .error()
-            .is_some_and(|error| error.contains("valid IPv4"))
-    );
+    assert!(app
+        .project_config
+        .as_ref()
+        .unwrap()
+        .error()
+        .is_some_and(|error| error.contains("valid IPv4")));
     app.handle(key(KeyCode::Delete));
     for ch in "192.168.1.42".chars() {
         app.handle(key(KeyCode::Char(ch)));
@@ -1292,6 +1291,12 @@ fn the_details_pane_lists_the_session_build_variants() {
     ] {
         assert!(frame.contains(expected), "missing {expected:?}:\n{frame}");
     }
+    assert!(
+        frame
+            .lines()
+            .any(|line| line.contains("Build variants") && line.contains('⧉')),
+        "the variants report row carries the clones glyph:\n{frame}"
+    );
     // A fresh session starts on the *board* variant, so it carries the
     // Current block's winner mark; the others keep the option mark. The
     // search is anchored to a variant row --- a bare '○' also matches the
@@ -1419,6 +1424,11 @@ fn rows_carry_their_controls_glyph_and_pending_ones_the_transition() {
     assert!(
         workspace.contains("📁"),
         "a path-picker row carries the folder:\n{workspace}"
+    );
+    let root = line(&frame, "Project folder", "project");
+    assert!(
+        root.contains("📁"),
+        "a report row naming a folder carries the folder:\n{root}"
     );
     let args = line(&frame, "Extra build arguments", "—");
     assert!(

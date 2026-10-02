@@ -435,6 +435,22 @@ impl IconSet {
         }
     }
 
+    /// A report row in the project configuration's list naming parallel
+    /// copies of one thing: `Build variants`, the declared and discovered
+    /// build configurations side by side. `⧉` / `nf-fa-clone` --- the
+    /// joined squares read as copies of a single source, the way a variant
+    /// is a copy of the project with a different target. The Unicode half
+    /// shares [`Self::copy`]'s glyph --- the same statement in two panes,
+    /// the way [`Self::choice`] shares [`Self::environment`]'s `☰`.
+    /// Decoration, like [`Self::directory`].
+    pub const fn variants(self) -> &'static str {
+        match self {
+            Self::Unicode => "⧉",
+            Self::Nerd => "\u{F24D}",
+            Self::None => "",
+        }
+    }
+
     /// The MicroPython backend's mark: the Python logo under Nerd Font
     /// (the header's `▲` and the home row's `🐍` both become it), the
     /// header's own triangle in the Unicode set (the surface that owns the
@@ -492,7 +508,7 @@ impl IconSet {
     /// Every glyph of this set, in vocabulary order --- so tests can walk
     /// the whole set without restating the method list by hand. Covers both
     /// vocabularies: the button glyphs and the pane/tab decorations.
-    pub fn glyphs(self) -> [&'static str; 31] {
+    pub fn glyphs(self) -> [&'static str; 32] {
         [
             self.play(),
             self.clean(),
@@ -524,6 +540,7 @@ impl IconSet {
             self.file(),
             self.text_edit(),
             self.choice(),
+            self.variants(),
             self.python(),
         ]
     }

@@ -1489,7 +1489,9 @@ level of the configuration stack answers it now (`chiptui.toml`, then the
 user config, then the defaults, stated once under the strip), and the
 literal line an unapplied answer will write. Each answer row carries a state
 marker (`●` pending, `✓` in the file, `←` answered at a less specific level,
-`·` unanswered). Path rows also advertise their picker. A pending row shows
+`·` unanswered). Path rows also advertise their picker, and each read-only
+report row carries a subject mark instead --- a folder for the project
+folder, the joined-squares clone mark for the build variants. A pending row shows
 the `old → new` transition
 rather than
 the new value alone. The Details pane lists every option of a choice row ---

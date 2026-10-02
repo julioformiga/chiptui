@@ -20,11 +20,11 @@ use std::time::{Duration, Instant};
 
 use chiptui::app::App;
 use chiptui::event::AppEvent;
-use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{
     KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
+use ratatui::Terminal;
 
 /// The absolute path of a fake tool in `tests/fixtures/bin/`.
 ///
