@@ -18,9 +18,9 @@
 //!
 //! Nothing here writes anything. A project may declare its variants in its
 //! own `chiptui.toml` (also written by explicit simulator preparation), and a project
-//! that declares none has them *discovered* from the two places the
-//! convention already leaves them: the build directories it has built
-//! before, and the fragments under `boards/`.
+//! also discovers existing build directories, merged by path. Fragments
+//! under `boards/` can suggest targets during simulator preparation, but
+//! are not complete configurations in the lifecycle selector.
 
 use std::path::{Path, PathBuf};
 
@@ -29,8 +29,7 @@ use super::yaml;
 /// A module manifest's location relative to the module root.
 const MODULE_MANIFEST: &str = "zephyr/module.yml";
 
-/// Where a variant's definition came from --- shown on the picker's rows,
-/// and the reason a declared list is never merged with a discovered one.
+/// Where a variant's definition came from, shown in project configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VariantOrigin {
     /// A `[[variant]]` block in the project's own `chiptui.toml`.
@@ -104,10 +103,9 @@ pub type Catalogue<'a> = &'a [String];
 
 /// The project's build variants, in the order they should be offered.
 ///
-/// A `chiptui.toml` that declares any wins outright --- a hand-written list
-/// is the most specific answer there is, and merging it with guesses would
-/// make it impossible to *remove* a variant. Otherwise the two conventional
-/// sources are merged (see [`discover`]).
+/// Declarations supply names and configurations not yet built. Existing
+/// directories join them by path, with cached board/shield describing what
+/// that directory actually holds. Fragments alone do not create choices.
 ///
 /// `app` is the application directory when the project root is not itself
 /// the application (the module-repository layout): the `boards/` fragments
@@ -120,10 +118,42 @@ pub fn variants(
     declared: &[Variant],
     catalogue: Catalogue<'_>,
 ) -> Vec<Variant> {
-    if declared.is_empty() {
-        discover(root, app, catalogue)
+    let _ = catalogue; // Fragments suggest boards, not complete build configurations.
+    let mut found = Vec::new();
+    for variant in declared {
+        if !super::configuration::belongs_to(root, app, &variant.build_dir) {
+            continue;
+        }
+        let mut variant = variant.clone();
+        if let Some(target) = crate::build::cached_target(root, &variant.build_dir) {
+            variant.board = Some(target.board);
+            variant.shield = target.shield;
+        }
+        if !found.iter().any(|v: &Variant| {
+            normalize(&root.join(&v.build_dir)) == normalize(&root.join(&variant.build_dir))
+        }) {
+            found.push(variant);
+        }
+    }
+    for variant in discover_all(root, app, &[]) {
+        if !found.iter().any(|v| {
+            normalize(&root.join(&v.build_dir)) == normalize(&root.join(&variant.build_dir))
+        }) {
+            found.push(variant);
+        }
+    }
+    dedupe_names(&mut found);
+    found.sort_by(|a, b| a.build_dir.cmp(&b.build_dir));
+    // Preserve the conventional single-board panel; a lone non-default
+    // directory or simulator must still become the lifecycle's target.
+    if declared.is_empty()
+        && found.len() == 1
+        && found[0].build_dir == "build"
+        && !found[0].is_simulator()
+    {
+        Vec::new()
     } else {
-        declared.to_vec()
+        found
     }
 }
 
@@ -165,11 +195,7 @@ pub fn discover_all(root: &Path, app: Option<&Path>, catalogue: Catalogue<'_>) -
         let Some(target) = crate::build::cached_target(root, &build_dir) else {
             continue;
         };
-        if found.iter().any(|v| {
-            v.board
-                .as_deref()
-                .is_some_and(|board| same_board(board, &target.board))
-        }) {
+        if !super::configuration::belongs_to(root, app, &build_dir) {
             continue;
         }
         found.push(Variant {
@@ -668,7 +694,10 @@ mod tests {
     /// build` leaves behind, in the classic (non-sysbuild) location.
     fn built(root: &Path, dir: &str, board: &str, shield: Option<&str>) {
         std::fs::create_dir_all(root.join(dir).join("zephyr")).unwrap();
-        let mut cache = format!("CMAKE_HOME_DIRECTORY:INTERNAL=/x\nCACHED_BOARD:STRING={board}\n");
+        let mut cache = format!(
+            "CMAKE_HOME_DIRECTORY:INTERNAL={}\nCACHED_BOARD:STRING={board}\n",
+            root.display()
+        );
         if let Some(shield) = shield {
             cache.push_str(&format!("SHIELD:STRING={shield}\n"));
         }
@@ -801,10 +830,9 @@ mod tests {
         assert!(discover(&root, None, &[]).is_empty());
     }
 
-    /// A declared list wins outright: merging would make a variant
-    /// impossible to *remove* from a project that names its own.
+    /// A declaration names an existing directory without hiding its siblings.
     #[test]
-    fn a_declared_list_is_never_merged_with_discovery() {
+    fn declarations_merge_by_directory_and_existing_caches_name_the_target() {
         let root = fixture("declared");
         built(&root, "build", "xiao_esp32c3", None);
         built(&root, "build_sim", "native_sim/native/64", None);
@@ -815,7 +843,11 @@ mod tests {
             build_dir: "build".into(),
             origin: VariantOrigin::Declared,
         }];
-        assert_eq!(variants(&root, None, &declared, &catalogue()), declared);
+        let found = variants(&root, None, &declared, &catalogue());
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].name, "hardware");
+        assert_eq!(found[0].board.as_deref(), Some("xiao_esp32c3"));
+        assert_eq!(found[1].build_dir, "build_sim");
         // With none declared, discovery answers.
         assert_eq!(variants(&root, None, &[], &catalogue()).len(), 2);
     }

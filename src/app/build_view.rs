@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
 use crate::backend::BuildKind;
-use crate::build::{BoardChoice, BuildAction, BuildPanel};
+use crate::build::{BoardChoice, BuildAction};
 use crate::project::config;
 
 use super::overlay::TargetPickerPurpose;
@@ -146,8 +146,8 @@ impl App {
         self.persist_target();
     }
 
-    /// Writes the panel's current target answers --- board, shield and the
-    /// selected variant's name --- into the registry entry for the project
+    /// Writes the panel's current target answers --- board and shield ---
+    /// into the registry entry for the project
     /// the panel is rooted at (creating the entry when the project is not
     /// recorded yet --- opening it would do the same). Everything else
     /// already recorded --- backend, name, last-opened stamp --- survives
@@ -213,13 +213,8 @@ impl App {
             entry.board = Some(board.to_string());
         }
         entry.shield = panel.shield_name().map(str::to_string);
-        // The *answer*, not the live target: a session starts on the board
-        // whatever was built last, so recording the target here would
-        // forget the answer the moment the project reopened.
-        entry.variant = panel
-            .variant_index_for(panel.remembered_simulator)
-            .and_then(|index| panel.variants.get(index))
-            .map(|variant| variant.name.clone());
+        // Picking a board does not change which build operation ran last.
+        entry.last_build_dir = panel.remembered_build_dir.clone();
         let config = self.user_config_path();
         match crate::settings::record_project(&config, entry) {
             Ok(()) => self
@@ -272,44 +267,71 @@ impl App {
         (board, shield)
     }
 
-    /// Opens the build question: on the board, or on the host simulator?
-    ///
-    /// Only when the project has both ([`BuildPanel::offers_build_choice`])
-    /// --- with a single target there is nothing to ask and `kind` starts
-    /// outright. The cursor opens on the *last* answer, so repeating a
-    /// target is one `Enter` and changing it is one arrow: the question is
-    /// asked every time (nothing on the pane says where the next build
-    /// goes, so remembering silently would hide it), but it never costs
-    /// more than a keypress.
+    /// Refreshes the configuration list at action time. The last started
+    /// directory leads the shared Clean/Build/Rebuild question. One eligible
+    /// directory needs no question; Clean still asks for confirmation.
     pub fn ask_build_target(&mut self, kind: BuildKind) {
-        self.overlay = Some(Overlay::BuildTarget {
-            kind,
-            selected: usize::from(
-                self.build
-                    .as_ref()
-                    .is_some_and(|panel| panel.remembered_simulator),
-            ),
+        self.refresh_variants();
+        let Some(panel) = self.build.as_ref() else {
+            return;
+        };
+        let mut rows: Vec<_> = panel
+            .variants
+            .iter()
+            .filter(|variant| {
+                kind != BuildKind::Clean
+                    || crate::build::cached_target(&panel.root, &variant.build_dir).is_some()
+            })
+            .cloned()
+            .collect();
+        rows.sort_by(|a, b| {
+            let last = panel.remembered_build_dir.as_deref();
+            (last != Some(a.build_dir.as_str()))
+                .cmp(&(last != Some(b.build_dir.as_str())))
+                .then_with(|| a.build_dir.cmp(&b.build_dir))
         });
+        match rows.len() {
+            0 if kind == BuildKind::Clean && !panel.has_build_dir() => {
+                self.logs
+                    .warn("Clean: no configured Zephyr build exists; run Build first");
+            }
+            0 => self.finish_build_choice(kind),
+            1 => self.apply_build_target(kind, &rows[0].build_dir),
+            _ => {
+                self.overlay = Some(Overlay::BuildTarget {
+                    kind,
+                    selected: 0,
+                    rows,
+                })
+            }
+        }
     }
 
-    /// Applies the build question's answer and starts the command: the
-    /// chosen variant becomes the panel's target --- its board, its shield
-    /// and its build directory together --- and `kind` runs against it.
-    ///
-    /// That target then outlives the command: `Clean`, `Menuconfig` and the
-    /// dashboard follow the last build, because that is the artifact the
-    /// user was just looking at. Only `Flash` is pinned to the board
-    /// ([`BuildPanel::flash_build_dir`]).
-    pub(super) fn apply_build_target(&mut self, kind: BuildKind, selected: usize) {
-        let simulator = selected == 1;
+    /// Applies the chosen directory without changing the project's board
+    /// answer. Clean confirms it; Build/Rebuild start it. Persisting the
+    /// choice belongs to command start, never to selection or cancellation.
+    pub(super) fn apply_build_target(&mut self, kind: BuildKind, build_dir: &str) {
         if let Some(panel) = &mut self.build {
-            panel.remembered_simulator = simulator;
-            if let Some(index) = panel.variant_index_for(simulator) {
+            if let Some(index) = panel.variants.iter().position(|v| v.build_dir == build_dir) {
                 panel.select_variant(index);
+            } else {
+                self.logs
+                    .warn("the selected build is no longer available; reopen the build selector");
+                return;
             }
-            self.persist_target();
         }
-        self.start_build(kind);
+        self.finish_build_choice(kind);
+    }
+
+    fn finish_build_choice(&mut self, kind: BuildKind) {
+        if kind == BuildKind::Clean {
+            self.overlay = Some(Overlay::ConfirmBuild {
+                action: BuildAction::Build(kind),
+                confirm: false,
+            });
+        } else {
+            self.start_build(kind);
+        }
     }
 
     /// Opens the shield picker, kicking off the background `west shields`
@@ -473,22 +495,7 @@ impl App {
         match action {
             BuildAction::Stop => self.stop_build(),
             BuildAction::Build(kind) => {
-                if kind == BuildKind::Clean {
-                    self.overlay = Some(Overlay::ConfirmBuild {
-                        action,
-                        confirm: false,
-                    });
-                } else if self
-                    .build
-                    .as_ref()
-                    .is_some_and(BuildPanel::offers_build_choice)
-                {
-                    // The project keeps a host target beside the board, so
-                    // where this build runs is a question, not a default.
-                    self.ask_build_target(kind);
-                } else {
-                    self.start_build(kind);
-                }
+                self.ask_build_target(kind);
             }
             BuildAction::Flash => self.open_flash_method(),
             BuildAction::Menuconfig => self.start_menuconfig(),
@@ -659,22 +666,25 @@ impl App {
             .manager
             .known_projects()
             .entry_for(&panel.root)
-            .and_then(|entry| entry.variant.clone());
+            .map(|entry| (entry.last_build_dir.clone(), entry.variant.clone()));
         let Some(panel) = &mut self.build else {
             return;
         };
         panel.set_variants(variants);
-        // The registry's answer seeds the *question's cursor*, not the
-        // target: the session starts on the board (`set_variants` lands
-        // there), so a `Clean` pressed before any build cannot erase a
-        // directory this session never mentioned. Only a name the project
-        // still has counts.
-        if let Some(name) = saved {
-            panel.remembered_simulator = panel
-                .variants
-                .iter()
-                .find(|v| v.name == name)
-                .is_some_and(|v| v.is_simulator());
+        // Read old variant-name preferences once for compatibility; new
+        // operations remember the directory, including same-board builds.
+        if panel.remembered_build_dir.is_none()
+            && let Some((dir, legacy)) = saved
+        {
+            panel.remembered_build_dir = dir.or_else(|| {
+                legacy.and_then(|name| {
+                    panel
+                        .variants
+                        .iter()
+                        .find(|v| v.name == name)
+                        .map(|v| v.build_dir.clone())
+                })
+            });
         }
     }
 
@@ -908,11 +918,7 @@ impl App {
             updates_board,
             BuildAction::Build(kind),
             Focus::Build,
-            |panel, backend| {
-                panel
-                    .command(kind, backend)
-                    .ok_or_else(|| "this backend offers no such action".to_string())
-            },
+            |panel, backend| panel.checked_command(kind, backend),
         );
         // Clean parks the cursor on Build: the build is the step a clean
         // exists to clear the way for (a build/rebuild already sits on
@@ -1213,6 +1219,29 @@ impl App {
             &caps,
         ) {
             return;
+        }
+        if matches!(action, BuildAction::Build(_)) {
+            panel.remembered_build_dir = Some(panel.build_dir.clone());
+            let root = panel.root.clone();
+            if let Some(kind) = self.manager.selected_kind() {
+                let mut entry = self
+                    .manager
+                    .known_projects()
+                    .entry_for(&root)
+                    .cloned()
+                    .unwrap_or_else(|| crate::settings::ProjectEntry::new(&root, kind));
+                entry.last_build_dir = panel.remembered_build_dir.clone();
+                entry.variant = None;
+                if let Err(err) = crate::settings::record_project(&self.user_config_path(), entry) {
+                    self.logs
+                        .warn(format!("could not save the last build directory: {err}"));
+                }
+                self.manager
+                    .set_known_projects(crate::settings::ProjectRegistry::load(
+                        &self.config_dir,
+                        &self.home_dir,
+                    ));
+            }
         }
         // No "running ..." notice: the process pool's `Started` event logs
         // the command line itself (the log's `$` rows), which is the same

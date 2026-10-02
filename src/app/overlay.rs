@@ -826,28 +826,50 @@ impl App {
                     _ => {}
                 }
             }
-            Overlay::BuildTarget { kind, selected } => {
-                // The stacked-menu grammar `ZephyrActions` has: two rows,
+            Overlay::BuildTarget {
+                kind,
+                selected,
+                rows,
+            } => {
+                // The stacked-menu grammar `ZephyrActions` has: named rows,
                 // no filter, so `q` is free to close and the letters mean
                 // nothing.
-                const COUNT: usize = crate::ui::BUILD_TARGET_COUNT;
+                let count = rows.len().max(1);
                 match key.code {
                     KeyCode::Esc | KeyCode::Char('q') => self.overlay = None,
                     KeyCode::Up | KeyCode::Char('k') => {
                         self.overlay = Some(Overlay::BuildTarget {
                             kind,
-                            selected: (selected + COUNT - 1) % COUNT,
+                            selected: (selected + count - 1) % count,
+                            rows,
                         });
                     }
                     KeyCode::Down | KeyCode::Char('j') => {
                         self.overlay = Some(Overlay::BuildTarget {
                             kind,
-                            selected: (selected + 1) % COUNT,
+                            selected: (selected + 1) % count,
+                            rows,
                         });
                     }
                     KeyCode::Enter => {
                         self.overlay = None;
-                        self.apply_build_target(kind, selected);
+                        if let Some(row) = rows.get(selected) {
+                            self.apply_build_target(kind, &row.build_dir);
+                        }
+                    }
+                    KeyCode::Home => {
+                        self.overlay = Some(Overlay::BuildTarget {
+                            kind,
+                            selected: 0,
+                            rows,
+                        })
+                    }
+                    KeyCode::End => {
+                        self.overlay = Some(Overlay::BuildTarget {
+                            kind,
+                            selected: count - 1,
+                            rows,
+                        })
                     }
                     _ => {}
                 }
@@ -1582,19 +1604,14 @@ pub enum Overlay {
     /// simulator the project also keeps
     /// ([`crate::backend::zephyr::variants`]).
     ///
-    /// Only opened when the project *has* both --- with a single target
-    /// there is no question and the command starts outright. `kind` is the
-    /// action that asked, so the answer starts that command rather than a
-    /// remembered one, and `selected` opens on the last answer: repeating
-    /// a target is `Enter`, changing it is one arrow.
-    ///
-    /// Not a confirm: nothing here is destructive
-    /// (`SPEC.md` §15) and neither answer is the safe one. It is a
-    /// two-button menu, drawn with the same stacked widget
-    /// [`Self::ZephyrActions`] uses.
+    /// Opens for multiple eligible configurations; rows are snapshotted in
+    /// last-used-first order. Uses the existing stacked button style with
+    /// cursor-following scrolling. Clean's answer opens a separate §15
+    /// confirmation before anything runs.
     BuildTarget {
         kind: crate::backend::BuildKind,
         selected: usize,
+        rows: Vec<crate::backend::zephyr::variants::Variant>,
     },
     /// The entry under the cursor in the file browser (`enter`): a small
     /// menu of what to do with it. Which actions show up depends on the pane,

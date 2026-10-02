@@ -5,6 +5,7 @@
 //! split (`SPEC.md` §12 --- one seam per tool).
 
 pub mod commands;
+pub mod configuration;
 pub mod domains;
 pub mod flash_method;
 pub mod flash_plan;

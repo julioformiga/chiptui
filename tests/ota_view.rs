@@ -157,6 +157,13 @@ fn prepare_through_modal(app: &mut App) {
 fn build_signed_image(root: &std::path::Path) {
     let app_dir = root.join("build/app/zephyr");
     std::fs::create_dir_all(&app_dir).unwrap();
+    // A real sysbuild records the application's board in its domain cache.
+    let cache = format!(
+        "CACHED_BOARD:STRING=xiao_esp32c3\nAPPLICATION_SOURCE_DIR:PATH={}\n",
+        root.display()
+    );
+    std::fs::write(root.join("build/app/CMakeCache.txt"), &cache).unwrap();
+    std::fs::write(root.join("build/CMakeCache.txt"), &cache).unwrap();
     std::fs::write(
         root.join("build/domains.yaml"),
         "default: app\nbuild_dir: /build\ndomains:\n  - name: app\n    build_dir: /build/app\nflash_order:\n  - app\n",

@@ -930,19 +930,20 @@ impl App {
                     self.set_overlay_selected(index);
                 }
             }
-            Overlay::BuildTarget { .. } => {
+            Overlay::BuildTarget { selected, rows, .. } => {
                 // A stacked-button menu, drawn the way `ZephyrActions` is:
                 // the click presses the button its row belongs to, through
                 // the same `Enter` the keyboard sends, so the gate and the
                 // effect stay one path.
-                let placeholders: Vec<crate::ui::Button> = (0..crate::ui::BUILD_TARGET_COUNT)
+                let (offset, count) = crate::ui::layout::build_target_window(rect, rows.len(), *selected);
+                let placeholders: Vec<crate::ui::Button> = (0..count)
                     .map(|_| crate::ui::Button::new("").detail(""))
                     .collect();
                 let Some(row) = point.1.checked_sub(rect.y + 1) else {
                     return;
                 };
                 if let Some(index) = crate::ui::button_at_row(&placeholders, row) {
-                    self.set_overlay_selected(index);
+                    self.set_overlay_selected(offset + index);
                     self.overlay_key(KeyCode::Enter);
                 }
             }

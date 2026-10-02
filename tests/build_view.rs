@@ -325,7 +325,7 @@ fn rebuild_is_pristine_and_pins_the_cached_board() {
             .output
             .front()
             .unwrap()
-            .ends_with("west build --pristine=always -b nrf52840dk/nrf52840")
+            .ends_with("west build --pristine=always -b nrf52840dk/nrf52840 --no-sysbuild")
     );
     let _ = pump_until(
         &mut app,
@@ -2252,7 +2252,7 @@ fn build_target_moves_the_build_directory_without_changing_the_projects_board() 
     app.ask_build_target(BuildKind::Build);
     assert!(matches!(
         app.overlay,
-        Some(Overlay::BuildTarget { selected: 1, .. })
+        Some(Overlay::BuildTarget { selected: 0, .. })
     ));
 }
 
@@ -2273,8 +2273,8 @@ fn an_open_device_variant_names_the_projects_board_on_the_button() {
     let panel = app.build.as_ref().unwrap();
     assert_eq!(
         panel.device_variant().and_then(|v| v.board.as_deref()),
-        None,
-        "the declared device variant leaves the board open"
+        Some("nrf52840dk/nrf52840"),
+        "the existing cache resolves the declared device variant's open board"
     );
     assert_eq!(panel.board_name(), Some("nrf52840dk/nrf52840"));
 
@@ -2547,6 +2547,192 @@ fn a_single_target_project_is_never_asked_where_to_build() {
     app.handle(key(KeyCode::Enter));
     assert!(app.overlay.is_none(), "no question with nothing to ask");
     assert!(app.build.as_ref().unwrap().is_busy(), "the build started");
+}
+
+fn add_configuration(root: &std::path::Path, dir: &str, board: &str) {
+    std::fs::create_dir_all(root.join(dir)).unwrap();
+    std::fs::write(
+        root.join(dir).join("CMakeCache.txt"),
+        format!(
+            "CACHED_BOARD:STRING={board}\nAPPLICATION_SOURCE_DIR:PATH={}\n",
+            root.display()
+        ),
+    )
+    .unwrap();
+}
+
+#[test]
+fn lifecycle_choices_share_directory_memory_and_clean_confirms_the_chosen_directory() {
+    let (mut app, root) = zephyr_app("multi-build-memory", Some("nrf52840dk/nrf52840"));
+    app.build.as_mut().unwrap().set_tool_path(fake("west"));
+    add_configuration(&root, "build_rev_a", "nrf52840dk/nrf52840");
+    add_configuration(&root, "build_rev_b", "nrf52840dk/nrf52840");
+    app.ask_build_target(BuildKind::Build);
+    let Some(Overlay::BuildTarget { rows, selected, .. }) = &app.overlay else {
+        panic!("no selector")
+    };
+    assert_eq!(*selected, 0);
+    assert_eq!(
+        rows.iter()
+            .map(|v| v.build_dir.as_str())
+            .collect::<Vec<_>>(),
+        ["build", "build_rev_a", "build_rev_b"]
+    );
+    app.handle(key(KeyCode::End));
+    app.handle(key(KeyCode::Enter));
+    assert!(pump_until(
+        &mut app,
+        |app| !app.build.as_ref().unwrap().is_busy(),
+        10
+    ));
+    assert_eq!(
+        app.build.as_ref().unwrap().remembered_build_dir.as_deref(),
+        Some("build_rev_b")
+    );
+    for kind in [BuildKind::Clean, BuildKind::Build, BuildKind::Rebuild] {
+        app.ask_build_target(kind);
+        let Some(Overlay::BuildTarget { rows, selected, .. }) = &app.overlay else {
+            panic!("no selector")
+        };
+        assert_eq!(*selected, 0);
+        assert_eq!(rows[0].build_dir, "build_rev_b");
+        assert_eq!(rows[1].build_dir, "build");
+        app.handle(key(KeyCode::Esc));
+    }
+    // Cancelling Clean's confirmation must not replace the remembered row.
+    app.ask_build_target(BuildKind::Clean);
+    app.handle(key(KeyCode::End));
+    app.handle(key(KeyCode::Enter));
+    assert!(matches!(
+        app.overlay,
+        Some(Overlay::ConfirmBuild { confirm: false, .. })
+    ));
+    assert!(render(&mut app, 100, 32).contains("build_rev_a/"));
+    app.handle(key(KeyCode::Esc));
+    assert_eq!(
+        app.build.as_ref().unwrap().remembered_build_dir.as_deref(),
+        Some("build_rev_b")
+    );
+
+    // The next confirmed Clean replaces the preference, even across restart.
+    app.ask_build_target(BuildKind::Clean);
+    app.handle(key(KeyCode::End));
+    app.handle(key(KeyCode::Enter));
+    app.handle(key(KeyCode::Char('y')));
+    assert!(pump_until(
+        &mut app,
+        |app| !app.build.as_ref().unwrap().is_busy(),
+        10
+    ));
+    assert!(app.build.as_ref().unwrap().last.as_ref().unwrap().ok);
+    let registry = chiptui::settings::ProjectRegistry::load(
+        &chiptui::settings::config_dir_in(&root.join("home")),
+        &root.join("home"),
+    );
+    assert_eq!(
+        registry.entry_for(&root).unwrap().last_build_dir.as_deref(),
+        Some("build_rev_a")
+    );
+    let mut reopened = App::new(&root);
+    reopened.set_home_dir(root.join("home"));
+    reopened.set_serial_dir(root.join("dev"));
+    reopened.bootstrap();
+    reopened.maybe_scan_devices();
+    reopened.ask_build_target(BuildKind::Rebuild);
+    let Some(Overlay::BuildTarget {
+        rows, selected: 0, ..
+    }) = &reopened.overlay
+    else {
+        panic!("no selector after restart")
+    };
+    assert_eq!(rows[0].build_dir, "build_rev_a");
+
+    // External additions/removals are discovered on the very next action.
+    std::fs::remove_dir_all(root.join("build_rev_a")).unwrap();
+    add_configuration(&root, "build_rev_c", "nrf52840dk/nrf52840");
+    reopened.ask_build_target(BuildKind::Build);
+    let Some(Overlay::BuildTarget { rows, .. }) = &reopened.overlay else {
+        panic!("no refreshed selector")
+    };
+    assert_eq!(
+        rows.iter()
+            .map(|v| v.build_dir.as_str())
+            .collect::<Vec<_>>(),
+        ["build", "build_rev_b", "build_rev_c"]
+    );
+}
+
+#[test]
+fn build_selector_scrolls_resizes_and_clicks_the_drawn_configuration() {
+    use chiptui::event::AppEvent;
+    use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    let (mut app, root) = zephyr_app("multi-build-scroll", Some("nrf52840dk/nrf52840"));
+    app.set_mouse_enabled(true);
+    app.build.as_mut().unwrap().set_tool_path(fake("west"));
+    for index in 0..12 {
+        add_configuration(&root, &format!("build_{index:02}"), "nrf52840dk/nrf52840");
+    }
+    app.ask_build_target(BuildKind::Clean);
+    app.handle(key(KeyCode::End));
+    let small = render(&mut app, 80, 24);
+    assert!(small.contains("Device · build_11"), "{small}");
+    assert!(!small.contains("Device · build_00"), "{small}");
+    let large = render(&mut app, 100, 40);
+    assert!(large.contains("Device · build_11"), "{large}");
+    let (row, column) = find_cell(&large, "Device · build_10").expect("visible configuration");
+    app.handle(AppEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    }));
+    assert!(matches!(
+        app.overlay,
+        Some(Overlay::ConfirmBuild { confirm: false, .. })
+    ));
+    assert_eq!(app.build.as_ref().unwrap().build_dir, "build_10");
+    assert!(!app.build.as_ref().unwrap().is_busy());
+}
+
+#[test]
+fn a_lone_nondefault_build_is_used_and_clean_excludes_unbuilt_declarations() {
+    let (mut app, root) = zephyr_app("lone-nondefault", None);
+    app.build.as_mut().unwrap().set_tool_path(fake("west"));
+    add_configuration(&root, "build_rev_a", "nrf52840dk/nrf52840");
+    app.ask_build_target(BuildKind::Build);
+    assert!(app.overlay.is_none());
+    assert_eq!(app.build.as_ref().unwrap().build_dir, "build_rev_a");
+    assert!(pump_until(
+        &mut app,
+        |app| !app.build.as_ref().unwrap().is_busy(),
+        10
+    ));
+    std::fs::write(
+        root.join("chiptui.toml"),
+        "[[variant]]\nname = 'sim'\nboard = 'native_sim/native/64'\nbuild_dir = 'build_sim'\n",
+    )
+    .unwrap();
+    app.ask_build_target(BuildKind::Build);
+    let Some(Overlay::BuildTarget { rows, .. }) = &app.overlay else {
+        panic!("declared simulator not offered")
+    };
+    assert_eq!(rows.len(), 2);
+    app.handle(key(KeyCode::Esc));
+    app.ask_build_target(BuildKind::Clean);
+    assert!(matches!(
+        app.overlay,
+        Some(Overlay::ConfirmBuild { confirm: false, .. })
+    ));
+    assert_eq!(app.build.as_ref().unwrap().build_dir, "build_rev_a");
+}
+
+#[test]
+fn clean_without_a_configured_directory_never_runs_west() {
+    let (mut app, _root) = zephyr_app("no-clean-build", None);
+    app.ask_build_target(BuildKind::Clean);
+    assert!(app.overlay.is_none());
+    assert!(!app.build.as_ref().unwrap().is_busy());
+    assert!(common::log_mentions(&app, "run Build first"));
 }
 
 /// The wheel over a cursor-walked list steps that list's cursor one row

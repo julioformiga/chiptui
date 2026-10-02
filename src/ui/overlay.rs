@@ -299,8 +299,8 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
             palette,
             app.icon_set(),
         ),
-        Overlay::BuildTarget { selected, .. } => {
-            draw_build_target(frame, popup, app, selected, app.icon_set(), palette)
+        Overlay::BuildTarget { kind, selected, rows } => {
+            draw_build_target(frame, popup, app, (kind, selected, &rows), app.icon_set(), palette)
         }
         Overlay::ProjectPicker {
             mpy,
@@ -1967,7 +1967,12 @@ fn board_target(app: &App) -> String {
     let board = app
         .build
         .as_ref()
-        .and_then(|panel| panel.board_name())
+        .and_then(|panel| {
+            panel
+                .device_variant()
+                .and_then(|variant| variant.board.as_deref())
+                .or_else(|| panel.board_name())
+        })
         .map(str::to_string);
     let port = app.devices.selected_port().map(str::to_string);
     match (board, port) {
@@ -2403,11 +2408,6 @@ fn draw_sample_picker(
     );
 }
 
-/// How many buttons [`draw_build_target`] draws. Two by construction ---
-/// the question is "board or host", and a project reaches this window only
-/// when it has one of each.
-pub(crate) const BUILD_TARGET_COUNT: usize = 2;
-
 /// Where a build should run: on the board, or on the host simulator.
 ///
 /// Each button names the target underneath it, because "Simulator" alone
@@ -2417,53 +2417,70 @@ fn draw_build_target(
     frame: &mut Frame,
     popup: Rect,
     app: &App,
-    selected: usize,
+    selection: (
+        crate::backend::BuildKind,
+        usize,
+        &[crate::backend::zephyr::variants::Variant],
+    ),
     icons: crate::icons::IconSet,
     palette: Palette,
 ) {
-    let (device, simulator, project_board) = app
-        .build
-        .as_ref()
-        .map(|panel| {
-            (
-                panel.device_variant(),
-                panel.simulator_variant(),
-                panel.board_name().map(str::to_string),
-            )
-        })
-        .unwrap_or((None, None, None));
-    // A device variant that leaves the board open builds with the project's
-    // Board answer (`BuildPanel::build_board` defers to it), so the button
-    // names that answer instead of a "?" --- the target the command will
-    // take is what the user is confirming here. A simulator variant always
-    // names its own board, so it never needs the fallback.
-    let detail = |variant: Option<&crate::backend::zephyr::variants::Variant>,
-                  fallback: Option<&str>| {
-        variant.map_or_else(
-            || "no target".to_string(),
-            |variant| {
-                format!(
-                    "{} · {}/",
-                    variant.board.as_deref().or(fallback).unwrap_or("?"),
-                    variant.build_dir
+    let (kind, selected, rows) = selection;
+    let panel = app.build.as_ref();
+    let (offset, count) = super::layout::build_target_window(popup, rows.len(), selected);
+    let buttons: Vec<_> = rows
+        .iter()
+        .enumerate()
+        .skip(offset)
+        .take(count)
+        .map(|(index, variant)| {
+            let simulator = variant.is_simulator();
+            let last =
+                panel.and_then(|p| p.remembered_build_dir.as_deref()) == Some(&variant.build_dir);
+            let label = format!(
+                "{} · {}{}",
+                if simulator { "Simulator" } else { "Device" },
+                variant.build_dir,
+                if last { " · last used" } else { "" }
+            );
+            let mut detail = format!(
+                "{} · {}/",
+                variant
+                    .board
+                    .as_deref()
+                    .or_else(|| panel.and_then(|p| p.board_name()))
+                    .unwrap_or("?"),
+                variant.build_dir
+            );
+            if let Some(shield) = &variant.shield {
+                detail.push_str(&format!(" · {shield}"));
+            }
+            super::button::Button::new(label)
+                .icon(
+                    if simulator {
+                        icons.play()
+                    } else {
+                        icons.flash()
+                    },
+                    if simulator {
+                        palette.success
+                    } else {
+                        palette.warning
+                    },
                 )
-            },
-        )
-    };
-
-    let buttons = vec![
-        super::button::Button::new("Device")
-            .icon(icons.flash(), palette.warning)
-            .detail(detail(device, project_board.as_deref()))
-            .selected(selected == 0),
-        super::button::Button::new("Simulator")
-            .icon(icons.play(), palette.success)
-            .detail(detail(simulator, None))
-            .selected(selected == 1),
-    ];
+                .detail(detail)
+                .selected(index == selected)
+        })
+        .collect();
 
     frame.render_widget(Clear, popup);
-    let block = modal("Where does this build run?", palette);
+    let title = format!(
+        "{} — select build ({}/{})",
+        kind.label(),
+        selected + 1,
+        rows.len()
+    );
+    let block = modal(&title, palette);
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
     super::button::render_stack(frame, inner, inner.y, &buttons, palette);

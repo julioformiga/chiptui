@@ -141,18 +141,12 @@ pub struct ProjectEntry {
     pub board: Option<String>,
     /// The shield picker's answer, same lifetime as [`Self::board`].
     pub shield: Option<String>,
-    /// Which of the project's build variants is selected, by *name*
-    /// (`sim`, `hardware`) --- the answer the Target row's picker gives.
-    ///
-    /// The name, not the variant: a variant's own board, shield and build
-    /// directory belong to the project (declared in its `chiptui.toml` or
-    /// derived from its directories), and duplicating them here would let
-    /// the two drift. It is also what keeps this a flat scalar key --- the
-    /// registry writer re-renders whole blocks and has no nesting to
-    /// express a table with.
-    ///
-    /// A name the project no longer has is simply not applied.
+    /// Legacy variant-name preference, read for compatibility. A lifecycle
+    /// operation replaces this with [`Self::last_build_dir`].
     pub variant: Option<String>,
+    /// Last started build/clean/rebuild directory, relative to this project.
+    /// Unlike the legacy variant name, this identifies same-board builds.
+    pub last_build_dir: Option<String>,
 }
 
 impl ProjectEntry {
@@ -171,6 +165,7 @@ impl ProjectEntry {
             board: None,
             shield: None,
             variant: None,
+            last_build_dir: None,
         }
     }
 
@@ -249,6 +244,7 @@ impl ProjectRegistry {
                 "board" => pending.board = Some(value),
                 "shield" => pending.shield = Some(value),
                 "variant" => pending.variant = Some(value),
+                "last_build_dir" => pending.last_build_dir = Some(value),
                 _ => {}
             }
         }
@@ -324,6 +320,7 @@ struct PendingEntry {
     board: Option<String>,
     shield: Option<String>,
     variant: Option<String>,
+    last_build_dir: Option<String>,
 }
 
 impl PendingEntry {
@@ -338,6 +335,7 @@ impl PendingEntry {
         entry.board = self.board.filter(|board| !board.is_empty());
         entry.shield = self.shield.filter(|shield| !shield.is_empty());
         entry.variant = self.variant.filter(|variant| !variant.is_empty());
+        entry.last_build_dir = self.last_build_dir.filter(|dir| !dir.is_empty());
         Some(entry)
     }
 }
@@ -673,6 +671,9 @@ fn render_projects(other: &str, entries: &[ProjectEntry]) -> String {
         }
         if let Some(variant) = &entry.variant {
             out.push_str(&format!("variant = {}\n", quote(variant)));
+        }
+        if let Some(dir) = &entry.last_build_dir {
+            out.push_str(&format!("last_build_dir = {}\n", quote(dir)));
         }
         if let Some(stamp) = &entry.last_opened {
             out.push_str(&format!("last_opened = {}\n", quote(stamp)));

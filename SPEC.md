@@ -994,12 +994,26 @@ Rebuild
 Menuconfig
 ```
 
-The lifecycle targets the build directory of the selected **variant**
-(below), which for a project with a single target is the conventional
-`build` --- `west`'s own default, so commands stay implicit. There is no
-directory picker: a directory alone is not a target, and choosing one
-without the board and shield it was configured for is how the two drift
-apart.
+The lifecycle targets a build **configuration**, identified by its build
+directory and enriched with its board and shield. Clean, Build and Rebuild
+refresh the configurations at action time and ask which to use when more
+than one is eligible. The selector retains the existing stacked, two-line
+Device/Simulator buttons, icons and theme; long lists scroll with the
+cursor and resize without losing the selection. Each directory is its own
+option, including multiple configurations of the same board.
+
+Clean offers configured directories only, then asks the §15 confirmation
+naming the selected directory. It runs `west build -t clean`: artifacts go,
+the configuration stays. With none configured it explains that Build must
+run first. Build/Rebuild additionally offer declared configurations whose
+directories do not yet exist. One eligible configuration skips selection;
+with none, Build/Rebuild use the conventional `build` and project answers.
+
+The last started lifecycle directory leads and is preselected in all three
+actions; the others sort alphabetically by directory. This preference is
+per project and survives restart. Cancelling a selection or Clean's
+confirmation never changes it. A missing, undeclared directory is not
+offered merely because it was remembered.
 
 Build output should stream into a log pane and show:
 
@@ -1058,9 +1072,9 @@ Code diverges by Kconfig symbol, never by board name
 `#if defined(CONFIG_WIFI)`): a hardware symbol in `prj.conf` breaks the
 simulator build.
 
-Variants come from two places, in this order:
+Configurations combine two sources, deduplicated by directory:
 
-1.  the project's own `chiptui.toml`, when it declares any. Variants describe
+1.  the project's own `chiptui.toml`. Variants describe
     how the user builds; blocks are hand-written or created by the explicit
     simulator preparation below:
 
@@ -1076,21 +1090,31 @@ Variants come from two places, in this order:
     build_dir = "build_sim"
     ```
 
-2.  otherwise they are **discovered**, so a project that already follows
-    the convention needs no configuration at all: each existing build
-    directory's `CMakeCache.txt` names the exact board *and shield* that
-    configuration used, and each `boards/<stem>.conf|.overlay` names a
-    target once the board list has been fetched. A project with one
-    target has no variants and the panel is exactly what it was.
+2.  **discovered** immediate `build*` directories at the project root.
+    Their CMake caches identify the board and shield actually configured;
+    an explicit source pointing at another application excludes the entry.
+    Sysbuild's default application domain supplies its application cache;
+    its internal images are not separate choices. A directory without a
+    recognizable Zephyr cache is not inferred from its name alone.
+
+Declarations retain their names; an existing cache describes the target
+actually built there. Additional discovered directories remain available
+even when declarations exist. Overlays and Kconfig fragments alone do not
+create lifecycle entries: they are inputs, not complete configurations.
+Board-specific fragments can still suggest targets during explicit
+simulator preparation.
 
 Variants are **not** a row of the environment checklist. A project that
-keeps a host target beside its board is asked where the build runs, at
-the moment it is asked to build:
+keeps multiple configurations is asked which to use at action time:
 
 ``` text
-Build / Rebuild  →  Where does this build run?
-                      ▲ Device      xiao_esp32c3 · build/
-                      ▶ Simulator   native_sim/native/64 · build_sim/
+Clean / Build / Rebuild → Select build
+                           ▲ Device · build_rev_b · last used
+                             xiao_esp32c3 · build_rev_b/
+                           ▲ Device · build_rev_a
+                             xiao_esp32c3 · build_rev_a/
+                           ▶ Simulator · build_sim
+                             native_sim/native/64 · build_sim/
 ```
 
 The question opens on the last answer, so repeating a target is one
@@ -1100,20 +1124,31 @@ go, and a build directory quietly switching under the user is worse than
 a keypress. A project with a single target is asked nothing --- the
 command starts outright.
 
-The answer moves the **build directory**, and only that. `Clean`,
-`Menuconfig` and the dashboard follow it, because the last build is the
-artifact the user was just looking at.
+The answer moves the **build directory**. `Menuconfig` and the dashboard
+follow it; Clean asks its own selection and confirmation. Simulator is an
+independent configuration, never automatically duplicated per device build.
+Multiple simulators follow the same ordering, including first place when
+last used.
 
 The project's `Board`/`Shield` answer is *not* touched. It is the
 checklist's answer to "which board is this project for", it is what the
 flash dialog names, and it is what the registry records --- and a host
 target is not an answer to that question, it is a place a build can run.
-The variant's own board reaches `west build -b`: a host variant always
-carries its (nothing else names it), and a device variant that declares
-one carries it over the project's cached answer. Explicit answers outrank
-a device variant, whether declared or discovered: the session pick first,
-then the project's `[zephyr] board`, then the registry. A pick saved by the
-board picker therefore keeps its precedence after the project reopens.
+Incremental builds reuse the chosen directory's configuration. Rebuilding
+an existing build recovers its board, shield, sysbuild mode and supported
+CMake inputs before `--pristine=always` discards the cache, instead of
+injecting another configuration's project-wide defaults. Retained inputs
+include overlays, Kconfig fragments, snippets, roots, toolchain selection,
+and cache entries marked as command-line inputs. Internal/derived CMake
+entries are not replayed. Sysbuild uses its top-level inputs, retaining
+image-prefixed arguments there. Broken sysbuild metadata is reported before
+pristine runs. The unquoted `west.command` string is not treated as a
+reproducible argv; environment-only inputs and manual generated `.config`
+edits should be represented in source configuration before pristine.
+
+For configurations not yet built, a declared board/shield supplies the
+initial configuration; project answers fill fields left open. Selecting
+a configuration never replaces its declared board with a global pick.
 
 That rule is enforced on the project answer itself, not only on the
 command: no source that seeds it --- the `chiptui.toml` `[zephyr] board`,
@@ -1140,14 +1175,15 @@ sign". A build answered "simulator" therefore never carries the flag,
 whatever the project's `sysbuild.conf` says: the file is the hardware
 target's OTA answer, and stays one.
 
-**`Flash` is always the board's**, whatever was built last: a host build
-produces an executable, not an image, so it targets the board variant's
-directory and names the board in its confirm.
+**`Flash` is always a device configuration's**, whatever was built last:
+a host build produces an executable, not an image. It retains the last
+selected device directory during the session, falling back to the first
+device configuration, and names that configuration's board in its confirm.
 
-The answer is remembered by name in the registry (§13), but it moves a
-*cursor*, not a target: a new session starts on the board, so a `Clean`
-pressed before any build cannot erase a directory that session never
-mentioned. Only the build question opens where the last one left it.
+The answer is remembered by relative directory as `last_build_dir` in the
+registry (§13). Legacy variant-name preferences seed it when possible.
+It moves the selector's cursor, not an unannounced destructive action:
+Clean always names its destination in its confirmation.
 
 Since neither the checklist nor the action stack changes for a host
 build, the panel's state line names it --- `Build (simulator) ok in
@@ -1181,9 +1217,8 @@ cursor: the same review, naming the `[[variant]]` block that leaves
 build directory are the user's files now, listed as kept and never deleted.
 The button is dim for a new simulator (nothing to remove) and for a
 discovered one (there is no declaration to remove; its build directory is
-the way, and the form says so). When the removal empties the declared list
-while the target's files remain, the review says the target may reappear
-as discovered.
+the way, and the form says so). A retained configured directory remains
+available as a discovered build after its declaration is removed.
 
 This profile is **LVGL + SDL**, with a 320 × 240 window and mouse input.
 Preparation checks the workspace's native_sim devices and LVGL 9 support.
@@ -1819,11 +1854,12 @@ consults before falling back to evidence. `last_parent` is where the project
 creator's folder picker starts. `board`/`shield` are the Zephyr pickers'
 persisted answers: written when the user picks, re-applied every time the
 project opens (outranking the build directory's cache), and a cleared
-shield removes its line. `variant` is the name of the build variant the last
-build *answer* chose (§10) --- the name only, because the variant's own
-board, shield and build directory belong to the project. It seeds the
-build question's cursor when the project reopens, never the session's
-target; a name the project no longer has is simply ignored.
+shield removes its line. `last_build_dir` is the relative directory of the
+last started Clean, Build or Rebuild (§10). It seeds the shared selector's
+first row when the project reopens; unavailable, undeclared directories
+are ignored. Configuration parameters remain in the project's declarations
+and build metadata. The old `variant` name is read for compatibility and
+replaced by `last_build_dir` on the next lifecycle operation.
 
 The blocks are machine-managed: they are rewritten as a whole, while
 everything else in the file --- other sections, comments, unknown keys ---

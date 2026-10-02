@@ -2298,6 +2298,7 @@ mod tests {
             Overlay::BuildTarget {
                 kind: crate::backend::BuildKind::Build,
                 selected: 0,
+                rows: Vec::new(),
             },
             Overlay::ProjectPicker {
                 mpy: false,

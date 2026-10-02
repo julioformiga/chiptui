@@ -75,6 +75,11 @@ pub fn rebuild(ctx: &BuildContext<'_>) -> Command {
     }
     command = shield_args(command, ctx.shield);
     command = sysbuild_args(command, ctx.sysbuild);
+    if ctx.build_dir_exists && !ctx.sysbuild {
+        // Preserve a configured ordinary build even when west's user config
+        // now defaults to sysbuild. The positive flag is handled above.
+        command = command.arg("--no-sysbuild");
+    }
     command = source_arg(command, ctx.source_dir);
     cmake_args(command, ctx.cmake_args)
 }

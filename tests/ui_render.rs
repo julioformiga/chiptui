@@ -1285,6 +1285,18 @@ fn destructive_confirmations_name_the_action_the_target_and_the_cost() {
 
     // --- `west build -t clean`: the project and the directory ---
     let mut app = header_fixture("confirm-clean");
+    let build_dir = app
+        .build
+        .as_ref()
+        .expect("a build panel")
+        .root
+        .join("build");
+    std::fs::create_dir_all(&build_dir).unwrap();
+    std::fs::write(
+        build_dir.join("CMakeCache.txt"),
+        "CACHED_BOARD:STRING=esp32c3_devkitm\n",
+    )
+    .unwrap();
     app.overlay = Some(Overlay::ConfirmBuild {
         action: BuildAction::Build(BuildKind::Clean),
         confirm: false,

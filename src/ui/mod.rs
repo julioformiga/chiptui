@@ -23,7 +23,7 @@ pub(crate) use install::area as install_area;
 pub(crate) mod layout;
 mod monitor;
 mod overlay;
-pub(crate) use overlay::{BUILD_TARGET_COUNT, DISCARD_CHOICES, ZEPHYR_ACTIONS_COUNT};
+pub(crate) use overlay::{DISCARD_CHOICES, ZEPHYR_ACTIONS_COUNT};
 pub(crate) mod ota;
 pub(crate) use ota::area as ota_area;
 mod panels;

@@ -481,17 +481,14 @@ pub struct BuildPanel {
     /// list is empty; otherwise always a valid index, kept so by
     /// [`Self::set_variants`] and [`Self::select_variant`]. A fresh session
     /// starts on the *board* variant, whatever was built last time --- see
-    /// [`Self::remembered_simulator`].
+    /// [`Self::remembered_build_dir`].
     pub variant: Option<usize>,
-    /// Which half the build question opens on: `true` the simulator.
-    ///
-    /// Seeded from the registry when the project opens, so the question
-    /// comes back where the last session left it, and updated by every
-    /// answer. Deliberately *not* the same thing as [`Self::variant`]: a
-    /// session starts targeting the board, so a `Clean` pressed before any
-    /// build cannot erase a directory this session never mentioned. The
-    /// remembered answer moves a cursor; it does not move the target.
-    pub remembered_simulator: bool,
+    /// Last started lifecycle directory. Seeds the first row in all three
+    /// action pickers; merely opening or cancelling a picker never changes it.
+    pub remembered_build_dir: Option<String>,
+    /// Last selected hardware directory, retained when a simulator runs so
+    /// Flash never silently falls back to another same-board configuration.
+    pub device_build_dir: Option<String>,
     /// Extra board search roots the project's Zephyr modules contribute
     /// ([`crate::backend::zephyr::variants::board_roots`]), riding a
     /// configuration's `-DBOARD_ROOT` --- see [`Self::cmake_args`] for why
@@ -579,7 +576,8 @@ impl BuildPanel {
             pending_log_line: None,
             variants: Vec::new(),
             variant: None,
-            remembered_simulator: false,
+            remembered_build_dir: None,
+            device_build_dir: None,
             board_roots: Vec::new(),
             list_roots: Vec::new(),
             build_args: Vec::new(),
@@ -666,7 +664,7 @@ impl BuildPanel {
         args
     }
 
-    /// Replaces the variant list, keeping the selection *by name* when the
+    /// Replaces the variant list, keeping the selection *by directory* when the
     /// new list still carries it --- a re-derivation (a fresh board
     /// catalogue arriving, a directory appearing) must not silently switch
     /// which target the buttons act on.
@@ -678,10 +676,15 @@ impl BuildPanel {
         if self.variants == variants {
             return;
         }
-        let current = self.variant_name().map(str::to_string);
+        let current = self.variant().map(|variant| variant.build_dir.clone());
+        let had_variants = !self.variants.is_empty();
         self.variants = variants;
         if self.variants.is_empty() {
             self.variant = None;
+            if had_variants {
+                self.build_dir = DEFAULT_BUILD_DIR.into();
+                self.device_build_dir = None;
+            }
             return;
         }
         // Keep the target when the re-derived list still carries it (a
@@ -689,7 +692,7 @@ impl BuildPanel {
         // directory under a running session); otherwise land on the board
         // variant, which is where a session starts.
         let index = current
-            .and_then(|name| self.variants.iter().position(|v| v.name == name))
+            .and_then(|dir| self.variants.iter().position(|v| v.build_dir == dir))
             .or_else(|| self.variant_index_for(false))
             .unwrap_or(0);
         self.select_variant(index);
@@ -715,49 +718,32 @@ impl BuildPanel {
             return;
         };
         self.variant = Some(index);
+        if !variant.is_simulator() {
+            self.device_build_dir = Some(variant.build_dir.clone());
+        }
         self.build_dir = variant.build_dir;
         self.last = None;
     }
 
-    /// The board the *next build command* passes as `-b`.
-    ///
-    /// A host variant carries its own, because nothing else names it: the
-    /// user never picks `native_sim` and no board cache of the project's
-    /// own holds it. A **device** variant that declares a board carries it
-    /// too: its declaration or discovered target outranks the project's
-    /// cache. Explicit answers (a session pick, project file or registry)
-    /// still outrank a device variant, so persisting a pick does not change
-    /// the next rebuild's target when the project reopens.
-    /// Everything else --- including a device variant that
-    /// leaves the board open --- defers to [`Self::board`], which is where
-    /// the picked, saved and cached answers already rank against each
-    /// other.
+    /// A selected configuration names its own board; the project answer is
+    /// the fallback for a declaration that deliberately leaves it open.
+    /// A project-wide pick must not re-target another build configuration.
     pub fn build_board(&self) -> Option<&str> {
         match self.variant() {
-            Some(variant) if variant.is_simulator() => variant.board.as_deref(),
-            Some(variant)
-                if variant.board.is_some()
-                    && !self
-                        .board
-                        .as_ref()
-                        .is_some_and(|choice| choice.origin != BoardOrigin::Cache) =>
-            {
-                variant.board.as_deref()
-            }
+            Some(variant) if variant.board.is_some() => variant.board.as_deref(),
             _ => self.board_name(),
         }
     }
 
-    /// The shield the next build command passes, by the same rule as
-    /// [`Self::build_board`]. A host build carries the shield its variant
-    /// declares, which is normally none --- there is no board to put one on.
-    /// The shield keeps deferring to the project's answer for every other
-    /// variant: unlike the board, it has no cache fold that a simulator
-    /// build could poison (only the picker and the saved answers write it),
-    /// so the project's answer is never stale here.
+    /// A declared shield belongs to its configuration. A fresh device
+    /// configuration leaving it open falls back to the project answer;
+    /// a simulator never inherits the device's shield. Existing directories
+    /// use their own cache in [`Self::checked_command`].
     pub fn build_shield(&self) -> Option<&str> {
         match self.variant() {
-            Some(variant) if variant.is_simulator() => variant.shield.as_deref(),
+            Some(variant) if variant.is_simulator() || variant.shield.is_some() => {
+                variant.shield.as_deref()
+            }
             _ => self.shield_name(),
         }
     }
@@ -796,25 +782,23 @@ impl BuildPanel {
         self.variant().is_some_and(|variant| variant.is_simulator())
     }
 
-    /// The project's board variant --- the first that is not a host
-    /// target. What `Flash` always writes, whatever the last build was
-    /// (there is nothing to flash from a host build), and the left half of
-    /// the build question.
+    /// Last selected hardware configuration, otherwise the first device
+    /// entry. Retained across simulator selections for Flash.
     pub fn device_variant(&self) -> Option<&crate::backend::zephyr::variants::Variant> {
-        self.variants.iter().find(|v| !v.is_simulator())
+        self.variants
+            .iter()
+            .find(|v| !v.is_simulator() && self.device_build_dir.as_deref() == Some(&v.build_dir))
+            .or_else(|| self.variants.iter().find(|v| !v.is_simulator()))
     }
 
-    /// The project's host variant, if it keeps one. Its presence is the
-    /// whole condition for asking where a build should run.
+    /// The first host variant, when a caller needs a default simulator.
     pub fn simulator_variant(&self) -> Option<&crate::backend::zephyr::variants::Variant> {
         self.variants.iter().find(|v| v.is_simulator())
     }
 
-    /// Whether the project offers a choice at build time: both a board and
-    /// a host target. One of either is no question --- the command starts
-    /// outright.
+    /// Whether more than one build configuration can be selected.
     pub fn offers_build_choice(&self) -> bool {
-        self.device_variant().is_some() && self.simulator_variant().is_some()
+        self.variants.len() > 1
     }
 
     /// The index of the variant a build answer selects, `simulator` naming
@@ -946,6 +930,8 @@ impl BuildPanel {
         // for the project being entered.
         self.variants.clear();
         self.variant = None;
+        self.remembered_build_dir = None;
+        self.device_build_dir = None;
         self.last = None;
         self.cursor = 0;
     }
@@ -1027,7 +1013,8 @@ impl BuildPanel {
     /// since buildability is a backend fact the panel stays agnostic
     /// about) and a board, picked or read from the build cache.
     pub fn lifecycle_ready(&self, project_ok: bool) -> bool {
-        project_ok && self.board.is_some()
+        project_ok
+            && (self.board.is_some() || self.variants.iter().any(|variant| variant.board.is_some()))
     }
 
     /// Applies a board chosen in the picker: it outranks the cache, and the
@@ -1188,19 +1175,61 @@ impl BuildPanel {
         kind: BuildKind,
         backend: &dyn crate::backend::Backend,
     ) -> Option<crate::process::Command> {
-        let command = backend.build_command(
-            kind,
-            &crate::backend::BuildContext {
-                board: self.build_board(),
-                shield: self.build_shield(),
-                build_dir_exists: self.has_build_dir(),
-                build_dir: &self.build_dir,
-                sysbuild: self.build_sysbuild(),
-                source_dir: self.source_arg().as_deref(),
-                cmake_args: &self.cmake_args(),
-            },
-        )?;
-        Some(self.decorated(backend, command.current_dir(&self.root)))
+        self.checked_command(kind, backend).ok()
+    }
+
+    /// Validates the selected configuration immediately before launching it.
+    pub fn checked_command(
+        &self,
+        kind: BuildKind,
+        backend: &dyn crate::backend::Backend,
+    ) -> Result<crate::process::Command, String> {
+        if !crate::backend::zephyr::configuration::belongs_to(
+            &self.root,
+            self.app_dir.as_deref(),
+            &self.build_dir,
+        ) {
+            return Err(format!(
+                "west {}: {} belongs to another application; reopen the build selector and choose this project's build",
+                kind.label(),
+                self.build_dir
+            ));
+        }
+        if kind == BuildKind::Clean && !self.has_build_dir() {
+            return Err("west clean: no configured build exists; run Build first".into());
+        }
+        let saved = if kind == BuildKind::Rebuild {
+            crate::backend::zephyr::configuration::rebuild(&self.root, &self.build_dir)?
+        } else {
+            None
+        };
+        // Reusing another configuration's project defaults would silently
+        // add its overlays/Kconfig options to this already-configured build.
+        let cmake_args = saved
+            .as_ref()
+            .map_or_else(|| self.cmake_args(), |saved| saved.cmake_args.clone());
+        let command = backend
+            .build_command(
+                kind,
+                &crate::backend::BuildContext {
+                    board: saved
+                        .as_ref()
+                        .map(|s| s.board.as_str())
+                        .or_else(|| self.build_board()),
+                    shield: saved
+                        .as_ref()
+                        .map_or_else(|| self.build_shield(), |s| s.shield.as_deref()),
+                    build_dir_exists: self.has_build_dir(),
+                    build_dir: &self.build_dir,
+                    sysbuild: saved
+                        .as_ref()
+                        .map_or_else(|| self.build_sysbuild(), |s| s.sysbuild),
+                    source_dir: self.source_arg().as_deref(),
+                    cmake_args: &cmake_args,
+                },
+            )
+            .ok_or_else(|| "this backend offers no such action".to_string())?;
+        Ok(self.decorated(backend, command.current_dir(&self.root)))
     }
 
     /// The flash command, rooted and decorated like the build ones, and
@@ -1213,6 +1242,9 @@ impl BuildPanel {
         port: Option<&str>,
         chip: Option<crate::backend::esptool::ChipFamily>,
     ) -> Result<crate::process::Command, String> {
+        if self.targets_simulator() && self.device_variant().is_none() {
+            return Err("no device build is available to flash; configure and build a hardware target first".into());
+        }
         let build_dir = self.flash_build_dir();
         let command = backend.flash_command(&crate::backend::FlashContext {
             root: &self.root,
@@ -1845,8 +1877,10 @@ pub(crate) fn project_board(name: String, origin: BoardOrigin) -> Option<BoardCh
 /// target, so the board is what makes the answer.
 pub fn cached_target(root: &Path, build_dir: &str) -> Option<CachedTarget> {
     let build = root.join(build_dir);
-    parse_cached_target(&build.join("zephyr/CMakeCache.txt"))
-        .or_else(|| parse_cached_target(&build.join("CMakeCache.txt")))
+    parse_cached_target(&crate::backend::zephyr::configuration::application_cache(
+        &build,
+    ))
+    .or_else(|| parse_cached_target(&build.join("CMakeCache.txt")))
 }
 
 fn parse_cached_target(cache: &Path) -> Option<CachedTarget> {
@@ -2236,10 +2270,16 @@ mod tests {
             Some("nrf52840dk/nrf52840")
         );
 
-        // When both spell a board, the classic entry wins: it is the
-        // application's own configuration.
+        // Once sysbuild identifies its application domain, that domain's
+        // cache supplies the application's board rather than the wrapper's.
+        std::fs::create_dir_all(dir.join("build/application")).unwrap();
         std::fs::write(
-            dir.join("build/zephyr/CMakeCache.txt"),
+            dir.join("build/domains.yaml"),
+            "default: application\nflash_order:\n  - application\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("build/application/CMakeCache.txt"),
             "CACHED_BOARD:STRING=thingy91/nrf9160\n",
         )
         .unwrap();
@@ -2410,7 +2450,11 @@ mod tests {
         assert!(build.to_string().ends_with("build"));
         assert!(!build.to_string().contains("-b"));
         let rebuild = panel.command(BuildKind::Rebuild, &ZephyrBackend).unwrap();
-        assert!(rebuild.to_string().ends_with("-b nrf52840dk/nrf52840"));
+        assert!(
+            rebuild
+                .to_string()
+                .ends_with("-b nrf52840dk/nrf52840 --no-sysbuild")
+        );
     }
 
     #[test]
@@ -2810,7 +2854,7 @@ mod tests {
 
     #[test]
     fn a_declared_device_variant_builds_its_own_target() {
-        // A variant outranks a cached answer, but not an explicit choice.
+        // A selected configuration keeps its target despite global answers.
         let dir = fixture_dir("declared-device");
         let _ = std::fs::remove_dir_all(dir.join("build"));
         let mut panel = BuildPanel::new(&dir, UtcOffset::UTC);
@@ -2832,36 +2876,36 @@ mod tests {
             },
         ]);
 
-        // The declaration beats the cache; the shield follows the project.
+        // The declaration supplies both board and shield for a fresh build.
         panel.set_shield(Some("saved_shield".to_string()));
         let build = panel.command(BuildKind::Build, &ZephyrBackend).unwrap();
         assert_eq!(
             build.to_string(),
-            "west build -b xiao_esp32c3 --shield saved_shield"
+            "west build -b xiao_esp32c3 --shield seeed_xiao_round_display"
         );
         let rebuild = panel.command(BuildKind::Rebuild, &ZephyrBackend).unwrap();
         assert_eq!(
             rebuild.to_string(),
-            "west build --pristine=always -b xiao_esp32c3 --shield saved_shield"
+            "west build --pristine=always -b xiao_esp32c3 --shield seeed_xiao_round_display"
         );
 
-        // Both persisted origins outrank declared and discovered variants.
+        // Saved project answers are fallbacks, never a different build's board.
         for origin in [
             crate::backend::zephyr::variants::VariantOrigin::Declared,
             crate::backend::zephyr::variants::VariantOrigin::Discovered,
         ] {
             panel.variants[0].origin = origin;
             panel.set_config_board("registry_board");
-            assert_eq!(panel.build_board(), Some("registry_board"));
+            assert_eq!(panel.build_board(), Some("xiao_esp32c3"));
             panel.set_project_file_board("file_board");
-            assert_eq!(panel.build_board(), Some("file_board"));
+            assert_eq!(panel.build_board(), Some("xiao_esp32c3"));
         }
-        // A session pick outranks the declaration too.
+        // A session pick remains the project's answer, not this variant's.
         panel.set_picked("other_board");
         let build = panel.command(BuildKind::Build, &ZephyrBackend).unwrap();
         assert_eq!(
             build.to_string(),
-            "west build -b other_board --shield saved_shield"
+            "west build -b xiao_esp32c3 --shield seeed_xiao_round_display"
         );
     }
 
@@ -3036,7 +3080,7 @@ mod tests {
     }
 
     #[test]
-    fn a_picked_board_outranks_the_cache() {
+    fn a_picked_project_board_does_not_retarget_a_configured_rebuild() {
         let dir = fixture_dir("picked");
         std::fs::write(
             dir.join("build/zephyr/CMakeCache.txt"),
@@ -3050,9 +3094,10 @@ mod tests {
         assert_eq!(panel.board_name(), Some("nrf52840dk/nrf52840"));
         assert_eq!(panel.board.as_ref().unwrap().origin, BoardOrigin::Picked);
 
-        // The pick reaches the commands: rebuild always passes the target.
+        // The project pick stays visible, but rebuilding this configuration
+        // preserves the target that actually belongs to its directory.
         let rebuild = panel.command(BuildKind::Rebuild, &ZephyrBackend).unwrap();
-        assert!(rebuild.to_string().ends_with("-b nrf52840dk/nrf52840"));
+        assert!(rebuild.to_string().ends_with("-b old_board --no-sysbuild"));
     }
 
     #[test]

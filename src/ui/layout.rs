@@ -747,8 +747,10 @@ pub(crate) fn overlay_popup(app: &App, overlay: &Overlay, frame: Rect) -> Rect {
                 .collect();
             (64, super::stack_height(&placeholders).saturating_add(2))
         }
-        Overlay::BuildTarget { .. } => {
-            let placeholders: Vec<super::Button> = (0..super::BUILD_TARGET_COUNT)
+        Overlay::BuildTarget { rows, .. } => {
+            let placeholders: Vec<super::Button> = rows
+                .iter()
+                .take(usize::from(frame.height.saturating_sub(5) / 3).max(1))
                 .map(|_| super::Button::new("").detail(""))
                 .collect();
             (64, super::stack_height(&placeholders).saturating_add(2))
@@ -878,6 +880,19 @@ pub(crate) fn sync_preview_lines(plan: &SyncPlan) -> usize {
         lines += section(plan.deletes.len(), false);
     }
     lines
+}
+
+/// Visible slice of the build selector's existing two-line stacked buttons.
+/// Recomputed for draw and mouse hit-testing, including after a resize.
+pub(crate) fn build_target_window(popup: Rect, len: usize, selected: usize) -> (usize, usize) {
+    let count = usize::from(popup.height.saturating_sub(3) / 3)
+        .max(1)
+        .min(len);
+    let offset = selected
+        .saturating_add(1)
+        .saturating_sub(count)
+        .min(len.saturating_sub(count));
+    (offset, count)
 }
 
 #[cfg(test)]

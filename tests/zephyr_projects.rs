@@ -623,7 +623,7 @@ fn opening_a_project_ignores_host_answers_without_hiding_valid_fallbacks() {
 }
 
 #[test]
-fn a_saved_board_pick_still_overrides_the_device_variant_after_reopening() {
+fn a_saved_project_board_does_not_retarget_the_selected_variant_after_reopening() {
     let (mut app, root) = repo_app(
         "variant-pick-reopen",
         Some(
@@ -640,10 +640,11 @@ fn a_saved_board_pick_still_overrides_the_device_variant_after_reopening() {
             &chiptui::backend::zephyr::ZephyrBackend,
         )
         .unwrap();
-    assert!(before.to_string().contains("-b nrf52840dk/nrf52840"));
+    assert!(before.to_string().contains("-b xiao_esp32c3"));
     drop(app);
     let app = reopen_repo(&root);
     let panel = app.build.as_ref().unwrap();
+    assert_eq!(panel.board_name(), Some("nrf52840dk/nrf52840"));
     assert_eq!(
         panel.variant().unwrap().board.as_deref(),
         Some("xiao_esp32c3")
@@ -654,10 +655,7 @@ fn a_saved_board_pick_still_overrides_the_device_variant_after_reopening() {
             &chiptui::backend::zephyr::ZephyrBackend,
         )
         .unwrap();
-    assert!(
-        after.to_string().contains("-b nrf52840dk/nrf52840"),
-        "{after}"
-    );
+    assert!(after.to_string().contains("-b xiao_esp32c3"), "{after}");
     drop(app);
     let _ = std::fs::remove_dir_all(root);
 }
