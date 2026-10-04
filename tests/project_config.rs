@@ -3,7 +3,11 @@
 //! Drives `App` through real key events against real temp directories, then
 //! checks what landed in the project's `chiptui.toml`, in the user config
 //! and in the registry --- and, as often, what did *not*, since the window's
-//! governing rule is that nothing reaches disk before it is applied.
+//! governing rule is that nothing reaches disk before it is applied, with
+//! one named exception: accepting a backend card writes `project_type` (and
+//! the registry entry, and an empty directory's starting layout) on the
+//! spot, because the target pickers list from the session that answer
+//! resolves.
 //!
 //! Every case redirects the home directory (`App::set_home_dir`) before
 //! answering anything: applying writes to the user config, and a test must
@@ -176,8 +180,9 @@ fn directory_pickers_return_to_the_pending_config_transaction_and_cancel_without
         Some(folder.to_str().unwrap().into())
     );
     assert!(
-        !dir.file().exists(),
-        "selection is pending, never a configuration write"
+        !dir.text().contains(folder.to_str().unwrap()),
+        "the path pick is pending, not written --- only the backend card's own answer reaches disk at choice time:\n{}",
+        dir.text()
     );
     app.handle(key(KeyCode::Enter));
     assert!(
@@ -224,6 +229,61 @@ fn target_pickers_return_to_the_pending_configuration_transaction() {
             ..
         })
     ));
+    app.handle(key(KeyCode::Esc));
+    assert_eq!(app.overlay, Some(Overlay::ProjectConfig));
+}
+
+/// The reason the card's answer is written at choice time: in a brand-new
+/// directory the target rows open their pickers before anything is
+/// applied, because accepting the card already resolved the session.
+#[test]
+fn choosing_the_backend_makes_the_target_rows_pickable_before_apply() {
+    let dir = TempDir::new("pick-before-apply");
+    let mut app = dir.app();
+    app.bootstrap();
+    open(&mut app);
+    pick_zephyr(&mut app);
+
+    assert!(
+        dir.text().contains("project_type = \"zephyr\""),
+        "the card's answer is on disk without an apply: {}",
+        dir.text()
+    );
+    assert_eq!(app.manager.selected_kind(), Some(BackendKind::Zephyr));
+
+    go_to(&mut app, ProjectConfigRow::ZephyrBoard);
+    app.handle(key(KeyCode::Enter));
+    assert!(
+        matches!(
+            app.overlay,
+            Some(Overlay::BoardPicker {
+                purpose: chiptui::app::overlay::TargetPickerPurpose::ProjectConfig(
+                    ProjectConfigRow::ZephyrBoard
+                ),
+                ..
+            })
+        ),
+        "the board picker opens in the same window session: {:?}",
+        app.overlay
+    );
+    app.handle(key(KeyCode::Esc));
+    assert_eq!(app.overlay, Some(Overlay::ProjectConfig));
+
+    go_to(&mut app, ProjectConfigRow::ZephyrShield);
+    app.handle(key(KeyCode::Enter));
+    assert!(
+        matches!(
+            app.overlay,
+            Some(Overlay::ShieldPicker {
+                purpose: chiptui::app::overlay::TargetPickerPurpose::ProjectConfig(
+                    ProjectConfigRow::ZephyrShield
+                ),
+                ..
+            })
+        ),
+        "and so does the shield picker: {:?}",
+        app.overlay
+    );
     app.handle(key(KeyCode::Esc));
     assert_eq!(app.overlay, Some(Overlay::ProjectConfig));
 }
@@ -332,7 +392,7 @@ fn a_registered_module_root_opens_without_asking() {
 }
 
 #[test]
-fn backend_selection_precedes_settings_and_navigation_writes_nothing() {
+fn backend_selection_precedes_settings_and_accepting_a_card_applies_it_at_once() {
     let dir = TempDir::new("backend-step");
     let mut app = dir.app();
     app.bootstrap();
@@ -366,9 +426,24 @@ fn backend_selection_precedes_settings_and_navigation_writes_nothing() {
     assert!(frame.contains("Change backend"), "{frame}");
     assert!(frame.contains("Project name"), "{frame}");
     assert!(!frame.contains("Choose backend"));
-    assert_eq!(app.project_config.as_ref().unwrap().change_count(), 1);
-    assert!(!dir.file().exists());
-    assert!(dir.registry().is_empty());
+    assert_eq!(
+        app.project_config.as_ref().unwrap().change_count(),
+        0,
+        "the card's own answer is already written --- nothing pends"
+    );
+    assert!(
+        dir.text().contains("project_type = \"zephyr\""),
+        "accepting the card wrote the backend: {}",
+        dir.text()
+    );
+    assert!(
+        dir.path.join("src/main.c").is_file(),
+        "and the empty directory took the starting layout with it"
+    );
+    assert!(
+        !dir.registry().is_empty(),
+        "and the registry recorded the project"
+    );
 }
 
 #[test]
@@ -399,7 +474,7 @@ fn resolved_backend_skips_selection_and_cancelling_a_switch_keeps_pending_answer
 }
 
 #[test]
-fn choosing_a_backend_reveals_its_sections_and_writes_nothing() {
+fn choosing_a_backend_reveals_its_sections_and_applies_the_choice() {
     let dir = TempDir::new("choose").into_board_module();
     let mut app = dir.app();
     app.bootstrap();
@@ -422,14 +497,18 @@ fn choosing_a_backend_reveals_its_sections_and_writes_nothing() {
     );
     assert_eq!(
         panel.change_count(),
-        1,
-        "the choice is the one pending change"
+        0,
+        "the choice itself is applied, not pending"
     );
-    assert!(!dir.file().exists(), "and it has not been written");
+    assert!(
+        dir.text().contains("project_type = \"zephyr\""),
+        "the card wrote the file: {}",
+        dir.text()
+    );
     assert_eq!(
         app.manager.selected_kind(),
-        None,
-        "nor applied to the session"
+        Some(BackendKind::Zephyr),
+        "and the session resolved around it"
     );
 }
 
@@ -445,7 +524,11 @@ fn applying_writes_the_file_records_the_project_and_settles() {
         ProjectConfigRow::ZephyrWorkspace,
         "/opt/zephyrproject",
     );
-    assert_eq!(app.project_config.as_ref().unwrap().change_count(), 2);
+    assert_eq!(
+        app.project_config.as_ref().unwrap().change_count(),
+        1,
+        "the card already wrote the backend; the workspace is the one pending answer"
+    );
 
     apply(&mut app);
 
@@ -483,11 +566,6 @@ fn a_directory_that_already_holds_a_project_is_never_scaffolded() {
     app.bootstrap();
     app.maybe_open_project_config();
     pick_zephyr(&mut app);
-    assert!(
-        app.config_scaffold().is_empty(),
-        "and the review says so before the user answers it"
-    );
-    apply(&mut app);
 
     assert!(
         !dir.path.join("prj.conf").exists(),
@@ -498,32 +576,25 @@ fn a_directory_that_already_holds_a_project_is_never_scaffolded() {
         "# the module contributes a board only\n",
         "and it overwrites nothing"
     );
+    assert!(
+        dir.text().contains("project_type = \"zephyr\""),
+        "the backend answer itself still lands: {}",
+        dir.text()
+    );
 }
 
 #[test]
-fn an_empty_directory_is_still_scaffolded_after_the_keys_are_written() {
-    // An empty directory opened for configuration. The transaction writes
-    // `chiptui.toml` first, which is not a hidden entry --- so asking
-    // whether the directory is empty *after* that write answers about a
-    // directory this very apply had just filled, and the starting layout
-    // the review promised never appeared.
+fn an_empty_directory_is_scaffolded_when_the_backend_card_is_accepted() {
+    // An empty directory opened for configuration. Accepting the card
+    // writes `chiptui.toml` first, which is not a hidden entry --- so
+    // asking whether the directory is empty *after* that write answers
+    // about a directory this very choice had just filled, and the starting
+    // layout would never appear.
     let dir = TempDir::new("scaffold");
     let mut app = dir.app();
     app.bootstrap();
     app.maybe_open_project_config();
     pick_zephyr(&mut app);
-    type_into(&mut app, ProjectConfigRow::ZephyrWorkspace, "/opt/ws");
-    assert_eq!(
-        app.config_scaffold(),
-        vec![
-            "CMakeLists.txt".to_string(),
-            "prj.conf".to_string(),
-            "src/main.c".to_string()
-        ],
-        "the review names the files it will create"
-    );
-
-    apply(&mut app);
 
     let cmake = std::fs::read_to_string(dir.path.join("CMakeLists.txt")).unwrap();
     assert!(cmake.contains("find_package(Zephyr"), "{cmake}");
@@ -557,34 +628,26 @@ fn write_fake_sample(samples: &Path, rel: &str) {
 
 #[test]
 fn an_empty_zephyr_directory_is_offered_the_workspaces_samples() {
+    // The samples question is asked when the card is accepted, against
+    // whatever workspace resolves at that moment --- so the workspace
+    // answers first, here through the user config.
     let dir = TempDir::new("samples");
     let workspace = fake_workspace(dir.root());
+    settings::save_workspace(&settings::user_config_path(&dir.config_dir()), &workspace).unwrap();
     let mut app = dir.app();
     app.set_serial_dir(dir.home.join("dev"));
     app.bootstrap();
     app.maybe_open_project_config();
     pick_zephyr(&mut app);
-    type_into(
-        &mut app,
-        ProjectConfigRow::ZephyrWorkspace,
-        workspace.to_str().unwrap(),
-    );
-
-    // The review names the coming question rather than a minimal layout it
-    // may not take.
-    let review = app.config_review_lines().join("\n");
-    assert!(
-        review.contains("your pick next"),
-        "the review names the sample question: {review}"
-    );
-
-    apply(&mut app);
 
     let Some(Overlay::SamplePicker {
         samples, selected, ..
     }) = &app.overlay
     else {
-        panic!("the samples question opens: {:?}", app.overlay);
+        panic!(
+            "the samples question opens with the card: {:?}",
+            app.overlay
+        );
     };
     assert_eq!(*selected, 0, "the minimal application leads");
     assert_eq!(samples.len(), 2);
@@ -606,17 +669,12 @@ fn an_empty_zephyr_directory_is_offered_the_workspaces_samples() {
 fn a_picked_sample_becomes_the_starting_layout() {
     let dir = TempDir::new("samples-pick");
     let workspace = fake_workspace(dir.root());
+    settings::save_workspace(&settings::user_config_path(&dir.config_dir()), &workspace).unwrap();
     let mut app = dir.app();
     app.set_serial_dir(dir.home.join("dev"));
     app.bootstrap();
     app.maybe_open_project_config();
     pick_zephyr(&mut app);
-    type_into(
-        &mut app,
-        ProjectConfigRow::ZephyrWorkspace,
-        workspace.to_str().unwrap(),
-    );
-    apply(&mut app);
 
     // The filter narrows to the one sample whose path contains it; row 0
     // stays the minimal application, so the sample is one `Down` away.
@@ -694,25 +752,12 @@ fn a_workspace_without_samples_falls_back_to_the_minimal_layout() {
     let workspace = dir.root().join("workspace");
     std::fs::create_dir_all(workspace.join(".west")).unwrap();
     std::fs::create_dir_all(workspace.join("zephyr")).unwrap();
+    settings::save_workspace(&settings::user_config_path(&dir.config_dir()), &workspace).unwrap();
     let mut app = dir.app();
     app.set_serial_dir(dir.home.join("dev"));
     app.bootstrap();
     app.maybe_open_project_config();
     pick_zephyr(&mut app);
-    type_into(
-        &mut app,
-        ProjectConfigRow::ZephyrWorkspace,
-        workspace.to_str().unwrap(),
-    );
-
-    // No samples: the review lists the minimal layout's files, as before.
-    let review = app.config_review_lines().join("\n");
-    assert!(
-        review.contains("src/main.c"),
-        "the minimal layout is what applying writes: {review}"
-    );
-
-    apply(&mut app);
 
     assert_eq!(
         app.overlay,
@@ -733,7 +778,6 @@ fn a_micropython_answer_scans_for_a_device() {
     assert!(app.browser.is_none());
     app.maybe_open_project_config();
     app.handle(key(KeyCode::Enter)); // MicroPython, the first card
-    apply(&mut app);
 
     assert_eq!(app.manager.selected_kind(), Some(BackendKind::MicroPython));
     assert!(
@@ -879,13 +923,18 @@ fn switching_backends_discards_that_backends_unapplied_answers_and_says_so() {
     assert_eq!(panel.chosen(), Some(BackendKind::MicroPython));
     assert_eq!(
         panel.change_count(),
-        1,
-        "only the choice is left --- what is pending is what is on screen"
+        0,
+        "the new card applied at once too; its discarded predecessors are gone with it"
     );
     let notice = panel.notice().expect("the discard is reported").text();
     assert!(
         notice.contains('2') && notice.contains("discarded"),
         "and it says how many: {notice}"
+    );
+    assert!(
+        dir.text().contains("project_type = \"micropython\""),
+        "and the switch is already the file's answer: {}",
+        dir.text()
     );
 }
 
@@ -939,8 +988,8 @@ fn the_theme_and_the_icons_preview_live_and_persist_only_on_apply() {
         "the window previews the answer live"
     );
     assert!(
-        dir.user_text().is_empty(),
-        "and nothing has been written for it:\n{}",
+        !dir.user_text().contains("icons"),
+        "and nothing has been written for it (the registry entry the card wrote is another answer's business):\n{}",
         dir.user_text()
     );
 
@@ -982,6 +1031,7 @@ fn leaving_with_changes_asks_first_and_a_no_keeps_them() {
     app.bootstrap();
     open(&mut app);
     pick_zephyr(&mut app);
+    type_into(&mut app, ProjectConfigRow::ZephyrWorkspace, "/opt/ws");
 
     app.handle(key(KeyCode::Esc));
     assert!(
@@ -996,7 +1046,11 @@ fn leaving_with_changes_asks_first_and_a_no_keeps_them() {
     app.handle(key(KeyCode::Esc));
     app.handle(key(KeyCode::Char('y')));
     assert_eq!(app.overlay, None);
-    assert!(!dir.file().exists());
+    let text = dir.text();
+    assert!(
+        text.contains("project_type = \"zephyr\"") && !text.contains("workspace"),
+        "discarding drops the pending answer; the card's own write stands:\n{text}"
+    );
 }
 
 #[test]
@@ -1006,6 +1060,7 @@ fn the_leave_dialog_defaults_to_keeping_the_work_and_can_apply_it() {
     app.bootstrap();
     open(&mut app);
     pick_zephyr(&mut app);
+    type_into(&mut app, ProjectConfigRow::ZephyrWorkspace, "/opt/ws");
 
     app.handle(key(KeyCode::Esc));
     assert!(
@@ -1026,10 +1081,10 @@ fn the_leave_dialog_defaults_to_keeping_the_work_and_can_apply_it() {
     app.handle(key(KeyCode::Esc));
     app.handle(key(KeyCode::Char('a')));
     assert_eq!(app.overlay, None);
+    let text = dir.text();
     assert!(
-        dir.text().contains("project_type = \"zephyr\""),
-        "applied, not discarded: {}",
-        dir.text()
+        text.contains("project_type = \"zephyr\"") && text.contains("workspace = \"/opt/ws\""),
+        "applied, not discarded:\n{text}"
     );
     assert!(app.project_config.is_none(), "and the window is closed");
 }
@@ -1041,6 +1096,7 @@ fn the_leave_dialog_walks_three_buttons_and_wraps() {
     app.bootstrap();
     open(&mut app);
     pick_zephyr(&mut app);
+    type_into(&mut app, ProjectConfigRow::ZephyrWorkspace, "/opt/ws");
 
     app.handle(key(KeyCode::Esc));
     app.handle(key(KeyCode::Right));
@@ -1065,7 +1121,11 @@ fn the_leave_dialog_walks_three_buttons_and_wraps() {
     // Discard is still one keypress away from anywhere in the walk.
     app.handle(key(KeyCode::Char('y')));
     assert_eq!(app.overlay, None);
-    assert!(!dir.file().exists());
+    assert!(
+        !dir.text().contains("workspace"),
+        "the pending answer is the only thing discarded:\n{}",
+        dir.text()
+    );
 }
 
 #[test]
@@ -1085,7 +1145,6 @@ fn the_leave_dialog_lists_what_is_at_stake() {
     let frame = common::render(&mut app, 110, 38);
     for expected in [
         "Leave without applying?",
-        "project_type = \"zephyr\"",
         "board = \"native_sim/native/64\"",
         "Keep editing",
         "Apply and close",
@@ -1096,6 +1155,10 @@ fn the_leave_dialog_lists_what_is_at_stake() {
             "the dialog names what is at stake ({expected:?}):\n{frame}"
         );
     }
+    assert!(
+        !frame.contains("project_type"),
+        "the card's answer is already written, so it is not at stake:\n{frame}"
+    );
 }
 
 #[test]
@@ -1122,7 +1185,6 @@ fn leaving_an_answered_directory_asks_the_environments_own_question() {
     app.bootstrap();
     app.maybe_open_project_config();
     pick_zephyr(&mut app);
-    apply(&mut app);
 
     app.handle(key(KeyCode::Esc));
     assert!(
@@ -1564,6 +1626,7 @@ fn a_click_picks_a_card_selects_a_row_and_one_outside_closes_the_window() {
         Some(ProjectConfigRow::Icons),
         "a row only selects --- the answer beside it needs a second gesture"
     );
+    app.handle(key(KeyCode::Right)); // a pending answer, so leaving asks
 
     // Outside the box: the same `Esc` every other overlay answers a click
     // outside with, which here means the discard question.

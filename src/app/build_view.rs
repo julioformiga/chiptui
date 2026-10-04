@@ -387,8 +387,10 @@ impl App {
     }
 
     /// Opens the existing target catalogue for a configuration row. The
-    /// catalogue needs a resolved Zephyr session for its `west` environment;
-    /// a newly selected backend must therefore be applied first.
+    /// catalogue needs a resolved Zephyr session for its `west` environment,
+    /// which accepting a backend card creates on the spot --- the choice is
+    /// applied at choice time precisely so these rows open their pickers
+    /// before the transaction's own apply.
     pub(super) fn open_config_target_picker(
         &mut self,
         row: crate::project_config::ProjectConfigRow,

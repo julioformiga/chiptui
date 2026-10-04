@@ -283,7 +283,9 @@ Enter accepts the highlighted backend and opens its configuration panels.
 Navigation alone changes no pending answers. A resolved project opens the
 panels directly. Their explicit **Change backend** action (`b`) returns to
 the cards; Esc cancels that selection and returns to the existing settings.
-Selecting a backend remains pending until Apply and its confirmation.
+Accepting a backend applies that one answer at once --- the target pickers
+list from the session the backend resolves, so the choice cannot wait for
+Apply and its confirmation the way every other answer does.
 
 Under the cards the answers are grouped. **General** holds what is true
 whatever the backend is: the project's name, the folder it lives in, and how
@@ -311,14 +313,17 @@ or discard and close. Switching backends drops that backend's own
 unapplied answers and says how many, since a pending change the window
 cannot show is one the review cannot be trusted to cover.
 
-Two rows are the deliberate exception, and they are exceptions because their
-value *is* the appearance: the theme and the icon set preview live while
-they are being chosen. They preview by being read off the window rather than
-by changing the session, so leaving restores them with nothing to undo.
-Persisting still waits for the apply, like everything else.
+Three answers are the deliberate exceptions. The theme and the icon set
+*preview* live while they are being chosen, because their value is the
+appearance: they preview by being read off the window rather than by
+changing the session, so leaving restores them with nothing to undo, and
+persisting still waits for the apply. The backend choice is *written* the
+moment its card is accepted --- not previewed but applied, registry entry
+and all --- because the board and shield pickers list from the session the
+answer resolves; a target row that only worked after saving would make the
+window's own sections unreachable when they matter most, the first time.
 
-Applying a backend answer does three things, all part of the one
-confirmation (§3: explicit, never inferred):
+Accepting a backend card does three things (§3: explicit, never inferred):
 
 -   `project_type` is written to the project's `chiptui.toml`;
 -   the answer is also recorded in the **user** configuration's project
@@ -346,11 +351,12 @@ picker lists every sample (a directory is a sample by the build's own bar
 and pressing `Enter` explicitly applies it; `Esc` cancels the question
 without writing a layout. Picking a sample copies its whole tree (README, `tests.yaml` and board fragments
 included, `build*` output left behind), keeps its own `project()` name, and
-overwrites nothing already there. The apply's review names the coming
-question instead of listing files it may not write, and a workspace that is
-unconfigured, invalid or sample-less falls back to the minimal layout with
-a log line saying why --- the picker needs the local checkout, so it is
-never a question a fresh machine cannot answer.
+overwrites nothing already there. The question opens the moment the card is
+accepted, against whatever workspace is resolvable then --- a workspace
+answered later in the same window is too late for it --- and a workspace
+that is unconfigured, invalid or sample-less falls back to the minimal
+layout with a log line saying why: the picker needs the local checkout, so
+it is never a question a fresh machine cannot answer.
 
 The same layout question is still owed when the registry or an existing
 `chiptui.toml` already identifies an otherwise-empty directory as Zephyr:

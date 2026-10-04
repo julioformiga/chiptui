@@ -508,14 +508,44 @@ impl App {
         )
     }
 
-    /// A click on a backend card.
+    /// A backend card accepted, by click or by `Enter`.
+    ///
+    /// The backend is the window's one answer that cannot wait for the
+    /// transaction: the target pickers (board, shield) list from the
+    /// session the answer resolves, so accepting a card writes
+    /// `project_type` and rebuilds the session on the spot --- registry
+    /// entry and, for an empty directory, the starting-layout question
+    /// included, exactly what applying the choice would do. Every other
+    /// answer stays staged for the review. A failed write keeps the choice
+    /// and names the error, leaving the retry to the ordinary apply.
     pub(super) fn choose_config_backend(&mut self, kind: BackendKind) {
         self.cancel_simulator_probe();
         let caps = self.capabilities_of(Some(kind));
-        if let Some(panel) = &mut self.project_config {
-            panel.choose(kind, |_| caps);
+        let Some(panel) = &mut self.project_config else {
+            return;
+        };
+        panel.choose(kind, |_| caps);
+        if !panel.backend_changed() {
             panel.show_settings();
+            return;
         }
+        // Asked before the write, as in `apply_project_config`: creating
+        // `chiptui.toml` is itself what would make the directory non-empty.
+        let was_empty = crate::startup::is_empty_dir(panel.root());
+        let path = panel.path().to_path_buf();
+        if let Err(err) = crate::project::config::set_project_type(&path, kind) {
+            panel.set_error(format!("cannot write {}: {err}", path.display()));
+            panel.show_settings();
+            return;
+        }
+        panel.settle_backend();
+        if panel.notice().is_none() {
+            panel.set_notice(crate::project_config::Notice::Done(format!(
+                "{kind} backend applied --- its target rows are pickable now"
+            )));
+        }
+        panel.show_settings();
+        self.backend_apply_tail(Some(kind), was_empty);
     }
 
     /// Selects a clicked list row without activating it (the picker grammar
@@ -831,6 +861,17 @@ impl App {
             return;
         }
 
+        self.backend_apply_tail(kind, was_empty);
+    }
+
+    /// Everything an applied backend answer does once `project_type` is on
+    /// disk: the session rebuilt around the override, the starting layout
+    /// for a directory that was empty, the registry entry, and the
+    /// environment's first resolution. Shared by the transaction's apply
+    /// and by the card choice's immediate write --- the target pickers list
+    /// from the session the answer resolves, so accepting a card cannot
+    /// wait for the review.
+    fn backend_apply_tail(&mut self, kind: Option<BackendKind>, was_empty: bool) {
         self.manager.set_override(kind);
         // The pane the old backend showed is not this backend's pane: the
         // actions tab belongs to a device pane that may not even exist yet,
@@ -852,15 +893,23 @@ impl App {
                     }
                     self.report_scaffold(kind);
                 } else {
+                    let path = self
+                        .project_config_root()
+                        .join(crate::project::config::FILE_NAME);
                     self.logs
                         .success(format!("{kind} recorded in {}", path.display()));
                 }
                 self.record_open_project();
             }
-            None => self.logs.info(format!(
-                "project type cleared in {} --- detection decides again",
-                path.display()
-            )),
+            None => {
+                let path = self
+                    .project_config_root()
+                    .join(crate::project::config::FILE_NAME);
+                self.logs.info(format!(
+                    "project type cleared in {} --- detection decides again",
+                    path.display()
+                ));
+            }
         }
 
         self.finish_backend_apply();

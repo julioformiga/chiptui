@@ -10,17 +10,22 @@
 //! **The whole window is one transaction.** Answers are collected as
 //! [`Pending`] edits and go to disk only when the user applies them, behind
 //! one review dialog naming every line about to be written. Leaving with
-//! edits outstanding asks before dropping them. The two exceptions are
+//! edits outstanding asks before dropping them. Three exceptions are
 //! deliberate and visible: the theme and the icon set *preview* live, since
 //! their value is the appearance itself --- and they preview by being read
 //! off this panel rather than by mutating the session, so discarding
-//! restores them for free.
+//! restores them for free --- and the backend choice is *written* the
+//! moment its card is accepted, because the target pickers (board, shield)
+//! list from the session that answer resolves and therefore cannot wait
+//! for the transaction.
 //!
 //! **The backend is chosen, not typed.** It is a picture of two boards'
 //! worth of tooling, not a string, so it is a pair of cards carrying each
 //! backend's own mark and colour --- the vocabulary the home screen already
 //! uses to tell the two kinds apart. Choosing one reveals the sections that
-//! backend owns; it writes nothing until the transaction is applied.
+//! backend owns and applies the choice itself on the spot (`project_type`,
+//! the registry entry, and the starting layout for an empty directory);
+//! every answer under it stays pending for the review.
 
 use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
@@ -1236,6 +1241,16 @@ impl ProjectConfigPanel {
             self.simulator_pending = None;
         }
         Ok(())
+    }
+
+    /// Re-reads both files and accepts the chosen backend as written,
+    /// keeping every other pending answer staged: the card choice's
+    /// immediate write, which exists so the target pickers have a resolved
+    /// session to list from before the transaction's own apply.
+    pub fn settle_backend(&mut self) {
+        self.text = std::fs::read_to_string(&self.path).unwrap_or_default();
+        self.user_text = std::fs::read_to_string(&self.user_config).unwrap_or_default();
+        self.backend = self.chosen;
     }
 
     /// Re-reads both files and forgets what was applied.
