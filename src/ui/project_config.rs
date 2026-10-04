@@ -20,7 +20,7 @@
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, List, ListItem, ListState, Paragraph, Wrap};
 
@@ -38,7 +38,11 @@ use crate::project_config::{
 const KEY_WIDTH: usize = 22;
 
 pub(super) fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
-    let areas = super::layout::project_config(area);
+    let choosing_backend = app
+        .project_config
+        .as_ref()
+        .is_some_and(|p| p.choosing_backend());
+    let areas = super::layout::project_config_step(area, choosing_backend);
     if app.project_config.is_none() {
         return;
     }
@@ -47,14 +51,35 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palett
         .border_type(BorderType::Rounded)
         .border_style(Style::new().fg(palette.accent))
         .title(Span::styled(
-            " Project configuration ",
+            if choosing_backend {
+                " Choose backend "
+            } else {
+                " Project configuration "
+            },
             Style::new().fg(palette.accent).add_modifier(Modifier::BOLD),
         ));
     frame.render_widget(Clear, areas.popup);
     frame.render_widget(block, areas.popup);
 
     draw_header(frame, &areas, app, palette);
-    draw_cards(frame, &areas, app, palette);
+    if choosing_backend {
+        draw_cards(frame, &areas, app, palette);
+        frame.render_widget(
+            Paragraph::new("Tab / arrows: choose · Enter: configure · Esc: back".fg(palette.muted)),
+            areas.footer,
+        );
+        return;
+    }
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("b  Change backend", Style::new().fg(palette.accent)),
+            Span::styled(
+                "   more specific wins: chiptui.toml > user config > defaults",
+                muted_style(palette),
+            ),
+        ])),
+        areas.hint,
+    );
     draw_rows(frame, &areas, app, palette);
     draw_details(frame, &areas, app, palette);
     draw_footer(frame, &areas, app, palette);
@@ -122,7 +147,7 @@ fn draw_cards(frame: &mut Frame, areas: &ProjectConfigAreas, app: &App, palette:
         let Some(kind) = BackendKind::ALL.get(index).copied() else {
             continue;
         };
-        let chosen = panel.chosen() == Some(kind);
+        let chosen = panel.highlighted_backend() == kind;
         let backend = kind.palette(palette);
         // A chosen card is drawn in its backend's own colour and filled
         // with its tint; the others keep the frame's muted rules. The

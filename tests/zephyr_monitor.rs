@@ -312,6 +312,7 @@ fn applying_the_config_does_not_clobber_the_device_picker_it_opens() {
     // `←` from an unanswered strip lands on Zephyr, the last card; the
     // answer only becomes real when the transaction is applied.
     app.handle(key(KeyCode::Left));
+    app.handle(key(KeyCode::Enter));
     app.handle(ctrl('s'));
     app.handle(key(KeyCode::Char('y')));
 

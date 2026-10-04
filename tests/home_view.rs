@@ -63,6 +63,49 @@ fn press(screen: &mut HomeScreen, code: KeyCode) {
     screen.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
 }
 
+#[test]
+fn new_project_prioritizes_launch_folder_across_resizes() {
+    let fixture = Fixture::new("create-location");
+    let current = fixture.home.join("current");
+    std::fs::create_dir(&current).unwrap();
+    let mut screen = fixture.screen().with_launch_dir(&current);
+    press(&mut screen, KeyCode::Enter);
+    for (width, height) in [(100, 30), (60, 18), (100, 30)] {
+        let frame = render(&screen, width, height);
+        assert!(frame.contains("Use current folder"), "{frame}");
+        assert!(
+            frame.find("Use current folder").unwrap()
+                < frame.find("Browse zephyr_projects").unwrap()
+        );
+    }
+    press(&mut screen, KeyCode::Down);
+    assert!(render(&screen, 100, 30).contains("Browse zephyr_projects"));
+    let theme = ratatui_themes::ThemeName::TokyoNight.palette();
+    for selected_label in ["Browse zephyr_projects", "Use current folder"] {
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal
+            .draw(|frame| chiptui::ui::home::draw(frame, &screen, theme))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let row = (0..30)
+            .find(|&y| {
+                (0..100)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+                    .contains(selected_label)
+            })
+            .unwrap();
+        let column = (0..100)
+            .find(|&x| buffer[(x, row)].symbol() == &selected_label[..1])
+            .unwrap();
+        assert_eq!(buffer[(column, row)].bg, theme.selection);
+        assert_eq!(buffer[(column, row + 1)].bg, theme.selection);
+        press(&mut screen, KeyCode::Up);
+    }
+    press(&mut screen, KeyCode::Esc);
+    assert!(screen.flow().is_none());
+}
+
 /// A left click at (column, row) over a frame of the given size, returning
 /// whatever the screen decided.
 fn click(

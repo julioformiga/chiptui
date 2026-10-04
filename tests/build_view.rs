@@ -646,8 +646,9 @@ fn switching_to_micropython_hides_the_panel_and_reclamps_focus() {
     // pane that exists --- rather than merely clamping off the build panel
     // that is gone. Applying reviews first, so the `y` is part of the path.
     app.open_project_config(false);
-    app.handle(key(KeyCode::Home));
+    app.handle(key(KeyCode::Char('b')));
     app.handle(key(KeyCode::Left)); // MicroPython, the card before Zephyr
+    app.handle(key(KeyCode::Enter));
     app.handle(ctrl('s'));
     assert!(
         matches!(app.overlay, Some(Overlay::ConfirmApplyConfig { .. })),

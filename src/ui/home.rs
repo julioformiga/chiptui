@@ -283,6 +283,44 @@ fn draw_flow(
     theme: super::Palette,
 ) {
     match flow {
+        Flow::CreateLocation {
+            current,
+            projects,
+            selected,
+        } => {
+            let popup = centered(area, 84, 12);
+            frame.render_widget(Clear, popup);
+            let block = modal("New project — location", theme);
+            let inner = block.inner(popup);
+            frame.render_widget(block, popup);
+            let buttons = [
+                super::button::Button::new("Use current folder")
+                    .icon(screen.icons().plus(), theme.success)
+                    .detail(screen.display_path(current))
+                    .selected(*selected == 0),
+                super::button::Button::new("Browse zephyr_projects")
+                    .icon(screen.icons().search(), theme.info)
+                    .detail(screen.display_path(projects))
+                    .selected(*selected == 1),
+            ];
+            let [description, choices, footer] = Layout::vertical([
+                Constraint::Length(1),
+                Constraint::Min(super::button::stack_height(&buttons)),
+                Constraint::Length(1),
+            ])
+            .areas(inner);
+            frame.render_widget(
+                Paragraph::new(
+                    "Create directly here, or choose a parent for a new folder.".fg(theme.muted),
+                ),
+                description,
+            );
+            super::button::render_stack(frame, choices, choices.y, &buttons, theme);
+            frame.render_widget(
+                Paragraph::new("↑/↓: choose · enter: continue · esc: cancel".fg(theme.muted)),
+                footer,
+            );
+        }
         Flow::OpenDir { picker } => super::path_picker::draw(
             frame,
             centered(area, super::path_picker::WIDTH, super::path_picker::HEIGHT),

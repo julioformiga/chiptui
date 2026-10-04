@@ -35,7 +35,13 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
     if over_project_config {
         super::project_config::draw(frame, area, app, palette);
         frame.buffer_mut().set_style(
-            super::layout::project_config(area).popup,
+            super::layout::project_config_step(
+                area,
+                app.project_config
+                    .as_ref()
+                    .is_some_and(|p| p.choosing_backend()),
+            )
+            .popup,
             Style::new().add_modifier(Modifier::DIM),
         );
     }

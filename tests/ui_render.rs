@@ -1473,7 +1473,7 @@ fn overlays_draw_above_the_dashboard() {
         "the window names the file it edits, and says there is none yet:\n{setup}"
     );
     for expected in [
-        "MicroPython",
+        "Change backend",
         "Zephyr",
         "General",
         "Workspace path",
@@ -1504,6 +1504,7 @@ fn overlays_draw_above_the_dashboard() {
 fn the_chosen_backend_tints_its_card_and_only_its_card() {
     let mut app = app_with_backend(BackendKind::Zephyr);
     app.open_project_config(false);
+    app.handle(key(KeyCode::Char('b')));
 
     let mut terminal = Terminal::new(TestBackend::new(100, 34)).expect("test terminal");
     terminal
@@ -1512,7 +1513,9 @@ fn the_chosen_backend_tints_its_card_and_only_its_card() {
     let frame = terminal.backend().to_string();
     let buffer = terminal.backend().buffer().clone();
     let palette = app.theme_palette();
-    let tint = chiptui::backend::BackendKind::Zephyr.palette(palette).tint;
+    let tint = chiptui::backend::BackendKind::Zephyr
+        .palette(palette)
+        .tint_selected;
 
     let row_of = |needle: &str| {
         frame
@@ -1537,6 +1540,18 @@ fn the_chosen_backend_tints_its_card_and_only_its_card() {
 
     // And nowhere else: a governed row and a General row sit on the same
     // ground --- the sections are separated by headings, not paint.
+    app.handle(key(KeyCode::Enter));
+    terminal
+        .draw(|frame| chiptui::ui::draw(frame, &mut app))
+        .unwrap();
+    let frame = terminal.backend().to_string();
+    let buffer = terminal.backend().buffer();
+    let row_of = |needle: &str| {
+        frame
+            .lines()
+            .position(|line| line.contains(needle))
+            .unwrap() as u16
+    };
     let workspace = buffer
         .cell((4, row_of("Workspace path ")))
         .expect("a Zephyr row");

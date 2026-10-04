@@ -381,8 +381,12 @@ pub(crate) struct ProjectConfigAreas {
 /// transition --- at 46 the transition had to amputate both halves.
 pub(crate) const CONFIG_LIST_WIDTH: u16 = 52;
 
-pub(crate) fn project_config(area: Rect) -> ProjectConfigAreas {
-    let popup = wide_modal(area);
+pub(crate) fn project_config_step(area: Rect, choosing_backend: bool) -> ProjectConfigAreas {
+    let popup = if choosing_backend {
+        super::centered(area, 84, 13)
+    } else {
+        wide_modal(area)
+    };
     let inner = Rect {
         x: popup.x + 1,
         y: popup.y + 1,
@@ -392,9 +396,9 @@ pub(crate) fn project_config(area: Rect) -> ProjectConfigAreas {
     let [header, _, cards, hint, body, footer] = Layout::vertical([
         Constraint::Length(2),
         Constraint::Length(1),
-        Constraint::Length(CARD_HEIGHT),
+        Constraint::Length(if choosing_backend { CARD_HEIGHT } else { 0 }),
         Constraint::Length(1),
-        Constraint::Min(3),
+        Constraint::Min(if choosing_backend { 0 } else { 3 }),
         Constraint::Length(1),
     ])
     .areas(inner);
@@ -408,6 +412,7 @@ pub(crate) fn project_config(area: Rect) -> ProjectConfigAreas {
     let right = cards.x + cards.width;
     let cards = crate::backend::BackendKind::ALL
         .iter()
+        .filter(|_| choosing_backend)
         .enumerate()
         .map(|(index, _)| {
             let x = start + index as u16 * (CARD_WIDTH + CARD_GAP);
@@ -421,6 +426,11 @@ pub(crate) fn project_config(area: Rect) -> ProjectConfigAreas {
         .filter(|rect| rect.width > 0)
         .collect();
 
+    let body = if choosing_backend {
+        Rect::default()
+    } else {
+        body
+    };
     let list_width = CONFIG_LIST_WIDTH.min(body.width);
     let [list, details] =
         Layout::horizontal([Constraint::Length(list_width), Constraint::Min(0)]).areas(body);
@@ -781,7 +791,15 @@ pub(crate) fn overlay_popup(app: &App, overlay: &Overlay, frame: Rect) -> Rect {
         // The `wide_modal` family: the installer's and the OTA panel's own
         // width, which is what keeps the left border off the second cell of
         // a two-cell glyph in the pane behind it.
-        Overlay::ProjectConfig => return project_config(frame).popup,
+        Overlay::ProjectConfig => {
+            return project_config_step(
+                frame,
+                app.project_config
+                    .as_ref()
+                    .is_some_and(|p| p.choosing_backend()),
+            )
+            .popup;
+        }
         Overlay::ZephyrInstall => return super::install_area(frame),
         Overlay::Ota => return super::ota_area(frame),
     };

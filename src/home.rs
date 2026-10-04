@@ -67,6 +67,12 @@ pub enum Row<'a> {
 /// A modal step layered over the list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Flow {
+    /// Prefer the launch folder itself, or browse for a new project parent.
+    CreateLocation {
+        current: PathBuf,
+        projects: PathBuf,
+        selected: usize,
+    },
     /// Browse for an existing project that the registry does not list yet.
     OpenDir { picker: PathPicker },
     /// Choosing the folder the new project's own directory goes into.
@@ -91,6 +97,7 @@ pub struct HomeScreen {
     /// `$HOME`: where the folder picker starts when nothing was used
     /// before, and what the list abbreviates paths against.
     home: PathBuf,
+    launch_dir: Option<PathBuf>,
     /// The session's icon set ([`crate::app::resolve_icons`]), read once
     /// here because this screen exists before any `App` --- the same
     /// startup read `App::new` does, and the reason the home answers the
@@ -111,6 +118,7 @@ impl HomeScreen {
         let mut screen = Self {
             config: settings::user_config_path(config_dir),
             home: home.to_path_buf(),
+            launch_dir: None,
             icons: crate::app::resolve_icons(config_dir),
             entries: Vec::new(),
             query: String::new(),
@@ -121,6 +129,16 @@ impl HomeScreen {
         };
         screen.reload();
         screen
+    }
+
+    /// Keep the original launch directory even when switching projects.
+    /// Canonicalization also excludes aliases of the filesystem root or HOME.
+    pub fn with_launch_dir(mut self, dir: &Path) -> Self {
+        self.launch_dir = std::fs::canonicalize(dir).ok().filter(|dir| {
+            let home = std::fs::canonicalize(&self.home).unwrap_or_else(|_| self.home.clone());
+            dir.is_dir() && dir.parent().is_some() && dir != &home
+        });
+        self
     }
 
     fn reload(&mut self) {
@@ -391,8 +409,19 @@ impl HomeScreen {
         self.status = None;
         match self.rows().get(self.selected)? {
             Row::Create => {
-                self.flow = Some(Flow::CreateDir {
-                    picker: PathPicker::new(PickerKind::Directory, self.start_dir(), &self.home),
+                self.flow = Some(match &self.launch_dir {
+                    Some(current) => Flow::CreateLocation {
+                        current: current.clone(),
+                        projects: self.start_dir(),
+                        selected: 0,
+                    },
+                    None => Flow::CreateDir {
+                        picker: PathPicker::new(
+                            PickerKind::Directory,
+                            self.start_dir(),
+                            &self.home,
+                        ),
+                    },
                 });
                 None
             }
@@ -400,7 +429,7 @@ impl HomeScreen {
         }
     }
 
-    /// Where the folder picker opens: where the last project was created,
+    /// Prefer the configured projects folder, then saved picker history,
     /// falling back to `$HOME` --- to navigate *from*, never to create in.
     fn start_dir(&self) -> PathBuf {
         let config_dir = self
@@ -409,7 +438,11 @@ impl HomeScreen {
             .and_then(Path::parent)
             .map(Path::to_path_buf)
             .unwrap_or_default();
-        settings::picker_directory(&self.config, "create_project", &self.home)
+        settings::load_user(&config_dir)
+            .and_then(|settings| settings.projects)
+            .map(|path| settings::expand_home(&path, &self.home))
+            .filter(|dir| dir.is_dir())
+            .or_else(|| settings::picker_directory(&self.config, "create_project", &self.home))
             .or_else(|| settings::last_parent(&config_dir, &self.home))
             .filter(|dir| dir.is_dir())
             .unwrap_or_else(|| self.home.clone())
@@ -417,6 +450,39 @@ impl HomeScreen {
 
     fn on_flow_key(&mut self, flow: Flow, key: KeyEvent) -> Option<HomeOutcome> {
         match flow {
+            Flow::CreateLocation {
+                current,
+                projects,
+                mut selected,
+            } => {
+                match key.code {
+                    KeyCode::Esc => return None,
+                    KeyCode::Up | KeyCode::Down => selected = 1 - selected,
+                    KeyCode::Enter => {
+                        if selected == 0 {
+                            if current.is_dir() {
+                                return Some(HomeOutcome::Open(current));
+                            }
+                            self.status = Some(format!(
+                                "Could not open {} for the new project: folder no longer exists. Choose another folder.",
+                                current.display()
+                            ));
+                            return None;
+                        }
+                        self.flow = Some(Flow::CreateDir {
+                            picker: PathPicker::new(PickerKind::Directory, projects, &self.home),
+                        });
+                        return None;
+                    }
+                    _ => {}
+                }
+                self.flow = Some(Flow::CreateLocation {
+                    current,
+                    projects,
+                    selected,
+                });
+                None
+            }
             Flow::OpenDir { mut picker } => {
                 match picker.handle_key(key, self.picker_page) {
                     PickerOutcome::Pending => self.flow = Some(Flow::OpenDir { picker }),
@@ -607,6 +673,93 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.home);
         }
+    }
+
+    #[test]
+    fn launch_folder_is_first_and_opens_directly_without_touching_files() {
+        let fixture = Fixture::new("launch");
+        let current = fixture.home.join("current");
+        std::fs::create_dir(&current).unwrap();
+        std::fs::write(current.join("keep.txt"), "keep").unwrap();
+        let mut screen = fixture.screen().with_launch_dir(&current);
+        screen.handle_key(key(KeyCode::Enter));
+        assert!(matches!(
+            screen.flow(),
+            Some(Flow::CreateLocation { selected: 0, .. })
+        ));
+        assert_eq!(
+            screen.handle_key(key(KeyCode::Enter)),
+            Some(HomeOutcome::Open(current.clone()))
+        );
+        assert_eq!(
+            std::fs::read_to_string(current.join("keep.txt")).unwrap(),
+            "keep"
+        );
+        assert_eq!(current.read_dir().unwrap().count(), 1);
+    }
+
+    #[test]
+    fn second_location_browses_configured_projects_then_creates_a_named_folder() {
+        let fixture = Fixture::new("locations");
+        let current = fixture.home.join("current");
+        let projects = fixture.home.join("zephyr_projects");
+        std::fs::create_dir(&current).unwrap();
+        std::fs::create_dir(&projects).unwrap();
+        settings::save_projects(&settings::user_config_path(&fixture.config_dir), &projects)
+            .unwrap();
+        let mut screen = fixture.screen().with_launch_dir(&current);
+        screen.handle_key(key(KeyCode::Enter));
+        screen.handle_key(key(KeyCode::Down));
+        screen.handle_key(key(KeyCode::Enter));
+        assert!(
+            matches!(screen.flow(), Some(Flow::CreateDir { picker }) if picker.path == projects)
+        );
+        screen.handle_key(key(KeyCode::Enter));
+        typed(&mut screen, "blinky");
+        assert_eq!(
+            screen.handle_key(key(KeyCode::Enter)),
+            Some(HomeOutcome::Open(projects.join("blinky")))
+        );
+        assert!(projects.join("blinky").is_dir());
+        assert_eq!(current.read_dir().unwrap().count(), 0);
+    }
+
+    #[test]
+    fn root_and_home_skip_location_choice() {
+        let fixture = Fixture::new("excluded");
+        for dir in [Path::new("/"), fixture.home.as_path()] {
+            let mut screen = fixture.screen().with_launch_dir(dir);
+            screen.handle_key(key(KeyCode::Enter));
+            assert!(matches!(screen.flow(), Some(Flow::CreateDir { .. })));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn aliases_of_home_and_root_skip_location_choice() {
+        let fixture = Fixture::new("aliases");
+        for (name, target) in [("root", Path::new("/")), ("home", fixture.home.as_path())] {
+            let alias = fixture.home.join(name);
+            std::os::unix::fs::symlink(target, &alias).unwrap();
+            let mut screen = fixture.screen().with_launch_dir(&alias);
+            screen.handle_key(key(KeyCode::Enter));
+            assert!(matches!(screen.flow(), Some(Flow::CreateDir { .. })));
+        }
+    }
+
+    #[test]
+    fn location_choice_cancels_and_reports_a_vanished_launch_folder() {
+        let fixture = Fixture::new("launch-gone");
+        let current = fixture.home.join("current");
+        std::fs::create_dir(&current).unwrap();
+        let mut screen = fixture.screen().with_launch_dir(&current);
+        screen.handle_key(key(KeyCode::Enter));
+        screen.handle_key(key(KeyCode::Esc));
+        assert!(screen.flow().is_none());
+        screen.handle_key(key(KeyCode::Enter));
+        std::fs::remove_dir(&current).unwrap();
+        assert_eq!(screen.handle_key(key(KeyCode::Enter)), None);
+        assert!(screen.status().unwrap().contains("no longer exists"));
     }
 
     #[test]

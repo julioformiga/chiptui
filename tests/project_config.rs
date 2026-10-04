@@ -276,8 +276,13 @@ fn udp_address_uses_an_ipv4_mask_and_validation() {
 /// Picks Zephyr on the card strip. `←` from an unanswered strip lands on the
 /// last card, which is the cheapest way to reach it.
 fn pick_zephyr(app: &mut App) {
-    app.handle(key(KeyCode::Home));
-    app.handle(key(KeyCode::Left));
+    if !app.project_config.as_ref().unwrap().choosing_backend() {
+        app.handle(key(KeyCode::Char('b')));
+    }
+    if app.project_config.as_ref().unwrap().highlighted_backend() != BackendKind::Zephyr {
+        app.handle(key(KeyCode::Left));
+    }
+    app.handle(key(KeyCode::Enter));
     assert_eq!(
         app.project_config.as_ref().unwrap().chosen(),
         Some(BackendKind::Zephyr)
@@ -324,6 +329,73 @@ fn a_registered_module_root_opens_without_asking() {
         "the registry already answered; the config window is not the ask"
     );
     assert_eq!(app.manager.selected_kind(), Some(BackendKind::Zephyr));
+}
+
+#[test]
+fn backend_selection_precedes_settings_and_navigation_writes_nothing() {
+    let dir = TempDir::new("backend-step");
+    let mut app = dir.app();
+    app.bootstrap();
+    open(&mut app);
+    for (width, height) in [(110, 38), (80, 24)] {
+        let frame = common::render(&mut app, width, height);
+        assert!(frame.contains("Choose backend"), "{frame}");
+        assert!(
+            !frame.contains("Project name"),
+            "settings must wait: {frame}"
+        );
+    }
+    app.handle(key(KeyCode::Tab));
+    assert_eq!(
+        app.project_config.as_ref().unwrap().highlighted_backend(),
+        BackendKind::Zephyr
+    );
+    app.handle(key(KeyCode::Tab));
+    assert_eq!(
+        app.project_config.as_ref().unwrap().highlighted_backend(),
+        BackendKind::MicroPython
+    );
+    app.handle(key(KeyCode::Left));
+    assert_eq!(
+        app.project_config.as_ref().unwrap().highlighted_backend(),
+        BackendKind::Zephyr
+    );
+    assert!(!app.project_config.as_ref().unwrap().is_dirty());
+    app.handle(key(KeyCode::Enter));
+    let frame = common::render(&mut app, 110, 38);
+    assert!(frame.contains("Change backend"), "{frame}");
+    assert!(frame.contains("Project name"), "{frame}");
+    assert!(!frame.contains("Choose backend"));
+    assert_eq!(app.project_config.as_ref().unwrap().change_count(), 1);
+    assert!(!dir.file().exists());
+    assert!(dir.registry().is_empty());
+}
+
+#[test]
+fn resolved_backend_skips_selection_and_cancelling_a_switch_keeps_pending_answers() {
+    let dir = TempDir::new("backend-switch-cancel");
+    std::fs::write(dir.file(), "project_type = \"zephyr\"\n").unwrap();
+    let mut app = dir.app();
+    app.bootstrap();
+    open(&mut app);
+    assert!(!app.project_config.as_ref().unwrap().choosing_backend());
+    type_into(&mut app, ProjectConfigRow::ZephyrWorkspace, "/opt/ws");
+    let changes = app.project_config.as_ref().unwrap().change_count();
+    app.handle(key(KeyCode::Char('b')));
+    app.handle(key(KeyCode::Tab));
+    assert_eq!(
+        app.project_config.as_ref().unwrap().chosen(),
+        Some(BackendKind::Zephyr)
+    );
+    app.handle(key(KeyCode::Esc));
+    let panel = app.project_config.as_ref().unwrap();
+    assert!(!panel.choosing_backend());
+    assert_eq!(panel.change_count(), changes);
+    assert_eq!(
+        panel.value(ProjectConfigRow::ZephyrWorkspace).as_deref(),
+        Some("/opt/ws")
+    );
+    assert_eq!(dir.text(), "project_type = \"zephyr\"\n");
 }
 
 #[test]
@@ -660,7 +732,7 @@ fn a_micropython_answer_scans_for_a_device() {
     app.bootstrap();
     assert!(app.browser.is_none());
     app.maybe_open_project_config();
-    app.handle(key(KeyCode::Right)); // MicroPython, the first card
+    app.handle(key(KeyCode::Enter)); // MicroPython, the first card
     apply(&mut app);
 
     assert_eq!(app.manager.selected_kind(), Some(BackendKind::MicroPython));
@@ -799,8 +871,9 @@ fn switching_backends_discards_that_backends_unapplied_answers_and_says_so() {
     type_into(&mut app, ProjectConfigRow::ZephyrWorkspace, "/opt/ws");
     type_into(&mut app, ProjectConfigRow::ZephyrSdk, "/opt/sdk");
 
-    app.handle(key(KeyCode::Home));
+    app.handle(key(KeyCode::Char('b')));
     app.handle(key(KeyCode::Left)); // MicroPython, the card before Zephyr
+    app.handle(key(KeyCode::Enter));
 
     let panel = app.project_config.as_ref().unwrap();
     assert_eq!(panel.chosen(), Some(BackendKind::MicroPython));
@@ -827,8 +900,9 @@ fn general_answers_survive_a_backend_switch() {
     go_to(&mut app, ProjectConfigRow::Icons);
     app.handle(key(KeyCode::Right));
 
-    app.handle(key(KeyCode::Home));
+    app.handle(key(KeyCode::Char('b')));
     app.handle(key(KeyCode::Left)); // MicroPython
+    app.handle(key(KeyCode::Enter));
     assert!(
         app.project_config
             .as_ref()
@@ -847,6 +921,7 @@ fn the_theme_and_the_icons_preview_live_and_persist_only_on_apply() {
     open(&mut app);
     let before = app.icon_set();
 
+    app.handle(key(KeyCode::Enter));
     go_to(&mut app, ProjectConfigRow::Icons);
     app.handle(key(KeyCode::Right)); // unicode, which is already the default
     app.handle(key(KeyCode::Right)); // nerd
@@ -879,6 +954,11 @@ fn the_theme_and_the_icons_preview_live_and_persist_only_on_apply() {
 #[test]
 fn applying_a_general_answer_writes_the_user_config() {
     let dir = TempDir::new("ui-keys");
+    settings::record_project(
+        &settings::user_config_path(&dir.config_dir()),
+        settings::ProjectEntry::new(&dir.path, BackendKind::MicroPython),
+    )
+    .unwrap();
     let mut app = dir.app();
     app.bootstrap();
     open(&mut app);
@@ -1349,6 +1429,7 @@ fn the_details_pane_lists_every_theme_and_scrolls() {
     app.bootstrap();
     open(&mut app);
 
+    app.handle(key(KeyCode::Enter));
     go_to(&mut app, ProjectConfigRow::Theme);
     let frame = common::render(&mut app, 110, 38);
     let options = frame.matches('○').count();
@@ -1453,6 +1534,8 @@ fn a_click_picks_a_card_selects_a_row_and_one_outside_closes_the_window() {
     app.maybe_scan_devices(); // the startup sequence's own order
     app.set_mouse_enabled(true);
     open(&mut app);
+
+    app.handle(key(KeyCode::Char('b')));
 
     let frame = common::render(&mut app, 110, 38);
     let (card_row, card_col) = frame

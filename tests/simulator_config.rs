@@ -238,8 +238,9 @@ fn cancellation_and_backend_switch_discard_the_entire_preparation() {
     open_simulator(&mut app);
     prepare(&mut app);
     app.handle(key(KeyCode::Esc));
-    app.handle(key(KeyCode::Home));
+    app.handle(key(KeyCode::Char('b')));
     app.handle(key(KeyCode::Left));
+    app.handle(key(KeyCode::Enter));
     let panel = app.project_config.as_ref().unwrap();
     assert_eq!(panel.chosen(), Some(BackendKind::MicroPython));
     assert!(panel.simulator_pending().is_none());

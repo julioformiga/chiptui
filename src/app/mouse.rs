@@ -1235,7 +1235,12 @@ impl App {
             // list's rows under the pointer and scrolls the details pane
             // over its own.
             Some(Overlay::ProjectConfig) => {
-                let areas = layout::project_config(frame);
+                let areas = layout::project_config_step(
+                    frame,
+                    self.project_config
+                        .as_ref()
+                        .is_some_and(|p| p.choosing_backend()),
+                );
                 if let Some(panel) = &mut self.project_config {
                     if let Some(editor) = &mut panel.simulator_edit {
                         if !editor.editing && contains(layout::simulator_config(frame).popup, point)
@@ -1422,7 +1427,11 @@ impl App {
             }
             return;
         }
-        let areas = crate::ui::layout::project_config(frame);
+        let choosing_backend = self
+            .project_config
+            .as_ref()
+            .is_some_and(|p| p.choosing_backend());
+        let areas = crate::ui::layout::project_config_step(frame, choosing_backend);
         for (index, rect) in areas.cards.iter().enumerate() {
             if contains(*rect, point)
                 && let Some(kind) = crate::backend::BackendKind::ALL.get(index).copied()
@@ -1430,6 +1439,16 @@ impl App {
                 self.choose_config_backend(kind);
                 return;
             }
+        }
+        if choosing_backend {
+            return;
+        }
+        if contains(areas.hint, point) {
+            self.on_project_config_key(ratatui::crossterm::event::KeyEvent::new(
+                KeyCode::Char('b'),
+                KeyModifiers::NONE,
+            ));
+            return;
         }
         // A click hands the pane it landed on the keyboard (the docs
         // pickers' rule): the details pane scrolls with it, the list

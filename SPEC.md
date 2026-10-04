@@ -249,9 +249,16 @@ reachable from the dashboard, so projects can be switched without restarting;
 anything still running is named in a confirmation first, since leaving cancels
 it.
 
-Creating a project asks for the folder it goes into, then the project's
-name; the new directory is empty, so the flow continues into the
-configuration screen below.
+When launched outside `/` and `$HOME` (including aliases of either), **New
+project** first offers the launch directory itself, selected by default,
+then a folder picker starting in the configured Zephyr projects directory.
+The first option opens the launch directory directly for configuration,
+without creating a nested folder. The second asks for the parent folder,
+then the project's name and creates an empty directory. At `/` or `$HOME`,
+only that folder-and-name flow is offered. Without a configured projects
+directory, the picker uses its saved location, last project parent, or
+`$HOME`. Both paths continue into the configuration screen below; existing
+files retain the same non-overwrite protections.
 
 ### The project configuration screen
 
@@ -269,12 +276,14 @@ decides whether to enter the folder at all. Once a project is open, the
 configuration screen is the empty-project question, and it opens on the one
 thing it has to ask.
 
-**The backend is chosen, not typed.** A pair of cards leads the window, one
-per backend, each carrying that backend's own mark and its own colour ---
-the vocabulary the project list already uses to tell the two kinds apart ---
-and a line saying what it is. Picking one reveals the sections that backend
-owns, immediately and before anything is written, so the choice can be read
-in its consequences rather than taken on faith.
+**The backend is chosen, not typed.** When no backend is resolved, a separate
+first step shows only a pair of cards, one per backend, with its own mark,
+colour and description. Tab/Shift+Tab and the arrows navigate the cards;
+Enter accepts the highlighted backend and opens its configuration panels.
+Navigation alone changes no pending answers. A resolved project opens the
+panels directly. Their explicit **Change backend** action (`b`) returns to
+the cards; Esc cancels that selection and returns to the existing settings.
+Selecting a backend remains pending until Apply and its confirmation.
 
 Under the cards the answers are grouped. **General** holds what is true
 whatever the backend is: the project's name, the folder it lives in, and how
@@ -1504,6 +1513,10 @@ row `<icon> <backend>  <name>  <path>`. A row is tinted with its backend's
 color --- deepened, not reversed, under the cursor --- so the kinds separate
 at a glance without a legend.
 
+The new-project location choice uses the Actions menu's shared bordered
+button stack, with each destination path below its label and the current
+folder selected by default.
+
 `↑/↓` moves, `enter` opens, `del` forgets an entry (never the directory),
 `esc` clears the search and then leaves. Every printable key goes to the
 search field, which is why the commands are the non-printing ones.
@@ -1514,8 +1527,9 @@ The `chiptui.toml` editor (§7), reachable at any time with `ctrl+,` --- or a
 bare `,` where the terminal cannot send the chord --- and opened by itself
 over a directory that names no project.
 
-A card strip leads it, one card per backend, centred, and under it two
-bordered panes: the answers on the left, one continuous list grouped into
+Backend selection is a preceding step (§7), with the same centred cards.
+The configuration step has a **Change backend** action and two bordered
+panes: the answers on the left, one continuous list grouped into
 General and the chosen
 backend's own sections (each heading a divider carrying how many of its
 rows have an answer), and a Details pane on the right --- what the

@@ -65,7 +65,7 @@ fn run() -> Result<()> {
     // serial port before the next project claims them.
     let outcome = loop {
         match route {
-            Route::Home => match home_loop(&mut guard, &mut events, &config_dir, &home) {
+            Route::Home => match home_loop(&mut guard, &mut events, &config_dir, &home, &cwd) {
                 Ok(Some(dir)) => route = Route::Open(dir),
                 Ok(None) => break Ok(()),
                 Err(err) => break Err(err),
@@ -93,8 +93,9 @@ fn home_loop(
     events: &mut EventSource,
     config_dir: &std::path::Path,
     home: &std::path::Path,
+    cwd: &std::path::Path,
 ) -> Result<Option<PathBuf>> {
-    let mut screen = HomeScreen::new(config_dir, home);
+    let mut screen = HomeScreen::new(config_dir, home).with_launch_dir(cwd);
     // No backend is active on the home screen, so an `Auto` choice renders
     // in the Tokyo Night stand-in there; the per-project loop resolves it
     // against the project's own backend.

@@ -148,6 +148,21 @@ impl App {
             return;
         };
 
+        if panel.choosing_backend() {
+            match key.code {
+                KeyCode::BackTab | KeyCode::Left | KeyCode::Up => panel.step_card(-1),
+                KeyCode::Tab | KeyCode::Right | KeyCode::Down => panel.step_card(1),
+                KeyCode::Enter => {
+                    let kind = panel.highlighted_backend();
+                    self.choose_config_backend(kind);
+                }
+                KeyCode::Esc if panel.chosen().is_some() => panel.show_settings(),
+                KeyCode::Esc => self.leave_project_config(),
+                _ => {}
+            }
+            return;
+        }
+
         // While a row is being typed into, every printable key belongs to
         // it and `Esc` cancels the edit rather than the window.
         if panel.editing().is_some() {
@@ -197,13 +212,14 @@ impl App {
             KeyCode::PageDown => panel.scroll_details(page),
             KeyCode::Up | KeyCode::Char('k') => panel.step(-1),
             KeyCode::Down | KeyCode::Char('j') => panel.step(1),
-            KeyCode::Home => panel.select_cards(),
+            KeyCode::Home => panel.show_settings(),
+            KeyCode::Char('b') => panel.select_cards(),
             KeyCode::End => panel.step(panel.rows().len() as isize),
             KeyCode::Delete => panel.clear_selected(),
             KeyCode::Left | KeyCode::Right => {
                 let delta = if key.code == KeyCode::Left { -1 } else { 1 };
                 match panel.selected() {
-                    None => self.step_config_card(delta),
+                    None => {}
                     Some(row) if matches!(row.kind(), RowKind::Choice(_)) => panel.cycle(delta),
                     Some(_) => {}
                 }
@@ -492,28 +508,13 @@ impl App {
         )
     }
 
-    fn step_config_card(&mut self, delta: isize) {
-        self.cancel_simulator_probe();
-        let caps: Vec<(BackendKind, Capabilities)> = BackendKind::ALL
-            .iter()
-            .map(|kind| (*kind, self.capabilities_of(Some(*kind))))
-            .collect();
-        if let Some(panel) = &mut self.project_config {
-            panel.step_card(delta, |kind| {
-                caps.iter()
-                    .find(|(candidate, _)| *candidate == kind)
-                    .map_or_else(Capabilities::empty, |(_, caps)| *caps)
-            });
-        }
-    }
-
     /// A click on a backend card.
     pub(super) fn choose_config_backend(&mut self, kind: BackendKind) {
         self.cancel_simulator_probe();
         let caps = self.capabilities_of(Some(kind));
         if let Some(panel) = &mut self.project_config {
-            panel.select_cards();
             panel.choose(kind, |_| caps);
+            panel.show_settings();
         }
     }
 

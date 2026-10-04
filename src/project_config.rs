@@ -83,8 +83,7 @@ impl Section {
     }
 }
 
-/// One line of the window's list. The backend choice is not here: it is the
-/// card strip above, which answers a question a list row cannot.
+/// One line of the settings list. Backend selection is a preceding step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProjectConfigRow {
     Heading(Section),
@@ -508,6 +507,7 @@ pub struct ProjectConfigPanel {
     /// differ exactly while a choice waits to be applied.
     backend: Option<BackendKind>,
     chosen: Option<BackendKind>,
+    card_choice: BackendKind,
     rows: Vec<ProjectConfigRow>,
     cursor: Cursor,
     pending: Vec<Pending>,
@@ -559,6 +559,7 @@ impl ProjectConfigPanel {
             user_config: user_config.to_path_buf(),
             backend,
             chosen: backend,
+            card_choice: backend.unwrap_or(BackendKind::ALL[0]),
             rows: Vec::new(),
             cursor: Cursor::Cards,
             pending: Vec::new(),
@@ -578,9 +579,8 @@ impl ProjectConfigPanel {
             from_startup,
         };
         panel.rebuild(caps);
-        // A window that opened by itself has one question; one the user
-        // opened has a file to read, so it starts in the list.
-        if !from_startup && panel.chosen.is_some() {
+        // Only an unresolved backend needs the initial selection step.
+        if panel.chosen.is_some() {
             panel.cursor = Cursor::Row(panel.first_selectable());
         }
         panel
@@ -851,9 +851,7 @@ impl ProjectConfigPanel {
         }
     }
 
-    /// Moves the cursor by `delta`, skipping headings. The cards are the
-    /// stop above the first row, and the ends hold rather than wrap --- the
-    /// checklist's grammar, not a picker's.
+    /// Moves through settings, skipping headings and holding at either end.
     pub fn step(&mut self, delta: isize) {
         self.edit = None;
         // A new row is a new details document --- start from its top.
@@ -871,7 +869,6 @@ impl ProjectConfigPanel {
         loop {
             let next = index + delta;
             if next < 0 {
-                self.cursor = Cursor::Cards;
                 return;
             }
             if next > last {
@@ -885,11 +882,27 @@ impl ProjectConfigPanel {
         }
     }
 
-    /// Puts the cursor on the cards (a click on the strip, or `Home`).
+    /// Opens the explicit backend-selection step without changing pending edits.
     pub fn select_cards(&mut self) {
         self.edit = None;
         self.details_scroll = 0;
         self.cursor = Cursor::Cards;
+        self.card_choice = self.chosen.unwrap_or(BackendKind::ALL[0]);
+    }
+
+    pub fn highlighted_backend(&self) -> BackendKind {
+        self.card_choice
+    }
+
+    pub fn choosing_backend(&self) -> bool {
+        self.cursor == Cursor::Cards
+    }
+
+    pub fn show_settings(&mut self) {
+        if self.chosen.is_some() {
+            self.details_focus = DocsFocus::List;
+            self.select(self.first_selectable());
+        }
     }
 
     /// Selects a list row, if it is selectable (a click's grammar: select,
@@ -937,19 +950,13 @@ impl ProjectConfigPanel {
         self.rebuild(caps_for(kind));
     }
 
-    /// Steps the card strip by `delta`, clamped.
-    pub fn step_card(&mut self, delta: isize, caps_for: impl Fn(BackendKind) -> Capabilities) {
+    /// Navigation previews a card; only accepting it changes the transaction.
+    pub fn step_card(&mut self, delta: isize) {
         let all = BackendKind::ALL;
-        let at = self
-            .chosen
-            .and_then(|kind| all.iter().position(|candidate| *candidate == kind));
-        let next = match at {
-            Some(at) => (at as isize + delta).clamp(0, all.len() as isize - 1) as usize,
-            // No choice yet: either end of the strip is one step away.
-            None if delta < 0 => all.len() - 1,
-            None => 0,
-        };
-        self.choose(all[next], caps_for);
+        let at = self.card_choice;
+        let index = all.iter().position(|kind| *kind == at).unwrap_or(0);
+        let next = (index as isize + delta).rem_euclid(all.len() as isize) as usize;
+        self.card_choice = all[next];
     }
 
     pub fn begin_edit(&mut self) {

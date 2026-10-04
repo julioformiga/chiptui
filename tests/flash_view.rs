@@ -1009,7 +1009,7 @@ fn entering_a_micropython_backend_starts_on_the_actions_tab() {
         Some(Overlay::ProjectConfig),
         "the empty directory asks for its backend"
     );
-    app.handle(key(KeyCode::Right)); // MicroPython, the first card
+    app.handle(key(KeyCode::Enter)); // MicroPython, the first card
     app.handle(common::ctrl('s'));
     app.handle(key(KeyCode::Char('y')));
     assert_eq!(app.focus, Focus::FilesDevice);
