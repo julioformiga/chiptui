@@ -172,11 +172,11 @@ impl Preparation {
             }
         }
         if declared.is_empty() && !discovered.iter().any(|v| !v.is_simulator()) {
-            if directories_overlap("build", &variant.build_dir) {
-                return Err(
-                    "The simulator must have its own directory, separate from the device's build/."
-                        .into(),
-                );
+            let default_build = super::variants::build_path(root, Some(app), "build");
+            if directories_overlap(&default_build, &variant.build_dir) {
+                return Err(format!(
+                    "The simulator must have its own directory, separate from the device's {default_build}/."
+                ));
             }
             if variant.name == "hardware"
                 || discovered
@@ -188,7 +188,7 @@ impl Preparation {
             // A host build may already occupy build/. The retained device
             // must not clean or flash that directory, even when this edit
             // moves the simulator somewhere else.
-            let mut build_dir = "build".to_string();
+            let mut build_dir = default_build;
             for index in 0..=discovered.len() {
                 if !discovered
                     .iter()
@@ -196,7 +196,8 @@ impl Preparation {
                 {
                     break;
                 }
-                build_dir = format!("build_device_{index}");
+                build_dir =
+                    super::variants::build_path(root, Some(app), &format!("build_device_{index}"));
             }
             if directories_overlap(&build_dir, &variant.build_dir) {
                 return Err(format!(
@@ -434,11 +435,10 @@ pub fn validate_variant(variant: &Variant) -> Result<(), String> {
             .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '/' | '_' | '-'))
         || !dir
             .components()
-            .next()
-            .is_some_and(|part| part.as_os_str().to_string_lossy().starts_with("build"))
+            .any(|part| part.as_os_str().to_string_lossy().starts_with("build"))
     {
         return Err(
-            "Use a project-relative build directory such as build_sim or build/sim, without '..'."
+            "Use a project-relative build directory such as build_sim, app/build_sim or build/sim, without '..'."
                 .into(),
         );
     }
@@ -452,11 +452,14 @@ mod tests {
     #[test]
     fn validation_refuses_escaping_and_non_native_targets() {
         let mut v = default_variant();
+        v.build_dir = "app/build_sim".into();
+        assert!(validate_variant(&v).is_ok());
         for dir in [
             "",
             "/tmp/build",
             "../build",
             "build/../src",
+            "app/build/../../src",
             "src",
             "build\\sim",
         ] {

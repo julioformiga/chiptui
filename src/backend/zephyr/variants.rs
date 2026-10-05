@@ -109,8 +109,8 @@ pub type Catalogue<'a> = &'a [String];
 ///
 /// `app` is the application directory when the project root is not itself
 /// the application (the module-repository layout): the `boards/` fragments
-/// are read there, beside the application's sources, while the build
-/// directories stay at the root. `None` for every project whose root is the
+/// and build directories are read there, beside the application's sources.
+/// `None` for every project whose root is the
 /// application.
 pub fn variants(
     root: &Path,
@@ -148,7 +148,7 @@ pub fn variants(
     // directory or simulator must still become the lifecycle's target.
     if declared.is_empty()
         && found.len() == 1
-        && found[0].build_dir == "build"
+        && found[0].build_dir == build_path(root, app, "build")
         && !found[0].is_simulator()
     {
         Vec::new()
@@ -163,8 +163,7 @@ pub fn variants(
 /// 1. **the build directories it already has.** `<dir>/CMakeCache.txt`
 ///    names the exact board string and shield that configuration used, so a
 ///    project that has ever been built answers this question itself, with
-///    no catalogue and no guessing. They live at the project root --- where
-///    `west build` runs.
+///    no catalogue and no guessing. They live beside the application.
 /// 2. **`boards/<stem>.conf|.overlay`.** Zephyr picks these up by name:
 ///    the stem is the board target with `/` written as `_`. Recovering the
 ///    target from the stem needs the catalogue, because `_` is also a legal
@@ -191,7 +190,7 @@ pub fn discover(root: &Path, app: Option<&Path>, catalogue: Catalogue<'_>) -> Ve
 pub fn discover_all(root: &Path, app: Option<&Path>, catalogue: Catalogue<'_>) -> Vec<Variant> {
     let mut found: Vec<Variant> = Vec::new();
 
-    for build_dir in build_dirs(root) {
+    for build_dir in build_dirs(root, app) {
         let Some(target) = crate::build::cached_target(root, &build_dir) else {
             continue;
         };
@@ -215,7 +214,7 @@ pub fn discover_all(root: &Path, app: Option<&Path>, catalogue: Catalogue<'_>) -
         }) {
             continue;
         }
-        let build_dir = free_build_dir(&found, &target);
+        let build_dir = free_build_dir(root, app, &found, &target);
         found.push(Variant {
             name: variant_name(&build_dir, &target),
             board: Some(target),
@@ -250,26 +249,33 @@ fn same_board(a: &str, b: &str) -> bool {
     covers(a, b) || covers(b, a)
 }
 
-/// The project's build directories: immediate subdirectories whose name
-/// starts with `build` and that hold a CMake cache. The name filter is what
-/// keeps a `src/` or a `docs/` from being stat-ed for a cache, and `build`
-/// is the prefix every convention in the wild uses (`build`, `build_sim`,
-/// `build-sim`). `build` sorts first when present --- it is the default
-/// `west build` targets, so it leads the list.
-fn build_dirs(root: &Path) -> Vec<String> {
-    let mut dirs: Vec<String> = std::fs::read_dir(root)
+/// A conventional build path, expressed relative to the repository when possible.
+pub fn build_path(root: &Path, app: Option<&Path>, name: &str) -> String {
+    let base = app.unwrap_or(root);
+    base.strip_prefix(root)
+        .unwrap_or(base)
+        .join(name)
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// Immediate `build*` children of the application, expressed relative to the
+/// project root. Cache validation happens in discovery. The default sorts first.
+fn build_dirs(root: &Path, app: Option<&Path>) -> Vec<String> {
+    let mut dirs: Vec<String> = std::fs::read_dir(app.unwrap_or(root))
         .into_iter()
         .flatten()
         .flatten()
         .filter(|entry| entry.path().is_dir())
         .map(|entry| entry.file_name().to_string_lossy().into_owned())
         .filter(|name| name.starts_with("build"))
+        .map(|name| build_path(root, app, &name))
         .collect();
     dirs.sort();
     dirs.dedup();
     if let Some(index) = dirs
         .iter()
-        .position(|name| name == crate::build::DEFAULT_BUILD_DIR)
+        .position(|name| name == &build_path(root, app, crate::build::DEFAULT_BUILD_DIR))
     {
         dirs.swap(0, index);
     }
@@ -336,16 +342,16 @@ fn fragment_targets(root: &Path, catalogue: Catalogue<'_>) -> Vec<String> {
 /// A build directory for a target that has none yet: `build` while it is
 /// free, else `build-<short name>` --- the spelling the projects in the
 /// wild already use, and one that cannot collide with a sibling variant.
-fn free_build_dir(found: &[Variant], target: &str) -> String {
-    let default = crate::build::DEFAULT_BUILD_DIR.to_string();
+fn free_build_dir(root: &Path, app: Option<&Path>, found: &[Variant], target: &str) -> String {
+    let default = build_path(root, app, crate::build::DEFAULT_BUILD_DIR);
     if !found.iter().any(|v| v.build_dir == default) {
         return default;
     }
     let short = short_name(target);
-    let mut candidate = format!("build-{short}");
+    let mut candidate = build_path(root, app, &format!("build-{short}"));
     let mut suffix = 2;
     while found.iter().any(|v| v.build_dir == candidate) {
-        candidate = format!("build-{short}-{suffix}");
+        candidate = build_path(root, app, &format!("build-{short}-{suffix}"));
         suffix += 1;
     }
     candidate
@@ -386,6 +392,10 @@ pub fn fragment_path_for(board: &str) -> PathBuf {
 /// `build` gets the board's short name too --- "build" names the directory,
 /// not the target.
 fn variant_name(build_dir: &str, board: &str) -> String {
+    let build_dir = Path::new(build_dir)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(build_dir);
     let suffix = build_dir
         .strip_prefix("build")
         .map(|rest| rest.trim_start_matches(['-', '_']))
@@ -745,6 +755,31 @@ mod tests {
         assert_eq!(found[1].build_dir, "build_sim");
         assert_eq!(found[1].board.as_deref(), Some("native_sim/native/64"));
         assert!(found[1].is_simulator());
+    }
+
+    #[test]
+    fn nested_application_owns_discovery_and_fragment_build_paths() {
+        let root = fixture("nested-build-base");
+        let app = root.join("app");
+        built(&root, "build_old", "xiao_esp32c3", None);
+        built(&app, "build", "xiao_esp32c3", None);
+        built(&app, "build_sim", "native_sim/native/64", None);
+        let found = variants(&root, Some(&app), &[], &[]);
+        assert_eq!(
+            found
+                .iter()
+                .map(|v| v.build_dir.as_str())
+                .collect::<Vec<_>>(),
+            ["app/build", "app/build_sim"]
+        );
+        assert_eq!(found[1].name, "sim");
+
+        std::fs::remove_dir_all(app.join("build_sim")).unwrap();
+        assert!(variants(&root, Some(&app), &[], &[]).is_empty());
+        fragment(&app, "native_sim_native_64");
+        let found = discover_all(&root, Some(&app), &catalogue());
+        assert!(found.iter().all(|v| v.build_dir.starts_with("app/build")));
+        assert_eq!(found.len(), 2);
     }
 
     /// A fresh clone has no build directories; the `boards/` fragments are

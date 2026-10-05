@@ -605,9 +605,9 @@ fn opening_a_project_ignores_host_answers_without_hiding_valid_fallbacks() {
         entry.board = Some(registry_board.to_string());
         chiptui::settings::record_project(&root.join("home/.config/chiptui/config.toml"), entry)
             .unwrap();
-        std::fs::create_dir_all(root.join("build")).unwrap();
+        std::fs::create_dir_all(root.join("app/build")).unwrap();
         std::fs::write(
-            root.join("build/CMakeCache.txt"),
+            root.join("app/build/CMakeCache.txt"),
             "CACHED_BOARD:STRING=cached_board\n",
         )
         .unwrap();
@@ -664,8 +664,8 @@ fn a_saved_project_board_does_not_retarget_the_selected_variant_after_reopening(
 /// asks the project question with the answer one `Enter` away: the picker
 /// lists the *entered* directory (not the configured projects folder), the
 /// cursor already on the only application in it. Accepting sets the
-/// application directory --- the repository stays the project, so its
-/// `build/` directories and its `chiptui.toml` stay where they are.
+/// application directory --- the repository stays the project, while builds
+/// default to the application folder.
 #[test]
 fn entering_a_module_repo_asks_for_its_only_application_preselected() {
     let (mut app, root) = repo_app("entry-ask", None);
@@ -706,6 +706,7 @@ fn entering_a_module_repo_asks_for_its_only_application_preselected() {
     let panel = app.build.as_ref().unwrap();
     assert_eq!(panel.root, root, "the repository stays the project root");
     assert_eq!(panel.app_dir.as_deref(), Some(root.join("app").as_path()));
+    assert_eq!(panel.build_dir, "app/build");
     assert_eq!(
         panel.project_origin,
         chiptui::build::ProjectOrigin::WorkingDir
@@ -732,6 +733,7 @@ fn the_build_runs_in_the_root_with_the_app_as_its_source() {
         .command(chiptui::backend::BuildKind::Build, backend)
         .expect("the gate passed, the command must compose");
     let text = command.to_string();
+    assert!(text.contains("-d app/build"), "{text}");
     assert!(
         text.trim_end().ends_with(" app"),
         "the application rides as west's source argument: {text}"
@@ -739,7 +741,7 @@ fn the_build_runs_in_the_root_with_the_app_as_its_source() {
     assert_eq!(
         command.cwd(),
         Some(&root),
-        "west runs in the repository, where build/ lives"
+        "west runs in the repository with a repository-relative build path"
     );
     // The reports and menuconfig run against the build directory alone ---
     // no source argument on a `-t` invocation.
@@ -750,6 +752,42 @@ fn the_build_runs_in_the_root_with_the_app_as_its_source() {
         .menuconfig_command(backend)
         .expect("menuconfig composes");
     assert!(!menuconfig.to_string().contains(" app "));
+    assert!(menuconfig.to_string().contains("-d app/build"));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn accepting_application_discovers_its_builds_and_cached_board() {
+    let (mut app, root) = repo_app("nested-builds", None);
+    for (dir, board) in [
+        ("build", "xiao_esp32c3"),
+        ("build_sim", "native_sim/native/64"),
+    ] {
+        let build = root.join("app").join(dir);
+        std::fs::create_dir_all(&build).unwrap();
+        std::fs::write(
+            build.join("CMakeCache.txt"),
+            format!(
+                "BOARD:STRING={board}\nZEPHYR_BASE:PATH=/zephyr\nAPPLICATION_SOURCE_DIR:PATH={}\n",
+                root.join("app").display()
+            ),
+        )
+        .unwrap();
+    }
+    app.maybe_open_entry_project();
+    app.handle(key(KeyCode::Enter));
+    let panel = app.build.as_ref().unwrap();
+    assert_eq!(panel.root, root);
+    assert_eq!(panel.board_name(), Some("xiao_esp32c3"));
+    assert_eq!(
+        panel
+            .variants
+            .iter()
+            .map(|v| v.build_dir.as_str())
+            .collect::<Vec<_>>(),
+        ["app/build", "app/build_sim"]
+    );
+    assert_eq!(panel.build_dir, "app/build");
     let _ = std::fs::remove_dir_all(&root);
 }
 

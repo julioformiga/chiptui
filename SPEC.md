@@ -882,9 +882,11 @@ one is being built is never guessed:
     `app/` --- any name, provided the child is the only one) is the
     **root-as-project** case. Nothing re-roots: the project stays the
     repository, and the application becomes `west build`'s source-directory
-    argument (`west build -b … app`), so the repository's `build/`
-    directories, its `chiptui.toml` and its board fragments stay where the
-    repository keeps them. The application may be declared outright
+    argument (`west build -b … -d app/build app`). Build discovery and new
+    default build directories use the application folder (`app/build*`);
+    when the repository itself is the application they use `repo/build*`.
+    The repository still owns `chiptui.toml`; explicitly declared build
+    paths remain relative to it. The application may be declared outright
     (`[zephyr] app = "app"` in the project's `chiptui.toml`; a declaration
     that no longer names an application is named in the log, never
     silently replaced by the discovery) or confirmed once per session in
@@ -1105,7 +1107,8 @@ Configurations combine two sources, deduplicated by directory:
     build_dir = "build_sim"
     ```
 
-2.  **discovered** immediate `build*` directories at the project root.
+2.  **discovered** immediate `build*` directories at the resolved application
+    root (`app/` when the application lives there, otherwise the project root).
     Their CMake caches identify the board and shield actually configured;
     an explicit source pointing at another application excludes the entry.
     Sysbuild's default application domain supplies its application cache;

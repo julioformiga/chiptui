@@ -278,7 +278,13 @@ impl App {
         } else {
             declared
         };
+        let default_build_dir =
+            crate::backend::zephyr::variants::build_path(root, Some(&app), "build_sim");
+        let pending = panel.simulator_pending().is_some();
         panel.open_simulator(&variants);
+        if let Some(editor) = &mut panel.simulator_edit {
+            editor.set_default_build_dir(default_build_dir, pending);
+        }
         if panel.sdl_probe.is_none() {
             panel.sdl_status = "Checking SDL2 development files…".into();
             panel.sdl_probe = Some(

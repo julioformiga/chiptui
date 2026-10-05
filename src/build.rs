@@ -682,7 +682,11 @@ impl BuildPanel {
         if self.variants.is_empty() {
             self.variant = None;
             if had_variants {
-                self.build_dir = DEFAULT_BUILD_DIR.into();
+                self.build_dir = crate::backend::zephyr::variants::build_path(
+                    &self.root,
+                    self.app_dir.as_deref(),
+                    DEFAULT_BUILD_DIR,
+                );
                 self.device_build_dir = None;
             }
             return;
@@ -941,7 +945,27 @@ impl BuildPanel {
     /// from the project's `chiptui.toml` when it declares one, from a
     /// confirmed resolution, or from an accepted picker row.
     pub fn set_app_dir(&mut self, app: Option<PathBuf>) {
+        if self.app_dir == app {
+            return;
+        }
         self.app_dir = app;
+        self.build_dir = crate::backend::zephyr::variants::build_path(
+            &self.root,
+            self.app_dir.as_deref(),
+            DEFAULT_BUILD_DIR,
+        );
+        self.variants.clear();
+        self.variant = None;
+        self.device_build_dir = None;
+        self.remembered_build_dir = None;
+        if self
+            .board
+            .as_ref()
+            .is_none_or(|choice| choice.origin == BoardOrigin::Cache)
+        {
+            self.board = cached_board(&self.root, &self.build_dir)
+                .and_then(|name| project_board(name, BoardOrigin::Cache));
+        }
     }
 
     /// Whether a build can run in this project: the root holds a Zephyr

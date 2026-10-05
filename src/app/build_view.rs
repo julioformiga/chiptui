@@ -655,9 +655,8 @@ impl App {
             }
             _ => Vec::new(),
         };
-        // The `boards/` fragments belong to the *application* (an app's
-        // own target fragments live beside its sources), while the build
-        // directories belong to the repository root.
+        // Build directories and board fragments live beside the application;
+        // their paths remain relative to the repository root.
         let variants = crate::backend::zephyr::variants::variants(
             &panel.root,
             panel.app_dir.as_deref(),
@@ -854,6 +853,7 @@ impl App {
                 panel.set_app_dir(Some(app.clone()));
             }
             self.persist_app_dir(&root, &app);
+            self.refresh_variants();
             self.overlay = None;
             return;
         }

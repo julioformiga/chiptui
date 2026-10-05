@@ -377,6 +377,7 @@ pub struct SimulatorEditor {
     pub selected: usize,
     pub editing: bool,
     original_value: String,
+    default_build_dir: String,
     pub values: [String; 3],
     pub error: Option<String>,
 }
@@ -414,6 +415,7 @@ impl SimulatorEditor {
             selected: 1,
             editing: false,
             original_value: String::new(),
+            default_build_dir: "build_sim".into(),
             values: [
                 variant.name,
                 variant
@@ -427,6 +429,13 @@ impl SimulatorEditor {
 
     pub fn original_name(&self) -> Option<String> {
         self.choices.get(self.choice).map(|v| v.name.clone())
+    }
+
+    pub fn set_default_build_dir(&mut self, path: String, pending: bool) {
+        if self.original_name().is_none() && !pending {
+            self.values[2] = path.clone();
+        }
+        self.default_build_dir = path;
     }
 
     pub fn begin_edit(&mut self) {
@@ -453,11 +462,11 @@ impl SimulatorEditor {
     pub fn step_choice(&mut self, delta: isize) {
         self.choice =
             (self.choice as isize + delta).rem_euclid(self.choices.len() as isize + 1) as usize;
-        let variant = self
-            .choices
-            .get(self.choice)
-            .cloned()
-            .unwrap_or_else(simulator::default_variant);
+        let variant = self.choices.get(self.choice).cloned().unwrap_or_else(|| {
+            let mut variant = simulator::default_variant();
+            variant.build_dir = self.default_build_dir.clone();
+            variant
+        });
         self.values = [
             variant.name,
             variant
