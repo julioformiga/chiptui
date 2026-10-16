@@ -4,7 +4,7 @@
 //! Reporting is opt-in (`[ui] mouse` in the user config, enabled by
 //! `terminal::init`); [`App::handle`](crate::app::App::handle) drops every
 //! gesture while it is off, and the event source has already narrowed the
-//! stream to left clicks and wheel steps. This module is where a gesture
+//! stream to left-button gestures and wheel steps. This module is where a gesture
 //! meets the layout: a click focuses the pane it lands on and moves that
 //! pane's cursor onto the row it landed on (`ui::layout`'s tree, published
 //! frame area and all, is the same geometry the renderer drew), a wheel
@@ -84,20 +84,24 @@ impl App {
         // owns the whole screen, and a gesture under it is not an answer
         // to its question.
         if self.overlay.is_some() {
+            self.monitor_selection.clear();
             self.on_overlay_mouse(event);
             return;
         }
         if self.shortcuts_overlay_active {
+            self.monitor_selection.clear();
             return;
         }
         // The flash view is a dialog layered over the dashboard: its own
         // screens (the online-firmware search among them) take the
         // gesture, the same standing `on_flash_key` has.
         if self.view == View::Flash {
+            self.monitor_selection.clear();
             self.on_flash_mouse(event);
             return;
         }
         if self.view != View::Dashboard {
+            self.monitor_selection.clear();
             return;
         }
         // `ui::draw` publishes this every frame; without it (first frame,
@@ -113,12 +117,66 @@ impl App {
         };
         let areas = layout::dashboard(self, body);
         let point = (event.column, event.row);
+        if self.monitor_selection_mouse(event, areas.row3) {
+            return;
+        }
         match event.kind {
             MouseEventKind::Down(MouseButton::Left) => self.click(point, &areas),
             MouseEventKind::ScrollUp => self.wheel(-1, point, &areas),
             MouseEventKind::ScrollDown => self.wheel(1, point, &areas),
             _ => {}
         }
+    }
+
+    fn monitor_selection_mouse(&mut self, event: MouseEvent, pane: Rect) -> bool {
+        use super::monitor_view::MonitorSelection;
+        if self.log_tab != LogTab::Monitor {
+            self.monitor_selection.clear();
+            return false;
+        }
+        let area = crate::ui::monitor::console_block(false, self.theme_palette()).inner(pane);
+        if area.is_empty()
+            || self
+                .monitor_selection
+                .snapshot
+                .as_ref()
+                .is_none_or(|b| b.area != area)
+        {
+            self.monitor_selection.clear();
+            return false;
+        }
+        let point = (event.column, event.row);
+        match event.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.monitor_selection.anchor = None;
+                if area.contains(point.into()) {
+                    if self.focus == Focus::Logs {
+                        self.monitor_selection.anchor = Some(point);
+                        self.monitor_selection.end = point;
+                    } else {
+                        self.focus = Focus::Logs;
+                    }
+                    return true;
+                }
+            }
+            MouseEventKind::Drag(MouseButton::Left) | MouseEventKind::Up(MouseButton::Left)
+                if self.monitor_selection.anchor.is_some() =>
+            {
+                self.monitor_selection.end = MonitorSelection::clamp(area, point);
+                if matches!(event.kind, MouseEventKind::Up(_)) {
+                    if self.monitor_selection.anchor != Some(self.monitor_selection.end) {
+                        let text = self.monitor_selection.text();
+                        if !text.is_empty() {
+                            self.clipboard_request = Some(text);
+                        }
+                    }
+                    self.monitor_selection.clear();
+                }
+                return true;
+            }
+            _ => {}
+        }
+        false
     }
 
     /// A left click: focus the pane it lands on, then move that pane's
@@ -1903,6 +1961,75 @@ mod tests {
 
     fn click(app: &mut App, column: u16, row: u16) {
         gesture(app, MouseEventKind::Down(MouseButton::Left), column, row);
+    }
+
+    #[test]
+    fn monitor_drag_copies_content_without_borders_and_freezes_live_output() {
+        let root = project_dir("monitor-selection", 0);
+        let mut app = app_with_backend(BackendKind::Zephyr, &root);
+        app.log_tab = LogTab::Monitor;
+        app.set_monitor_source(crate::app::MonitorSource::Build);
+        app.focus = Focus::Logs;
+        app.build.as_mut().unwrap().output =
+            vec!["hello world".into(), "second line".into()].into();
+        render(&mut app, 100, 36);
+        let area = app.monitor_selection.snapshot.as_ref().unwrap().area;
+        click(&mut app, area.x + 6, area.y);
+        gesture(
+            &mut app,
+            MouseEventKind::Drag(MouseButton::Left),
+            area.x + 5,
+            area.y + 1,
+        );
+        app.build.as_mut().unwrap().output = vec!["replacement".into()].into();
+        render(&mut app, 100, 36);
+        gesture(
+            &mut app,
+            MouseEventKind::Up(MouseButton::Left),
+            area.x + 5,
+            area.y + 1,
+        );
+        assert_eq!(
+            app.take_clipboard_request().as_deref(),
+            Some("world\nsecond")
+        );
+        assert!(app.monitor_selection.anchor.is_none());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn monitor_selection_requires_focus_and_cancels_on_resize() {
+        let root = project_dir("monitor-selection-gates", 0);
+        let mut app = app_with_backend(BackendKind::Zephyr, &root);
+        app.log_tab = LogTab::Monitor;
+        app.set_monitor_source(crate::app::MonitorSource::Build);
+        app.build.as_mut().unwrap().output = vec!["hello world".into()].into();
+        app.focus = Focus::Build;
+        render(&mut app, 100, 36);
+        let area = app.monitor_selection.snapshot.as_ref().unwrap().area;
+        click(&mut app, area.x, area.y);
+        gesture(
+            &mut app,
+            MouseEventKind::Up(MouseButton::Left),
+            area.right(),
+            area.y,
+        );
+        assert!(app.take_clipboard_request().is_none());
+        assert_eq!(app.focus, Focus::Logs);
+        click(&mut app, area.x, area.y);
+        app.handle(AppEvent::Resize {
+            width: 90,
+            height: 30,
+        });
+        gesture(
+            &mut app,
+            MouseEventKind::Up(MouseButton::Left),
+            area.right(),
+            area.y,
+        );
+        assert!(app.take_clipboard_request().is_none());
+        assert!(app.monitor_selection.anchor.is_none());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     fn wheel(app: &mut App, direction: isize, column: u16, row: u16) {

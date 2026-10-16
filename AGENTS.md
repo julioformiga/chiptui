@@ -147,7 +147,9 @@ A click that acts on a row (copying a log line or the MAC row, pressing a
 stacked Actions button, opening an Environment row's dialog) additionally
 requires its pane to already hold focus --- the position `Enter` is always
 in --- so an unfocused click is spent on focus alone. Left clicks and
-wheel steps only --- no motion, drag or hover. Hit-testing
+wheel steps, plus left-button drag/release for Monitor text selection;
+no unpressed motion or hover. Monitor selection copies only content on
+release and uses a frozen content snapshot while dragging. Hit-testing
 recomputes the drawn geometry (`ui::layout`, the published frame area,
 `ui::home::hit_areas`) rather than caching rects; a gesture that arrives
 while reporting is off, under a modal, or before a frame is dropped.

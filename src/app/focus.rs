@@ -186,6 +186,7 @@ impl App {
     }
 
     pub(super) fn select_log_tab(&mut self, tab: LogTab) {
+        self.monitor_selection.clear();
         if tab == LogTab::Terminal {
             // Entering the Terminal tab is the start gesture for its shell
             // (and the re-attach point after a `ctrl+]` detach) --- it never

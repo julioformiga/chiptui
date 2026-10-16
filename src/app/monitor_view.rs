@@ -6,6 +6,66 @@
 //! offset, and the Terminal tab reuses the state but not the renderer.
 
 use super::{App, Focus, LogTab};
+use ratatui::{buffer::Buffer, layout::Rect};
+
+/// The visible content snapshot is frozen only while dragging. Coordinates
+/// are cells, not byte offsets, so wide and combining characters stay intact.
+#[derive(Default)]
+pub(crate) struct MonitorSelection {
+    pub snapshot: Option<Buffer>,
+    pub anchor: Option<(u16, u16)>,
+    pub end: (u16, u16),
+}
+
+impl MonitorSelection {
+    pub fn clear(&mut self) {
+        *self = Self::default();
+    }
+
+    pub fn contains(&self, x: u16, y: u16) -> bool {
+        let Some(anchor) = self.anchor else {
+            return false;
+        };
+        let a = (anchor.1, anchor.0);
+        let b = (self.end.1, self.end.0);
+        (a.min(b)..=a.max(b)).contains(&(y, x))
+    }
+
+    pub fn text(&self) -> String {
+        let Some(buffer) = &self.snapshot else {
+            return String::new();
+        };
+        let mut lines = Vec::new();
+        for y in buffer.area.y..buffer.area.bottom() {
+            let mut line = String::new();
+            let mut selected = false;
+            let mut covered_until = buffer.area.x;
+            for x in buffer.area.x..buffer.area.right() {
+                if x < covered_until {
+                    continue;
+                }
+                let symbol = buffer[(x, y)].symbol();
+                let width = ratatui::text::Span::raw(symbol).width().max(1) as u16;
+                covered_until = x.saturating_add(width);
+                if (x..covered_until).any(|column| self.contains(column, y)) {
+                    selected = true;
+                    line.push_str(symbol);
+                }
+            }
+            if selected {
+                lines.push(line.trim_end().to_string());
+            }
+        }
+        lines.join("\n")
+    }
+
+    pub fn clamp(area: Rect, point: (u16, u16)) -> (u16, u16) {
+        (
+            point.0.clamp(area.x, area.right() - 1),
+            point.1.clamp(area.y, area.bottom() - 1),
+        )
+    }
+}
 
 /// Which live feed the Monitor tab is currently showing. Changed only at
 /// explicit transition points --- never derived from [`FlashPanel`]/device
@@ -103,6 +163,7 @@ impl App {
     /// Switches the Monitor tab's feed and re-pins it to the new output's
     /// tail --- a fresh session must not inherit the previous one's scroll.
     pub fn set_monitor_source(&mut self, source: MonitorSource) {
+        self.monitor_selection.clear();
         self.monitor_source = source;
         self.monitor_scroll = MonitorScroll::default();
     }
@@ -117,6 +178,7 @@ impl App {
 
     /// Scrolls the Monitor tab towards older output, leaving the tail.
     pub fn monitor_scroll_up(&mut self, rows: usize) {
+        self.monitor_selection.clear();
         let max = self.monitor_max_offset();
         self.monitor_scroll.offset = if self.monitor_scroll.following {
             max.saturating_sub(rows)
@@ -129,11 +191,31 @@ impl App {
     /// Scrolls the Monitor tab towards newer output; reaching the bottom
     /// resumes following.
     pub fn monitor_scroll_down(&mut self, rows: usize) {
+        self.monitor_selection.clear();
         if self.monitor_scroll.following {
             return;
         }
         let max = self.monitor_max_offset();
         self.monitor_scroll.offset = (self.monitor_scroll.offset + rows).min(max);
         self.monitor_scroll.following = self.monitor_scroll.offset >= max;
+    }
+}
+
+#[cfg(test)]
+mod selection_tests {
+    use super::*;
+
+    #[test]
+    fn reverse_selection_preserves_wide_and_combining_characters() {
+        let area = Rect::new(3, 4, 12, 2);
+        let mut buffer = Buffer::empty(area);
+        buffer.set_string(3, 4, "a界e\u{301}z", ratatui::style::Style::default());
+        buffer.set_string(3, 5, "last", ratatui::style::Style::default());
+        let selection = MonitorSelection {
+            snapshot: Some(buffer),
+            anchor: Some((6, 5)),
+            end: (5, 4),
+        };
+        assert_eq!(selection.text(), "界e\u{301}z\nlast");
     }
 }

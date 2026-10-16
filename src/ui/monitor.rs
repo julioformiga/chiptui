@@ -40,6 +40,40 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
         MonitorSource::Run => draw_run_output(frame, area, app, focused, palette),
         MonitorSource::Build => draw_build_output(frame, area, app, focused, palette),
     }
+    let content = console_block(focused, palette).inner(area);
+    if !app.mouse_enabled() || dashboard_behind_dialog(app) || content.is_empty() {
+        app.monitor_selection.clear();
+        return;
+    }
+    let selection = &mut app.monitor_selection;
+    if selection
+        .snapshot
+        .as_ref()
+        .is_some_and(|b| b.area != content)
+    {
+        selection.clear();
+    }
+    if selection.anchor.is_some() {
+        if let Some(snapshot) = &selection.snapshot {
+            for y in content.y..content.bottom() {
+                for x in content.x..content.right() {
+                    let cell = &mut frame.buffer_mut()[(x, y)];
+                    *cell = snapshot[(x, y)].clone();
+                    if selection.contains(x, y) {
+                        cell.set_style(Style::new().fg(palette.fg).bg(palette.selection));
+                    }
+                }
+            }
+        }
+    } else {
+        let mut snapshot = ratatui::buffer::Buffer::empty(content);
+        for y in content.y..content.bottom() {
+            for x in content.x..content.right() {
+                snapshot[(x, y)] = frame.buffer_mut()[(x, y)].clone();
+            }
+        }
+        selection.snapshot = Some(snapshot);
+    }
 }
 
 /// Streamed build-command output (`west build`), mirroring the flash

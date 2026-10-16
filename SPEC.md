@@ -1851,7 +1851,15 @@ button, opening an Environment row's dialog) additionally needs its pane
 already focused, the position `Enter` is always in, so an unfocused click
 only takes focus. The wheel scrolls the log/monitor pane. Off by default: reporting on makes
 the terminal send clicks to the app instead of selecting text, and
-keyboard stays primary (§4.7). Motion, drag and hover are not reported.
+keyboard stays primary (§4.7). In the focused Monitor, dragging with the
+left button highlights text and copies it on release using the terminal's
+clipboard support. Only the inner content is copied, without panel borders,
+tab titles or the scrollbar; trailing padding is removed. The visible content
+is held stable during the drag while output continues to be collected.
+An unfocused click only focuses the pane. A plain click copies nothing.
+Selection is cancelled by keyboard input, scrolling, resizing, switching
+feeds/tabs or opening a modal. Drag/release events are used only for this
+selection; hover is ignored.
 
 ### Project registry
 

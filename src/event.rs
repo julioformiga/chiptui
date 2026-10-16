@@ -193,14 +193,14 @@ impl Default for EventSource {
     }
 }
 
-/// The mouse kinds that ever become an [`AppEvent::Mouse`]: a left click
-/// activates what it lands on and a wheel step scrolls. Motion and drag
-/// reports arrive per cell crossed and have no meaning here, other buttons
-/// and the release half of a click are not gestures the dashboard answers.
+/// Left-button gestures include the Monitor's drag-to-copy selection.
+/// Unpressed motion and other buttons are ignored.
 fn is_gesture(kind: MouseEventKind) -> bool {
     matches!(
         kind,
         MouseEventKind::Down(MouseButton::Left)
+            | MouseEventKind::Drag(MouseButton::Left)
+            | MouseEventKind::Up(MouseButton::Left)
             | MouseEventKind::ScrollUp
             | MouseEventKind::ScrollDown
     )
@@ -221,16 +221,15 @@ mod tests {
     }
 
     #[test]
-    fn only_left_clicks_and_wheel_steps_are_gestures() {
+    fn only_left_button_gestures_and_wheel_steps_are_gestures() {
         assert!(is_gesture(MouseEventKind::Down(MouseButton::Left)));
         assert!(is_gesture(MouseEventKind::ScrollUp));
         assert!(is_gesture(MouseEventKind::ScrollDown));
-        // The noise half: per-cell motion/drag floods, other buttons,
-        // releases, and the horizontal wheel nobody asks for here.
+        // Other buttons, unpressed motion and horizontal wheel are ignored.
         assert!(!is_gesture(MouseEventKind::Down(MouseButton::Right)));
         assert!(!is_gesture(MouseEventKind::Down(MouseButton::Middle)));
-        assert!(!is_gesture(MouseEventKind::Up(MouseButton::Left)));
-        assert!(!is_gesture(MouseEventKind::Drag(MouseButton::Left)));
+        assert!(is_gesture(MouseEventKind::Up(MouseButton::Left)));
+        assert!(is_gesture(MouseEventKind::Drag(MouseButton::Left)));
         assert!(!is_gesture(MouseEventKind::Moved));
         assert!(!is_gesture(MouseEventKind::ScrollLeft));
         assert!(!is_gesture(MouseEventKind::ScrollRight));

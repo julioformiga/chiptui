@@ -18,7 +18,10 @@ use super::{App, Overlay, RunState, View, flash_view};
 impl App {
     pub fn handle(&mut self, event: AppEvent) {
         match event {
-            AppEvent::Key(key) => self.on_key(key),
+            AppEvent::Key(key) => {
+                self.monitor_selection.clear();
+                self.on_key(key);
+            }
             // Ratatui re-renders from scratch each frame, so a resize only has
             // to invalidate what depends on the old geometry.
             // A paste belongs to whatever owns the keyboard, and only the
@@ -28,7 +31,11 @@ impl App {
                     self.paste_into_terminal(&text);
                 }
             }
-            AppEvent::Resize { .. } => self.logs.scroll_to_bottom(),
+            AppEvent::Resize { .. } => {
+                self.monitor_selection.clear();
+                self.frame_area = None;
+                self.logs.scroll_to_bottom();
+            }
             // A mouse gesture is only ever an alternative trigger for an
             // action the keyboard already owns, and only when the session
             // asked for reporting --- otherwise it is dropped here, before

@@ -21,7 +21,7 @@ pub mod home;
 mod install;
 pub(crate) use install::area as install_area;
 pub(crate) mod layout;
-mod monitor;
+pub(crate) mod monitor;
 mod overlay;
 pub(crate) use overlay::{DISCARD_CHOICES, ZEPHYR_ACTIONS_COUNT};
 pub(crate) mod ota;
@@ -105,6 +105,13 @@ fn icon_column(mark: &str, single_cell: bool) -> String {
 }
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
+    if app.log_tab != LogTab::Monitor
+        || app.view != View::Dashboard
+        || app.overlay.is_some()
+        || app.shortcuts_overlay_active
+    {
+        app.monitor_selection.clear();
+    }
     let area = frame.area();
     // Published before anything else: the mouse hit-testing recomputes the
     // layout from this area, and a frame that cannot draw the dashboard

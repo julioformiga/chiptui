@@ -276,6 +276,7 @@ pub struct App {
     pub monitor_scroll: MonitorScroll,
     /// The Monitor tab's on-screen geometry, published by the renderer.
     pub monitor_view: MonitorView,
+    pub(crate) monitor_selection: monitor_view::MonitorSelection,
     pub overlay: Option<Overlay>,
     picker_return: Option<Overlay>,
     /// Height of the log pane, published by the renderer so page-scrolling and
@@ -652,6 +653,7 @@ impl App {
             monitor_source: MonitorSource::default(),
             monitor_scroll: MonitorScroll::default(),
             monitor_view: MonitorView::default(),
+            monitor_selection: monitor_view::MonitorSelection::default(),
             overlay: None,
             picker_return: None,
             log_viewport: 1,
@@ -775,7 +777,12 @@ impl App {
     /// project session from the guard; tests enable it to exercise click
     /// handling without a terminal.
     pub fn set_mouse_enabled(&mut self, enabled: bool) {
+        self.monitor_selection.clear();
         self.mouse_enabled = enabled;
+    }
+
+    pub(crate) fn mouse_enabled(&self) -> bool {
+        self.mouse_enabled
     }
 
     /// Queues `text` for the clipboard and says so in the log --- the
