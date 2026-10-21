@@ -138,21 +138,14 @@ impl App {
                 || format!("west init -m {} .", crate::install::steps::MANIFEST_URL),
                 |command| command.to_string(),
             );
-        self.overlay = Some(Overlay::Confirm {
-            message: command,
+        self.overlay = Some(Overlay::ConfirmZephyrInstall {
+            command,
             confirm: false,
         });
-        self.install_confirm_pending = true;
-    }
-
-    /// Whether the open shared confirm belongs to the installer.
-    pub(super) fn install_confirm_pending(&self) -> bool {
-        self.install_confirm_pending
     }
 
     /// The confirm's accept path.
     pub(super) fn start_install(&mut self) {
-        self.install_confirm_pending = false;
         let Some(installer) = &mut self.installer else {
             return;
         };
@@ -171,7 +164,6 @@ impl App {
     /// The confirm's decline path: back to the installer, not to the
     /// dashboard --- declining one question is not leaving the flow.
     pub(super) fn cancel_install(&mut self) {
-        self.install_confirm_pending = false;
         self.overlay = Some(Overlay::ZephyrInstall);
     }
 

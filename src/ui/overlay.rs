@@ -58,9 +58,6 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
             draw_device_picker(frame, popup, app, selected, palette)
         }
         Overlay::ThemePicker { selected } => draw_theme_picker(frame, popup, app, selected, palette),
-        // `message` is the literal command preview the caller built; which
-        // action it belongs to lives on the panel, un-consumed, so the
-        // dialog can name it (`FlashPanel::pending`).
         // `reason` is state the decline path needs, not something to draw
         // --- see `draw_install_offer`.
         Overlay::ConfirmInstallHere { dir, confirm, .. } => {
@@ -115,7 +112,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
         Overlay::SdkToolchains { selected } => {
             draw_sdk_toolchains(frame, popup, app, selected, palette)
         }
-        Overlay::Confirm { message, confirm } if app.install_confirm_pending => draw_confirm_dialog(
+        Overlay::ConfirmZephyrInstall { command, confirm } => draw_confirm_dialog(
             frame,
             popup,
             "Install Zephyr here?",
@@ -133,42 +130,44 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, palette: Palette) {
                         .fg(palette.fg),
                 ),
                 Line::from(""),
-                Line::from(shorten_middle(&message, DESTRUCTIVE_BUDGET).fg(palette.muted)),
+                Line::from(shorten_middle(&command, DESTRUCTIVE_BUDGET).fg(palette.muted)),
             ],
             confirm,
             palette,
         ),
-        Overlay::Confirm { message, confirm } => {
-            match app.flash.as_ref().and_then(|flash| flash.pending()) {
-                Some(crate::flash::FlashAction::EraseFlash) => draw_destructive(
-                    frame,
-                    popup,
-                    Destructive {
-                        title: "Erase the flash?".to_string(),
-                        target: chip_target(app),
-                        consequence: "Erases the whole chip — firmware and filesystem alike.".to_string(),
-                        command: message,
-                    },
-                    confirm,
-                    palette,
-                ),
-                Some(crate::flash::FlashAction::WriteFlash) => draw_destructive(
-                    frame,
-                    popup,
-                    Destructive {
-                        title: "Write the firmware?".to_string(),
-                        target: chip_target(app),
-                        consequence: "Overwrites the firmware currently on it.".to_string(),
-                        command: message,
-                    },
-                    confirm,
-                    palette,
-                ),
-                // Any other confirmation still routed through this overlay
-                // keeps the plain single-line form.
-                _ => draw_confirm(frame, popup, &message, confirm, palette),
-            }
-        }
+        Overlay::ConfirmFlashAction {
+            action,
+            command,
+            confirm,
+        } => match action {
+            crate::flash::FlashAction::EraseFlash => draw_destructive(
+                frame,
+                popup,
+                Destructive {
+                    title: "Erase the flash?".to_string(),
+                    target: chip_target(app),
+                    consequence: "Erases the whole chip — firmware and filesystem alike.".to_string(),
+                    command,
+                },
+                confirm,
+                palette,
+            ),
+            crate::flash::FlashAction::WriteFlash => draw_destructive(
+                frame,
+                popup,
+                Destructive {
+                    title: "Write the firmware?".to_string(),
+                    target: chip_target(app),
+                    consequence: "Overwrites the firmware currently on it.".to_string(),
+                    command,
+                },
+                confirm,
+                palette,
+            ),
+            // Only the two above are destructive (`FlashAction::
+            // is_destructive`); anything else keeps the plain form.
+            _ => draw_confirm(frame, popup, &command, confirm, palette),
+        },
         Overlay::ConfirmBuild {
             action: crate::build::BuildAction::UpdateZephyr,
             confirm,

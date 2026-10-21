@@ -1482,7 +1482,8 @@ impl App {
                 | Overlay::ZephyrActions { .. },
             ) => vec![("?", "help")],
             Some(
-                Overlay::Confirm { .. }
+                Overlay::ConfirmFlashAction { .. }
+                | Overlay::ConfirmZephyrInstall { .. }
                 | Overlay::ConfirmBuild { .. }
                 | Overlay::ConfirmDownloadOverwrite { .. }
                 | Overlay::ConfirmDelete { .. }

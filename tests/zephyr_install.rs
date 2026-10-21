@@ -165,7 +165,7 @@ fn accept_confirm(app: &mut App) {
     }
     app.handle(key(KeyCode::Enter));
     assert!(
-        matches!(app.overlay, Some(Overlay::Confirm { .. })),
+        matches!(app.overlay, Some(Overlay::ConfirmZephyrInstall { .. })),
         "starting must confirm first"
     );
     app.handle(key(KeyCode::Char('y')));
@@ -262,6 +262,35 @@ fn a_missing_blocking_prerequisite_stops_the_sequence_and_names_the_fix() {
         frame.contains("install") || frame.contains("cmake.org"),
         "the row must name a way to fix it:\n{frame}"
     );
+}
+
+/// The start question is the installer's own dialog: it names the folder
+/// the sequence writes into, and declining it hands the installer back ---
+/// one question declined is not the flow left --- with nothing started.
+#[test]
+fn the_start_question_names_its_folder_and_declining_returns_to_the_installer() {
+    let (mut app, root) = install_app("start-question");
+    open(&mut app, &root.join("ws"));
+    if let Some(installer) = app.installer.as_mut()
+        && !installer.sdk_ready()
+    {
+        installer
+            .picked_toolchains
+            .push("arm-zephyr-eabi".to_string());
+    }
+    app.handle(key(KeyCode::Enter));
+    assert!(
+        matches!(app.overlay, Some(Overlay::ConfirmZephyrInstall { .. })),
+        "starting must confirm first"
+    );
+    let target = app.installer.as_ref().unwrap().root.display().to_string();
+    let frame = render(&mut app, 120, 40);
+    assert!(frame.contains("Install Zephyr here?"), "{frame}");
+    assert!(frame.contains(&target), "the folder is named:\n{frame}");
+
+    app.handle(key(KeyCode::Esc));
+    assert!(matches!(app.overlay, Some(Overlay::ZephyrInstall)));
+    assert!(!app.installer.as_ref().unwrap().is_busy(), "nothing ran");
 }
 
 #[test]

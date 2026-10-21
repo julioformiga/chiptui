@@ -1322,10 +1322,10 @@ fn destructive_confirmations_name_the_action_the_target_and_the_cost() {
         family: Some(ChipFamily::Esp32S3),
         ..DeviceDetails::default()
     };
-    flash.request_confirmation(FlashAction::EraseFlash);
     app.flash = Some(flash);
-    app.overlay = Some(Overlay::Confirm {
-        message: "esptool --port /dev/ttyACM0 erase-flash".to_string(),
+    app.overlay = Some(Overlay::ConfirmFlashAction {
+        action: FlashAction::EraseFlash,
+        command: "esptool --port /dev/ttyACM0 erase-flash".to_string(),
         confirm: false,
     });
     let frame = render(&mut app, 100, 34);
@@ -1345,11 +1345,10 @@ fn destructive_confirmations_name_the_action_the_target_and_the_cost() {
     // Nothing invented when the answers are missing: an unknown target
     // says it is unknown rather than reading as a confirmed board.
     let mut app = app_with_backend(BackendKind::MicroPython);
-    let mut flash = FlashPanel::new(std::env::temp_dir());
-    flash.request_confirmation(FlashAction::EraseFlash);
-    app.flash = Some(flash);
-    app.overlay = Some(Overlay::Confirm {
-        message: "esptool erase-flash".to_string(),
+    app.flash = Some(FlashPanel::new(std::env::temp_dir()));
+    app.overlay = Some(Overlay::ConfirmFlashAction {
+        action: FlashAction::EraseFlash,
+        command: "esptool erase-flash".to_string(),
         confirm: false,
     });
     let frame = render(&mut app, 100, 34);

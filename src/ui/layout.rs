@@ -658,22 +658,17 @@ pub(crate) const DESTRUCTIVE_WIDTH: u16 = 72;
 /// the hit-testing never mirrored, so a click *inside* the empty device
 /// picker was judged outside and dismissed it.
 ///
-/// A variant whose shape depends on state (the confirm family's three
-/// `Confirm` sizes, the sync preview's line count, the help table's widest
-/// binding) reads it off `app` here rather than in two places.
+/// A variant whose shape depends on state (the sync preview's line count,
+/// the help table's widest binding) reads it off `app` here rather than in
+/// two places.
 pub(crate) fn overlay_popup(app: &App, overlay: &Overlay, frame: Rect) -> Rect {
     let (width, height) = match overlay {
         // ---- the confirm family: fixed boxes, one per wording ----------
-        Overlay::Confirm { .. } if app.install_confirm_pending => (DESTRUCTIVE_WIDTH, 10),
-        Overlay::Confirm { .. }
-            if app
-                .flash
-                .as_ref()
-                .is_some_and(|flash| flash.pending().is_some()) =>
-        {
+        Overlay::ConfirmZephyrInstall { .. } => (DESTRUCTIVE_WIDTH, 10),
+        Overlay::ConfirmFlashAction { action, .. } if action.is_destructive() => {
             (DESTRUCTIVE_WIDTH, 9)
         }
-        Overlay::Confirm { .. } => (70, 7),
+        Overlay::ConfirmFlashAction { .. } => (70, 7),
         Overlay::ConfirmBuild { .. }
         | Overlay::ConfirmInstallHere { .. }
         | Overlay::ConfirmRemovePackage { .. }

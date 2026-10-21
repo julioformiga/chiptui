@@ -295,9 +295,6 @@ pub struct FlashPanel {
     /// The last finished user-started command, for the actions tab's
     /// state line (see [`FlashReport`]).
     pub last: Option<FlashReport>,
-    /// Set by [`FlashPanel::request_confirmation`], consumed by the caller
-    /// once the user accepts the confirmation overlay.
-    pending_action: Option<FlashAction>,
     in_flight: Option<RunningCommand>,
     /// Whether the last identification read left a firmware named without
     /// a version --- the version hunt
@@ -423,7 +420,6 @@ impl FlashPanel {
             output_progress_last: false,
             state: RunState::default(),
             last: None,
-            pending_action: None,
             in_flight: None,
             version_hunt_pending: false,
             tool_path: None,
@@ -809,28 +805,6 @@ impl FlashPanel {
                 commands::verify_flash(port, chip, &self.offset, &self.selected_firmware_path()?)
             }
         })
-    }
-
-    /// Marks `action` as awaiting the confirmation overlay. The caller reads
-    /// [`FlashPanel::command_preview`] for the message and calls
-    /// [`FlashPanel::take_pending`] once the user accepts.
-    pub fn request_confirmation(&mut self, action: FlashAction) {
-        self.pending_action = Some(action);
-    }
-
-    pub fn take_pending(&mut self) -> Option<FlashAction> {
-        self.pending_action.take()
-    }
-
-    /// The action awaiting the confirmation overlay, without consuming it:
-    /// the overlay is redrawn every frame and has to name what it is
-    /// asking about (`SPEC.md` §15).
-    pub fn pending(&self) -> Option<FlashAction> {
-        self.pending_action
-    }
-
-    pub fn cancel_pending(&mut self) {
-        self.pending_action = None;
     }
 
     /// Starts `action`. Returns a warning instead of spawning when a
@@ -1437,7 +1411,7 @@ impl FlashPanel {
     /// Overwrite confirmation, if needed, is the caller's job (`App` shows
     /// [`crate::app::Overlay::ConfirmDownloadOverwrite`] before calling this)
     /// --- this method just runs, the same division of responsibility as
-    /// [`FlashPanel::run`] vs. [`FlashPanel::request_confirmation`].
+    /// [`FlashPanel::run`] vs. [`crate::app::Overlay::ConfirmFlashAction`].
     pub fn download(
         &mut self,
         url: &str,

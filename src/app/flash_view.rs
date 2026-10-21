@@ -553,12 +553,12 @@ impl App {
 
         let port = self.devices.selected_port().map(str::to_string);
         if action.is_destructive() {
-            flash.request_confirmation(action);
-            let message = flash
+            let command = flash
                 .command_preview(action, port.as_deref())
                 .unwrap_or_else(|| "(command unavailable)".to_string());
-            self.overlay = Some(Overlay::Confirm {
-                message,
+            self.overlay = Some(Overlay::ConfirmFlashAction {
+                action,
+                command,
                 confirm: false,
             });
             self.flash = Some(flash);

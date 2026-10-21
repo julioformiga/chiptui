@@ -59,7 +59,7 @@ impl App {
     }
 
     /// Shared key handling for every Yes/No confirm overlay
-    /// (`Overlay::Confirm`, `ConfirmDownloadOverwrite`, `ConfirmUpload`,
+    /// (`ConfirmFlashAction`, `ConfirmDownloadOverwrite`, `ConfirmUpload`,
     /// `ConfirmRestartDevice`, `ConfirmEraseForMicroPython`,
     /// `ConfirmDelete`): Left/Right/Tab/BackTab/h/l toggle which button is
     /// highlighted, `y`/`n` jump straight to an answer for muscle memory,
@@ -250,30 +250,34 @@ impl App {
                     _ => {}
                 }
             }
-            Overlay::Confirm { message, confirm } => {
+            Overlay::ConfirmFlashAction {
+                action,
+                command,
+                confirm,
+            } => {
                 self.dispatch_confirm(
                     key.code,
                     confirm,
                     move |app, confirm| {
-                        app.overlay = Some(Overlay::Confirm { message, confirm });
+                        app.overlay = Some(Overlay::ConfirmFlashAction {
+                            action,
+                            command,
+                            confirm,
+                        });
                     },
-                    // The shared confirm serves two askers; the installer
-                    // flags its own so the flash panel's `pending` is not
-                    // consulted for a question it never asked.
-                    |app| {
-                        if app.install_confirm_pending() {
-                            app.start_install();
-                        } else {
-                            app.confirm_flash_action();
-                        }
+                    move |app| app.confirm_flash_action(action),
+                    |_| {},
+                );
+            }
+            Overlay::ConfirmZephyrInstall { command, confirm } => {
+                self.dispatch_confirm(
+                    key.code,
+                    confirm,
+                    move |app, confirm| {
+                        app.overlay = Some(Overlay::ConfirmZephyrInstall { command, confirm });
                     },
-                    |app| {
-                        if app.install_confirm_pending() {
-                            app.cancel_install();
-                        } else if let Some(flash) = &mut app.flash {
-                            flash.cancel_pending();
-                        }
-                    },
+                    |app| app.start_install(),
+                    |app| app.cancel_install(),
                 );
             }
             Overlay::ConfirmInstallHere {
@@ -1299,14 +1303,10 @@ impl App {
         }
     }
 
-    /// Runs the action a [`Overlay::Confirm`] was guarding, once the user
-    /// accepted it.
-    fn confirm_flash_action(&mut self) {
+    /// Runs the action a [`Overlay::ConfirmFlashAction`] was guarding, once
+    /// the user accepted it.
+    fn confirm_flash_action(&mut self, action: crate::flash::FlashAction) {
         let Some(mut flash) = self.flash.take() else {
-            return;
-        };
-        let Some(action) = flash.take_pending() else {
-            self.flash = Some(flash);
             return;
         };
         let port = self.devices.selected_port().map(str::to_string);
@@ -1355,7 +1355,8 @@ fn is_help_reachable_overlay(overlay: &Overlay) -> bool {
         Overlay::DirPicker { .. }
         | Overlay::FilePicker { .. }
         | Overlay::Help { .. }
-        | Overlay::Confirm { .. }
+        | Overlay::ConfirmFlashAction { .. }
+        | Overlay::ConfirmZephyrInstall { .. }
         | Overlay::ConfirmBuild { .. }
         | Overlay::ConfirmDownloadOverwrite { .. }
         | Overlay::ConfirmDelete { .. }
@@ -1408,7 +1409,8 @@ fn is_text_entry_overlay(overlay: &Overlay) -> bool {
         | Overlay::RestoreDeviceScript { .. }
         | Overlay::ZephyrActions { .. }
         | Overlay::FlashMethod { .. }
-        | Overlay::Confirm { .. }
+        | Overlay::ConfirmFlashAction { .. }
+        | Overlay::ConfirmZephyrInstall { .. }
         | Overlay::ConfirmBuild { .. }
         | Overlay::ConfirmDownloadOverwrite { .. }
         | Overlay::ConfirmDelete { .. }
@@ -1455,9 +1457,18 @@ pub enum Overlay {
     /// of naming a theme outright.
     ThemePicker { selected: usize },
     /// A destructive esptool action awaiting explicit confirmation
-    /// (`SPEC.md` §15). `message` is the literal command about to run, never
-    /// a paraphrase.
-    Confirm { message: String, confirm: bool },
+    /// (`SPEC.md` §15). The dialog carries the action it guards, so the
+    /// title names it and `y` runs exactly it; `command` is the literal
+    /// command about to run, never a paraphrase.
+    ConfirmFlashAction {
+        action: crate::flash::FlashAction,
+        command: String,
+        confirm: bool,
+    },
+    /// The installer's start question, opened over [`Self::ZephyrInstall`]
+    /// and handing back to it on either answer. `command` is the literal
+    /// first step `y` runs.
+    ConfirmZephyrInstall { command: String, confirm: bool },
     /// Shared file browser, with the consumer's filter and accept action.
     FilePicker {
         purpose: super::path_picker_view::FilePurpose,
@@ -1680,11 +1691,9 @@ pub enum Overlay {
     /// command for a minute and re-opens it, which only works if the tab,
     /// cursor, filter and scroll outlived it on [`App::build_dashboard`].
     BuildDashboard,
-    /// "Remove this package?" --- the manager's `Del`. Its own variant
-    /// rather than the shared [`Overlay::Confirm`] (already multiplexed
-    /// between the flash panel's `pending` and the installer's start
-    /// question), because accepting acts on *two* things and the wording
-    /// has to name both.
+    /// "Remove this package?" --- the manager's `Del`. Accepting acts on
+    /// *two* things (the device's `/lib` and `requirements.txt`), and the
+    /// wording has to name both.
     ConfirmRemovePackage {
         /// The package name, or the whole specification for a git/URL line.
         name: String,
@@ -1804,10 +1813,6 @@ pub enum Overlay {
     /// question *and* is what restores the picker on decline: the overlay
     /// slot is one deep, so an offer that covers the picker has to carry
     /// enough to put it back.
-    ///
-    /// Its own variant rather than the shared [`Self::Confirm`], whose one
-    /// slot is already multiplexed between the flash panel's pending
-    /// action and the installer's start question.
     ConfirmInstallHere {
         dir: std::path::PathBuf,
         reason: String,

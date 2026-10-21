@@ -375,10 +375,6 @@ pub struct App {
     /// confirm can replace the window and hand it back unchanged --- the
     /// one-deep-slot discipline `Packages` and `Ota` follow.
     pub project_config: Option<crate::project_config::ProjectConfigPanel>,
-    /// Whether the open `Overlay::Confirm` is the installer's. The shared
-    /// confirm is otherwise the flash panel's, which reads its action from
-    /// `FlashPanel::pending`.
-    pub(crate) install_confirm_pending: bool,
     /// The Project pane's cursor, over its checklist rows (the environment
     /// questions that moved out of the workspace pane into row 1).
     pub project_cursor: usize,
@@ -680,7 +676,6 @@ impl App {
             ota_doc_max: 0,
             ota_tool_path: None,
             project_config: None,
-            install_confirm_pending: false,
             project_cursor: 0,
             board_segment: true,
             device_pane_tab: DevicePaneTab::default(),

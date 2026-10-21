@@ -743,7 +743,8 @@ impl App {
         }
         match overlay {
             // ---- confirms: the drawn No/Yes buttons answer -------------
-            Overlay::Confirm { .. }
+            Overlay::ConfirmFlashAction { .. }
+            | Overlay::ConfirmZephyrInstall { .. }
             | Overlay::ConfirmBuild { .. }
             | Overlay::ConfirmRestartDevice { .. }
             | Overlay::ConfirmSwitchProject { .. }

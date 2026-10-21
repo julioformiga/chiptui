@@ -143,7 +143,9 @@ fn erase_flash_requires_confirmation_showing_the_literal_command() {
     app.handle(key(KeyCode::Enter));
 
     match &app.overlay {
-        Some(Overlay::Confirm { message, .. }) => {
+        Some(Overlay::ConfirmFlashAction {
+            command: message, ..
+        }) => {
             assert!(
                 message.contains("erase-flash"),
                 "confirmation must show the real command, not a paraphrase: {message}"
@@ -163,7 +165,10 @@ fn cancelling_the_confirmation_runs_nothing() {
     app.handle(key(KeyCode::Down));
     app.handle(key(KeyCode::Down));
     app.handle(key(KeyCode::Enter));
-    assert!(matches!(app.overlay, Some(Overlay::Confirm { .. })));
+    assert!(matches!(
+        app.overlay,
+        Some(Overlay::ConfirmFlashAction { .. })
+    ));
 
     app.handle(key(KeyCode::Esc));
     assert_eq!(app.overlay, None);
@@ -249,7 +254,7 @@ fn choosing_external_firmware_preserves_the_download_folder_and_confirmation() {
     flash.set_offset("0x1000".into());
     app.handle(key(KeyCode::Enter));
     assert!(
-        matches!(&app.overlay, Some(Overlay::Confirm { message, confirm: false }) if message.contains(image.to_str().unwrap()))
+        matches!(&app.overlay, Some(Overlay::ConfirmFlashAction { command: message, confirm: false, .. }) if message.contains(image.to_str().unwrap()))
     );
     app.handle(key(KeyCode::Esc));
     assert!(!app.flash.as_ref().unwrap().is_busy());
@@ -282,7 +287,9 @@ fn write_flash_end_to_end_succeeds_and_detects_the_chip() {
     }
     app.handle(key(KeyCode::Enter)); // request confirmation
     match &app.overlay {
-        Some(Overlay::Confirm { message, .. }) => {
+        Some(Overlay::ConfirmFlashAction {
+            command: message, ..
+        }) => {
             assert!(message.contains("write-flash"));
             assert!(message.contains("app.bin"));
             assert!(message.contains("0x1000"));
@@ -346,7 +353,9 @@ fn a_running_write_flash_reports_esptools_percentage() {
     }
     app.handle(key(KeyCode::Enter)); // firmware and offset already set: straight to confirm
     match &app.overlay {
-        Some(Overlay::Confirm { message, .. }) => assert!(message.contains("write-flash")),
+        Some(Overlay::ConfirmFlashAction {
+            command: message, ..
+        }) => assert!(message.contains("write-flash")),
         other => panic!("expected a confirmation overlay, got {other:?}"),
     }
     app.handle(key(KeyCode::Char('y'))); // confirm
@@ -429,7 +438,9 @@ fn a_running_write_flash_collapses_esptool_v5s_piped_bar() {
     }
     app.handle(key(KeyCode::Enter)); // firmware and offset already set: straight to confirm
     match &app.overlay {
-        Some(Overlay::Confirm { message, .. }) => assert!(message.contains("write-flash")),
+        Some(Overlay::ConfirmFlashAction {
+            command: message, ..
+        }) => assert!(message.contains("write-flash")),
         other => panic!("expected a confirmation overlay, got {other:?}"),
     }
     app.handle(key(KeyCode::Char('y'))); // confirm
@@ -625,7 +636,9 @@ fn write_flash_without_a_chip_or_offset_stays_on_options_instead_of_confirming()
     app.handle(key(KeyCode::Right));
     app.handle(key(KeyCode::Enter));
     match &app.overlay {
-        Some(Overlay::Confirm { message, .. }) => assert!(
+        Some(Overlay::ConfirmFlashAction {
+            command: message, ..
+        }) => assert!(
             !message.contains("write-flash  ") && !message.contains("write-flash \""),
             "offset must not be blank in the confirmed command: {message}"
         ),
@@ -843,7 +856,9 @@ fn downloading_online_firmware_offers_the_erase_and_flash_chain() {
         "firmware-bytes"
     );
     match &app.overlay {
-        Some(Overlay::Confirm { message, .. }) => assert!(
+        Some(Overlay::ConfirmFlashAction {
+            command: message, ..
+        }) => assert!(
             message.contains("erase-flash"),
             "must show the literal command, not a paraphrase: {message}"
         ),
@@ -1298,7 +1313,9 @@ fn erase_from_the_actions_tab_still_confirms_with_the_literal_command() {
     app.handle(key(KeyCode::Enter));
 
     match &app.overlay {
-        Some(Overlay::Confirm { message, .. }) => assert!(
+        Some(Overlay::ConfirmFlashAction {
+            command: message, ..
+        }) => assert!(
             message.contains("erase-flash"),
             "the confirmation must show the real command: {message}"
         ),
