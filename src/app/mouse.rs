@@ -1541,29 +1541,6 @@ impl App {
         }
     }
 
-    /// Writes `index` into whichever `selected` field the open overlay
-    /// carries --- every picker variant names it the same way.
-    fn set_overlay_selected(&mut self, index: usize) {
-        if let Some(
-            Overlay::DevicePicker { selected, .. }
-            | Overlay::ThemePicker { selected, .. }
-            | Overlay::RestoreDeviceScript { selected, .. }
-            | Overlay::FileActions { selected, .. }
-            | Overlay::ProjectPicker { selected, .. }
-            | Overlay::SamplePicker { selected, .. }
-            | Overlay::BuildTarget { selected, .. }
-            | Overlay::BoardPicker { selected, .. }
-            | Overlay::ShieldPicker { selected, .. }
-            | Overlay::SdkToolchains { selected, .. }
-            | Overlay::OtaTransport { selected, .. }
-            | Overlay::FlashMethod { selected, .. }
-            | Overlay::ZephyrActions { selected, .. },
-        ) = &mut self.overlay
-        {
-            *selected = index;
-        }
-    }
-
     /// A docs picker's focus follows the click: a gesture on the details
     /// pane hands it the keyboard, one on the list side takes it back ---
     /// the same swap `Tab` makes.

@@ -342,16 +342,8 @@ impl App {
         let count = crate::ota::Transport::ALL.len();
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => self.overlay = Some(Overlay::Ota),
-            KeyCode::Up | KeyCode::Char('k') => {
-                self.overlay = Some(Overlay::OtaTransport {
-                    selected: (selected + count - 1) % count,
-                });
-            }
-            KeyCode::Down | KeyCode::Char('j') => {
-                self.overlay = Some(Overlay::OtaTransport {
-                    selected: (selected + 1) % count,
-                });
-            }
+            KeyCode::Up | KeyCode::Char('k') => self.step_overlay_selected(-1, count),
+            KeyCode::Down | KeyCode::Char('j') => self.step_overlay_selected(1, count),
             KeyCode::Enter => {
                 if let Some(transport) = crate::ota::Transport::ALL.get(selected).copied()
                     && let Some(panel) = &mut self.ota

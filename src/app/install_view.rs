@@ -182,16 +182,8 @@ impl App {
         let toolchains = crate::install::steps::TOOLCHAINS;
         let count = toolchains.len();
         match key.code {
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.overlay = Some(Overlay::SdkToolchains {
-                    selected: (selected + count - 1) % count,
-                });
-            }
-            KeyCode::Char('j') | KeyCode::Down => {
-                self.overlay = Some(Overlay::SdkToolchains {
-                    selected: (selected + 1) % count,
-                });
-            }
+            KeyCode::Char('k') | KeyCode::Up => self.step_overlay_selected(-1, count),
+            KeyCode::Char('j') | KeyCode::Down => self.step_overlay_selected(1, count),
             KeyCode::Char(' ') => {
                 let Some(name) = toolchains.get(selected).map(|name| (*name).to_string()) else {
                     return;

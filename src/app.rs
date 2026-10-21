@@ -1669,6 +1669,68 @@ mod tests {
         assert!(matches!(app.overlay, Some(Overlay::ThemePicker { .. })));
     }
 
+    /// A filter typed after walking down the full list re-clamps the cursor
+    /// against the rows the *edited* filter leaves, so `Enter` acts on the
+    /// row the window draws highlighted rather than on a row past the end.
+    #[test]
+    fn a_filter_typed_after_walking_down_still_activates_the_drawn_row() {
+        let mut app = app();
+        app.overlay = Some(OVERLAY_HELP);
+        for _ in 0..5 {
+            app.handle(key(KeyCode::Down));
+        }
+        for c in "theme".chars() {
+            app.handle(key(KeyCode::Char(c)));
+        }
+        app.handle(key(KeyCode::Enter));
+        assert!(matches!(app.overlay, Some(Overlay::ThemePicker { .. })));
+    }
+
+    /// The confirm highlight flips in place: `Tab` moves it between No and
+    /// Yes on every confirm, and whatever else the dialog carries is left
+    /// exactly as it was.
+    #[test]
+    fn tab_flips_a_confirm_in_place_and_keeps_its_payload() {
+        let confirms = [
+            Overlay::ConfirmFlashAction {
+                action: crate::flash::FlashAction::EraseFlash,
+                command: "esptool erase-flash".to_string(),
+                confirm: false,
+            },
+            Overlay::ConfirmZephyrInstall {
+                command: "west init".to_string(),
+                confirm: false,
+            },
+            Overlay::ConfirmUpload {
+                name: "main.py".to_string(),
+                is_dir: false,
+                confirm: false,
+            },
+            Overlay::ConfirmDelete {
+                side: Side::Device,
+                name: "lib".to_string(),
+                is_dir: true,
+                confirm: false,
+            },
+            Overlay::ConfirmDownloadOverwrite {
+                url: "https://example.invalid/fw.bin".to_string(),
+                dest: PathBuf::from("/tmp/fw.bin"),
+                confirm: false,
+            },
+            Overlay::ConfirmQuit { confirm: false },
+        ];
+        for overlay in confirms {
+            let mut app = app();
+            let mut expected = overlay.clone();
+            if let Some(confirm) = expected.confirm_mut() {
+                *confirm = true;
+            }
+            app.overlay = Some(overlay);
+            app.handle(key(KeyCode::Tab));
+            assert_eq!(app.overlay.as_ref(), Some(&expected));
+        }
+    }
+
     #[test]
     fn help_closes_on_the_first_esc_however_the_filter_stands() {
         let mut app = app();

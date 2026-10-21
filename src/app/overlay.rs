@@ -64,14 +64,13 @@ impl App {
     /// `ConfirmDelete`): Left/Right/Tab/BackTab/h/l toggle which button is
     /// highlighted, `y`/`n` jump straight to an answer for muscle memory,
     /// `Enter` dispatches on the highlighted button, and `Esc`/`q` decline.
-    /// Only `toggle` (rebuilding the overlay --- each variant carries
-    /// different associated data) and what `accept`/`decline` actually do
-    /// differ per variant; `decline` is a no-op for most of them.
+    /// The highlight flips in place ([`Overlay::confirm_mut`]); only what
+    /// `accept`/`decline` actually do differs per variant, and `decline` is
+    /// a no-op for most of them.
     fn dispatch_confirm(
         &mut self,
         code: KeyCode,
         confirm: bool,
-        toggle: impl FnOnce(&mut Self, bool),
         accept: impl FnOnce(&mut Self),
         decline: impl FnOnce(&mut Self),
     ) {
@@ -80,7 +79,11 @@ impl App {
             | KeyCode::Right
             | KeyCode::Tab
             | KeyCode::BackTab
-            | KeyCode::Char('h' | 'l') => toggle(self, !confirm),
+            | KeyCode::Char('h' | 'l') => {
+                if let Some(confirm) = self.overlay.as_mut().and_then(Overlay::confirm_mut) {
+                    *confirm = !*confirm;
+                }
+            }
             KeyCode::Char('y') => {
                 self.overlay = None;
                 accept(self);
@@ -101,7 +104,44 @@ impl App {
         }
     }
 
+    /// Moves a list overlay's cursor `delta` rows, wrapping over `count`
+    /// --- the arrows' grammar in every stacked menu and picker.
+    pub(super) fn step_overlay_selected(&mut self, delta: isize, count: usize) {
+        if count == 0 {
+            return;
+        }
+        if let Some(selected) = self.overlay.as_mut().and_then(Overlay::selected_mut) {
+            *selected = (*selected as isize + delta).rem_euclid(count as isize) as usize;
+        }
+    }
+
+    /// Types into, or backspaces out of, the name field of the create and
+    /// rename dialogs.
+    fn edit_entry_input(&mut self, code: KeyCode) {
+        if let Some(Overlay::CreateEntry { input, .. } | Overlay::RenameEntry { input, .. }) =
+            &mut self.overlay
+        {
+            match code {
+                KeyCode::Char(c) => input.push(c),
+                KeyCode::Backspace => {
+                    input.pop();
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Puts a list overlay's cursor on `index` (`Home`/`End`, a click).
+    pub(super) fn set_overlay_selected(&mut self, index: usize) {
+        if let Some(selected) = self.overlay.as_mut().and_then(Overlay::selected_mut) {
+            *selected = index;
+        }
+    }
+
     pub(super) fn on_overlay_key(&mut self, key: KeyEvent) {
+        // A snapshot to dispatch on: arms read it and hand its payloads to
+        // the handlers that own them, while every state change is written
+        // to `self.overlay` in place.
         let Some(overlay) = self.overlay.clone() else {
             return;
         };
@@ -123,14 +163,23 @@ impl App {
         }
         match overlay {
             Overlay::Help { filter, selected } => {
-                // The cursor walks the *filtered* command rows, so every
-                // filter change re-clamps `selected` against the length the
-                // changed filter produces (typing can only shrink it, but
-                // backspace grows it too).
-                let count =
-                    help::visible(help::bindings(self.view, HelpSection::Commands), &filter)
+                // The cursor walks the *filtered* command rows: the arrows
+                // wrap over that count, and a filter edit re-clamps against
+                // the count the *edited* filter produces (typing can only
+                // shrink it, but backspace grows it too).
+                let visible = |view: View, filter: &str| {
+                    help::visible(help::bindings(view, HelpSection::Commands), filter)
                         .len()
-                        .max(1);
+                        .max(1)
+                };
+                let count = visible(self.view, &filter);
+                let edit_filter = |app: &mut Self, edit: &dyn Fn(&mut String)| {
+                    let view = app.view;
+                    if let Some(Overlay::Help { filter, selected }) = &mut app.overlay {
+                        edit(filter);
+                        *selected = (*selected).min(visible(view, filter) - 1);
+                    }
+                };
                 // Close, then replay the row under the cursor through the
                 // screen's own handler --- exactly the event pressing that
                 // key outside the help would send. Rows without an event
@@ -160,49 +209,17 @@ impl App {
                 // (and `q`) stop being keys here, or `json` and `keyboard`
                 // become untypeable searches.
                 match key.code {
-                    KeyCode::Char(c) => {
-                        let mut text = filter.clone();
-                        text.push(c);
-                        self.overlay = Some(Overlay::Help {
-                            filter: text,
-                            selected: selected.min(count.saturating_sub(1)),
-                        });
-                    }
-                    KeyCode::Backspace => {
-                        let mut text = filter.clone();
-                        text.pop();
-                        self.overlay = Some(Overlay::Help {
-                            filter: text,
-                            selected: selected.min(count.saturating_sub(1)),
-                        });
-                    }
+                    KeyCode::Char(c) => edit_filter(self, &|filter| filter.push(c)),
+                    KeyCode::Backspace => edit_filter(self, &|filter| {
+                        filter.pop();
+                    }),
                     // One press closes the window, whatever the filter says
                     // --- there is no editing mode left to step out of.
                     KeyCode::Esc => self.overlay = None,
-                    KeyCode::Up => {
-                        self.overlay = Some(Overlay::Help {
-                            filter,
-                            selected: (selected + count - 1) % count,
-                        });
-                    }
-                    KeyCode::Down => {
-                        self.overlay = Some(Overlay::Help {
-                            filter,
-                            selected: (selected + 1) % count,
-                        });
-                    }
-                    KeyCode::Home => {
-                        self.overlay = Some(Overlay::Help {
-                            filter,
-                            selected: 0,
-                        });
-                    }
-                    KeyCode::End => {
-                        self.overlay = Some(Overlay::Help {
-                            filter,
-                            selected: count - 1,
-                        });
-                    }
+                    KeyCode::Up => self.step_overlay_selected(-1, count),
+                    KeyCode::Down => self.step_overlay_selected(1, count),
+                    KeyCode::Home => self.set_overlay_selected(0),
+                    KeyCode::End => self.set_overlay_selected(count - 1),
                     KeyCode::Enter => activate(self, selected),
                     _ => {}
                 }
@@ -211,16 +228,8 @@ impl App {
                 let count = ThemeChoice::all().len();
                 match key.code {
                     KeyCode::Esc | KeyCode::Char('q') => self.overlay = None,
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        self.overlay = Some(Overlay::ThemePicker {
-                            selected: (selected + count - 1) % count,
-                        });
-                    }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        self.overlay = Some(Overlay::ThemePicker {
-                            selected: (selected + 1) % count,
-                        });
-                    }
+                    KeyCode::Up | KeyCode::Char('k') => self.step_overlay_selected(-1, count),
+                    KeyCode::Down | KeyCode::Char('j') => self.step_overlay_selected(1, count),
                     KeyCode::Enter => {
                         self.overlay = None;
                         self.apply_theme_picker(selected);
@@ -232,16 +241,8 @@ impl App {
                 let count = self.devices.devices().len().max(1);
                 match key.code {
                     KeyCode::Esc | KeyCode::Char('q') => self.overlay = None,
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        self.overlay = Some(Overlay::DevicePicker {
-                            selected: (selected + count - 1) % count,
-                        });
-                    }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        self.overlay = Some(Overlay::DevicePicker {
-                            selected: (selected + 1) % count,
-                        });
-                    }
+                    KeyCode::Up | KeyCode::Char('k') => self.step_overlay_selected(-1, count),
+                    KeyCode::Down | KeyCode::Char('j') => self.step_overlay_selected(1, count),
                     KeyCode::Enter => {
                         self.apply_device_picker(selected);
                         self.overlay = None;
@@ -251,31 +252,19 @@ impl App {
                 }
             }
             Overlay::ConfirmFlashAction {
-                action,
-                command,
-                confirm,
+                action, confirm, ..
             } => {
                 self.dispatch_confirm(
                     key.code,
                     confirm,
-                    move |app, confirm| {
-                        app.overlay = Some(Overlay::ConfirmFlashAction {
-                            action,
-                            command,
-                            confirm,
-                        });
-                    },
                     move |app| app.confirm_flash_action(action),
                     |_| {},
                 );
             }
-            Overlay::ConfirmZephyrInstall { command, confirm } => {
+            Overlay::ConfirmZephyrInstall { confirm, .. } => {
                 self.dispatch_confirm(
                     key.code,
                     confirm,
-                    move |app, confirm| {
-                        app.overlay = Some(Overlay::ConfirmZephyrInstall { command, confirm });
-                    },
                     |app| app.start_install(),
                     |app| app.cancel_install(),
                 );
@@ -286,19 +275,11 @@ impl App {
                 confirm,
             } => {
                 let accepted = dir.clone();
-                let declined = (dir.clone(), reason.clone());
                 self.dispatch_confirm(
                     key.code,
                     confirm,
-                    move |app, confirm| {
-                        app.overlay = Some(Overlay::ConfirmInstallHere {
-                            dir,
-                            reason,
-                            confirm,
-                        });
-                    },
                     move |app| app.open_installer(accepted),
-                    move |app| app.decline_install_offer(declined.0, declined.1),
+                    move |app| app.decline_install_offer(dir, reason),
                 );
             }
             Overlay::ZephyrInstall => self.on_install_key(key),
@@ -309,9 +290,6 @@ impl App {
                 self.dispatch_confirm(
                     key.code,
                     confirm,
-                    move |app, confirm| {
-                        app.overlay = Some(Overlay::ConfirmOta { what, confirm });
-                    },
                     move |app| app.accept_ota_confirm(what),
                     |app| app.decline_ota_confirm(),
                 );
@@ -327,15 +305,9 @@ impl App {
                 if self.scroll_config_review(key.code) {
                     return;
                 }
-                self.dispatch_confirm(
-                    key.code,
-                    confirm,
-                    |app, confirm| {
-                        app.overlay = Some(Overlay::ConfirmApplyConfig { confirm });
-                    },
-                    App::apply_project_config,
-                    |app| app.overlay = Some(Overlay::ProjectConfig),
-                );
+                self.dispatch_confirm(key.code, confirm, App::apply_project_config, |app| {
+                    app.overlay = Some(Overlay::ProjectConfig)
+                });
             }
             // Three choices, not Yes/No: the arrows walk the buttons and
             // the letters answer by muscle memory --- `n` keeps editing
@@ -351,14 +323,10 @@ impl App {
                 const COUNT: usize = crate::ui::DISCARD_CHOICES.len();
                 match key.code {
                     KeyCode::Left | KeyCode::BackTab | KeyCode::Char('h') => {
-                        self.overlay = Some(Overlay::ConfirmDiscardConfig {
-                            selected: (selected + COUNT - 1) % COUNT,
-                        });
+                        self.step_overlay_selected(-1, COUNT);
                     }
                     KeyCode::Right | KeyCode::Tab | KeyCode::Char('l') => {
-                        self.overlay = Some(Overlay::ConfirmDiscardConfig {
-                            selected: (selected + 1) % COUNT,
-                        });
+                        self.step_overlay_selected(1, COUNT);
                     }
                     KeyCode::Char('n' | 'q') | KeyCode::Esc => {
                         self.overlay = Some(Overlay::ProjectConfig);
@@ -383,15 +351,10 @@ impl App {
                 }
             }
             Overlay::ConfirmDownloadOverwrite { url, dest, confirm } => {
-                let (accept_url, accept_dest) = (url.clone(), dest.clone());
                 self.dispatch_confirm(
                     key.code,
                     confirm,
-                    move |app, confirm| {
-                        app.overlay =
-                            Some(Overlay::ConfirmDownloadOverwrite { url, dest, confirm });
-                    },
-                    move |app| app.start_download(accept_url, accept_dest),
+                    move |app| app.start_download(url, dest),
                     |_| {},
                 );
             }
@@ -400,23 +363,15 @@ impl App {
                 is_dir,
                 confirm,
             } => {
-                let accept_name = name.clone();
                 self.dispatch_confirm(
                     key.code,
                     confirm,
-                    move |app, confirm| {
-                        app.overlay = Some(Overlay::ConfirmUpload {
-                            name,
-                            is_dir,
-                            confirm,
-                        });
-                    },
                     move |app| {
                         app.dispatch_browser(|browser, processes, port| {
                             if is_dir {
-                                browser.request_upload_dir(&accept_name, processes, port)
+                                browser.request_upload_dir(&name, processes, port)
                             } else {
-                                browser.request_upload(&accept_name, processes, port)
+                                browser.request_upload(&name, processes, port)
                             }
                         });
                     },
@@ -427,9 +382,6 @@ impl App {
                 self.dispatch_confirm(
                     key.code,
                     confirm,
-                    move |app, confirm| {
-                        app.overlay = Some(Overlay::ConfirmBuild { action, confirm });
-                    },
                     // Accept runs the command directly --- routing back
                     // through `run_build_action` would re-open this confirm.
                     move |app| match action {
@@ -668,10 +620,7 @@ impl App {
             }
             Overlay::DirPicker { purpose, picker } => self.on_dir_picker_key(key, purpose, picker),
             Overlay::ProjectPicker {
-                mpy,
-                dir,
-                selected,
-                error,
+                mpy, dir, selected, ..
             } => {
                 if key
                     .modifiers
@@ -703,27 +652,32 @@ impl App {
                         .unwrap_or(0)
                 }
                 .max(1);
-                let rebuild = |app: &mut Self, selected: usize, error: Option<String>| {
-                    app.overlay = Some(Overlay::ProjectPicker {
-                        mpy,
-                        dir: dir.clone(),
-                        selected,
-                        error,
-                    });
+                let clear_error = |app: &mut Self| {
+                    if let Some(Overlay::ProjectPicker { error, .. }) = &mut app.overlay {
+                        *error = None;
+                    }
                 };
                 match key.code {
                     KeyCode::Esc | KeyCode::Char('q') => self.overlay = None,
                     KeyCode::Up | KeyCode::Char('k') => {
-                        rebuild(self, (selected + count - 1) % count, None);
+                        self.step_overlay_selected(-1, count);
+                        clear_error(self);
                     }
                     KeyCode::Down | KeyCode::Char('j') => {
-                        rebuild(self, (selected + 1) % count, None);
+                        self.step_overlay_selected(1, count);
+                        clear_error(self);
                     }
-                    KeyCode::Home => rebuild(self, 0, None),
-                    KeyCode::End => rebuild(self, count - 1, None),
+                    KeyCode::Home => {
+                        self.set_overlay_selected(0);
+                        clear_error(self);
+                    }
+                    KeyCode::End => {
+                        self.set_overlay_selected(count - 1);
+                        clear_error(self);
+                    }
                     KeyCode::Enter if mpy => self.apply_mpy_project_picker(selected),
-                    KeyCode::Enter => self.apply_project_picker(selected, dir.clone()),
-                    _ => rebuild(self, selected, error),
+                    KeyCode::Enter => self.apply_project_picker(selected, dir),
+                    _ => {}
                 }
             }
             Overlay::SamplePicker {
@@ -841,40 +795,16 @@ impl App {
                 let count = rows.len().max(1);
                 match key.code {
                     KeyCode::Esc | KeyCode::Char('q') => self.overlay = None,
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        self.overlay = Some(Overlay::BuildTarget {
-                            kind,
-                            selected: (selected + count - 1) % count,
-                            rows,
-                        });
-                    }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        self.overlay = Some(Overlay::BuildTarget {
-                            kind,
-                            selected: (selected + 1) % count,
-                            rows,
-                        });
-                    }
+                    KeyCode::Up | KeyCode::Char('k') => self.step_overlay_selected(-1, count),
+                    KeyCode::Down | KeyCode::Char('j') => self.step_overlay_selected(1, count),
                     KeyCode::Enter => {
                         self.overlay = None;
                         if let Some(row) = rows.get(selected) {
                             self.apply_build_target(kind, &row.build_dir);
                         }
                     }
-                    KeyCode::Home => {
-                        self.overlay = Some(Overlay::BuildTarget {
-                            kind,
-                            selected: 0,
-                            rows,
-                        })
-                    }
-                    KeyCode::End => {
-                        self.overlay = Some(Overlay::BuildTarget {
-                            kind,
-                            selected: count - 1,
-                            rows,
-                        })
-                    }
+                    KeyCode::Home => self.set_overlay_selected(0),
+                    KeyCode::End => self.set_overlay_selected(count - 1),
                     _ => {}
                 }
             }
@@ -894,24 +824,8 @@ impl App {
                     // (`←` back, `→` act) so the menu never asks for a
                     // different reflex than the pane it opened from.
                     KeyCode::Esc | KeyCode::Char('q') | KeyCode::Left => self.overlay = None,
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        self.overlay = Some(Overlay::FileActions {
-                            side,
-                            name,
-                            is_dir,
-                            status,
-                            selected: (selected + count - 1) % count,
-                        });
-                    }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        self.overlay = Some(Overlay::FileActions {
-                            side,
-                            name,
-                            is_dir,
-                            status,
-                            selected: (selected + 1) % count,
-                        });
-                    }
+                    KeyCode::Up | KeyCode::Char('k') => self.step_overlay_selected(-1, count),
+                    KeyCode::Down | KeyCode::Char('j') => self.step_overlay_selected(1, count),
                     KeyCode::Enter | KeyCode::Right => {
                         let action =
                             FileAction::for_entry(side, is_dir, is_text, status, capabilities)
@@ -924,16 +838,7 @@ impl App {
             }
             Overlay::CreateEntry { side, input } => match key.code {
                 KeyCode::Esc => self.overlay = None,
-                KeyCode::Backspace => {
-                    let mut input = input;
-                    input.pop();
-                    self.overlay = Some(Overlay::CreateEntry { side, input });
-                }
-                KeyCode::Char(c) => {
-                    let mut input = input;
-                    input.push(c);
-                    self.overlay = Some(Overlay::CreateEntry { side, input });
-                }
+                KeyCode::Backspace | KeyCode::Char(_) => self.edit_entry_input(key.code),
                 KeyCode::Enter => {
                     self.overlay = None;
                     self.create_entry(side, &input);
@@ -944,16 +849,7 @@ impl App {
             // `Enter` applies, `Esc` leaves the entry exactly as it was.
             Overlay::RenameEntry { name, input } => match key.code {
                 KeyCode::Esc => self.overlay = None,
-                KeyCode::Backspace => {
-                    let mut input = input;
-                    input.pop();
-                    self.overlay = Some(Overlay::RenameEntry { name, input });
-                }
-                KeyCode::Char(c) => {
-                    let mut input = input;
-                    input.push(c);
-                    self.overlay = Some(Overlay::RenameEntry { name, input });
-                }
+                KeyCode::Backspace | KeyCode::Char(_) => self.edit_entry_input(key.code),
                 KeyCode::Enter => {
                     self.overlay = None;
                     self.rename_entry(&name, &input);
@@ -968,20 +864,10 @@ impl App {
                 declared,
                 confirm,
             } => {
-                let accepted = (name.clone(), targets.clone());
                 self.dispatch_confirm(
                     key.code,
                     confirm,
-                    move |app, confirm| {
-                        app.overlay = Some(Overlay::ConfirmRemovePackage {
-                            name,
-                            targets,
-                            declared,
-                            confirm,
-                        });
-                    },
                     move |app| {
-                        let (name, targets) = accepted;
                         // Landed back on the manager *before* removing, not
                         // after: `remove_package`'s own device request can be
                         // gated on a running script, and `check_interrupt_gate`
@@ -1036,45 +922,18 @@ impl App {
             // other confirm overlay here --- a restart interrupts whatever
             // the board is doing.
             Overlay::ConfirmRestartDevice { confirm } => {
-                self.dispatch_confirm(
-                    key.code,
-                    confirm,
-                    |app, confirm| {
-                        app.overlay = Some(Overlay::ConfirmRestartDevice { confirm });
-                    },
-                    Self::restart_device,
-                    |_| {},
-                );
+                self.dispatch_confirm(key.code, confirm, Self::restart_device, |_| {});
             }
             Overlay::ConfirmSwitchProject { confirm } => {
-                self.dispatch_confirm(
-                    key.code,
-                    confirm,
-                    |app, confirm| {
-                        app.overlay = Some(Overlay::ConfirmSwitchProject { confirm });
-                    },
-                    Self::request_project_switch,
-                    |_| {},
-                );
+                self.dispatch_confirm(key.code, confirm, Self::request_project_switch, |_| {});
             }
             Overlay::ConfirmQuit { confirm } => {
-                self.dispatch_confirm(
-                    key.code,
-                    confirm,
-                    |app, confirm| {
-                        app.overlay = Some(Overlay::ConfirmQuit { confirm });
-                    },
-                    Self::quit,
-                    |_| {},
-                );
+                self.dispatch_confirm(key.code, confirm, Self::quit, |_| {});
             }
             Overlay::ConfirmEraseForMicroPython { confirm } => {
                 self.dispatch_confirm(
                     key.code,
                     confirm,
-                    |app, confirm| {
-                        app.overlay = Some(Overlay::ConfirmEraseForMicroPython { confirm });
-                    },
                     Self::confirm_erase_for_micropython,
                     |_| {},
                 );
@@ -1085,34 +944,21 @@ impl App {
                 is_dir,
                 confirm,
             } => {
-                let accept_name = name.clone();
                 self.dispatch_confirm(
                     key.code,
                     confirm,
-                    move |app, confirm| {
-                        app.overlay = Some(Overlay::ConfirmDelete {
-                            side,
-                            name,
-                            is_dir,
-                            confirm,
-                        });
-                    },
-                    move |app| app.delete_file(side, &accept_name, is_dir),
+                    move |app| app.delete_file(side, &name, is_dir),
                     |_| {},
                 );
             }
             Overlay::SyncPreview { plan, confirm } => {
-                let accept_plan = plan.clone();
                 let has_deletes = !plan.deletes.is_empty();
                 self.dispatch_confirm(
                     key.code,
                     confirm,
-                    move |app, confirm| {
-                        app.overlay = Some(Overlay::SyncPreview { plan, confirm });
-                    },
                     move |app| {
                         app.dispatch_browser(|browser, processes, port| {
-                            browser.execute_sync(&accept_plan, has_deletes, processes, port)
+                            browser.execute_sync(&plan, has_deletes, processes, port)
                         });
                     },
                     |_| {},
@@ -1126,9 +972,6 @@ impl App {
                 self.dispatch_confirm(
                     key.code,
                     confirm,
-                    |app, confirm| {
-                        app.overlay = Some(Overlay::ConfirmIdentifyDevice { confirm });
-                    },
                     |app| app.confirm_identify_device(true),
                     |app| app.confirm_identify_device(false),
                 );
@@ -1144,12 +987,6 @@ impl App {
                 self.dispatch_confirm(
                     key.code,
                     confirm,
-                    move |app, confirm| {
-                        app.overlay = Some(Overlay::ConfirmInterruptDevice {
-                            confirm,
-                            return_to_packages,
-                        });
-                    },
                     move |app| {
                         app.restore_pending = true;
                         app.set_script_state(ScriptState::Stopped);
@@ -1182,16 +1019,8 @@ impl App {
                 const COUNT: usize = crate::ui::ZEPHYR_ACTIONS_COUNT;
                 match key.code {
                     KeyCode::Esc | KeyCode::Char('q') => self.overlay = None,
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        self.overlay = Some(Overlay::ZephyrActions {
-                            selected: (selected + COUNT - 1) % COUNT,
-                        });
-                    }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        self.overlay = Some(Overlay::ZephyrActions {
-                            selected: (selected + 1) % COUNT,
-                        });
-                    }
+                    KeyCode::Up | KeyCode::Char('k') => self.step_overlay_selected(-1, COUNT),
+                    KeyCode::Down | KeyCode::Char('j') => self.step_overlay_selected(1, COUNT),
                     KeyCode::Enter if selected == 0 => {
                         self.overlay = Some(Overlay::ConfirmBuild {
                             action: BuildAction::UpdateZephyr,
@@ -1220,18 +1049,10 @@ impl App {
                 // The stacked-menu grammar again: arrows and `Enter`, `q`
                 // free to close because no letter means anything here.
                 let count = rows.len();
-                let step = |app: &mut Self, selected: usize| {
-                    app.overlay = Some(Overlay::FlashMethod {
-                        rows: rows.clone(),
-                        selected,
-                    });
-                };
                 match key.code {
                     KeyCode::Esc | KeyCode::Char('q') => self.overlay = None,
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        step(self, (selected + count - 1) % count);
-                    }
-                    KeyCode::Down | KeyCode::Char('j') => step(self, (selected + 1) % count),
+                    KeyCode::Up | KeyCode::Char('k') => self.step_overlay_selected(-1, count),
+                    KeyCode::Down | KeyCode::Char('j') => self.step_overlay_selected(1, count),
                     KeyCode::Enter => {
                         let Some(row) = rows.get(selected) else {
                             return;
@@ -1281,18 +1102,8 @@ impl App {
                     // Dismissing is itself a choice here --- "leave it
                     // stopped" --- so it needs no separate guard.
                     KeyCode::Esc | KeyCode::Char('q') => self.overlay = closed,
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        self.overlay = Some(Overlay::RestoreDeviceScript {
-                            selected: (selected + COUNT - 1) % COUNT,
-                            return_to_packages,
-                        });
-                    }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        self.overlay = Some(Overlay::RestoreDeviceScript {
-                            selected: (selected + 1) % COUNT,
-                            return_to_packages,
-                        });
-                    }
+                    KeyCode::Up | KeyCode::Char('k') => self.step_overlay_selected(-1, COUNT),
+                    KeyCode::Down | KeyCode::Char('j') => self.step_overlay_selected(1, COUNT),
                     KeyCode::Enter => {
                         self.overlay = closed;
                         self.apply_restore_device_script(selected);
@@ -1848,4 +1659,109 @@ pub enum Overlay {
     /// Kconfig block it makes stale is rewritten under the prepare's own
     /// confirm. Replaces [`Self::Ota`] and hands it back either way.
     OtaTransport { selected: usize },
+}
+
+impl Overlay {
+    /// The highlighted answer of a Yes/No confirm (`true` is Yes), for
+    /// [`App::dispatch_confirm`] to flip in place. Exhaustive on purpose,
+    /// like [`is_help_reachable_overlay`]: a new confirm that is not listed
+    /// here would draw its buttons and never move between them.
+    pub(super) fn confirm_mut(&mut self) -> Option<&mut bool> {
+        match self {
+            Self::ConfirmFlashAction { confirm, .. }
+            | Self::ConfirmZephyrInstall { confirm, .. }
+            | Self::ConfirmApplyConfig { confirm }
+            | Self::ConfirmDownloadOverwrite { confirm, .. }
+            | Self::ConfirmUpload { confirm, .. }
+            | Self::ConfirmBuild { confirm, .. }
+            | Self::ConfirmRestartDevice { confirm }
+            | Self::ConfirmEraseForMicroPython { confirm }
+            | Self::ConfirmDelete { confirm, .. }
+            | Self::ConfirmRemovePackage { confirm, .. }
+            | Self::SyncPreview { confirm, .. }
+            | Self::ConfirmIdentifyDevice { confirm }
+            | Self::ConfirmInterruptDevice { confirm, .. }
+            | Self::ConfirmSwitchProject { confirm }
+            | Self::ConfirmQuit { confirm }
+            | Self::ConfirmInstallHere { confirm, .. }
+            | Self::ConfirmOta { confirm, .. } => Some(confirm),
+            Self::Help { .. }
+            | Self::DevicePicker { .. }
+            | Self::ThemePicker { .. }
+            | Self::FilePicker { .. }
+            | Self::ProjectConfig
+            | Self::ConfirmDiscardConfig { .. }
+            | Self::BoardPicker { .. }
+            | Self::ShieldPicker { .. }
+            | Self::DirPicker { .. }
+            | Self::ProjectPicker { .. }
+            | Self::SamplePicker { .. }
+            | Self::BuildTarget { .. }
+            | Self::FileActions { .. }
+            | Self::FileViewer
+            | Self::CreateEntry { .. }
+            | Self::RenameEntry { .. }
+            | Self::Packages
+            | Self::BuildDashboard
+            | Self::RestoreDeviceScript { .. }
+            | Self::ZephyrActions { .. }
+            | Self::FlashMethod { .. }
+            | Self::ZephyrInstall
+            | Self::SdkToolchains { .. }
+            | Self::Ota
+            | Self::OtaAddress { .. }
+            | Self::OtaTransport { .. } => None,
+        }
+    }
+
+    /// The cursor of a list overlay, for the keyboard's arrows and the
+    /// mouse's clicks alike to move in place. Exhaustive for the same
+    /// reason as [`Self::confirm_mut`].
+    pub(super) fn selected_mut(&mut self) -> Option<&mut usize> {
+        match self {
+            Self::Help { selected, .. }
+            | Self::DevicePicker { selected }
+            | Self::ThemePicker { selected }
+            | Self::ConfirmDiscardConfig { selected }
+            | Self::BoardPicker { selected, .. }
+            | Self::ShieldPicker { selected, .. }
+            | Self::ProjectPicker { selected, .. }
+            | Self::SamplePicker { selected, .. }
+            | Self::BuildTarget { selected, .. }
+            | Self::FileActions { selected, .. }
+            | Self::RestoreDeviceScript { selected, .. }
+            | Self::ZephyrActions { selected }
+            | Self::FlashMethod { selected, .. }
+            | Self::SdkToolchains { selected }
+            | Self::OtaTransport { selected } => Some(selected),
+            Self::ConfirmFlashAction { .. }
+            | Self::ConfirmZephyrInstall { .. }
+            | Self::FilePicker { .. }
+            | Self::ProjectConfig
+            | Self::ConfirmApplyConfig { .. }
+            | Self::ConfirmDownloadOverwrite { .. }
+            | Self::ConfirmUpload { .. }
+            | Self::ConfirmBuild { .. }
+            | Self::DirPicker { .. }
+            | Self::FileViewer
+            | Self::ConfirmRestartDevice { .. }
+            | Self::ConfirmEraseForMicroPython { .. }
+            | Self::ConfirmDelete { .. }
+            | Self::CreateEntry { .. }
+            | Self::RenameEntry { .. }
+            | Self::Packages
+            | Self::BuildDashboard
+            | Self::ConfirmRemovePackage { .. }
+            | Self::SyncPreview { .. }
+            | Self::ConfirmIdentifyDevice { .. }
+            | Self::ConfirmInterruptDevice { .. }
+            | Self::ConfirmSwitchProject { .. }
+            | Self::ConfirmQuit { .. }
+            | Self::ZephyrInstall
+            | Self::ConfirmInstallHere { .. }
+            | Self::Ota
+            | Self::OtaAddress { .. }
+            | Self::ConfirmOta { .. } => None,
+        }
+    }
 }
