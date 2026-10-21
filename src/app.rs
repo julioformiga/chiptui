@@ -447,10 +447,9 @@ pub struct App {
     /// never by a second reading of which backend this is.
     device_monitor_is_platform: bool,
     /// Plain-text capture of the PTY session, retained for MicroPython
-    /// version/script heuristics. The visible monitor is the VT grid below.
-    pub device_monitor_output: Vec<String>,
-    /// Line-oriented side capture for the monitor heuristics above.
-    monitor_console: LineConsole,
+    /// version/script heuristics: a bounded tail, read line by line as it
+    /// completes. The visible monitor is the VT grid below.
+    pub device_monitor_output: crate::device::MonitorCapture,
     /// The device monitor's full VT100 cell grid, fed raw PTY bytes.
     pub device_monitor_terminal: terminal::TerminalSession,
 
@@ -458,8 +457,8 @@ pub struct App {
     /// monitor (`src/app/terminal.rs`).
     pub terminal_process: Option<ProcessId>,
     /// The shell's terminal: a `vt100` cell grid fed the PTY's raw bytes.
-    /// Unlike [`Self::monitor_console`], which edits one line and drops
-    /// every attribute, this is a real emulator --- a shell prompt paints
+    /// Unlike [`Self::device_monitor_output`]'s line console, which edits
+    /// one line and drops every attribute, this is a real emulator --- a shell prompt paints
     /// itself in colour, redraws by moving the cursor, and full-screen
     /// programs take over the alternate screen.
     pub terminal: terminal::TerminalSession,
@@ -490,7 +489,7 @@ pub struct App {
     pub run_process: Option<ProcessId>,
     pub run_output: Vec<RunLine>,
     /// VT interpretation of the run session's raw output, mirroring
-    /// [`Self::monitor_console`].
+    /// [`Self::device_monitor_output`]'s.
     run_console: LineConsole,
     pub run_script: Option<PathBuf>,
     pub run_state: RunState,
@@ -700,8 +699,7 @@ impl App {
             pending_edit: None,
             device_monitor_process: None,
             device_monitor_is_platform: false,
-            device_monitor_output: Vec::new(),
-            monitor_console: LineConsole::new(),
+            device_monitor_output: crate::device::MonitorCapture::default(),
             device_monitor_terminal: terminal::TerminalSession::new(),
             terminal_process: None,
             terminal: terminal::TerminalSession::new(),
@@ -985,7 +983,10 @@ mod tests {
             id,
             data: b">>> ab".to_vec(),
         }));
-        assert_eq!(app.device_monitor_output, vec![">>> ab".to_string()]);
+        assert_eq!(
+            app.device_monitor_output.lines(),
+            vec![">>> ab".to_string()]
+        );
         assert_eq!(app.monitor_cursor(), Some((0, 6)));
 
         // One backspace echo: the line loses a char and the cursor tracks.
@@ -993,7 +994,7 @@ mod tests {
             id,
             data: b"\x08\x1b[K".to_vec(),
         }));
-        assert_eq!(app.device_monitor_output, vec![">>> a".to_string()]);
+        assert_eq!(app.device_monitor_output.lines(), vec![">>> a".to_string()]);
         assert_eq!(app.monitor_cursor(), Some((0, 5)));
 
         // Left arrow moves the cursor without changing the text.
@@ -1001,7 +1002,7 @@ mod tests {
             id,
             data: b"\x1b[D".to_vec(),
         }));
-        assert_eq!(app.device_monitor_output, vec![">>> a".to_string()]);
+        assert_eq!(app.device_monitor_output.lines(), vec![">>> a".to_string()]);
         assert_eq!(app.monitor_cursor(), Some((0, 4)));
 
         app.processes.cancel(id);
@@ -1092,7 +1093,7 @@ mod tests {
             for event in app.processes.drain() {
                 app.handle(AppEvent::Process(event));
             }
-            let text = app.device_monitor_output.join(" ");
+            let text = app.device_monitor_output.lines().join(" ");
             if text.matches("BYTE").count() >= 5 || Instant::now() > deadline {
                 break text;
             }

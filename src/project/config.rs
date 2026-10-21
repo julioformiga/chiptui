@@ -16,6 +16,7 @@ use std::path::Path;
 use crate::backend::BackendKind;
 use crate::backend::zephyr::variants::{Variant, VariantOrigin};
 use crate::ota::{OtaConfig, OtaMethod, Transport};
+use crate::settings::{quote, strip_comment, unquote};
 
 /// The scaffold file's name, at the project root.
 pub const FILE_NAME: &str = "chiptui.toml";
@@ -43,7 +44,7 @@ pub fn parse_variants(text: &str) -> Vec<Variant> {
     let mut variants: Vec<Variant> = Vec::new();
     let mut pending: Option<PendingVariant> = None;
     for line in text.lines() {
-        let line = variant_code(line).trim();
+        let line = strip_comment(line).trim();
         if line.is_empty() {
             continue;
         }
@@ -81,7 +82,7 @@ fn variant_block_ranges(text: &str) -> Vec<std::ops::Range<usize>> {
     let mut start = None;
     let mut offset = 0;
     for line in text.split_inclusive('\n') {
-        let stripped = variant_code(line).trim();
+        let stripped = strip_comment(line).trim();
         if stripped.starts_with('[') {
             if let Some(begin) = start.take() {
                 blocks.push(begin..offset);
@@ -173,16 +174,6 @@ pub fn upsert_variant(
         ("shield", variant.shield.as_deref()),
         ("build_dir", Some(variant.build_dir.as_str())),
     ];
-    let quote = |value: &str| {
-        format!(
-            "\"{}\"",
-            value
-                .replace('\\', "\\\\")
-                .replace('"', "\\\"")
-                .replace('\n', "\\n")
-                .replace('\r', "\\r")
-        )
-    };
     let Some(range) = selected else {
         let mut out = text.to_string();
         if !out.is_empty() {
@@ -203,7 +194,7 @@ pub fn upsert_variant(
     let mut updated = String::new();
     for line in text[range.clone()].split_inclusive('\n') {
         let body = line.trim_end_matches(['\r', '\n']);
-        let stripped = variant_code(body);
+        let stripped = strip_comment(body);
         let found = stripped
             .split_once('=')
             .and_then(|(key, _)| fields.iter().position(|(name, _)| *name == key.trim()));
@@ -259,28 +250,6 @@ pub fn upsert_variant(
     ))
 }
 
-/// A hash inside a quoted value is data, not an inline comment.
-fn variant_code(line: &str) -> &str {
-    let mut quote = None;
-    let mut escaped = false;
-    for (index, ch) in line.char_indices() {
-        if escaped {
-            escaped = false;
-        } else if quote == Some('"') && ch == '\\' {
-            escaped = true;
-        } else if quote == Some(ch) {
-            quote = None;
-        } else if quote.is_none() {
-            match ch {
-                '\'' | '"' => quote = Some(ch),
-                '#' => return &line[..index],
-                _ => {}
-            }
-        }
-    }
-    line
-}
-
 /// A `[[variant]]` block being read; becomes a [`Variant`] only if it
 /// carries the one key that makes it meaningful.
 #[derive(Default)]
@@ -307,25 +276,13 @@ impl PendingVariant {
     }
 }
 
-/// Strips one layer of quoting, the way [`crate::settings`] does. Kept
-/// local rather than shared: the two files are parsed by two modules on
-/// purpose, and one small function is a cheaper coupling than none.
-fn unquote(value: &str) -> String {
-    value
-        .strip_prefix('"')
-        .and_then(|v| v.strip_suffix('"'))
-        .or_else(|| value.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')))
-        .unwrap_or(value)
-        .to_string()
-}
-
 /// Reads `project_type = "<id>"` out of `text`, ignoring comments, blank
 /// lines and surrounding whitespace. Returns `None` for anything else ---
 /// a missing or unrecognised value falls back to normal detection rather
 /// than failing outright.
 pub fn parse(text: &str) -> Option<BackendKind> {
     text.lines().find_map(|line| {
-        let line = line.split('#').next().unwrap_or("").trim();
+        let line = strip_comment(line).trim();
         let value = line.strip_prefix("project_type")?.trim();
         let value = value.strip_prefix('=')?.trim();
         let value = value
@@ -409,7 +366,7 @@ pub fn parse_ota(text: &str) -> Option<OtaConfig> {
 pub fn key_value(text: &str, section: &str, key: &str) -> Option<String> {
     let mut inside = section.is_empty();
     for line in text.lines() {
-        let line = line.split('#').next().unwrap_or("").trim();
+        let line = strip_comment(line).trim();
         if line.is_empty() {
             continue;
         }
@@ -438,7 +395,7 @@ fn section_keys(text: &str, section: &str) -> Option<Vec<(String, String)>> {
     let mut keys = Vec::new();
     let mut inside = false;
     for line in text.lines() {
-        let line = line.split('#').next().unwrap_or("").trim();
+        let line = strip_comment(line).trim();
         if line.is_empty() {
             continue;
         }
@@ -807,6 +764,38 @@ something = \"a newer chiptui wrote this\"
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
 
         assert_eq!(parse_ota(&text), Some(OtaConfig::default()));
+    }
+
+    /// The project file is written through the user config's writer, so it
+    /// is read back through the same grammar: a `#` inside a value is data,
+    /// and an escaped backslash or quote is one character.
+    #[test]
+    fn set_values_read_back_byte_for_byte() {
+        for value in [
+            "build#2",
+            r"C:\apps\blinky",
+            "-DCONF_FILE=\"prj fast.conf\"",
+        ] {
+            let text = crate::settings::upsert_key(HAND_WRITTEN, ZEPHYR_SECTION, "app", value);
+            assert_eq!(
+                key_value(&text, ZEPHYR_SECTION, "app").as_deref(),
+                Some(value),
+                "written as:\n{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_variant_reads_back_as_written() {
+        let mut variant = crate::backend::zephyr::simulator::default_variant();
+        variant.name = "sim#2".to_string();
+        variant.build_dir = r"build\sim".to_string();
+        let text = upsert_variant(HAND_WRITTEN, None, &variant).unwrap();
+        assert_eq!(
+            parse_variants(&text).last(),
+            Some(&variant),
+            "written as:\n{text}"
+        );
     }
 
     #[test]

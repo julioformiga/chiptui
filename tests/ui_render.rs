@@ -2186,7 +2186,7 @@ fn a_cleared_monitor_screen_remains_a_terminal_not_a_connected_placeholder() {
     // The side capture records that terminal output has arrived even though
     // ED 2 clears every visible cell. The renderer must keep the VT grid so
     // its cursor and scrollback remain authoritative.
-    app.device_monitor_output.push("before clear".to_string());
+    app.device_monitor_output.feed("before clear\r\n");
     app.device_monitor_terminal
         .write("before clear\r\n\x1b[2J\x1b[H");
 

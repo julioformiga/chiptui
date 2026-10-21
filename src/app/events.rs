@@ -262,8 +262,7 @@ impl App {
                 let epitaph = format!("[monitor {}]", outcome.summary());
                 self.device_monitor_terminal
                     .write(&format!("\r\n{epitaph}\r\n"));
-                self.monitor_console
-                    .push_line(&mut self.device_monitor_output, epitaph);
+                self.device_monitor_output.push_line(epitaph);
                 return;
             }
             // The Terminal tab's shell (PTY): the emulator is fed the raw

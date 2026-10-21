@@ -227,9 +227,8 @@ impl App {
             self.processes.write_stdin(id, &replies);
         }
 
-        let text = String::from_utf8_lossy(data);
-        self.monitor_console
-            .feed(&mut self.device_monitor_output, &text);
+        self.device_monitor_output
+            .feed(&String::from_utf8_lossy(data));
         self.update_script_from_monitor();
     }
 

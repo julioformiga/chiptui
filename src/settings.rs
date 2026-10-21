@@ -64,7 +64,7 @@ impl ZephyrSettings {
         let mut settings = Self::default();
         let mut in_section = false;
         for line in text.lines() {
-            let line = line.split('#').next().unwrap_or("").trim();
+            let line = strip_comment(line).trim();
             if line.is_empty() {
                 continue;
             }
@@ -96,12 +96,35 @@ impl ZephyrSettings {
     }
 }
 
-fn unquote(value: &str) -> String {
+/// Strips one layer of quoting from a config value: a single-quoted
+/// (literal) string verbatim, a double-quoted (basic) string with the escapes
+/// [`quote`] writes undone in one left-to-right pass, anything else as it
+/// stands.
+///
+/// Only `\\` and `\"` are undone, so a hand-written Windows path survives
+/// verbatim instead of losing its separators to a general unescaper ---
+/// `"C:\ncs\v2.7"`, nRF Connect's own default, would otherwise read its
+/// `\n` as a line break. The price is the one value [`quote`] cannot hand
+/// back: a line break, written as `\n` so it cannot split its line, reads
+/// back as those two characters. No path, board or name carries one.
+///
+/// Shared with [`crate::project::config`], together with [`quote`] and
+/// [`strip_comment`]: the grammar a value is written in is the grammar it
+/// is read back in, for every key of both files.
+pub(crate) fn unquote(value: &str) -> String {
     if let Some(inner) = value.strip_prefix('"').and_then(|v| v.strip_suffix('"')) {
-        // Only the two escapes this module ever *writes* are undone, so a
-        // hand-written Windows path (`C:\dev`, unescaped) survives verbatim
-        // instead of losing its separators to a general unescaper.
-        return inner.replace("\\\"", "\"").replace("\\\\", "\\");
+        let mut out = String::with_capacity(inner.len());
+        let mut chars = inner.chars().peekable();
+        while let Some(ch) = chars.next() {
+            match chars.peek() {
+                Some(&next) if ch == '\\' && matches!(next, '\\' | '"') => {
+                    out.push(next);
+                    chars.next();
+                }
+                _ => out.push(ch),
+            }
+        }
+        return out;
     }
     value
         .strip_prefix('\'')
@@ -110,8 +133,50 @@ fn unquote(value: &str) -> String {
         .to_string()
 }
 
-fn quote(value: &str) -> String {
-    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+/// A value as a double-quoted string, the one shape both config files are
+/// written in. `\` and `"` are escaped so [`unquote`] reads the value back
+/// byte for byte; a line break is escaped too, so a value can never split
+/// its line into a second key or a forged section header.
+pub(crate) fn quote(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for ch in value.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            _ => out.push(ch),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// The code half of a config line: everything before its `#` comment. A
+/// `#` inside a quoted value is data, not a comment --- `projects =
+/// "~/dev/c#"` names a directory --- so the scan tracks quotes, with `\`
+/// escaping only inside a double-quoted string (a single-quoted one has no
+/// escapes), the way TOML reads them.
+pub(crate) fn strip_comment(line: &str) -> &str {
+    let mut quote = None;
+    let mut escaped = false;
+    for (index, ch) in line.char_indices() {
+        if escaped {
+            escaped = false;
+        } else if quote == Some('"') && ch == '\\' {
+            escaped = true;
+        } else if quote == Some(ch) {
+            quote = None;
+        } else if quote.is_none() {
+            match ch {
+                '\'' | '"' => quote = Some(ch),
+                '#' => return &line[..index],
+                _ => {}
+            }
+        }
+    }
+    line
 }
 
 /// A directory ChipTUI knows is a project, as recorded in the user config.
@@ -216,7 +281,7 @@ impl ProjectRegistry {
         let mut entries = Vec::new();
         let mut current: Option<PendingEntry> = None;
         for line in text.lines() {
-            let line = line.split('#').next().unwrap_or("").trim();
+            let line = strip_comment(line).trim();
             if line.is_empty() {
                 continue;
             }
@@ -554,7 +619,7 @@ fn save_key(config: &Path, section: &str, key: &str, value: &str) -> std::io::Re
 fn section_value(text: &str, section: &str, key: &str) -> Option<String> {
     let mut in_section = false;
     for line in text.lines() {
-        let line = line.split('#').next().unwrap_or("").trim();
+        let line = strip_comment(line).trim();
         if line.is_empty() {
             continue;
         }
@@ -635,12 +700,12 @@ pub(crate) fn write_config(config: &Path, text: &str) -> std::io::Result<()> {
 /// Splits `text` into everything that is not a `[[project]]` block and the
 /// entries those blocks describe --- the pure half of [`record_project`].
 fn split_projects(text: &str) -> (String, Vec<ProjectEntry>) {
-    let is_header = |line: &str| line.split('#').next().unwrap_or("").trim().starts_with('[');
     let mut other = Vec::new();
     let mut in_project = false;
     for line in text.lines() {
-        if is_header(line) {
-            in_project = line.split('#').next().unwrap_or("").trim() == "[[project]]";
+        let code = strip_comment(line).trim();
+        if code.starts_with('[') {
+            in_project = code == "[[project]]";
         }
         if !in_project {
             other.push(line.to_string());
@@ -693,12 +758,12 @@ fn render_projects(other: &str, entries: &[ProjectEntry]) -> String {
 /// key of the same name in a later section (or inside a `[[project]]`
 /// block) would be the one replaced.
 ///
-/// Shared with [`crate::project::config`] rather than copied. `unquote` is
-/// deliberately duplicated there ("one small function is a cheaper coupling
-/// than none"), but this one *is* the preservation guarantee --- section
-/// tracking, comment stripping before the `=` split, insert-after-header
-/// versus append-a-section --- and two copies of it would drift into two
-/// different definitions of "preserve".
+/// Shared with [`crate::project::config`] rather than copied: this is the
+/// preservation guarantee --- section tracking, comment stripping before
+/// the `=` split, insert-after-header versus append-a-section --- and two
+/// copies of it would drift into two different definitions of "preserve".
+/// The value goes through [`quote`], so every reader's [`unquote`] hands it
+/// back unchanged.
 pub(crate) fn upsert_key(text: &str, section: &str, key: &str, value: &str) -> String {
     let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
     // An empty `section` names the region *before* the first header --- the
@@ -715,17 +780,17 @@ pub(crate) fn upsert_key(text: &str, section: &str, key: &str, value: &str) -> S
         if !in_section {
             continue;
         }
-        let stripped = line.split('#').next().unwrap_or("").trim();
+        let stripped = strip_comment(line).trim();
         if let Some((found, _)) = stripped.split_once('=')
             && found.trim() == key
         {
-            *line = format!("{key} = \"{value}\"");
+            *line = format!("{key} = {}", quote(value));
             replaced = true;
             break;
         }
     }
     if !replaced {
-        let entry = format!("{key} = \"{value}\"");
+        let entry = format!("{key} = {}", quote(value));
         if section.is_empty() {
             // Before the first header, so the key lands in the region it
             // belongs to --- and *after* whatever leads the file, so a
@@ -775,9 +840,7 @@ pub(crate) fn upsert_key(text: &str, section: &str, key: &str, value: &str) -> S
 /// section boundary like any other --- which is what keeps a `board` inside
 /// one from being mistaken for the `[zephyr]` one.
 fn header_name(line: &str) -> Option<String> {
-    line.split('#')
-        .next()
-        .unwrap_or("")
+    strip_comment(line)
         .trim()
         .strip_prefix('[')
         .and_then(|l| l.strip_suffix(']'))
@@ -805,7 +868,7 @@ pub(crate) fn remove_key(text: &str, section: &str, key: &str) -> String {
             continue;
         }
         if !removed && in_section {
-            let stripped = line.split('#').next().unwrap_or("").trim();
+            let stripped = strip_comment(line).trim();
             if let Some((found, _)) = stripped.split_once('=')
                 && found.trim() == key
             {
@@ -1190,6 +1253,67 @@ mod tests {
         let entry = ProjectEntry::new("/p/with \"quotes\" and \\slash", BackendKind::Zephyr);
         let text = render_projects("", std::slice::from_ref(&entry));
         assert_eq!(ProjectRegistry::parse(&text).entries(), &[entry]);
+    }
+
+    /// Whatever either writer puts in the file, every reader hands back
+    /// unchanged: a `#` inside a quoted value is part of it, not the start
+    /// of a comment, and an escaped backslash is one backslash, not half of
+    /// a UNC path's two.
+    #[test]
+    fn written_values_read_back_byte_for_byte() {
+        for value in [
+            "/home/dev/proj#2",
+            r"\\server\share\zephyr",
+            r"C:\ncs\v2.7",
+            "/home/dev/say \"hi\"",
+            r"C:\trailing\",
+        ] {
+            let text = upsert_key("", "zephyr", "workspace", value);
+            assert_eq!(
+                ZephyrSettings::parse(&text).workspace.as_deref(),
+                Some(value),
+                "written as:\n{text}"
+            );
+            assert_eq!(
+                section_value(&text, "zephyr", "workspace").as_deref(),
+                Some(value),
+                "written as:\n{text}"
+            );
+
+            let entry = ProjectEntry::new(value, BackendKind::Zephyr);
+            let text = render_projects("", std::slice::from_ref(&entry));
+            assert_eq!(
+                ProjectRegistry::parse(&text).entries(),
+                &[entry],
+                "written as:\n{text}"
+            );
+        }
+    }
+
+    /// The spellings only a person writes: an unescaped Windows path in
+    /// double quotes (invalid TOML, common in practice), a `#` inside single
+    /// quotes, and a real comment right after a quoted value.
+    #[test]
+    fn hand_written_values_keep_their_hashes_and_backslashes() {
+        let settings = ZephyrSettings::parse(
+            r##"[zephyr]
+workspace = "C:\ncs\v2.7" # nRF Connect's default
+projects = '~/dev/c#'
+sdk = "~/sdk"#tight comment
+"##,
+        );
+        assert_eq!(settings.workspace.as_deref(), Some(r"C:\ncs\v2.7"));
+        assert_eq!(settings.projects.as_deref(), Some("~/dev/c#"));
+        assert_eq!(settings.sdk.as_deref(), Some("~/sdk"));
+    }
+
+    /// A line break is written escaped: raw, it would split the value's own
+    /// line and the rest of it would read as keys and sections of its own.
+    #[test]
+    fn a_line_break_cannot_forge_a_key_or_a_section() {
+        let text = upsert_key("", "zephyr", "workspace", "/ws\n[ui]\ntheme = \"forged\"");
+        assert_eq!(text.lines().count(), 2, "one header, one key:\n{text}");
+        assert_eq!(section_value(&text, "ui", "theme"), None, "{text}");
     }
 
     #[test]

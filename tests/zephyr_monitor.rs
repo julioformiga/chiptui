@@ -218,6 +218,7 @@ fn m_runs_the_platforms_own_espressif_monitor_on_the_selected_port() {
         &mut app,
         |app| {
             app.device_monitor_output
+                .lines()
                 .iter()
                 .any(|l| l.contains("espressif"))
         },
@@ -227,11 +228,12 @@ fn m_runs_the_platforms_own_espressif_monitor_on_the_selected_port() {
     let port = root.join("dev/ttyACM0").display().to_string();
     assert!(
         app.device_monitor_output
+            .lines()
             .iter()
             .any(|l| l.contains("espressif monitor") && l.contains("-p") && l.contains(&port)),
         "the monitor must run the workspace's own espressif extension with \
          the selected port: {:?}",
-        app.device_monitor_output
+        app.device_monitor_output.lines()
     );
 }
 

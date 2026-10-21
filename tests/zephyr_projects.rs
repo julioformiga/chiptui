@@ -767,8 +767,10 @@ fn accepting_application_discovers_its_builds_and_cached_board() {
         std::fs::create_dir_all(&build).unwrap();
         std::fs::write(
             build.join("CMakeCache.txt"),
+            // Zephyr writes both keys; `CACHED_BOARD` is the one the
+            // build panel and variant discovery read.
             format!(
-                "BOARD:STRING={board}\nZEPHYR_BASE:PATH=/zephyr\nAPPLICATION_SOURCE_DIR:PATH={}\n",
+                "BOARD:STRING={board}\nCACHED_BOARD:STRING={board}\nZEPHYR_BASE:PATH=/zephyr\nAPPLICATION_SOURCE_DIR:PATH={}\n",
                 root.join("app").display()
             ),
         )

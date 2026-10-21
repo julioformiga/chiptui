@@ -247,8 +247,10 @@ fn cancellation_and_backend_switch_discard_the_entire_preparation() {
     assert!(!panel.rows().contains(&ProjectConfigRow::Simulator));
 }
 
+/// `SPEC.md` §Build variants: the repository keeps `chiptui.toml`, while
+/// new default build directories sit beside the resolved application.
 #[test]
-fn nested_application_keeps_config_and_builds_at_repository_root() {
+fn nested_application_keeps_config_at_the_root_and_builds_beside_the_app() {
     let temp = TempDir::new("sim-nested");
     let (mut app, project) = setup(&temp);
     std::fs::create_dir_all(project.join("app/src")).unwrap();
@@ -269,9 +271,10 @@ fn nested_application_keeps_config_and_builds_at_repository_root() {
     assert!(!project.join("boards").exists());
     assert!(!project.join("app/chiptui.toml").exists());
     let v = config::parse_variants(&std::fs::read_to_string(project.join("chiptui.toml")).unwrap());
+    assert_eq!(v[0].build_dir, "app/build");
     assert_eq!(
         v[1].executable(&project),
-        project.join("build_sim/zephyr/zephyr.exe")
+        project.join("app/build_sim/zephyr/zephyr.exe")
     );
 }
 

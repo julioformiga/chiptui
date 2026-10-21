@@ -4,9 +4,11 @@
 //! one is selected, and address files on the device. Connection state lives in
 //! `mpremote`, not here (`AGENTS.md` §2).
 
+mod capture;
 mod path;
 mod vendor;
 
+pub use capture::MonitorCapture;
 pub use path::DevicePath;
 
 /// USB serial port paths under `dir`, sorted --- the port-discovery half of
@@ -113,18 +115,34 @@ pub enum ScriptState {
 /// "not enough evidence either way": a silent script looks identical to a
 /// silent board, and pretending otherwise would interrupt on a guess.
 pub fn monitor_script_activity(lines: &[String]) -> Option<ScriptState> {
-    const PROMPT: &str = ">>> ";
+    script_verdict(
+        lines.iter().any(|line| shows_prompt(line)),
+        lines.iter().filter(|line| is_meaningful(line)).count(),
+    )
+}
+
+/// [`monitor_script_activity`]'s rule over its two tallies, shared with
+/// [`MonitorCapture`], which keeps the tallies as lines complete instead of
+/// recounting the whole transcript.
+fn script_verdict(prompt_seen: bool, meaningful: usize) -> Option<ScriptState> {
     /// Output lines that carry no signal about who produced them.
     const MIN_LINES: usize = 3;
 
-    if lines.iter().any(|line| line.contains(PROMPT)) {
+    if prompt_seen {
         return Some(ScriptState::Stopped);
     }
-    let meaningful = lines
-        .iter()
-        .filter(|line| !is_banner(line) && !line.trim().is_empty())
-        .count();
     (meaningful >= MIN_LINES).then_some(ScriptState::Running)
+}
+
+/// A REPL prompt somewhere on the line.
+fn shows_prompt(line: &str) -> bool {
+    line.contains(">>> ")
+}
+
+/// Output that says something about who produced it: neither blank nor a
+/// connect banner.
+fn is_meaningful(line: &str) -> bool {
+    !is_banner(line) && !line.trim().is_empty()
 }
 
 /// Lines either tool prints on connect, before any board output arrives.
@@ -144,11 +162,14 @@ fn is_banner(line: &str) -> bool {
 /// full identifier. `None` when no banner was seen --- the honest answer
 /// until the probe or the monitor has connected once.
 pub fn micropython_version(lines: &[String]) -> Option<String> {
-    lines.iter().find_map(|line| {
-        let rest = line.trim().strip_prefix("MicroPython v")?;
-        let version = rest.split_whitespace().next()?;
-        (!version.is_empty()).then(|| format!("v{version}"))
-    })
+    lines.iter().find_map(|line| banner_version(line))
+}
+
+/// The version one line's MicroPython banner names, if it is one.
+fn banner_version(line: &str) -> Option<String> {
+    let rest = line.trim().strip_prefix("MicroPython v")?;
+    let version = rest.split_whitespace().next()?;
+    (!version.is_empty()).then(|| format!("v{version}"))
 }
 
 /// What the device manager currently knows.

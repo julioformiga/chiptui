@@ -500,13 +500,10 @@ impl App {
     /// runs, rather than before or after touching the device. The banner it
     /// inevitably prints also refreshes the board's MicroPython version.
     pub(super) fn update_script_from_monitor(&mut self) {
-        // Computed before the mutable use below: the lines are borrowed
-        // immutably here and `self` mutably by the assignment.
-        if let Some(version) = crate::device::micropython_version(&self.device_monitor_output) {
+        if let Some(version) = self.device_monitor_output.micropython_version() {
             self.mpy_version = Some(version);
         }
-        let Some(state) = crate::device::monitor_script_activity(&self.device_monitor_output)
-        else {
+        let Some(state) = self.device_monitor_output.script_activity() else {
             return;
         };
         if self.devices.script_state() == state {
@@ -817,7 +814,6 @@ impl App {
                 self.log_tab = LogTab::Monitor;
                 self.set_monitor_source(MonitorSource::Device);
                 self.device_monitor_output.clear();
-                self.monitor_console.reset();
                 self.device_monitor_terminal.reset();
 
                 // The monitor is a real terminal: advertise only what the
